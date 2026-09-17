@@ -1,0 +1,145 @@
+{
+  "attributes": {"fixture_purpose": "deterministic routing impossible input"},
+  "ceilings": [],
+  "circuits": [],
+  "conductors": [],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "load",
+      "host_id": null,
+      "id": "device:load",
+      "level_id": null,
+      "name": null,
+      "pose": {
+        "position": {"x": 4, "y": 0, "z": 0},
+        "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+      },
+      "provenance": [],
+      "rated_voltage_v": null,
+      "size": null,
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "equipment:source",
+      "level_id": null,
+      "name": null,
+      "pose": {
+        "position": {"x": 0, "y": 0, "z": 0},
+        "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+      },
+      "provenance": [],
+      "rated_voltage_v": null,
+      "size": null,
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "levels": [],
+  "model_id": "model:routing-test",
+  "name": null,
+  "obstacles": [
+    {
+      "attributes": {},
+      "clearance_m": 0.0,
+      "confidence": 1.0,
+      "geometry": {
+        "kind": "box3d",
+        "pose": {
+          "position": {"x": 2, "y": 1, "z": 0},
+          "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+        },
+        "size": {"x": 2, "y": 2, "z": 2}
+      },
+      "id": "obstacle:covers-required",
+      "level_id": null,
+      "name": null,
+      "obstacle_type": "hard",
+      "provenance": []
+    }
+  ],
+  "openings": [],
+  "ports": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {"x": 1, "y": 0, "z": 0},
+      "domain": "power",
+      "id": "port:source",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equipment:source",
+      "pose": {
+        "position": {"x": 0, "y": 0, "z": 0},
+        "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+      },
+      "provenance": [],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {"x": -1, "y": 0, "z": 0},
+      "domain": "power",
+      "id": "port:load",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:load",
+      "pose": {
+        "position": {"x": 4, "y": 0, "z": 0},
+        "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+      },
+      "provenance": [],
+      "role": "sink"
+    }
+  ],
+  "provenance": [],
+  "route_constraints": [
+    {
+      "applies_to": [],
+      "attributes": {},
+      "clearance_m": 0.0,
+      "confidence": 1.0,
+      "constraint_type": "required-corridor",
+      "geometry": {
+        "kind": "box3d",
+        "pose": {
+          "position": {"x": 2, "y": 1, "z": 0},
+          "rotation": {"w": 1.0, "x": 0.0, "y": 0.0, "z": 0.0}
+        },
+        "size": {"x": 0.5, "y": 0.3, "z": 0.3}
+      },
+      "hard": true,
+      "id": "constraint:required",
+      "level_id": null,
+      "name": null,
+      "provenance": []
+    }
+  ],
+  "route_fittings": [],
+  "routes": [],
+  "schema_version": "1.0.0",
+  "slabs": [],
+  "spaces": [],
+  "walls": []
+}

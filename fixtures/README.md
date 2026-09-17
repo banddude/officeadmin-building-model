@@ -2,7 +2,14 @@
 
 Only synthetic or explicitly public/cleared fixtures belong here.
 
-Planned golden fixtures:
+`model/v1/` contains the checked-in canonical contract examples:
+
+1. `minimal-room.json`: tiny known-answer building model
+2. `garage-route.json`: broad v1 contract coverage for building + electrical + route semantics
+
+The garage-route fixture is a contract example, not the later convergence acceptance fixture.
+
+Planned golden fixtures remain:
 
 1. rectangular room
 2. wall opening / door obstruction

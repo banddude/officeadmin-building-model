@@ -1,0 +1,498 @@
+{
+  "doors": [
+    {
+      "category": {
+        "door": {
+          "isOpen": false
+        }
+      },
+      "confidence": {
+        "high": {}
+      },
+      "dimensions": [
+        0.9,
+        2.1,
+        0
+      ],
+      "identifier": "door-south",
+      "parentIdentifier": "wall-south",
+      "polygonCorners": [
+        [
+          -0.45,
+          -1.05,
+          0
+        ],
+        [
+          0.45,
+          -1.05,
+          0
+        ],
+        [
+          0.45,
+          1.05,
+          0
+        ],
+        [
+          -0.45,
+          1.05,
+          0
+        ]
+      ],
+      "story": 1,
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0.8,
+        4.25,
+        1.5,
+        1
+      ]
+    }
+  ],
+  "floors": [
+    {
+      "category": {
+        "floor": {}
+      },
+      "confidence": {
+        "high": {}
+      },
+      "dimensions": [
+        4,
+        3,
+        0
+      ],
+      "identifier": "floor-main",
+      "polygonCorners": [
+        [
+          -2,
+          -1.5,
+          0
+        ],
+        [
+          2,
+          -1.5,
+          0
+        ],
+        [
+          2,
+          1.5,
+          0
+        ],
+        [
+          -2,
+          1.5,
+          0
+        ]
+      ],
+      "story": 1,
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0,
+        0,
+        3.2,
+        0,
+        1
+      ]
+    }
+  ],
+  "identifier": "11111111-1111-4111-8111-111111111111",
+  "objects": [
+    {
+      "attributes": {
+        "fixtureNote": "preserved source metadata"
+      },
+      "category": {
+        "table": {}
+      },
+      "confidence": {
+        "medium": {}
+      },
+      "dimensions": [
+        1.2,
+        0.75,
+        0.6
+      ],
+      "identifier": "object-table",
+      "story": 1,
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        3.575,
+        0,
+        1
+      ]
+    }
+  ],
+  "openings": [
+    {
+      "category": {
+        "opening": {}
+      },
+      "confidence": {
+        "low": {}
+      },
+      "dimensions": [
+        0.7,
+        1.9,
+        0
+      ],
+      "identifier": "opening-east",
+      "story": 1,
+      "transform": [
+        0,
+        0,
+        -1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        2,
+        4.3,
+        0.4,
+        1
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "center": [
+        0,
+        3.2,
+        0
+      ],
+      "label": "kitchen",
+      "story": 1
+    }
+  ],
+  "story": 1,
+  "version": 2,
+  "walls": [
+    {
+      "category": {
+        "wall": {}
+      },
+      "completedEdges": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "confidence": {
+        "high": {}
+      },
+      "curve": {
+        "endAngle": 0.2,
+        "radius": 9.25,
+        "startAngle": -0.2
+      },
+      "dimensions": [
+        4,
+        2.8,
+        0
+      ],
+      "identifier": "wall-south",
+      "polygonCorners": [
+        [
+          -2,
+          -1.4,
+          0
+        ],
+        [
+          2,
+          -1.4,
+          0
+        ],
+        [
+          2,
+          1.4,
+          0
+        ],
+        [
+          -2,
+          1.4,
+          0
+        ]
+      ],
+      "story": 1,
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        4.6,
+        1.5,
+        1
+      ]
+    },
+    {
+      "category": {
+        "wall": {}
+      },
+      "confidence": {
+        "high": {}
+      },
+      "dimensions": [
+        4,
+        2.8,
+        0
+      ],
+      "identifier": "wall-north",
+      "polygonCorners": [
+        [
+          -2,
+          -1.4,
+          0
+        ],
+        [
+          2,
+          -1.4,
+          0
+        ],
+        [
+          2,
+          1.4,
+          0
+        ],
+        [
+          -2,
+          1.4,
+          0
+        ]
+      ],
+      "story": 1,
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        4.6,
+        -1.5,
+        1
+      ]
+    },
+    {
+      "category": {
+        "wall": {}
+      },
+      "confidence": {
+        "medium": {}
+      },
+      "dimensions": [
+        3,
+        2.8,
+        0
+      ],
+      "identifier": "wall-east",
+      "polygonCorners": [
+        [
+          -1.5,
+          -1.4,
+          0
+        ],
+        [
+          1.5,
+          -1.4,
+          0
+        ],
+        [
+          1.5,
+          1.4,
+          0
+        ],
+        [
+          -1.5,
+          1.4,
+          0
+        ]
+      ],
+      "story": 1,
+      "transform": [
+        0,
+        0,
+        -1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        2,
+        4.6,
+        0,
+        1
+      ]
+    },
+    {
+      "category": {
+        "wall": {}
+      },
+      "confidence": {
+        "medium": {}
+      },
+      "dimensions": [
+        3,
+        2.8,
+        0
+      ],
+      "identifier": "wall-west",
+      "polygonCorners": [
+        [
+          -1.5,
+          -1.4,
+          0
+        ],
+        [
+          1.5,
+          -1.4,
+          0
+        ],
+        [
+          1.5,
+          1.4,
+          0
+        ],
+        [
+          -1.5,
+          1.4,
+          0
+        ]
+      ],
+      "story": 1,
+      "transform": [
+        0,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0,
+        -2,
+        4.6,
+        0,
+        1
+      ]
+    }
+  ],
+  "windows": [
+    {
+      "category": {
+        "window": {}
+      },
+      "confidence": {
+        "medium": {}
+      },
+      "dimensions": [
+        1.2,
+        1,
+        0
+      ],
+      "identifier": "window-north",
+      "parentIdentifier": "wall-north",
+      "polygonCorners": [
+        [
+          -0.6,
+          -0.5,
+          0
+        ],
+        [
+          0.6,
+          -0.5,
+          0
+        ],
+        [
+          0.6,
+          0.5,
+          0
+        ],
+        [
+          -0.6,
+          0.5,
+          0
+        ]
+      ],
+      "story": 1,
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        -0.5,
+        4.7,
+        -1.5,
+        1
+      ]
+    }
+  ]
+}

@@ -19,3 +19,7 @@ Planned golden fixtures remain:
 6. impossible route
 7. two-level building
 8. synthetic garage integration fixture
+
+## RoomPlan
+
+`roomplan/captured-room-3d.json` is a synthetic CapturedRoom-shaped fixture for the RoomPlan / LiDAR importer. It includes nonzero story elevation, 4x4 transforms, polygon surfaces, openings, source confidence, an object, and section metadata. It contains no customer or private scan data.

@@ -81,6 +81,18 @@ def _ifc_port_graph(ifc: ifcopenshell.file) -> dict[int, set[int]]:
         right = relation.RelatedPort.id()
         graph.setdefault(left, set()).add(right)
         graph.setdefault(right, set()).add(left)
+
+    # IfcRelConnectsPorts joins adjacent products. Continuity through a conduit
+    # segment or fitting is represented by the pair of ports owned by that
+    # distribution element, so include that native element-internal link too.
+    for class_name in ("IfcCableCarrierSegment", "IfcCableCarrierFitting"):
+        for product in ifc.by_type(class_name):
+            ports = sorted(_product_ports(ifc, product))
+            if len(ports) != 2:
+                continue
+            left, right = ports
+            graph.setdefault(left, set()).add(right)
+            graph.setdefault(right, set()).add(left)
     return graph
 
 

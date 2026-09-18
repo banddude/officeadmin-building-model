@@ -1,10 +1,11 @@
 from dataclasses import replace
+import math
 
 import pytest
 
 from oabm.model import (
     Box3D, BuildingModel, Ceiling, ElectricalDevice, ElectricalEquipment, Obstacle,
-    Point3, Polygon3D, Polyline3D, Port, Pose, RouteConstraint, Size3, Vector3,
+    Point3, Polygon3D, Polyline3D, Port, Pose, Quaternion, RouteConstraint, Size3, Vector3,
     stable_id,
 )
 import oabm.routing.router as routing_router
@@ -251,6 +252,53 @@ def test_required_polyline_and_polygon_constraints_use_actual_geometry(geometry)
     route, _ = route_between_ports(model, "port:source", "port:load", "emt")
     assert route.attributes["required_constraint_ids"] == [required.id]
     assert route.attributes["bend_count"] > 0
+
+
+def test_required_rotated_box_constraint_uses_oriented_geometry_not_world_aabb():
+    rotation = Quaternion(
+        z=math.sin(math.pi / 8),
+        w=math.cos(math.pi / 8),
+    )
+    required = RouteConstraint(
+        id="constraint:rotated",
+        constraint_type="required-corridor",
+        hard=True,
+        geometry=Box3D(
+            pose=Pose(
+                position=Point3(x=0, y=0, z=0),
+                rotation=rotation,
+            ),
+            size=Size3(x=2.0, y=0.2, z=0.2),
+        ),
+    )
+
+    misses_obb = _base_model(
+        start=Point3(x=0.7, y=-0.7, z=0),
+        end=Point3(x=1.5, y=-0.7, z=0),
+        constraints=(required,),
+    )
+    with pytest.raises(NoRouteError, match="required corridors=constraint:rotated"):
+        route_between_ports(
+            misses_obb,
+            "port:source",
+            "port:load",
+            "emt",
+            options=RoutingOptions(max_bends=0),
+        )
+
+    crosses_obb = _base_model(
+        start=Point3(x=-1.5, y=0, z=0),
+        end=Point3(x=1.5, y=0, z=0),
+        constraints=(required,),
+    )
+    route, _ = route_between_ports(
+        crosses_obb,
+        "port:source",
+        "port:load",
+        "emt",
+        options=RoutingOptions(max_bends=0),
+    )
+    assert route.attributes["required_constraint_ids"] == [required.id]
 
 
 def test_route_and_fitting_identity_does_not_depend_on_router_version(monkeypatch):

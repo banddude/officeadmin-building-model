@@ -715,10 +715,122 @@ def _segment_intersects_bounds(a: Point3, b: Point3, bounds: _Bounds) -> bool:
     return t_max >= -_EPS and t_min <= 1.0 + _EPS
 
 
+def _inverse_rotate_vector(vector: tuple[float, float, float], quaternion) -> tuple[float, float, float]:
+    x, y, z = vector
+    qx, qy, qz, qw = -quaternion.x, -quaternion.y, -quaternion.z, quaternion.w
+    tx = 2 * (qy * z - qz * y)
+    ty = 2 * (qz * x - qx * z)
+    tz = 2 * (qx * y - qy * x)
+    return (
+        x + qw * tx + (qy * tz - qz * ty),
+        y + qw * ty + (qz * tx - qx * tz),
+        z + qw * tz + (qx * ty - qy * tx),
+    )
+
+
+def _box_local_coordinates(point: Point3, box: Box3D) -> tuple[float, float, float]:
+    center = box.pose.position
+    return _inverse_rotate_vector(
+        (point.x - center.x, point.y - center.y, point.z - center.z),
+        box.pose.rotation,
+    )
+
+
+def _point_box_distance(point: Point3, box: Box3D) -> float:
+    local = _box_local_coordinates(point, box)
+    half_sizes = (box.size.x / 2, box.size.y / 2, box.size.z / 2)
+    outside = tuple(
+        max(abs(value) - half_size, 0.0)
+        for value, half_size in zip(local, half_sizes)
+    )
+    return math.sqrt(_dot(outside, outside))
+
+
+def _segment_aabb_distance(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    half_sizes: tuple[float, float, float],
+) -> float:
+    delta = tuple(right - left for left, right in zip(start, end))
+
+    t_min = 0.0
+    t_max = 1.0
+    intersects = True
+    for value, change, half_size in zip(start, delta, half_sizes):
+        if abs(change) <= _EPS:
+            if value < -half_size - _EPS or value > half_size + _EPS:
+                intersects = False
+                break
+            continue
+        first = (-half_size - value) / change
+        second = (half_size - value) / change
+        if first > second:
+            first, second = second, first
+        t_min = max(t_min, first)
+        t_max = min(t_max, second)
+        if t_min > t_max + _EPS:
+            intersects = False
+            break
+    if intersects and t_max >= -_EPS and t_min <= 1.0 + _EPS:
+        return 0.0
+
+    breakpoints = {0.0, 1.0}
+    for value, change, half_size in zip(start, delta, half_sizes):
+        if abs(change) <= _EPS:
+            continue
+        for boundary in (-half_size, half_size):
+            parameter = (boundary - value) / change
+            if _EPS < parameter < 1.0 - _EPS:
+                breakpoints.add(parameter)
+    ordered = sorted(breakpoints)
+
+    def squared_distance(parameter: float) -> float:
+        total = 0.0
+        for value, change, half_size in zip(start, delta, half_sizes):
+            coordinate = value + change * parameter
+            outside = max(abs(coordinate) - half_size, 0.0)
+            total += outside * outside
+        return total
+
+    best = min(squared_distance(parameter) for parameter in ordered)
+    for left, right in zip(ordered, ordered[1:]):
+        if right - left <= _EPS:
+            continue
+        midpoint = (left + right) / 2
+        numerator = 0.0
+        denominator = 0.0
+        for value, change, half_size in zip(start, delta, half_sizes):
+            coordinate = value + change * midpoint
+            if coordinate < -half_size:
+                boundary = -half_size
+            elif coordinate > half_size:
+                boundary = half_size
+            else:
+                continue
+            numerator += change * (value - boundary)
+            denominator += change * change
+        if denominator <= _EPS:
+            continue
+        parameter = -numerator / denominator
+        if left - _EPS <= parameter <= right + _EPS:
+            parameter = max(left, min(right, parameter))
+            best = min(best, squared_distance(parameter))
+    return math.sqrt(max(best, 0.0))
+
+
+def _segment_box_distance(a: Point3, b: Point3, box: Box3D) -> float:
+    return _segment_aabb_distance(
+        _box_local_coordinates(a, box),
+        _box_local_coordinates(b, box),
+        (box.size.x / 2, box.size.y / 2, box.size.z / 2),
+    )
+
 
 def _rule_contains_point(point: Point3, rule: _Rule) -> bool:
     if not _point_in_bounds(point, rule.bounds):
         return False
+    if isinstance(rule.geometry, Box3D):
+        return _point_box_distance(point, rule.geometry) <= rule.tolerance_m + _EPS
     if isinstance(rule.geometry, Polyline3D):
         return any(
             _point_segment_distance(point, start, end) <= rule.tolerance_m + _EPS
@@ -732,6 +844,8 @@ def _rule_contains_point(point: Point3, rule: _Rule) -> bool:
 def _rule_intersects_segment(a: Point3, b: Point3, rule: _Rule) -> bool:
     if not _segment_intersects_bounds(a, b, rule.bounds):
         return False
+    if isinstance(rule.geometry, Box3D):
+        return _segment_box_distance(a, b, rule.geometry) <= rule.tolerance_m + _EPS
     if isinstance(rule.geometry, Polyline3D):
         return any(
             _segment_segment_distance(a, b, start, end) <= rule.tolerance_m + _EPS

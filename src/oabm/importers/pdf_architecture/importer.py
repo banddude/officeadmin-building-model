@@ -579,7 +579,7 @@ def _room_ceiling_height_evidence(
     page: PdfPageObservation,
     shells: tuple[_Shell, ...],
     ambiguities: list[dict[str, object]],
-) -> dict[str, _Measurement]:
+) -> tuple[dict[str, _Measurement], set[str]]:
     shell_anchors = {shell.room.anchor for shell in shells}
     candidates: dict[str, list[tuple[PdfTextObservation, float]]] = {}
     for observation, height_m, scope, room_anchor in _ceiling_height_scopes(page):
@@ -601,6 +601,7 @@ def _room_ceiling_height_evidence(
         candidates.setdefault(room_anchor, []).append((observation, height_m))
 
     result: dict[str, _Measurement] = {}
+    blocked: set[str] = set()
     for anchor in sorted(candidates):
         items = candidates[anchor]
         first_value = items[0][1]
@@ -619,6 +620,7 @@ def _room_ceiling_height_evidence(
                     "source_text": [observation.text for observation, _ in items],
                 }
             )
+            blocked.add(anchor)
             continue
         observation, height_m = items[0]
         result[anchor] = _Measurement(
@@ -630,7 +632,7 @@ def _room_ceiling_height_evidence(
             source_text=observation.text,
             source_element_id=observation.element_id,
         )
-    return result
+    return result, blocked
 
 
 def _slab_thickness_from_text(page: PdfPageObservation) -> tuple[float, str] | None:
@@ -998,6 +1000,7 @@ def _shell_entities(
     level: Level,
     level_info: _LevelInfo,
     room_height: _Measurement | None,
+    room_height_blocked: bool,
     source_id: str,
     slab_thickness: tuple[float, str] | None,
     ambiguities: list[dict[str, object]],
@@ -1006,11 +1009,19 @@ def _shell_entities(
     identity = f"{source_id}|level:{level_info.anchor}|room:{room.anchor}"
     base_confidence = min(room.confidence, scale.confidence, transform.confidence)
     footprint = _polygon_from_bbox(shell.inner.bbox_pt, transform, level.elevation_m)
-    resolved_height_m = room_height.value_m if room_height is not None else level.height_m
+    resolved_height_m = (
+        None
+        if room_height_blocked
+        else (room_height.value_m if room_height is not None else level.height_m)
+    )
     height_confidence = (
-        room_height.confidence
-        if room_height is not None
-        else (level_info.height_confidence or 0.0)
+        0.0
+        if room_height_blocked
+        else (
+            room_height.confidence
+            if room_height is not None
+            else (level_info.height_confidence or 0.0)
+        )
     )
     room_height_provenance: tuple[Provenance, ...] = ()
     if room_height is not None:
@@ -1550,7 +1561,7 @@ def import_observations(
 
         rooms = _room_labels(page)
         shells = _shell_candidates(page, scale, rooms, options, ambiguities)
-        room_heights = _room_ceiling_height_evidence(page, shells, ambiguities)
+        room_heights, blocked_room_heights = _room_ceiling_height_evidence(page, shells, ambiguities)
         slab_thickness = _slab_thickness_from_text(page)
         page_walls: list[_WallContext] = []
         for shell in shells:
@@ -1578,6 +1589,7 @@ def import_observations(
                 level,
                 level_info,
                 room_heights.get(shell.room.anchor),
+                shell.room.anchor in blocked_room_heights,
                 document.source_id,
                 slab_thickness,
                 ambiguities,

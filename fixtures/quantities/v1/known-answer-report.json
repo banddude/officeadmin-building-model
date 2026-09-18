@@ -1,0 +1,315 @@
+{
+  "count_unit": "ea",
+  "items": [
+    {
+      "assembly_key": "jbox-4sq",
+      "category": "box",
+      "id": "qty:d862a752384b5588bdf4126621b98a02",
+      "item_type": "junction-box",
+      "measure": "count",
+      "properties": {},
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "jbox",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 1,
+      "source_ids": [
+        "device:jbox"
+      ],
+      "unit": "ea"
+    },
+    {
+      "assembly_key": null,
+      "category": "conductor",
+      "id": "qty:929fe7ab36835db4ad102f422dbd87f7",
+      "item_type": "conductor",
+      "measure": "count",
+      "properties": {
+        "insulation": "THHN/THWN-2",
+        "material": "copper",
+        "role": "equipment-ground",
+        "size": "#10 AWG"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "egc",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 1,
+      "source_ids": [
+        "conductor:egc"
+      ],
+      "unit": "ea"
+    },
+    {
+      "assembly_key": null,
+      "category": "conductor",
+      "id": "qty:0153a339ba1a5833938f93adc5c288ed",
+      "item_type": "conductor",
+      "measure": "count",
+      "properties": {
+        "insulation": "THHN/THWN-2",
+        "material": "copper",
+        "role": "line",
+        "size": "#6 AWG"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "lines",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 2,
+      "source_ids": [
+        "conductor:lines"
+      ],
+      "unit": "ea"
+    },
+    {
+      "assembly_key": null,
+      "category": "conductor",
+      "id": "qty:bc6b64f124c453159d52d7cde2fec16f",
+      "item_type": "conductor",
+      "measure": "length",
+      "properties": {
+        "insulation": "THHN/THWN-2",
+        "material": "copper",
+        "role": "equipment-ground",
+        "size": "#10 AWG"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "egc",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        },
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "route-a",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        },
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "route-b",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 7.0,
+      "source_ids": [
+        "conductor:egc",
+        "route:jbox-evse",
+        "route:panel-jbox"
+      ],
+      "unit": "m"
+    },
+    {
+      "assembly_key": null,
+      "category": "conductor",
+      "id": "qty:f3966db7ce435a3d87697f95d80bb56d",
+      "item_type": "conductor",
+      "measure": "length",
+      "properties": {
+        "insulation": "THHN/THWN-2",
+        "material": "copper",
+        "role": "line",
+        "size": "#6 AWG"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "lines",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        },
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "route-a",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        },
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "route-b",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 14.0,
+      "source_ids": [
+        "conductor:lines",
+        "route:jbox-evse",
+        "route:panel-jbox"
+      ],
+      "unit": "m"
+    },
+    {
+      "assembly_key": "evse-wall",
+      "category": "device",
+      "id": "qty:87694b7411145cffa0a7bb5264bcdeaf",
+      "item_type": "evse",
+      "measure": "count",
+      "properties": {
+        "rated_voltage_v": 240.0,
+        "system": "240V-1ph"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "evse",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 1,
+      "source_ids": [
+        "device:evse"
+      ],
+      "unit": "ea"
+    },
+    {
+      "assembly_key": "panelboard-standard",
+      "category": "equipment",
+      "id": "qty:be23aeb852815bcab4603e453dcc4427",
+      "item_type": "panelboard",
+      "measure": "count",
+      "properties": {
+        "rated_voltage_v": 240.0,
+        "system": "120/240V-1ph"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 1,
+      "source_ids": [
+        "equip:panel"
+      ],
+      "unit": "ea"
+    },
+    {
+      "assembly_key": null,
+      "category": "fitting",
+      "id": "qty:e3fcdbde73a05b76899ebc513bd4bade",
+      "item_type": "elbow-90",
+      "measure": "count",
+      "properties": {
+        "angle_radians": 1.5707963267948966,
+        "nominal_diameter_m": 0.021
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "fit-a",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        },
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "fit-b",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 2,
+      "source_ids": [
+        "fitting:evse-drop",
+        "fitting:panel-rise"
+      ],
+      "unit": "ea"
+    },
+    {
+      "assembly_key": null,
+      "category": "route",
+      "id": "qty:78784c773c0a5f24b9aab9343a1d5073",
+      "item_type": "emt",
+      "measure": "length",
+      "properties": {
+        "nominal_diameter_m": 0.021
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "route-a",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        },
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": null,
+          "page": null,
+          "source_element_id": "route-b",
+          "source_id": "fixture:quantity-known-answer-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "quantity": 7.0,
+      "source_ids": [
+        "route:jbox-evse",
+        "route:panel-jbox"
+      ],
+      "unit": "m"
+    }
+  ],
+  "length_unit": "m",
+  "model_id": "model:quantity-known-answer-v1",
+  "schema_version": "1.0.0"
+}

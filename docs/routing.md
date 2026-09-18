@@ -49,4 +49,4 @@ Routes and fittings carry `router` provenance with method `deterministic-rectili
 
 ## Geometry note
 
-The router uses conservative axis-aligned bounds for collision/corridor search. Rotated `Box3D` geometry is first transformed to its enclosing world-space bounds. `Polyline3D` and `Polygon3D` rules use their world-space bounds. Conservative over-avoidance is preferred to violating hard no-go geometry in this first deterministic engine.
+The routing grid uses conservative axis-aligned bounds to generate candidate coordinates. Rotated `Box3D` geometry is transformed to its enclosing world-space bounds. Active `RouteConstraint` values backed by `Polyline3D` or planar `Polygon3D` are then evaluated against their actual geometry with clearance, route radius, and corridor tolerance applied as distance tolerances; their AABBs are only broad-phase filters. Non-planar or degenerate polygon constraints fail explicitly instead of being reinterpreted. Canonical obstacle and surface-path bounds remain conservative in this first deterministic engine.

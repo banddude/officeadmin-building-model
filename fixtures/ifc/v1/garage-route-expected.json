@@ -1,0 +1,22 @@
+{
+  "source_fixture": "fixtures/model/v1/garage-route.json",
+  "ifc_schema": "IFC4",
+  "expected_counts": {
+    "IfcElectricDistributionBoard": 1,
+    "IfcElectricAppliance": 1,
+    "IfcDistributionCircuit": 1,
+    "IfcCableCarrierSegment": 3,
+    "IfcCableCarrierFitting": 2,
+    "IfcCableSegment": 3,
+    "IfcDistributionPort": 12,
+    "IfcRelConnectsPorts": 12
+  },
+  "route": {
+    "canonical_id": "route:panel-evse",
+    "route_type": "emt",
+    "ifc_segment_class": "IfcCableCarrierSegment",
+    "ifc_segment_predefined_type": "CONDUITSEGMENT",
+    "segment_count": 3,
+    "fitting_count": 2
+  }
+}

@@ -1,0 +1,1 @@
+{"model_id":"model:invalid","schema_version":"1.0.0","coordinate_system":{"frame_id":"model","handedness":"right","up_axis":"+Z","length_unit":"m","angle_unit":"rad"},"levels":[{"id":"level:a","elevation_m":0}],"walls":[{"id":"wall:bad","level_id":"level:a","centerline":{"kind":"polyline3d","points":[{"x":0,"y":0,"z":0},{"x":0,"y":0,"z":0}]},"thickness_m":0.1,"height_m":3}]}

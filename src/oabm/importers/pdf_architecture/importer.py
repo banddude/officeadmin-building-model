@@ -1572,12 +1572,8 @@ def import_observations(
             page_record["status"] = "skipped_unresolved_scale_or_registration"
             page_metadata.append(page_record)
             continue
-        if base_geometry_page is None:
-            base_geometry_page = page.page_number
-
         page_record.update(
             {
-                "status": "geometry_imported",
                 "scale_meters_per_point": scale.meters_per_point,
                 "scale_method": scale.method,
                 "scale_source_text": scale.source_text,
@@ -1642,21 +1638,51 @@ def import_observations(
         existing_ids = {context.wall.id for context in page_walls}
         page_walls.extend(context for context in tagged_line_walls if context.wall.id not in existing_ids)
         wall_contexts.extend(page_walls)
-        openings.extend(
-            _make_openings(
-                page,
-                transform,
-                level,
-                tuple(page_walls),
-                document.source_id,
-                options,
-                ambiguities,
-                used_opening_identity,
-            )
+        page_openings = _make_openings(
+            page,
+            transform,
+            level,
+            tuple(page_walls),
+            document.source_id,
+            options,
+            ambiguities,
+            used_opening_identity,
         )
-        page_record["resolved_room_count"] = sum(
+        openings.extend(page_openings)
+        page_room_count = sum(
             1 for space in spaces if space.provenance and space.provenance[0].page == page.page_number
         )
+        page_slab_count = sum(
+            1 for slab in slabs if slab.provenance and slab.provenance[0].page == page.page_number
+        )
+        page_ceiling_count = sum(
+            1 for ceiling in ceilings if ceiling.provenance and ceiling.provenance[0].page == page.page_number
+        )
+        page_geometry_count = (
+            page_room_count
+            + len(page_walls)
+            + page_slab_count
+            + page_ceiling_count
+            + len(page_openings)
+        )
+        if page_geometry_count:
+            page_record["status"] = "geometry_imported"
+            if base_geometry_page is None:
+                base_geometry_page = page.page_number
+        else:
+            page_record["status"] = "no_supported_geometry_recognized"
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "architectural_geometry_unrecognized",
+                    "detail": (
+                        "architectural plan resolved level, scale, and registration but "
+                        "produced no supported canonical spatial geometry; the page did "
+                        "not establish the shared geometry frame"
+                    ),
+                }
+            )
+        page_record["resolved_room_count"] = page_room_count
         page_record["resolved_wall_count"] = len(page_walls)
         page_record["stable_native_line_count"] = sum(1 for item in page.lines if item.native_id)
         page_record["untagged_vector_line_count"] = sum(1 for item in page.lines if not item.native_id)

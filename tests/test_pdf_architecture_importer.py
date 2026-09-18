@@ -11,6 +11,7 @@ from oabm.importers.pdf_architecture.extract import extract_pdf
 from oabm.importers.pdf_architecture.importer import classify_page, import_architectural_pdf, import_observations
 from oabm.importers.pdf_architecture.types import (
     PdfDocumentObservation,
+    PdfLineObservation,
     PdfPageObservation,
     PdfRectObservation,
     PdfTextObservation,
@@ -55,6 +56,54 @@ def _plan_page(
 
 def _document(*pages: PdfPageObservation, source_id: str = "fixture:observations", digest: str = "a" * 64) -> PdfDocumentObservation:
     return PdfDocumentObservation(source_id=source_id, content_sha256=digest, pages=tuple(pages))
+
+
+def _line(
+    element_id: str,
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> PdfLineObservation:
+    return PdfLineObservation(element_id=element_id, start_pt=start, end_pt=end)
+
+
+def _ordinary_vector_fixture_page() -> PdfPageObservation:
+    payload = json.loads(
+        (FIXTURE_DIR / "ordinary-vector-room.json").read_text(encoding="utf-8")
+    )
+    return PdfPageObservation(
+        page_number=payload["page_number"],
+        width_pt=payload["width_pt"],
+        height_pt=payload["height_pt"],
+        texts=tuple(
+            PdfTextObservation(
+                element_id=item["element_id"],
+                text=item["text"],
+                bbox_pt=tuple(item["bbox_pt"]),
+            )
+            for item in payload["texts"]
+        ),
+        lines=tuple(
+            PdfLineObservation(
+                element_id=item["element_id"],
+                start_pt=tuple(item["start_pt"]),
+                end_pt=tuple(item["end_pt"]),
+            )
+            for item in payload["lines"]
+        ),
+    )
+
+
+def _loop_lines(
+    prefix: str,
+    bbox: tuple[float, float, float, float],
+) -> tuple[PdfLineObservation, ...]:
+    x0, y0, x1, y1 = bbox
+    return (
+        _line(f"{prefix}:south", (x0, y0), (x1, y0)),
+        _line(f"{prefix}:east", (x1, y0), (x1, y1)),
+        _line(f"{prefix}:north", (x0, y1), (x1, y1)),
+        _line(f"{prefix}:west", (x0, y0), (x0, y1)),
+    )
 
 
 def _ambiguity_codes(model: BuildingModel) -> set[str]:
@@ -581,3 +630,149 @@ def test_unqualified_height_outside_rooms_is_not_promoted_to_level() -> None:
     assert not model.ceilings
     assert "ceiling_height_scope_unresolved" in _ambiguity_codes(model)
     validate_model(model)
+
+
+def test_ordinary_vector_line_loops_emit_canonical_space_and_walls() -> None:
+    page = _ordinary_vector_fixture_page()
+    model = import_observations(
+        _document(page, source_id="fixture:ordinary-vector-room")
+    )
+
+    validate_model(model)
+    assert len(model.levels) == 1
+    assert len(model.spaces) == 1
+    assert len(model.walls) == 4
+    assert len(model.ceilings) == 1
+    assert not model.slabs
+    assert model.spaces[0].name == "OFFICE"
+    assert model.spaces[0].attributes["pdf_architecture"]["recognition"] == "ordinary_vector_line_loops"
+    assert model.spaces[0].confidence == pytest.approx(0.86)
+    assert all(wall.confidence == pytest.approx(0.86) for wall in model.walls)
+    assert all(
+        wall.attributes["pdf_architecture"]["recognition"] == "ordinary_vector_line_loops"
+        for wall in model.walls
+    )
+
+    meters_per_point = 100 * 0.0254 / 72
+    footprint = model.spaces[0].footprint.points
+    expected_points = (
+        (24 * meters_per_point, 24 * meters_per_point, 0.0),
+        (216 * meters_per_point, 24 * meters_per_point, 0.0),
+        (216 * meters_per_point, 116 * meters_per_point, 0.0),
+        (24 * meters_per_point, 116 * meters_per_point, 0.0),
+    )
+    for point, expected in zip(footprint, expected_points, strict=True):
+        assert point.x == pytest.approx(expected[0])
+        assert point.y == pytest.approx(expected[1])
+        assert point.z == pytest.approx(expected[2])
+    assert all(
+        wall.thickness_m == pytest.approx(4 * meters_per_point)
+        for wall in model.walls
+    )
+    assert all(wall.height_m == pytest.approx(2.7432) for wall in model.walls)
+    assert model.coordinate_system.length_unit == "m"
+
+    space_provenance = model.spaces[0].provenance[0]
+    assert "ordinary vector" in space_provenance.method
+    assert space_provenance.source_element_id == "ov:room"
+    assert space_provenance.attributes["outer_boundary_elements"] == [
+        "ov:outer-east",
+        "ov:outer-north",
+        "ov:outer-south",
+        "ov:outer-west",
+    ]
+    assert space_provenance.attributes["inner_boundary_elements"] == [
+        "ov:inner-east",
+        "ov:inner-north",
+        "ov:inner-south",
+        "ov:inner-west",
+    ]
+    page_meta = model.attributes["pdf_architecture"]["pages"][0]
+    assert page_meta["status"] == "geometry_imported"
+    assert page_meta["ordinary_vector_enclosure_count"] == 1
+    assert "architectural_geometry_unrecognized" not in _ambiguity_codes(model)
+
+
+def test_ordinary_vector_ids_and_output_do_not_depend_on_extraction_order() -> None:
+    page = _ordinary_vector_fixture_page()
+    baseline = import_observations(
+        _document(page, source_id="fixture:ordinary-vector-room")
+    )
+    reordered = import_observations(
+        _document(
+            replace(page, lines=tuple(reversed(page.lines))),
+            source_id="fixture:ordinary-vector-room",
+        )
+    )
+    assert baseline.to_json() == reordered.to_json()
+
+    unrelated = _line("ov:unrelated", (245, 80), (270, 80))
+    edited = import_observations(
+        _document(
+            replace(page, lines=(unrelated, *page.lines)),
+            source_id="fixture:ordinary-vector-room",
+            digest="b" * 64,
+        )
+    )
+    assert {item.id for item in baseline.spaces} == {item.id for item in edited.spaces}
+    assert {item.id for item in baseline.walls} == {item.id for item in edited.walls}
+    assert {item.id for item in baseline.ceilings} == {item.id for item in edited.ceilings}
+    validate_model(edited)
+
+
+def test_open_ordinary_vector_enclosure_fails_closed() -> None:
+    page = _ordinary_vector_fixture_page()
+    page = replace(
+        page,
+        lines=tuple(
+            line
+            for line in page.lines
+            if line.element_id != "ov:inner-north"
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:ordinary-vector-open")
+    )
+
+    validate_model(model)
+    assert not model.spaces
+    assert not model.walls
+    assert not model.ceilings
+    assert "ordinary_vector_enclosure_unresolved" in _ambiguity_codes(model)
+    assert "architectural_geometry_unrecognized" in _ambiguity_codes(model)
+    assert (
+        model.attributes["pdf_architecture"]["pages"][0]["status"]
+        == "no_supported_geometry_recognized"
+    )
+
+
+def test_multiple_ordinary_vector_enclosures_are_explicitly_ambiguous() -> None:
+    page = _ordinary_vector_fixture_page()
+    second_shell = (
+        *_loop_lines("ov:outer-2", (40, 35, 200, 105)),
+        *_loop_lines("ov:inner-2", (44, 39, 196, 101)),
+    )
+    page = replace(page, lines=(*page.lines, *second_shell))
+
+    model = import_observations(
+        _document(page, source_id="fixture:ordinary-vector-ambiguous")
+    )
+
+    validate_model(model)
+    assert not model.spaces
+    assert not model.walls
+    assert not model.ceilings
+    assert "ordinary_vector_enclosure_ambiguous" in _ambiguity_codes(model)
+    ambiguity = next(
+        item
+        for item in model.attributes["pdf_architecture"]["ambiguities"]
+        if item["code"] == "ordinary_vector_enclosure_ambiguous"
+    )
+    assert ambiguity["room_anchor"] == "office"
+    assert len(ambiguity["source_boundaries"]) == 2
+    assert (
+        model.attributes["pdf_architecture"]["pages"][0]["status"]
+        == "no_supported_geometry_recognized"
+    )
+

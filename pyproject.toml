@@ -9,7 +9,13 @@ description = "Semantic 3D building and electrical modeling engine for OfficeAdm
 requires-python = ">=3.11"
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "jsonschema>=4.23,<5"]
+ifc = ["ifcopenshell>=0.8.5,<0.9", "numpy>=1.26,<3"]
+dev = [
+  "pytest>=8,<10",
+  "jsonschema>=4.23,<5",
+  "ifcopenshell>=0.8.5,<0.9",
+  "numpy>=1.26,<3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,1 @@
+{"model_id":"model:invalid","schema_version":"1.0.0","coordinate_system":{"frame_id":"model","handedness":"right","up_axis":"+Z","length_unit":"m","angle_unit":"rad"},"spaces":[{"id":"space:bad","level_id":"level:missing","footprint":{"kind":"polygon3d","points":[{"x":0,"y":0,"z":0},{"x":1,"y":0,"z":0},{"x":0,"y":1,"z":0}]}}]}

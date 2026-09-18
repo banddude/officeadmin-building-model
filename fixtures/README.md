@@ -17,13 +17,8 @@ recognition lane:
 
 These fixtures are synthetic. They contain no customer plan content.
 
-Planned golden fixtures remain:
+`golden/v1/` is the issue #10 cross-workstream regression suite. It contains the rectangular room, door obstruction, panel-to-EVSE, elevation-change, multiple-valid-route, impossible-route, two-level-building, and synthetic-garage known-answer cases plus intentionally invalid boundary fixtures. See `golden/v1/README.md` and `docs/qa-golden-fixtures.md` for usage.
 
-1. rectangular room
-2. wall opening / door obstruction
-3. panel to EVSE
-4. route requiring a vertical elevation change
-5. route with multiple valid alternatives
-6. impossible route
-7. two-level building
-8. synthetic garage integration fixture
+## RoomPlan
+
+`roomplan/captured-room-3d.json` is a synthetic CapturedRoom-shaped fixture for the RoomPlan / LiDAR importer. It includes nonzero story elevation, 4x4 transforms, polygon and curved wall surfaces, openings, source confidence, an object, and section metadata. It contains no customer or private scan data.

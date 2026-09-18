@@ -17,6 +17,11 @@ recognition lane:
 
 These fixtures are synthetic. They contain no customer plan content.
 
+`pdf_convergence/v1/` contains Gate D's public-safe convergence manifest. It
+reuses the synthetic architectural garage and electrical-sheet fixtures and adds
+only the explicit shared-frame registration plus known hosting answers. See
+`docs/pdf-convergence.md`.
+
 `golden/v1/` is the issue #10 cross-workstream regression suite. It contains the rectangular room, door obstruction, panel-to-EVSE, elevation-change, multiple-valid-route, impossible-route, two-level-building, and synthetic-garage known-answer cases plus intentionally invalid boundary fixtures. See `golden/v1/README.md` and `docs/qa-golden-fixtures.md` for usage.
 
 ## RoomPlan

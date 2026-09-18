@@ -1,0 +1,85 @@
+{
+  "model_id": "model:invalid-reference-v1",
+  "name": "Schema-valid document with invalid canonical reference",
+  "schema_version": "1.0.0",
+  "coordinate_system": {
+    "frame_id": "model",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "length_unit": "m",
+    "angle_unit": "rad",
+    "crs": null,
+    "origin_in_crs": null,
+    "true_north_radians": 0
+  },
+  "levels": [],
+  "spaces": [],
+  "walls": [],
+  "slabs": [],
+  "ceilings": [],
+  "openings": [],
+  "electrical_equipment": [],
+  "electrical_devices": [],
+  "ports": [
+    {
+      "id": "port:orphan",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:invalid-reference-v1",
+          "source_element_id": "port:orphan",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "owner_id": "equip:missing",
+      "domain": "power",
+      "role": "source",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 1
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "nominal_diameter_m": 0.021,
+      "connected_port_ids": []
+    }
+  ],
+  "obstacles": [],
+  "route_constraints": [],
+  "routes": [],
+  "route_fittings": [],
+  "circuits": [],
+  "conductors": [],
+  "provenance": [
+    {
+      "source_kind": "synthetic",
+      "source_id": "fixture:invalid-reference-v1",
+      "source_element_id": null,
+      "page": null,
+      "method": "hand-authored golden fixture",
+      "confidence": 1,
+      "attributes": {}
+    }
+  ],
+  "attributes": {
+    "fixture_purpose": "cross-workstream golden regression"
+  }
+}

@@ -1,0 +1,241 @@
+{
+  "harness_version": 1,
+  "canonical_schema_version": "1.0.0",
+  "description": "Public-safe synthetic golden cases for cross-workstream contract and acceptance regression.",
+  "cases": [
+    {
+      "name": "rectangular-room",
+      "path": "rectangular-room.json",
+      "description": "Single rectangular room with level, space, four walls, slab, and ceiling.",
+      "tags": [
+        "architecture",
+        "geometry"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "levels": 1,
+        "spaces": 1,
+        "walls": 4,
+        "slabs": 1,
+        "ceilings": 1
+      },
+      "required_ids": [
+        "level:ground",
+        "space:room",
+        "wall:south"
+      ],
+      "routing_outcome": null,
+      "require_provenance": true
+    },
+    {
+      "name": "door-obstruction",
+      "path": "door-obstruction.json",
+      "description": "Room with a hosted door opening, door-swing obstacle, and hard keep-out.",
+      "tags": [
+        "architecture",
+        "openings",
+        "routing-input"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "openings": 1,
+        "obstacles": 1,
+        "route_constraints": 1
+      },
+      "required_ids": [
+        "opening:door",
+        "obstacle:door-swing",
+        "constraint:door-keepout"
+      ],
+      "routing_outcome": null,
+      "require_provenance": true
+    },
+    {
+      "name": "panel-to-evse",
+      "path": "panel-to-evse.json",
+      "description": "Known-answer panel-to-EVSE electrical topology with symmetric ports, route, circuit, and conductors.",
+      "tags": [
+        "electrical",
+        "routing-output",
+        "quantities",
+        "drawings"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "electrical_equipment": 1,
+        "electrical_devices": 1,
+        "ports": 2,
+        "routes": 1,
+        "circuits": 1,
+        "conductors": 3
+      },
+      "required_ids": [
+        "equip:panel",
+        "device:evse",
+        "route:panel-evse",
+        "circuit:evse"
+      ],
+      "routing_outcome": null,
+      "require_provenance": true
+    },
+    {
+      "name": "elevation-change",
+      "path": "elevation-change.json",
+      "description": "Known-answer 3D route that rises vertically before running horizontally, with ordered fittings.",
+      "tags": [
+        "electrical",
+        "routing-output",
+        "3d"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "ports": 2,
+        "routes": 1,
+        "route_fittings": 2,
+        "circuits": 1,
+        "conductors": 1
+      },
+      "required_ids": [
+        "route:elevation",
+        "fitting:rise",
+        "fitting:turn"
+      ],
+      "routing_outcome": null,
+      "require_provenance": true
+    },
+    {
+      "name": "multiple-valid-routes",
+      "path": "multiple-valid-routes.json",
+      "description": "Routing input with a center obstacle and two equivalent preferred corridors.",
+      "tags": [
+        "routing-input",
+        "alternatives"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "ports": 2,
+        "obstacles": 1,
+        "route_constraints": 2,
+        "routes": 0
+      },
+      "required_ids": [
+        "obstacle:center",
+        "constraint:south-corridor",
+        "constraint:north-corridor"
+      ],
+      "routing_outcome": "multiple-valid",
+      "require_provenance": true
+    },
+    {
+      "name": "impossible-route",
+      "path": "impossible-route.json",
+      "description": "Routing input whose declared domain is partitioned by a full-height hard keep-out.",
+      "tags": [
+        "routing-input",
+        "impossible"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "ports": 2,
+        "route_constraints": 1,
+        "routes": 0
+      },
+      "required_ids": [
+        "constraint:sealed-barrier"
+      ],
+      "routing_outcome": "impossible",
+      "require_provenance": true
+    },
+    {
+      "name": "two-level-building",
+      "path": "two-level-building.json",
+      "description": "Two explicit levels with separate 3D spaces, walls, slabs, and ceilings.",
+      "tags": [
+        "architecture",
+        "levels",
+        "3d"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "levels": 2,
+        "spaces": 2,
+        "walls": 8,
+        "slabs": 2,
+        "ceilings": 2
+      },
+      "required_ids": [
+        "level:ground",
+        "level:upper",
+        "space:ground",
+        "space:upper"
+      ],
+      "routing_outcome": null,
+      "require_provenance": true
+    },
+    {
+      "name": "synthetic-garage",
+      "path": "synthetic-garage.json",
+      "description": "Broad integration fixture spanning architecture, electrical topology, obstacle/constraint, route/fittings, and circuit/conductors.",
+      "tags": [
+        "integration",
+        "architecture",
+        "electrical",
+        "routing-output",
+        "quantities",
+        "drawings"
+      ],
+      "expected_valid": true,
+      "expected_error": null,
+      "expected_counts": {
+        "levels": 1,
+        "spaces": 1,
+        "walls": 4,
+        "openings": 1,
+        "electrical_equipment": 1,
+        "electrical_devices": 1,
+        "ports": 2,
+        "obstacles": 1,
+        "route_constraints": 1,
+        "routes": 1,
+        "route_fittings": 2,
+        "circuits": 1,
+        "conductors": 3
+      },
+      "required_ids": [
+        "opening:garage-door",
+        "equip:panel",
+        "device:evse",
+        "route:panel-evse",
+        "circuit:evse"
+      ],
+      "routing_outcome": null,
+      "require_provenance": true
+    },
+    {
+      "name": "invalid-reference",
+      "path": "invalid/invalid-reference.json",
+      "description": "Schema-valid model with a port owner reference that intentionally does not exist.",
+      "tags": [
+        "negative",
+        "references"
+      ],
+      "expected_valid": false,
+      "expected_error": "references missing id",
+      "expected_counts": {
+        "ports": 1
+      },
+      "required_ids": [
+        "port:orphan"
+      ],
+      "routing_outcome": null,
+      "require_provenance": true
+    }
+  ]
+}

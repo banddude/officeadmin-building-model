@@ -1,0 +1,678 @@
+{
+  "model_id": "model:elevation-change-v1",
+  "name": "Route requiring vertical elevation change",
+  "schema_version": "1.0.0",
+  "coordinate_system": {
+    "frame_id": "model",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "length_unit": "m",
+    "angle_unit": "rad",
+    "crs": null,
+    "origin_in_crs": null,
+    "true_north_radians": 0
+  },
+  "levels": [
+    {
+      "id": "level:ground",
+      "name": "Ground",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "level:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "elevation_m": 0,
+      "height_m": 3
+    }
+  ],
+  "spaces": [
+    {
+      "id": "space:room",
+      "name": "Room",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "space:room",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 3,
+      "usage": null
+    }
+  ],
+  "walls": [
+    {
+      "id": "wall:south",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "wall:south",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:east",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "wall:east",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:north",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "wall:north",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 6,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:west",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "wall:west",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    }
+  ],
+  "slabs": [
+    {
+      "id": "slab:ground",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "slab:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.1
+    }
+  ],
+  "ceilings": [
+    {
+      "id": "ceiling:room",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "ceiling:room",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 3
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 3
+          },
+          {
+            "x": 6,
+            "y": 4,
+            "z": 3
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 3
+          }
+        ]
+      },
+      "thickness_m": 0.02
+    }
+  ],
+  "openings": [],
+  "electrical_equipment": [
+    {
+      "id": "equip:panel",
+      "name": "Panel",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "equip:panel",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "equipment_type": "panelboard",
+      "pose": {
+        "position": {
+          "x": 0.5,
+          "y": 0.5,
+          "z": 0.8
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": null,
+      "size": {
+        "x": 0.4,
+        "y": 0.12,
+        "z": 0.8
+      },
+      "system": "120/240V-1ph",
+      "rated_voltage_v": 240
+    }
+  ],
+  "electrical_devices": [
+    {
+      "id": "device:load",
+      "name": "Load box",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "device:load",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "device_type": "junction-box",
+      "pose": {
+        "position": {
+          "x": 5.5,
+          "y": 0.5,
+          "z": 2.4
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": "wall:south",
+      "size": {
+        "x": 0.3,
+        "y": 0.15,
+        "z": 0.5
+      },
+      "system": "240V-1ph",
+      "rated_voltage_v": 240
+    }
+  ],
+  "ports": [
+    {
+      "id": "port:start",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "port:start",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "owner_id": "equip:panel",
+      "domain": "power",
+      "role": "source",
+      "pose": {
+        "position": {
+          "x": 0.5,
+          "y": 0.5,
+          "z": 0.8
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "direction": {
+        "x": 0,
+        "y": 0,
+        "z": 1
+      },
+      "nominal_diameter_m": 0.021,
+      "connected_port_ids": []
+    },
+    {
+      "id": "port:end",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "port:end",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "owner_id": "device:load",
+      "domain": "power",
+      "role": "sink",
+      "pose": {
+        "position": {
+          "x": 5.5,
+          "y": 0.5,
+          "z": 2.4
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "nominal_diameter_m": 0.021,
+      "connected_port_ids": []
+    }
+  ],
+  "obstacles": [],
+  "route_constraints": [],
+  "routes": [
+    {
+      "id": "route:elevation",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "route:elevation",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "route_type": "emt",
+      "start_port_id": "port:start",
+      "end_port_id": "port:end",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.5,
+            "y": 0.5,
+            "z": 0.8
+          },
+          {
+            "x": 0.5,
+            "y": 0.5,
+            "z": 2.4
+          },
+          {
+            "x": 5.5,
+            "y": 0.5,
+            "z": 2.4
+          }
+        ]
+      },
+      "nominal_diameter_m": 0.021,
+      "fitting_ids": [
+        "fitting:rise",
+        "fitting:turn"
+      ]
+    }
+  ],
+  "route_fittings": [
+    {
+      "id": "fitting:rise",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "fitting:rise",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "route_id": "route:elevation",
+      "fitting_type": "elbow-90",
+      "pose": {
+        "position": {
+          "x": 0.5,
+          "y": 0.5,
+          "z": 2.4
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "nominal_diameter_m": 0.021,
+      "angle_radians": 1.5707963267948966
+    },
+    {
+      "id": "fitting:turn",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "fitting:turn",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "route_id": "route:elevation",
+      "fitting_type": "elbow-90",
+      "pose": {
+        "position": {
+          "x": 5.5,
+          "y": 0.5,
+          "z": 2.4
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "nominal_diameter_m": 0.021,
+      "angle_radians": 1.5707963267948966
+    }
+  ],
+  "circuits": [
+    {
+      "id": "circuit:load",
+      "name": "EVSE circuit",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "circuit:load",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "source_port_id": "port:start",
+      "load_port_ids": [
+        "port:end"
+      ],
+      "circuit_number": "7",
+      "voltage_v": 240,
+      "poles": 2,
+      "phase": "1ph",
+      "load_va": 9600,
+      "route_ids": [
+        "route:elevation"
+      ]
+    }
+  ],
+  "conductors": [
+    {
+      "id": "conductor:feed",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:elevation-change-v1",
+          "source_element_id": "conductor:feed",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "circuit_id": "circuit:load",
+      "role": "line",
+      "material": "copper",
+      "size": "#12 AWG",
+      "count": 2,
+      "insulation": "THHN/THWN-2",
+      "route_ids": [
+        "route:elevation"
+      ]
+    }
+  ],
+  "provenance": [
+    {
+      "source_kind": "synthetic",
+      "source_id": "fixture:elevation-change-v1",
+      "source_element_id": null,
+      "page": null,
+      "method": "hand-authored golden fixture",
+      "confidence": 1,
+      "attributes": {}
+    }
+  ],
+  "attributes": {
+    "fixture_purpose": "cross-workstream golden regression"
+  }
+}

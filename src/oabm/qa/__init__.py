@@ -1,0 +1,41 @@
+"""QA helpers and public synthetic golden regression fixtures."""
+
+from .golden import (
+    DEFAULT_GOLDEN_ROOT,
+    DEFAULT_SCHEMA_PATH,
+    ENTITY_COLLECTIONS,
+    GoldenCase,
+    assert_case_invariants,
+    assert_deterministic,
+    assert_identity_preserved,
+    assert_traceable,
+    canonical_fingerprint,
+    canonical_json,
+    discover_cases,
+    entity_ids,
+    get_case,
+    load_case_document,
+    load_manifest,
+    validate_case,
+    validate_schema,
+)
+
+__all__ = [
+    "DEFAULT_GOLDEN_ROOT",
+    "DEFAULT_SCHEMA_PATH",
+    "ENTITY_COLLECTIONS",
+    "GoldenCase",
+    "assert_case_invariants",
+    "assert_deterministic",
+    "assert_identity_preserved",
+    "assert_traceable",
+    "canonical_fingerprint",
+    "canonical_json",
+    "discover_cases",
+    "entity_ids",
+    "get_case",
+    "load_case_document",
+    "load_manifest",
+    "validate_case",
+    "validate_schema",
+]

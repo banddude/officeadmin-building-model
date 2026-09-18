@@ -1,0 +1,859 @@
+{
+  "model_id": "model:synthetic-garage-v1",
+  "name": "Synthetic garage cross-workstream acceptance fixture",
+  "schema_version": "1.0.0",
+  "coordinate_system": {
+    "frame_id": "model",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "length_unit": "m",
+    "angle_unit": "rad",
+    "crs": null,
+    "origin_in_crs": null,
+    "true_north_radians": 0
+  },
+  "levels": [
+    {
+      "id": "level:ground",
+      "name": "Ground",
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "level:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "elevation_m": 0,
+      "height_m": 2.8
+    }
+  ],
+  "spaces": [
+    {
+      "id": "space:garage",
+      "name": "Garage",
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "space:garage",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 5,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 5,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 2.8,
+      "usage": "garage"
+    }
+  ],
+  "walls": [
+    {
+      "id": "wall:south",
+      "name": null,
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "wall:south",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 2.8
+    },
+    {
+      "id": "wall:east",
+      "name": null,
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "wall:east",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 5,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 2.8
+    },
+    {
+      "id": "wall:north",
+      "name": null,
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "wall:north",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 6,
+            "y": 5,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 5,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 2.8
+    },
+    {
+      "id": "wall:west",
+      "name": null,
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "wall:west",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 5,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 2.8
+    }
+  ],
+  "slabs": [
+    {
+      "id": "slab:ground",
+      "name": null,
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "slab:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 6,
+            "y": 5,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 5,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.1
+    }
+  ],
+  "ceilings": [
+    {
+      "id": "ceiling:room",
+      "name": null,
+      "confidence": 0.98,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "ceiling:room",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.98,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 2.8
+          },
+          {
+            "x": 6,
+            "y": 0,
+            "z": 2.8
+          },
+          {
+            "x": 6,
+            "y": 5,
+            "z": 2.8
+          },
+          {
+            "x": 0,
+            "y": 5,
+            "z": 2.8
+          }
+        ]
+      },
+      "thickness_m": 0.02
+    }
+  ],
+  "openings": [
+    {
+      "id": "opening:garage-door",
+      "name": "Garage door",
+      "confidence": 0.99,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "opening:garage-door",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.99,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "host_id": "wall:south",
+      "opening_type": "door",
+      "pose": {
+        "position": {
+          "x": 3,
+          "y": 0,
+          "z": 1.1
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "size": {
+        "x": 2.8,
+        "y": 0.14,
+        "z": 2.2
+      }
+    }
+  ],
+  "electrical_equipment": [
+    {
+      "id": "equip:panel",
+      "name": "Panel LP",
+      "confidence": 0.97,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "equip:panel",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.97,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "equipment_type": "panelboard",
+      "pose": {
+        "position": {
+          "x": 0.25,
+          "y": 0.25,
+          "z": 1.5
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "level_id": "level:ground",
+      "space_id": "space:garage",
+      "host_id": null,
+      "size": {
+        "x": 0.4,
+        "y": 0.12,
+        "z": 0.8
+      },
+      "system": "120/240V-1ph",
+      "rated_voltage_v": 240
+    }
+  ],
+  "electrical_devices": [
+    {
+      "id": "device:evse",
+      "name": "EVSE",
+      "confidence": 0.96,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "device:evse",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.96,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "device_type": "evse",
+      "pose": {
+        "position": {
+          "x": 5.3,
+          "y": 0.25,
+          "z": 1.2
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "level_id": "level:ground",
+      "space_id": "space:garage",
+      "host_id": "wall:south",
+      "size": {
+        "x": 0.3,
+        "y": 0.15,
+        "z": 0.5
+      },
+      "system": "240V-1ph",
+      "rated_voltage_v": 240
+    }
+  ],
+  "ports": [
+    {
+      "id": "port:panel-load",
+      "name": null,
+      "confidence": 0.97,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "port:panel-load",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.97,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "owner_id": "equip:panel",
+      "domain": "power",
+      "role": "source",
+      "pose": {
+        "position": {
+          "x": 0.25,
+          "y": 0.25,
+          "z": 1.5
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "direction": {
+        "x": 0,
+        "y": 0,
+        "z": 1
+      },
+      "nominal_diameter_m": 0.021,
+      "connected_port_ids": [
+        "port:evse-feed"
+      ]
+    },
+    {
+      "id": "port:evse-feed",
+      "name": null,
+      "confidence": 0.96,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "port:evse-feed",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.96,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "owner_id": "device:evse",
+      "domain": "power",
+      "role": "sink",
+      "pose": {
+        "position": {
+          "x": 5.3,
+          "y": 0.25,
+          "z": 1.2
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "direction": {
+        "x": 0,
+        "y": 0,
+        "z": 1
+      },
+      "nominal_diameter_m": 0.021,
+      "connected_port_ids": [
+        "port:panel-load"
+      ]
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "obstacle:beam",
+      "name": "Beam",
+      "confidence": 0.95,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "obstacle:beam",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.95,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "geometry": {
+        "kind": "box3d",
+        "pose": {
+          "position": {
+            "x": 3,
+            "y": 0.25,
+            "z": 2.5
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          }
+        },
+        "size": {
+          "x": 0.45,
+          "y": 0.5,
+          "z": 0.45
+        }
+      },
+      "obstacle_type": "hard",
+      "level_id": "level:ground",
+      "clearance_m": 0.08
+    }
+  ],
+  "route_constraints": [
+    {
+      "id": "constraint:ceiling-zone",
+      "name": "Preferred ceiling routing zone",
+      "confidence": 0.94,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "constraint:ceiling-zone",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.94,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "constraint_type": "preferred-corridor",
+      "geometry": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.25,
+            "y": 0.25,
+            "z": 2.5
+          },
+          {
+            "x": 5.3,
+            "y": 0.25,
+            "z": 2.5
+          }
+        ]
+      },
+      "hard": false,
+      "applies_to": [
+        "emt"
+      ],
+      "level_id": "level:ground",
+      "clearance_m": 0
+    }
+  ],
+  "routes": [
+    {
+      "id": "route:panel-evse",
+      "name": null,
+      "confidence": 0.92,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "route:panel-evse",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.92,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "route_type": "emt",
+      "start_port_id": "port:panel-load",
+      "end_port_id": "port:evse-feed",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.25,
+            "y": 0.25,
+            "z": 1.5
+          },
+          {
+            "x": 0.25,
+            "y": 0.25,
+            "z": 2.5
+          },
+          {
+            "x": 5.3,
+            "y": 0.25,
+            "z": 2.5
+          },
+          {
+            "x": 5.3,
+            "y": 0.25,
+            "z": 1.2
+          }
+        ]
+      },
+      "nominal_diameter_m": 0.021,
+      "fitting_ids": [
+        "fitting:rise",
+        "fitting:drop"
+      ]
+    }
+  ],
+  "route_fittings": [
+    {
+      "id": "fitting:rise",
+      "name": null,
+      "confidence": 0.93,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "fitting:rise",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.93,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "route_id": "route:panel-evse",
+      "fitting_type": "elbow-90",
+      "pose": {
+        "position": {
+          "x": 0.25,
+          "y": 0.25,
+          "z": 2.5
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "nominal_diameter_m": 0.021,
+      "angle_radians": 1.5707963267948966
+    },
+    {
+      "id": "fitting:drop",
+      "name": null,
+      "confidence": 0.93,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "fitting:drop",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.93,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "route_id": "route:panel-evse",
+      "fitting_type": "elbow-90",
+      "pose": {
+        "position": {
+          "x": 5.3,
+          "y": 0.25,
+          "z": 2.5
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "nominal_diameter_m": 0.021,
+      "angle_radians": 1.5707963267948966
+    }
+  ],
+  "circuits": [
+    {
+      "id": "circuit:evse",
+      "name": "EVSE circuit",
+      "confidence": 0.91,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "circuit:evse",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.91,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "source_port_id": "port:panel-load",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "circuit_number": "12",
+      "voltage_v": 240,
+      "poles": 2,
+      "phase": "1ph",
+      "load_va": 9600,
+      "route_ids": [
+        "route:panel-evse"
+      ]
+    }
+  ],
+  "conductors": [
+    {
+      "id": "conductor:l1",
+      "name": null,
+      "confidence": 0.9,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "conductor:l1",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.9,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "circuit_id": "circuit:evse",
+      "role": "line",
+      "material": "copper",
+      "size": "#6 AWG",
+      "count": 1,
+      "insulation": "THHN/THWN-2",
+      "route_ids": [
+        "route:panel-evse"
+      ]
+    },
+    {
+      "id": "conductor:l2",
+      "name": null,
+      "confidence": 0.9,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "conductor:l2",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.9,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "circuit_id": "circuit:evse",
+      "role": "line",
+      "material": "copper",
+      "size": "#6 AWG",
+      "count": 1,
+      "insulation": "THHN/THWN-2",
+      "route_ids": [
+        "route:panel-evse"
+      ]
+    },
+    {
+      "id": "conductor:egc",
+      "name": null,
+      "confidence": 0.9,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:synthetic-garage-v1",
+          "source_element_id": "conductor:egc",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 0.9,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "circuit_id": "circuit:evse",
+      "role": "equipment-ground",
+      "material": "copper",
+      "size": "#10 AWG",
+      "count": 1,
+      "insulation": "THHN/THWN-2",
+      "route_ids": [
+        "route:panel-evse"
+      ]
+    }
+  ],
+  "provenance": [
+    {
+      "source_kind": "synthetic",
+      "source_id": "fixture:synthetic-garage-v1",
+      "source_element_id": null,
+      "page": null,
+      "method": "hand-authored golden fixture",
+      "confidence": 0.98,
+      "attributes": {}
+    }
+  ],
+  "attributes": {
+    "fixture_purpose": "cross-workstream golden regression"
+  }
+}

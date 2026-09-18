@@ -1,0 +1,628 @@
+{
+  "model_id": "model:multiple-valid-routes-v1",
+  "name": "Routing input with equivalent alternate corridors",
+  "schema_version": "1.0.0",
+  "coordinate_system": {
+    "frame_id": "model",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "length_unit": "m",
+    "angle_unit": "rad",
+    "crs": null,
+    "origin_in_crs": null,
+    "true_north_radians": 0
+  },
+  "levels": [
+    {
+      "id": "level:ground",
+      "name": "Ground",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "level:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "elevation_m": 0,
+      "height_m": 3
+    }
+  ],
+  "spaces": [
+    {
+      "id": "space:room",
+      "name": "Room",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "space:room",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 8,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 8,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 3,
+      "usage": null
+    }
+  ],
+  "walls": [
+    {
+      "id": "wall:south",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "wall:south",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 8,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:east",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "wall:east",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 8,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 8,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:north",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "wall:north",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 8,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:west",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "wall:west",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    }
+  ],
+  "slabs": [
+    {
+      "id": "slab:ground",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "slab:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 8,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 8,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.1
+    }
+  ],
+  "ceilings": [
+    {
+      "id": "ceiling:room",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "ceiling:room",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 3
+          },
+          {
+            "x": 8,
+            "y": 0,
+            "z": 3
+          },
+          {
+            "x": 8,
+            "y": 4,
+            "z": 3
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 3
+          }
+        ]
+      },
+      "thickness_m": 0.02
+    }
+  ],
+  "openings": [],
+  "electrical_equipment": [
+    {
+      "id": "equip:panel",
+      "name": "Panel",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "equip:panel",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "equipment_type": "panelboard",
+      "pose": {
+        "position": {
+          "x": 0.5,
+          "y": 2,
+          "z": 1.2
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": null,
+      "size": {
+        "x": 0.4,
+        "y": 0.12,
+        "z": 0.8
+      },
+      "system": "120/240V-1ph",
+      "rated_voltage_v": 240
+    }
+  ],
+  "electrical_devices": [
+    {
+      "id": "device:load",
+      "name": "Load",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "device:load",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "device_type": "junction-box",
+      "pose": {
+        "position": {
+          "x": 7.5,
+          "y": 2,
+          "z": 1.2
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": "wall:east",
+      "size": {
+        "x": 0.3,
+        "y": 0.15,
+        "z": 0.5
+      },
+      "system": "240V-1ph",
+      "rated_voltage_v": 240
+    }
+  ],
+  "ports": [
+    {
+      "id": "port:start",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "port:start",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "owner_id": "equip:panel",
+      "domain": "power",
+      "role": "source",
+      "pose": {
+        "position": {
+          "x": 0.5,
+          "y": 2,
+          "z": 1.2
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "nominal_diameter_m": 0.021,
+      "connected_port_ids": []
+    },
+    {
+      "id": "port:end",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "port:end",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "owner_id": "device:load",
+      "domain": "power",
+      "role": "sink",
+      "pose": {
+        "position": {
+          "x": 7.5,
+          "y": 2,
+          "z": 1.2
+        },
+        "rotation": {
+          "x": 0,
+          "y": 0,
+          "z": 0,
+          "w": 1
+        }
+      },
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "nominal_diameter_m": 0.021,
+      "connected_port_ids": []
+    }
+  ],
+  "obstacles": [
+    {
+      "id": "obstacle:center",
+      "name": "Center obstruction",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "obstacle:center",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "geometry": {
+        "kind": "box3d",
+        "pose": {
+          "position": {
+            "x": 4,
+            "y": 2,
+            "z": 1.5
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          }
+        },
+        "size": {
+          "x": 1.5,
+          "y": 1.2,
+          "z": 2.4
+        }
+      },
+      "obstacle_type": "hard",
+      "level_id": "level:ground",
+      "clearance_m": 0.1
+    }
+  ],
+  "route_constraints": [
+    {
+      "id": "constraint:south-corridor",
+      "name": "South corridor",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "constraint:south-corridor",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "constraint_type": "preferred-corridor",
+      "geometry": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.5,
+            "y": 0.8,
+            "z": 2.4
+          },
+          {
+            "x": 7.5,
+            "y": 0.8,
+            "z": 2.4
+          }
+        ]
+      },
+      "hard": false,
+      "applies_to": [
+        "emt"
+      ],
+      "level_id": "level:ground",
+      "clearance_m": 0
+    },
+    {
+      "id": "constraint:north-corridor",
+      "name": "North corridor",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:multiple-valid-routes-v1",
+          "source_element_id": "constraint:north-corridor",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "constraint_type": "preferred-corridor",
+      "geometry": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.5,
+            "y": 3.2,
+            "z": 2.4
+          },
+          {
+            "x": 7.5,
+            "y": 3.2,
+            "z": 2.4
+          }
+        ]
+      },
+      "hard": false,
+      "applies_to": [
+        "emt"
+      ],
+      "level_id": "level:ground",
+      "clearance_m": 0
+    }
+  ],
+  "routes": [],
+  "route_fittings": [],
+  "circuits": [],
+  "conductors": [],
+  "provenance": [
+    {
+      "source_kind": "synthetic",
+      "source_id": "fixture:multiple-valid-routes-v1",
+      "source_element_id": null,
+      "page": null,
+      "method": "hand-authored golden fixture",
+      "confidence": 1,
+      "attributes": {}
+    }
+  ],
+  "attributes": {
+    "fixture_purpose": "cross-workstream golden regression",
+    "routing_outcome": "multiple-valid"
+  }
+}

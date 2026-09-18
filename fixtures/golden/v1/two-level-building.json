@@ -1,0 +1,633 @@
+{
+  "model_id": "model:two-level-building-v1",
+  "name": "Two-level building golden fixture",
+  "schema_version": "1.0.0",
+  "coordinate_system": {
+    "frame_id": "model",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "length_unit": "m",
+    "angle_unit": "rad",
+    "crs": null,
+    "origin_in_crs": null,
+    "true_north_radians": 0
+  },
+  "levels": [
+    {
+      "id": "level:ground",
+      "name": "Ground",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "level:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "elevation_m": 0,
+      "height_m": 3
+    },
+    {
+      "id": "level:upper",
+      "name": "Upper",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "level:upper",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "elevation_m": 3.2,
+      "height_m": 3
+    }
+  ],
+  "spaces": [
+    {
+      "id": "space:ground",
+      "name": "Ground room",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "space:ground",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 3,
+      "usage": "office"
+    },
+    {
+      "id": "space:upper",
+      "name": "Upper room",
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "space:upper",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:upper",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 3.2
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 3.2
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 3.2
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 3.2
+          }
+        ]
+      },
+      "height_m": 3,
+      "usage": "office"
+    }
+  ],
+  "walls": [
+    {
+      "id": "wall:g-south",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:g-south",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:g-east",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:g-east",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 5,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:g-north",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:g-north",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 5,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:g-west",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:g-west",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:u-south",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:u-south",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:upper",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 3.2
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 3.2
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:u-east",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:u-east",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:upper",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 5,
+            "y": 0,
+            "z": 3.2
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 3.2
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:u-north",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:u-north",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:upper",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 5,
+            "y": 4,
+            "z": 3.2
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 3.2
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    },
+    {
+      "id": "wall:u-west",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "wall:u-west",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:upper",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 4,
+            "z": 3.2
+          },
+          {
+            "x": 0,
+            "y": 0,
+            "z": 3.2
+          }
+        ]
+      },
+      "thickness_m": 0.14,
+      "height_m": 3
+    }
+  ],
+  "slabs": [
+    {
+      "id": "slab:g-",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "slab:g-",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.1
+    },
+    {
+      "id": "slab:u-",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "slab:u-",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:upper",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 3.2
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 3.2
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 3.2
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 3.2
+          }
+        ]
+      },
+      "thickness_m": 0.1
+    }
+  ],
+  "ceilings": [
+    {
+      "id": "ceiling:g-",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "ceiling:g-",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:ground",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 3
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 3
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 3
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 3
+          }
+        ]
+      },
+      "thickness_m": 0.02
+    },
+    {
+      "id": "ceiling:u-",
+      "name": null,
+      "confidence": 1,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:two-level-building-v1",
+          "source_element_id": "ceiling:u-",
+          "page": null,
+          "method": "hand-authored golden fixture",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "attributes": {},
+      "level_id": "level:upper",
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 6.2
+          },
+          {
+            "x": 5,
+            "y": 0,
+            "z": 6.2
+          },
+          {
+            "x": 5,
+            "y": 4,
+            "z": 6.2
+          },
+          {
+            "x": 0,
+            "y": 4,
+            "z": 6.2
+          }
+        ]
+      },
+      "thickness_m": 0.02
+    }
+  ],
+  "openings": [],
+  "electrical_equipment": [],
+  "electrical_devices": [],
+  "ports": [],
+  "obstacles": [],
+  "route_constraints": [],
+  "routes": [],
+  "route_fittings": [],
+  "circuits": [],
+  "conductors": [],
+  "provenance": [
+    {
+      "source_kind": "synthetic",
+      "source_id": "fixture:two-level-building-v1",
+      "source_element_id": null,
+      "page": null,
+      "method": "hand-authored golden fixture",
+      "confidence": 1,
+      "attributes": {}
+    }
+  ],
+  "attributes": {
+    "fixture_purpose": "cross-workstream golden regression"
+  }
+}

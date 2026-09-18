@@ -82,7 +82,9 @@ def test_synthetic_pdf_matches_known_answer_and_canonical_contract() -> None:
     assert not model.electrical_equipment
     assert model.openings[0].host_id in {wall.id for wall in model.walls}
     assert model.spaces[0].name == "GARAGE"
+    assert model.levels[0].height_m is None
     assert model.spaces[0].height_m == pytest.approx(2.7432)
+    assert model.spaces[0].confidence == pytest.approx(0.9)
     assert {round(wall.thickness_m, 3) for wall in model.walls} == {0.14}
 
 
@@ -346,7 +348,17 @@ def test_conflicting_explicit_level_elevations_are_not_silently_collapsed() -> N
     model = import_observations(_document(first, second))
 
     assert model.levels[0].elevation_m == pytest.approx(0.0)
+    assert model.levels[0].confidence == pytest.approx(0.5)
     assert "level_elevation_conflict" in _ambiguity_codes(model)
+    conflict = next(
+        item
+        for item in model.attributes["pdf_architecture"]["ambiguities"]
+        if item["code"] == "level_elevation_conflict"
+    )
+    assert conflict["existing_page"] == 1
+    assert conflict["conflicting_page"] == 2
+    assert conflict["existing_value_m"] == pytest.approx(0.0)
+    assert conflict["conflicting_value_m"] == pytest.approx(3.048)
     assert {space.name for space in model.spaces} == {"OFFICE"}
     assert model.attributes["pdf_architecture"]["pages"][1]["status"] == "skipped_unresolved_level"
     validate_model(model)
@@ -426,6 +438,8 @@ def test_room_specific_ceiling_heights_stay_scoped_to_their_rooms() -> None:
     spaces = {space.name: space for space in model.spaces}
     assert spaces["OFFICE"].height_m == pytest.approx(2.7432)
     assert spaces["LOBBY"].height_m == pytest.approx(3.6576)
+    assert spaces["OFFICE"].confidence == pytest.approx(0.9)
+    assert spaces["LOBBY"].confidence == pytest.approx(0.9)
     assert any(
         provenance.source_element_id == "office-height"
         and "room-scoped" in provenance.method
@@ -447,6 +461,14 @@ def test_room_specific_ceiling_heights_stay_scoped_to_their_rooms() -> None:
         ceiling.footprint.points[0].z
         for ceiling in model.ceilings
     ) == pytest.approx([2.7432, 3.6576])
+    assert sorted({wall.confidence for wall in model.walls}) == pytest.approx([0.9])
+    assert sorted({ceiling.confidence for ceiling in model.ceilings}) == pytest.approx([0.85])
+    assert {
+        provenance.source_element_id
+        for ceiling in model.ceilings
+        for provenance in ceiling.provenance
+        if provenance.attributes.get("scope") == "room"
+    } == {"office-height", "lobby-height"}
     assert "level_height_conflict" not in _ambiguity_codes(model)
     assert "ceiling_height_scope_unresolved" not in _ambiguity_codes(model)
     validate_model(model)
@@ -483,4 +505,37 @@ def test_conflicting_room_heights_do_not_fall_back_to_global_level_height() -> N
     assert not model.ceilings
     assert "room_ceiling_height_conflict" in _ambiguity_codes(model)
     assert "wall_height_unresolved" in _ambiguity_codes(model)
+    validate_model(model)
+
+
+def test_unqualified_height_outside_rooms_is_not_promoted_to_level() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=320,
+        height_pt=240,
+        texts=(
+            _text("title", "A1.1 FLOOR PLAN", 10, 205),
+            _text("scale", "SCALE: 1:100", 10, 190),
+            _text("level", "LEVEL: GROUND", 10, 175),
+            _text("elev", "ELEVATION: 0'-0\"", 10, 160),
+            _text("unqualified-height", "CEILING HEIGHT: 10'-0\"", 10, 145),
+            _text("office-room", "ROOM: OFFICE", 45, 60),
+            _text("lobby-room", "ROOM: LOBBY", 185, 60),
+        ),
+        rects=(
+            PdfRectObservation(element_id="office-outer", bbox_pt=(20, 20, 130, 120)),
+            PdfRectObservation(element_id="office-inner", bbox_pt=(24, 24, 126, 116)),
+            PdfRectObservation(element_id="lobby-outer", bbox_pt=(160, 20, 270, 120)),
+            PdfRectObservation(element_id="lobby-inner", bbox_pt=(164, 24, 266, 116)),
+        ),
+    )
+
+    model = import_observations(_document(page))
+
+    assert model.levels[0].height_m is None
+    assert {space.name for space in model.spaces} == {"OFFICE", "LOBBY"}
+    assert all(space.height_m is None for space in model.spaces)
+    assert not model.walls
+    assert not model.ceilings
+    assert "ceiling_height_scope_unresolved" in _ambiguity_codes(model)
     validate_model(model)

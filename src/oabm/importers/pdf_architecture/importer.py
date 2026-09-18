@@ -469,29 +469,6 @@ def _is_explicit_global_ceiling_height(text: str) -> bool:
     )
 
 
-def _is_level_metadata_ceiling_height(
-    page: PdfPageObservation,
-    observation: PdfTextObservation,
-) -> bool:
-    """Return True only when a generic height note is grouped with level metadata."""
-
-    ox, oy = observation.center_pt
-    for item in page.texts:
-        if item.element_id == observation.element_id:
-            continue
-        upper = _clean_text(item.text).upper()
-        if not (
-            re.search(r"\\bLEVEL\\s*[:#-]", upper)
-            or "ELEVATION" in upper
-            or re.search(r"\\bEL\\.?\\s*[:=]", upper)
-        ):
-            continue
-        ix, iy = item.center_pt
-        if abs(oy - iy) <= 48.0 and abs(ox - ix) <= 160.0:
-            return True
-    return False
-
-
 def _room_scope_boxes(
     page: PdfPageObservation,
     rooms: tuple[_RoomLabel, ...],
@@ -543,11 +520,10 @@ def _ceiling_height_scopes(
             result.append((observation, height_m, "room", contained[0]))
         elif len(contained) > 1:
             result.append((observation, height_m, "unresolved", None))
-        elif _is_level_metadata_ceiling_height(page, observation):
-            # Generic notes are level-wide only when their placement groups
-            # them with explicit LEVEL/ELEVATION metadata. Merely sitting
-            # outside a room enclosure is not enough to make a height global.
-            result.append((observation, height_m, "global", None))
+        elif len(rooms) == 1 and rooms[0].anchor in boxes:
+            # With exactly one resolved room, an otherwise-unqualified height
+            # note can be scoped to that room. It is never promoted to Level.
+            result.append((observation, height_m, "room", rooms[0].anchor))
         else:
             result.append((observation, height_m, "unresolved", None))
     return tuple(result)
@@ -709,6 +685,10 @@ def _reconcile_measurement(
                 "conflicting_value_m": candidate.value_m,
                 "conflicting_page": candidate.page_number,
                 "resolution": "kept higher-priority evidence",
+                "selected_source_text": existing.source_text,
+                "selected_source_element_id": existing.source_element_id,
+                "conflicting_source_text": candidate.source_text,
+                "conflicting_source_element_id": candidate.source_element_id,
             }
         )
         return existing, False
@@ -723,12 +703,19 @@ def _reconcile_measurement(
             ),
             "existing_value_m": existing.value_m,
             "existing_page": existing.page_number,
+            "existing_source_text": existing.source_text,
+            "existing_source_element_id": existing.source_element_id,
             "conflicting_value_m": candidate.value_m,
             "conflicting_page": candidate.page_number,
+            "conflicting_source_text": candidate.source_text,
+            "conflicting_source_element_id": candidate.source_element_id,
             "resolution": "current page skipped until explicitly resolved",
         }
     )
-    return existing, True
+    return replace(
+        existing,
+        confidence=min(existing.confidence, candidate.confidence, 0.5),
+    ), True
 
 
 def _resolve_level(
@@ -832,6 +819,7 @@ def _resolve_level(
             ambiguities=ambiguities,
         )
         if blocked:
+            known_levels[anchor] = replace(existing, elevation=elevation)
             return None
 
     height = existing.height
@@ -847,6 +835,7 @@ def _resolve_level(
                 ambiguities=ambiguities,
             )
             if blocked:
+                known_levels[anchor] = replace(existing, elevation=elevation, height=height)
                 return None
 
     resolved_name = name if override and override.name else existing.name
@@ -1032,34 +1021,45 @@ def _shell_entities(
     identity = f"{source_id}|level:{level_info.anchor}|room:{room.anchor}"
     base_confidence = min(room.confidence, scale.confidence, transform.confidence)
     footprint = _polygon_from_bbox(shell.inner.bbox_pt, transform, level.elevation_m)
-    resolved_height_m = (
-        None
-        if room_height_blocked
-        else (room_height.value_m if room_height is not None else level.height_m)
-    )
-    height_confidence = (
-        0.0
-        if room_height_blocked
-        else (
-            room_height.confidence
-            if room_height is not None
-            else (level_info.height_confidence or 0.0)
+    level_height = level_info.height
+    if room_height_blocked:
+        selected_height = (
+            level_height
+            if level_height is not None and level_height.priority >= 3
+            else None
         )
-    )
-    room_height_provenance: tuple[Provenance, ...] = ()
-    if room_height is not None:
-        room_height_provenance = _provenance(
+        selected_scope = "level" if selected_height is not None else None
+    elif (
+        room_height is not None
+        and (level_height is None or room_height.priority >= level_height.priority)
+    ):
+        selected_height = room_height
+        selected_scope = "room"
+    else:
+        selected_height = level_height
+        selected_scope = "level" if selected_height is not None else None
+
+    resolved_height_m = selected_height.value_m if selected_height is not None else None
+    height_confidence = selected_height.confidence if selected_height is not None else 0.0
+    height_provenance: tuple[Provenance, ...] = ()
+    if selected_height is not None:
+        height_provenance = _provenance(
             source_id,
-            room_height.page_number,
-            method=room_height.method,
-            confidence=room_height.confidence,
-            source_element_id=room_height.source_element_id,
+            selected_height.page_number,
+            method=selected_height.method,
+            confidence=selected_height.confidence,
+            source_element_id=selected_height.source_element_id,
             attributes={
                 "field": "height_m",
-                "scope": "room",
-                "source_text": room_height.source_text,
+                "scope": selected_scope,
+                "source_text": selected_height.source_text,
             },
         )
+    space_confidence = (
+        min(base_confidence, height_confidence)
+        if resolved_height_m is not None
+        else base_confidence
+    )
 
     space = Space(
         id=stable_id("space", identity),
@@ -1068,7 +1068,7 @@ def _shell_entities(
         footprint=footprint,
         height_m=resolved_height_m,
         usage=room.usage,
-        confidence=base_confidence,
+        confidence=space_confidence,
         provenance=(
             _provenance(
                 source_id,
@@ -1081,7 +1081,7 @@ def _shell_entities(
                     "inner_rect": shell.inner.element_id,
                 },
             )
-            + room_height_provenance
+            + height_provenance
         ),
         attributes={"pdf_architecture": {"identity_anchor": room.anchor}},
     )
@@ -1135,7 +1135,7 @@ def _shell_entities(
                         source_element_id=f"{shell.outer.element_id}+{shell.inner.element_id}:{side}",
                         attributes={"room_anchor": room.anchor, "source_side": side},
                     )
-                    + room_height_provenance
+                    + height_provenance
                 ),
                 attributes={"pdf_architecture": {"room_anchor": room.anchor, "source_side": side}},
             )
@@ -1181,7 +1181,7 @@ def _shell_entities(
                     confidence=ceiling_confidence,
                     source_element_id=room.observation.element_id,
                 )
-                + room_height_provenance
+                + height_provenance
             ),
         )
     return space, tuple(walls), slab, ceiling

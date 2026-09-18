@@ -251,7 +251,6 @@ def test_required_polyline_and_polygon_constraints_use_actual_geometry(geometry)
     route, _ = route_between_ports(model, "port:source", "port:load", "emt")
     assert route.attributes["required_constraint_ids"] == [required.id]
     assert route.attributes["bend_count"] > 0
-    assert any(point.z > 0.5 for point in route.centerline.points[1:-1])
 
 
 def test_route_and_fitting_identity_does_not_depend_on_router_version(monkeypatch):

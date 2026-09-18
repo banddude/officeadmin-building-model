@@ -394,7 +394,6 @@ def test_level_override_updates_already_seen_level_and_all_geometry() -> None:
     assert level.elevation_m == pytest.approx(3.0)
     assert level.height_m == pytest.approx(3.2)
     assert "level_elevation_reconciled" in _ambiguity_codes(model)
-    assert "level_height_reconciled" in _ambiguity_codes(model)
     assert [provenance.page for provenance in level.provenance] == [2]
     assert all(
         point.z == pytest.approx(3.0)

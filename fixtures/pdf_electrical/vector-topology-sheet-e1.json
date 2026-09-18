@@ -31,6 +31,29 @@
       "y_pt": 520
     }
   ],
+  "symbols": [
+    {
+      "element_id": "p1:symbol:0010",
+      "page": 1,
+      "name": "/PANEL",
+      "x_pt": 80,
+      "y_pt": 500
+    },
+    {
+      "element_id": "p1:symbol:0020",
+      "page": 1,
+      "name": "/EVSE1",
+      "x_pt": 300,
+      "y_pt": 500
+    },
+    {
+      "element_id": "p1:symbol:0030",
+      "page": 1,
+      "name": "/EVSE2",
+      "x_pt": 300,
+      "y_pt": 420
+    }
+  ],
   "vectors": [
     {
       "element_id": "p1:vector:0010",

@@ -655,18 +655,21 @@ def test_ordinary_vector_line_loops_emit_canonical_space_and_walls() -> None:
 
     meters_per_point = 100 * 0.0254 / 72
     footprint = model.spaces[0].footprint.points
-    assert [(point.x, point.y, point.z) for point in footprint] == pytest.approx(
-        [
-            (24 * meters_per_point, 24 * meters_per_point, 0.0),
-            (216 * meters_per_point, 24 * meters_per_point, 0.0),
-            (216 * meters_per_point, 116 * meters_per_point, 0.0),
-            (24 * meters_per_point, 116 * meters_per_point, 0.0),
-        ]
+    expected_points = (
+        (24 * meters_per_point, 24 * meters_per_point, 0.0),
+        (216 * meters_per_point, 24 * meters_per_point, 0.0),
+        (216 * meters_per_point, 116 * meters_per_point, 0.0),
+        (24 * meters_per_point, 116 * meters_per_point, 0.0),
     )
-    assert {wall.thickness_m for wall in model.walls} == pytest.approx(
-        {4 * meters_per_point}
+    for point, expected in zip(footprint, expected_points, strict=True):
+        assert point.x == pytest.approx(expected[0])
+        assert point.y == pytest.approx(expected[1])
+        assert point.z == pytest.approx(expected[2])
+    assert all(
+        wall.thickness_m == pytest.approx(4 * meters_per_point)
+        for wall in model.walls
     )
-    assert {wall.height_m for wall in model.walls} == pytest.approx({2.7432})
+    assert all(wall.height_m == pytest.approx(2.7432) for wall in model.walls)
     assert model.coordinate_system.length_unit == "m"
 
     space_provenance = model.spaces[0].provenance[0]

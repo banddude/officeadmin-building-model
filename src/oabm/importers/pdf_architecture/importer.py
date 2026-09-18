@@ -447,7 +447,7 @@ def _ceiling_height_notes(page: PdfPageObservation) -> tuple[tuple[PdfTextObserv
     result: list[tuple[PdfTextObservation, float]] = []
     for item in page.texts:
         upper = item.text.upper()
-        if "CEILING HEIGHT" in upper or re.search(r"\\bCLG(?:\\.|\\s)\\s*(?:HT|HEIGHT)?\\b", upper):
+        if "CEILING HEIGHT" in upper or re.search(r"\bCLG(?:\.|\s)\s*(?:HT|HEIGHT)?\b", upper):
             dim = _find_dimension(item.text)
             if dim and dim[0] > 0:
                 result.append((item, dim[0]))

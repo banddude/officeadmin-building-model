@@ -145,6 +145,30 @@ def test_two_point_registration_controls_scale_rotation_and_translation() -> Non
     assert page_meta["scale_meters_per_point"] == pytest.approx(one_hundred_scale)
 
 
+def test_empty_architectural_page_does_not_claim_geometry_or_own_shared_frame() -> None:
+    empty = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=(
+            _text("p1:title", "A1.0 FLOOR PLAN", 10, 180),
+            _text("p1:scale", "SCALE: 1:100", 10, 165),
+            _text("p1:level", "LEVEL: GROUND", 10, 140),
+            _text("p1:elev", "ELEVATION: 0'-0\"", 10, 128),
+        ),
+    )
+    second = _plan_page(page_number=2, room_name="STORAGE")
+
+    model = import_observations(_document(empty, second))
+
+    assert len(model.spaces) == 1
+    pages = model.attributes["pdf_architecture"]["pages"]
+    assert pages[0]["status"] == "no_supported_geometry_recognized"
+    assert pages[1]["status"] == "geometry_imported"
+    assert "architectural_geometry_unrecognized" in _ambiguity_codes(model)
+    assert "registration_unresolved" not in _ambiguity_codes(model)
+
+
 def test_additional_plan_page_requires_explicit_registration() -> None:
     first = _plan_page(page_number=1, room_name="OFFICE")
     second = _plan_page(page_number=2, room_name="STORAGE", dx=20)

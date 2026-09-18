@@ -40,7 +40,7 @@ All semantic output is canonical `Level`, `Space`, `Wall`, `Opening`, `Slab`, `C
 
 ## Scale and registration
 
-The first resolved architectural plan may define the project-local XY origin if it has a supported printed or overridden scale. Every additional plan page must have an explicit `RegistrationHint` before its geometry can share that canonical frame.
+The first architectural plan that resolves level and scale and actually emits supported canonical spatial geometry may define the project-local XY origin. A resolved plan that emits no supported spatial geometry is recorded as `no_supported_geometry_recognized` with `architectural_geometry_unrecognized`; it does not claim the shared frame. Once a base geometry page exists, every additional plan page must have an explicit `RegistrationHint` before its geometry can share that canonical frame.
 
 A two-point registration controls scale, rotation, and translation. If its computed scale disagrees with a printed or overridden scale beyond `scale_registration_tolerance`, the page is skipped and the disagreement is recorded rather than choosing one silently.
 
@@ -66,6 +66,7 @@ Typical ambiguity codes include:
 
 - `scale_unresolved` / `scale_conflict`;
 - `scale_registration_conflict` / `registration_unresolved`;
+- `architectural_geometry_unrecognized`;
 - `level_elevation_local_datum` / `level_elevation_unresolved`;
 - `level_elevation_reconciled` / `level_elevation_conflict`;
 - `level_height_reconciled` / `level_height_conflict`;
@@ -78,4 +79,4 @@ The rule is conservative: unresolved facts remain unresolved instead of being co
 
 ## Fixtures and tests
 
-`fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe. Its known-answer canonical model is checked in alongside it. Tests also construct synthetic observations for ambiguous scale, missing height, explicit registration, inter-sheet registration, stable identity, repeatability, and lane isolation. No customer plan set is used.
+`fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe. Its known-answer canonical model is checked in alongside it. Tests also construct synthetic observations for ambiguous scale, missing height, explicit registration, inter-sheet registration, resolved pages that emit no geometry, stable identity, repeatability, and lane isolation. No customer plan set is used.

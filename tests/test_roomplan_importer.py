@@ -308,7 +308,7 @@ def test_curved_or_segmented_wall_bottom_is_kept_as_polyline() -> None:
 
     assert len(imported.centerline.points) == 5
     assert len({round(point.y, 3) for point in imported.centerline.points}) > 1
-    assert imported.attributes["roomplan"]["curve"] == wall["curve"]
+    assert "curve" not in imported.attributes["roomplan"]
 
 
 def test_roomplan_curve_is_tessellated_into_canonical_wall_centerline() -> None:

@@ -441,8 +441,8 @@ def test_room_specific_ceiling_heights_stay_scoped_to_their_rooms() -> None:
         anchor: {wall.height_m for wall in model.walls if wall.attributes["pdf_architecture"]["room_anchor"] == anchor}
         for anchor in ("office", "lobby")
     }
-    assert wall_heights["office"] == {pytest.approx(2.7432)}
-    assert wall_heights["lobby"] == {pytest.approx(3.6576)}
+    assert sorted(wall_heights["office"]) == pytest.approx([2.7432])
+    assert sorted(wall_heights["lobby"]) == pytest.approx([3.6576])
     assert sorted(
         ceiling.footprint.points[0].z
         for ceiling in model.ceilings

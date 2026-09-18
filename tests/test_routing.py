@@ -4,8 +4,10 @@ import pytest
 
 from oabm.model import (
     Box3D, BuildingModel, Ceiling, ElectricalDevice, ElectricalEquipment, Obstacle,
-    Point3, Polygon3D, Port, Pose, RouteConstraint, Size3, Vector3,
+    Point3, Polygon3D, Polyline3D, Port, Pose, RouteConstraint, Size3, Vector3,
+    stable_id,
 )
+import oabm.routing.router as routing_router
 from oabm.routing import NoRouteError, RoutingError, RoutingOptions, route_between_ports
 
 
@@ -204,6 +206,85 @@ def test_route_and_fitting_identity_stays_stable_when_geometry_moves_but_topolog
     assert first_route.id == second_route.id
     assert tuple(item.id for item in first_fittings) == tuple(item.id for item in second_fittings)
     assert first_route.centerline != second_route.centerline
+
+
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    (
+        Polyline3D(
+            points=(
+                Point3(x=1, y=-1, z=0),
+                Point3(x=2, y=0, z=1),
+                Point3(x=3, y=1, z=2),
+            )
+        ),
+        Polygon3D(
+            points=(
+                Point3(x=1, y=-1, z=0),
+                Point3(x=3, y=-1, z=0),
+                Point3(x=3, y=1, z=2),
+                Point3(x=1, y=1, z=2),
+            )
+        ),
+    ),
+)
+def test_required_polyline_and_polygon_constraints_use_actual_geometry(geometry):
+    required = RouteConstraint(
+        id="constraint:shape-aware",
+        constraint_type="required-corridor",
+        hard=True,
+        geometry=geometry,
+    )
+    model = _base_model(constraints=(required,))
+
+    with pytest.raises(NoRouteError, match="required corridors=constraint:shape-aware"):
+        route_between_ports(
+            model,
+            "port:source",
+            "port:load",
+            "emt",
+            options=RoutingOptions(max_bends=0),
+        )
+
+    route, _ = route_between_ports(model, "port:source", "port:load", "emt")
+    assert route.attributes["required_constraint_ids"] == [required.id]
+    assert route.attributes["bend_count"] > 0
+    assert any(point.z > 0.5 for point in route.centerline.points[1:-1])
+
+
+def test_route_and_fitting_identity_does_not_depend_on_router_version(monkeypatch):
+    model = _base_model(
+        start=Point3(x=0, y=0, z=1),
+        end=Point3(x=4, y=0, z=1),
+        start_direction=Vector3(x=0, y=0, z=1),
+        end_direction=Vector3(x=0, y=0, z=1),
+    )
+    first_route, first_fittings = route_between_ports(
+        model,
+        "port:source",
+        "port:load",
+        "emt",
+    )
+    expected_id = stable_id(
+        "route",
+        f"{model.model_id}:emt:port:source:port:load",
+    )
+    assert first_route.id == expected_id
+
+    monkeypatch.setattr(routing_router, "_ALGORITHM", "deterministic-rectilinear-v2")
+    second_route, second_fittings = route_between_ports(
+        model,
+        "port:source",
+        "port:load",
+        "emt",
+    )
+
+    assert second_route.id == first_route.id
+    assert tuple(item.id for item in second_fittings) == tuple(item.id for item in first_fittings)
+    assert second_route.provenance[0].method == "deterministic-rectilinear-v2"
+    assert second_route.attributes["routing_engine"] == "deterministic-rectilinear-v2"
 
 
 def test_checked_in_routing_fixtures_cover_normal_alternate_and_impossible():

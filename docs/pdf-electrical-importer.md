@@ -38,9 +38,10 @@ these recognized objects.
 ## Ambiguity rules
 
 The importer does not create a circuit unless the same text evidence identifies
-a source panel, circuit number, and at least one recognized load tag. Incomplete
-circuit evidence is retained under
-`model.attributes.pdf_electrical.unresolved_circuits`.
+a source panel, circuit number, and at least one independently recognized load
+tag. A circuit callout that merely mentions a panel or device does not
+materialize that object at the callout position. Incomplete circuit evidence is
+retained under `model.attributes.pdf_electrical.unresolved_circuits`.
 
 A symbol is materialized only when the symbol catalog yields one clear
 classification. Unknown or tied classifications are retained under

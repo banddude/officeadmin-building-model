@@ -450,3 +450,37 @@ def test_room_specific_ceiling_heights_stay_scoped_to_their_rooms() -> None:
     assert "level_height_conflict" not in _ambiguity_codes(model)
     assert "ceiling_height_scope_unresolved" not in _ambiguity_codes(model)
     validate_model(model)
+
+
+
+def test_conflicting_room_heights_do_not_fall_back_to_global_level_height() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=(
+            _text("title", "A1.1 FLOOR PLAN", 10, 190),
+            _text("scale", "SCALE: 1:100", 10, 176),
+            _text("level", "LEVEL: GROUND", 10, 162),
+            _text("elev", "ELEVATION: 0'-0\"", 10, 148),
+            _text("global-height", "LEVEL CEILING HEIGHT: 11'-0\"", 10, 134),
+            _text("office-room", "ROOM: OFFICE", 70, 55),
+            _text("office-height-a", "CEILING HEIGHT: 9'-0\"", 70, 80),
+            _text("office-height-b", "CEILING HEIGHT: 10'-0\"", 70, 95),
+        ),
+        rects=(
+            PdfRectObservation(element_id="office-outer", bbox_pt=(20, 20, 220, 120)),
+            PdfRectObservation(element_id="office-inner", bbox_pt=(24, 24, 216, 116)),
+        ),
+    )
+
+    model = import_observations(_document(page))
+
+    assert model.levels[0].height_m == pytest.approx(3.3528)
+    assert len(model.spaces) == 1
+    assert model.spaces[0].height_m is None
+    assert not model.walls
+    assert not model.ceilings
+    assert "room_ceiling_height_conflict" in _ambiguity_codes(model)
+    assert "wall_height_unresolved" in _ambiguity_codes(model)
+    validate_model(model)

@@ -101,14 +101,38 @@ class _Transform2D:
 
 
 @dataclass(frozen=True, slots=True)
+class _Measurement:
+    value_m: float
+    confidence: float
+    priority: int
+    method: str
+    page_number: int
+    source_text: str | None = None
+    source_element_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class _LevelInfo:
     anchor: str
     name: str
-    elevation_m: float
-    height_m: float | None
-    elevation_confidence: float
-    height_confidence: float | None
-    method: str
+    elevation: _Measurement
+    height: _Measurement | None
+
+    @property
+    def elevation_m(self) -> float:
+        return self.elevation.value_m
+
+    @property
+    def height_m(self) -> float | None:
+        return self.height.value_m if self.height is not None else None
+
+    @property
+    def elevation_confidence(self) -> float:
+        return self.elevation.confidence
+
+    @property
+    def height_confidence(self) -> float | None:
+        return self.height.confidence if self.height is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,14 +443,194 @@ def _elevation_from_text(page: PdfPageObservation) -> tuple[float, str] | None:
     return None
 
 
-def _ceiling_height_from_text(page: PdfPageObservation) -> tuple[float, str] | None:
+def _ceiling_height_notes(page: PdfPageObservation) -> tuple[tuple[PdfTextObservation, float], ...]:
+    result: list[tuple[PdfTextObservation, float]] = []
     for item in page.texts:
         upper = item.text.upper()
-        if "CEILING HEIGHT" in upper or re.search(r"\bCLG(?:\.|\s)\s*(?:HT|HEIGHT)?\b", upper):
+        if "CEILING HEIGHT" in upper or re.search(r"\\bCLG(?:\\.|\\s)\\s*(?:HT|HEIGHT)?\\b", upper):
             dim = _find_dimension(item.text)
             if dim and dim[0] > 0:
-                return (dim[0], item.text)
-    return None
+                result.append((item, dim[0]))
+    return tuple(result)
+
+
+def _is_explicit_global_ceiling_height(text: str) -> bool:
+    upper = _clean_text(text).upper()
+    return any(
+        token in upper
+        for token in (
+            "LEVEL CEILING HEIGHT",
+            "FLOOR CEILING HEIGHT",
+            "TYPICAL CEILING HEIGHT",
+            "TYPICAL CLG",
+            "TYP. CLG",
+            "TYP CLG",
+        )
+    )
+
+
+def _room_scope_boxes(
+    page: PdfPageObservation,
+    rooms: tuple[_RoomLabel, ...],
+) -> dict[str, tuple[float, float, float, float]]:
+    boxes: dict[str, tuple[float, float, float, float]] = {}
+    for room in rooms:
+        if sum(item.anchor == room.anchor for item in rooms) != 1:
+            continue
+        containing = [rect for rect in page.rects if _inside(rect.bbox_pt, room.observation.center_pt)]
+        if not containing:
+            continue
+        chosen = min(
+            containing,
+            key=lambda rect: (
+                rect.width_pt * rect.height_pt,
+                rect.element_id,
+            ),
+        )
+        boxes[room.anchor] = chosen.bbox_pt
+    return boxes
+
+
+def _ceiling_height_scopes(
+    page: PdfPageObservation,
+) -> tuple[tuple[PdfTextObservation, float, str, str | None], ...]:
+    rooms = _room_labels(page)
+    boxes = _room_scope_boxes(page, rooms)
+    result: list[tuple[PdfTextObservation, float, str, str | None]] = []
+    for observation, height_m in _ceiling_height_notes(page):
+        upper = _clean_text(observation.text).upper()
+        if _is_explicit_global_ceiling_height(observation.text):
+            result.append((observation, height_m, "global", None))
+            continue
+
+        named = [room.anchor for room in rooms if room.name.upper() in upper]
+        if len(named) == 1:
+            result.append((observation, height_m, "room", named[0]))
+            continue
+        if len(named) > 1:
+            result.append((observation, height_m, "unresolved", None))
+            continue
+
+        contained = [
+            anchor
+            for anchor, bbox in boxes.items()
+            if _inside(bbox, observation.center_pt)
+        ]
+        if len(contained) == 1:
+            result.append((observation, height_m, "room", contained[0]))
+        elif len(contained) > 1:
+            result.append((observation, height_m, "unresolved", None))
+        elif boxes or not rooms:
+            # A ceiling-height note placed outside all resolved room enclosures
+            # is page/level evidence. This preserves title/note-area annotations
+            # without promoting notes that are spatially inside a room.
+            result.append((observation, height_m, "global", None))
+        else:
+            result.append((observation, height_m, "unresolved", None))
+    return tuple(result)
+
+
+def _global_ceiling_height_from_text(
+    page: PdfPageObservation,
+    ambiguities: list[dict[str, object]],
+) -> tuple[_Measurement | None, bool]:
+    candidates = [
+        (observation, height_m)
+        for observation, height_m, scope, _ in _ceiling_height_scopes(page)
+        if scope == "global"
+    ]
+    if not candidates:
+        return None, False
+
+    first_value = candidates[0][1]
+    if any(
+        not math.isclose(height_m, first_value, rel_tol=1e-9, abs_tol=1e-6)
+        for _, height_m in candidates[1:]
+    ):
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "level_height_conflict",
+                "detail": (
+                    "multiple distinct page/level ceiling-height annotations were found; "
+                    "supply LevelOverride to select the intended level height"
+                ),
+                "source_text": [observation.text for observation, _ in candidates],
+            }
+        )
+        return None, True
+
+    observation, height_m = candidates[0]
+    return (
+        _Measurement(
+            value_m=height_m,
+            confidence=0.9,
+            priority=2,
+            method="height parsed from explicit ceiling-height annotation",
+            page_number=page.page_number,
+            source_text=observation.text,
+            source_element_id=observation.element_id,
+        ),
+        False,
+    )
+
+
+def _room_ceiling_height_evidence(
+    page: PdfPageObservation,
+    shells: tuple[_Shell, ...],
+    ambiguities: list[dict[str, object]],
+) -> dict[str, _Measurement]:
+    shell_anchors = {shell.room.anchor for shell in shells}
+    candidates: dict[str, list[tuple[PdfTextObservation, float]]] = {}
+    for observation, height_m, scope, room_anchor in _ceiling_height_scopes(page):
+        if scope == "unresolved":
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "ceiling_height_scope_unresolved",
+                    "detail": (
+                        f"ceiling-height annotation {observation.text!r} could not be scoped "
+                        "to one room or to the level"
+                    ),
+                    "source_element_id": observation.element_id,
+                }
+            )
+            continue
+        if scope != "room" or room_anchor not in shell_anchors:
+            continue
+        candidates.setdefault(room_anchor, []).append((observation, height_m))
+
+    result: dict[str, _Measurement] = {}
+    for anchor in sorted(candidates):
+        items = candidates[anchor]
+        first_value = items[0][1]
+        if any(
+            not math.isclose(height_m, first_value, rel_tol=1e-9, abs_tol=1e-6)
+            for _, height_m in items[1:]
+        ):
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "room_ceiling_height_conflict",
+                    "detail": (
+                        f"room {anchor!r} has multiple distinct ceiling-height annotations; "
+                        "room height and 3D wall/ceiling geometry were left unresolved"
+                    ),
+                    "source_text": [observation.text for observation, _ in items],
+                }
+            )
+            continue
+        observation, height_m = items[0]
+        result[anchor] = _Measurement(
+            value_m=height_m,
+            confidence=0.9,
+            priority=2,
+            method="height parsed from room-scoped ceiling-height annotation",
+            page_number=page.page_number,
+            source_text=observation.text,
+            source_element_id=observation.element_id,
+        )
+    return result
 
 
 def _slab_thickness_from_text(page: PdfPageObservation) -> tuple[float, str] | None:
@@ -439,6 +643,69 @@ def _slab_thickness_from_text(page: PdfPageObservation) -> tuple[float, str] | N
     return None
 
 
+def _reconcile_measurement(
+    existing: _Measurement,
+    candidate: _Measurement,
+    *,
+    anchor: str,
+    field: str,
+    ambiguities: list[dict[str, object]],
+) -> tuple[_Measurement, bool]:
+    if math.isclose(existing.value_m, candidate.value_m, rel_tol=1e-9, abs_tol=1e-6):
+        return (candidate if candidate.priority > existing.priority else existing), False
+
+    if candidate.priority > existing.priority:
+        ambiguities.append(
+            {
+                "page": candidate.page_number,
+                "code": f"level_{field}_reconciled",
+                "detail": (
+                    f"level {anchor!r} {field} was replaced by higher-priority evidence"
+                ),
+                "previous_value_m": existing.value_m,
+                "previous_page": existing.page_number,
+                "selected_value_m": candidate.value_m,
+                "selected_page": candidate.page_number,
+            }
+        )
+        return candidate, False
+
+    if candidate.priority < existing.priority:
+        ambiguities.append(
+            {
+                "page": candidate.page_number,
+                "code": f"level_{field}_conflict",
+                "detail": (
+                    f"level {anchor!r} has conflicting lower-priority {field} evidence; "
+                    "the existing higher-priority value was retained"
+                ),
+                "selected_value_m": existing.value_m,
+                "selected_page": existing.page_number,
+                "conflicting_value_m": candidate.value_m,
+                "conflicting_page": candidate.page_number,
+                "resolution": "kept higher-priority evidence",
+            }
+        )
+        return existing, False
+
+    ambiguities.append(
+        {
+            "page": candidate.page_number,
+            "code": f"level_{field}_conflict",
+            "detail": (
+                f"level {anchor!r} has conflicting equally authoritative {field} evidence; "
+                "supply LevelOverride to resolve it"
+            ),
+            "existing_value_m": existing.value_m,
+            "existing_page": existing.page_number,
+            "conflicting_value_m": candidate.value_m,
+            "conflicting_page": candidate.page_number,
+            "resolution": "current page skipped until explicitly resolved",
+        }
+    )
+    return existing, True
+
+
 def _resolve_level(
     page: PdfPageObservation,
     options: ImportOptions,
@@ -449,68 +716,120 @@ def _resolve_level(
     parsed_name = _level_name_from_text(page)
     name = override.name if override and override.name else parsed_name or "Unlabeled Level"
     anchor = _anchor(name)
+    existing = known_levels.get(anchor)
 
-    if anchor in known_levels and override is None:
-        existing = known_levels[anchor]
-        parsed_height = _ceiling_height_from_text(page)
-        if existing.height_m is None and parsed_height:
-            return replace(existing, height_m=parsed_height[0], height_confidence=0.9)
-        return existing
+    global_height, global_height_conflict = _global_ceiling_height_from_text(page, ambiguities)
+    if global_height_conflict:
+        return None
 
+    parsed_elevation = _elevation_from_text(page)
+    elevation_candidate: _Measurement | None = None
     if override:
+        elevation_candidate = _Measurement(
+            value_m=override.elevation_m,
+            confidence=override.confidence,
+            priority=3,
+            method=override.note,
+            page_number=page.page_number,
+        )
+    elif parsed_elevation:
+        elevation_candidate = _Measurement(
+            value_m=parsed_elevation[0],
+            confidence=0.95,
+            priority=2,
+            method="parsed explicit level elevation",
+            page_number=page.page_number,
+            source_text=parsed_elevation[1],
+        )
+    elif existing is None:
+        if not known_levels:
+            elevation_candidate = _Measurement(
+                value_m=0.0,
+                confidence=0.55,
+                priority=1,
+                method="sole/first plan level assigned project-local elevation datum 0 m",
+                page_number=page.page_number,
+            )
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "level_elevation_local_datum",
+                    "detail": "no elevation annotation found; this first level defines local Z=0",
+                    "level_anchor": anchor,
+                }
+            )
+        else:
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "level_elevation_unresolved",
+                    "detail": f"level {name!r} has no elevation relative to existing levels; supply LevelOverride",
+                }
+            )
+            return None
+
+    height_candidate: _Measurement | None = None
+    if override and override.height_m is not None:
+        height_candidate = _Measurement(
+            value_m=override.height_m,
+            confidence=override.confidence,
+            priority=3,
+            method=override.note,
+            page_number=page.page_number,
+        )
+    elif global_height is not None:
+        height_candidate = global_height
+    elif options.default_wall_height_m is not None and (existing is None or existing.height is None):
+        height_candidate = _Measurement(
+            value_m=options.default_wall_height_m,
+            confidence=options.assumed_value_confidence,
+            priority=1,
+            method="height supplied explicitly by ImportOptions.default_wall_height_m",
+            page_number=page.page_number,
+        )
+
+    if existing is None:
+        assert elevation_candidate is not None
         return _LevelInfo(
             anchor=anchor,
             name=name,
-            elevation_m=override.elevation_m,
-            height_m=override.height_m,
-            elevation_confidence=override.confidence,
-            height_confidence=override.confidence if override.height_m is not None else None,
-            method=override.note,
+            elevation=elevation_candidate,
+            height=height_candidate,
         )
 
-    elevation = _elevation_from_text(page)
-    ceiling = _ceiling_height_from_text(page)
-    if elevation:
-        elevation_m = elevation[0]
-        elevation_confidence = 0.95
-        method = "parsed explicit level elevation"
-    elif not known_levels:
-        elevation_m = 0.0
-        elevation_confidence = 0.55
-        method = "sole/first plan level assigned project-local elevation datum 0 m"
-        ambiguities.append(
-            {
-                "page": page.page_number,
-                "code": "level_elevation_local_datum",
-                "detail": "no elevation annotation found; this first level defines local Z=0",
-            }
+    elevation = existing.elevation
+    if elevation_candidate is not None:
+        elevation, blocked = _reconcile_measurement(
+            elevation,
+            elevation_candidate,
+            anchor=anchor,
+            field="elevation",
+            ambiguities=ambiguities,
         )
-    else:
-        ambiguities.append(
-            {
-                "page": page.page_number,
-                "code": "level_elevation_unresolved",
-                "detail": f"level {name!r} has no elevation relative to existing levels; supply LevelOverride",
-            }
-        )
-        return None
+        if blocked:
+            return None
 
-    height_m = ceiling[0] if ceiling else options.default_wall_height_m
-    height_confidence = 0.9 if ceiling else (
-        options.assumed_value_confidence if options.default_wall_height_m is not None else None
-    )
-    if ceiling:
-        method += "; height parsed from explicit ceiling-height annotation"
-    elif options.default_wall_height_m is not None:
-        method += "; height supplied explicitly by ImportOptions.default_wall_height_m"
+    height = existing.height
+    if height_candidate is not None:
+        if height is None:
+            height = height_candidate
+        else:
+            height, blocked = _reconcile_measurement(
+                height,
+                height_candidate,
+                anchor=anchor,
+                field="height",
+                ambiguities=ambiguities,
+            )
+            if blocked:
+                return None
+
+    resolved_name = name if override and override.name else existing.name
     return _LevelInfo(
         anchor=anchor,
-        name=name,
-        elevation_m=elevation_m,
-        height_m=height_m,
-        elevation_confidence=elevation_confidence,
-        height_confidence=height_confidence,
-        method=method,
+        name=resolved_name,
+        elevation=elevation,
+        height=height,
     )
 
 
@@ -678,6 +997,7 @@ def _shell_entities(
     scale: _Scale,
     level: Level,
     level_info: _LevelInfo,
+    room_height: _Measurement | None,
     source_id: str,
     slab_thickness: tuple[float, str] | None,
     ambiguities: list[dict[str, object]],
@@ -686,35 +1006,62 @@ def _shell_entities(
     identity = f"{source_id}|level:{level_info.anchor}|room:{room.anchor}"
     base_confidence = min(room.confidence, scale.confidence, transform.confidence)
     footprint = _polygon_from_bbox(shell.inner.bbox_pt, transform, level.elevation_m)
+    resolved_height_m = room_height.value_m if room_height is not None else level.height_m
+    height_confidence = (
+        room_height.confidence
+        if room_height is not None
+        else (level_info.height_confidence or 0.0)
+    )
+    room_height_provenance: tuple[Provenance, ...] = ()
+    if room_height is not None:
+        room_height_provenance = _provenance(
+            source_id,
+            room_height.page_number,
+            method=room_height.method,
+            confidence=room_height.confidence,
+            source_element_id=room_height.source_element_id,
+            attributes={
+                "field": "height_m",
+                "scope": "room",
+                "source_text": room_height.source_text,
+            },
+        )
+
     space = Space(
         id=stable_id("space", identity),
         name=room.name,
         level_id=level.id,
         footprint=footprint,
-        height_m=level.height_m,
+        height_m=resolved_height_m,
         usage=room.usage,
         confidence=base_confidence,
-        provenance=_provenance(
-            source_id,
-            page.page_number,
-            method="room label contained by a paired wall rectangle enclosure",
-            confidence=base_confidence,
-            source_element_id=room.observation.element_id,
-            attributes={
-                "outer_rect": shell.outer.element_id,
-                "inner_rect": shell.inner.element_id,
-            },
+        provenance=(
+            _provenance(
+                source_id,
+                page.page_number,
+                method="room label contained by a paired wall rectangle enclosure",
+                confidence=base_confidence,
+                source_element_id=room.observation.element_id,
+                attributes={
+                    "outer_rect": shell.outer.element_id,
+                    "inner_rect": shell.inner.element_id,
+                },
+            )
+            + room_height_provenance
         ),
         attributes={"pdf_architecture": {"identity_anchor": room.anchor}},
     )
 
     walls: list[_WallContext] = []
-    if level.height_m is None:
+    if resolved_height_m is None:
         ambiguities.append(
             {
                 "page": page.page_number,
                 "code": "wall_height_unresolved",
-                "detail": f"room {room.name!r} has wall geometry but no supported wall/ceiling height; walls were not promoted",
+                "detail": (
+                    f"room {room.name!r} has wall geometry but no supported room/level "
+                    "wall or ceiling height; walls were not promoted"
+                ),
             }
         )
     else:
@@ -730,7 +1077,6 @@ def _shell_entities(
             ("north", (right, top), (left, top), shell.thickness_y_m),
             ("west", (left, top), (left, bottom), shell.thickness_x_m),
         )
-        height_confidence = level_info.height_confidence or 0.0
         wall_confidence = min(base_confidence, 0.95, height_confidence)
         for side, start, end, thickness in sides:
             wall_id = stable_id("wall", f"{identity}|boundary:{side}")
@@ -744,15 +1090,18 @@ def _shell_entities(
                     )
                 ),
                 thickness_m=thickness,
-                height_m=level.height_m,
+                height_m=resolved_height_m,
                 confidence=wall_confidence,
-                provenance=_provenance(
-                    source_id,
-                    page.page_number,
-                    method="wall centerline inferred midway between paired vector boundaries; height from level/ceiling evidence",
-                    confidence=wall_confidence,
-                    source_element_id=f"{shell.outer.element_id}+{shell.inner.element_id}:{side}",
-                    attributes={"room_anchor": room.anchor, "source_side": side},
+                provenance=(
+                    _provenance(
+                        source_id,
+                        page.page_number,
+                        method="wall centerline inferred midway between paired vector boundaries; height from level/ceiling evidence",
+                        confidence=wall_confidence,
+                        source_element_id=f"{shell.outer.element_id}+{shell.inner.element_id}:{side}",
+                        attributes={"room_anchor": room.anchor, "source_side": side},
+                    )
+                    + room_height_provenance
                 ),
                 attributes={"pdf_architecture": {"room_anchor": room.anchor, "source_side": side}},
             )
@@ -778,24 +1127,27 @@ def _shell_entities(
         )
 
     ceiling: Ceiling | None = None
-    if level.height_m is not None:
-        ceiling_confidence = min(base_confidence, level_info.height_confidence or 0.0, 0.85)
+    if resolved_height_m is not None:
+        ceiling_confidence = min(base_confidence, height_confidence, 0.85)
         ceiling = Ceiling(
             id=stable_id("ceiling", f"{identity}|ceiling"),
             level_id=level.id,
             footprint=_polygon_from_bbox(
                 shell.inner.bbox_pt,
                 transform,
-                level.elevation_m + level.height_m,
+                level.elevation_m + resolved_height_m,
             ),
             thickness_m=None,
             confidence=ceiling_confidence,
-            provenance=_provenance(
-                source_id,
-                page.page_number,
-                method="ceiling surface inferred at explicit/overridden room height over labelled room footprint",
-                confidence=ceiling_confidence,
-                source_element_id=room.observation.element_id,
+            provenance=(
+                _provenance(
+                    source_id,
+                    page.page_number,
+                    method="ceiling surface inferred at explicit/overridden room height over labelled room footprint",
+                    confidence=ceiling_confidence,
+                    source_element_id=room.observation.element_id,
+                )
+                + room_height_provenance
             ),
         )
     return space, tuple(walls), slab, ceiling
@@ -1060,20 +1412,46 @@ def _make_openings(
     return tuple(result)
 
 
-def _level_entity(source_id: str, page: PdfPageObservation, info: _LevelInfo) -> Level:
-    confidence = min(info.elevation_confidence, info.height_confidence if info.height_confidence is not None else 1.0)
+def _level_entity(source_id: str, info: _LevelInfo) -> Level:
+    confidence = min(
+        info.elevation_confidence,
+        info.height_confidence if info.height_confidence is not None else 1.0,
+    )
+
+    if info.height is not None and info.height.page_number == info.elevation.page_number:
+        method = (
+            info.elevation.method
+            if info.elevation.method == info.height.method
+            else f"{info.elevation.method}; {info.height.method}"
+        )
+        provenance = _provenance(
+            source_id,
+            info.elevation.page_number,
+            method=method,
+            confidence=confidence,
+        )
+    else:
+        provenance = _provenance(
+            source_id,
+            info.elevation.page_number,
+            method=info.elevation.method,
+            confidence=info.elevation.confidence,
+        )
+        if info.height is not None:
+            provenance += _provenance(
+                source_id,
+                info.height.page_number,
+                method=info.height.method,
+                confidence=info.height.confidence,
+            )
+
     return Level(
         id=stable_id("level", f"{source_id}|level:{info.anchor}"),
         name=info.name,
         elevation_m=info.elevation_m,
         height_m=info.height_m,
         confidence=confidence,
-        provenance=_provenance(
-            source_id,
-            page.page_number,
-            method=info.method,
-            confidence=confidence,
-        ),
+        provenance=provenance,
         attributes={"pdf_architecture": {"identity_anchor": info.anchor}},
     )
 
@@ -1088,8 +1466,29 @@ def import_observations(
     options = options or ImportOptions()
     ambiguities: list[dict[str, object]] = []
     page_metadata: list[dict[str, object]] = []
-    levels_by_anchor: dict[str, Level] = {}
     level_info_by_anchor: dict[str, _LevelInfo] = {}
+    level_anchor_by_page: dict[int, str | None] = {}
+    ordered_pages = tuple(sorted(document.pages, key=lambda item: item.page_number))
+
+    # Resolve all level evidence before materializing geometry. This lets later
+    # explicit/override evidence correctly upgrade an earlier local datum or
+    # assumed height without leaving already-emitted geometry at stale Z/height.
+    for page in ordered_pages:
+        classification = classify_page(page)
+        if classification.kind != "architectural_plan":
+            continue
+        level_info = _resolve_level(page, options, level_info_by_anchor, ambiguities)
+        if level_info is None:
+            level_anchor_by_page[page.page_number] = None
+            continue
+        level_info_by_anchor[level_info.anchor] = level_info
+        level_anchor_by_page[page.page_number] = level_info.anchor
+
+    levels_by_anchor = {
+        anchor: _level_entity(document.source_id, info)
+        for anchor, info in level_info_by_anchor.items()
+    }
+
     spaces: list[Space] = []
     wall_contexts: list[_WallContext] = []
     slabs: list[Slab] = []
@@ -1099,7 +1498,7 @@ def import_observations(
     used_opening_identity: set[str] = set()
     base_geometry_page: int | None = None
 
-    for page in sorted(document.pages, key=lambda item: item.page_number):
+    for page in ordered_pages:
         classification = classify_page(page)
         page_record: dict[str, object] = {
             "page": page.page_number,
@@ -1113,17 +1512,13 @@ def import_observations(
             page_metadata.append(page_record)
             continue
 
-        level_info = _resolve_level(page, options, level_info_by_anchor, ambiguities)
-        if level_info is None:
+        level_anchor = level_anchor_by_page.get(page.page_number)
+        if level_anchor is None:
             page_record["status"] = "skipped_unresolved_level"
             page_metadata.append(page_record)
             continue
-        level_info_by_anchor[level_info.anchor] = level_info
-        if level_info.anchor not in levels_by_anchor:
-            levels_by_anchor[level_info.anchor] = _level_entity(document.source_id, page, level_info)
-        elif levels_by_anchor[level_info.anchor].height_m is None and level_info.height_m is not None:
-            levels_by_anchor[level_info.anchor] = _level_entity(document.source_id, page, level_info)
-        level = levels_by_anchor[level_info.anchor]
+        level_info = level_info_by_anchor[level_anchor]
+        level = levels_by_anchor[level_anchor]
 
         scale = _resolve_scale(page, options, ambiguities)
         transform, scale = _resolve_transform(
@@ -1155,6 +1550,7 @@ def import_observations(
 
         rooms = _room_labels(page)
         shells = _shell_candidates(page, scale, rooms, options, ambiguities)
+        room_heights = _room_ceiling_height_evidence(page, shells, ambiguities)
         slab_thickness = _slab_thickness_from_text(page)
         page_walls: list[_WallContext] = []
         for shell in shells:
@@ -1181,6 +1577,7 @@ def import_observations(
                 scale,
                 level,
                 level_info,
+                room_heights.get(shell.room.anchor),
                 document.source_id,
                 slab_thickness,
                 ambiguities,

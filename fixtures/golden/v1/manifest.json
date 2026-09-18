@@ -1,0 +1,276 @@
+{
+  "canonical_schema_version": "1.0.0",
+  "cases": [
+    {
+      "expectations": {
+        "entity_counts": {
+          "ceilings": 1,
+          "levels": 1,
+          "slabs": 1,
+          "spaces": 1,
+          "walls": 4
+        },
+        "level_elevations_m": [
+          0.0
+        ],
+        "model_id": "model:golden-rectangular-room",
+        "required_ids": [
+          "space:rect",
+          "slab:rect",
+          "ceiling:rect",
+          "wall:rect-south"
+        ],
+        "route_expected": false
+      },
+      "file": "rectangular-room.json",
+      "name": "rectangular-room",
+      "sha256": "e96c7b077cda2385a4c8114ada492d8cc0e58111e22221f388ec100b6f7ba6e4",
+      "valid": true
+    },
+    {
+      "expectations": {
+        "entity_counts": {
+          "openings": 1,
+          "route_constraints": 1,
+          "walls": 4
+        },
+        "model_id": "model:golden-door-obstruction",
+        "required_ids": [
+          "opening:door",
+          "constraint:door-swing",
+          "wall:door-room-south"
+        ],
+        "route_expected": false
+      },
+      "file": "door-obstruction.json",
+      "name": "door-obstruction",
+      "sha256": "bcef898adfdb3fc0be19daefa13105a36fec7daf38d9308442afeb9fedec5743",
+      "valid": true
+    },
+    {
+      "expectations": {
+        "entity_counts": {
+          "circuits": 1,
+          "conductors": 3,
+          "electrical_devices": 1,
+          "electrical_equipment": 1,
+          "ports": 2,
+          "routes": 1
+        },
+        "model_id": "model:golden-panel-to-evse",
+        "required_ids": [
+          "equip:ev-panel",
+          "device:evse",
+          "port:ev-panel-load",
+          "port:evse-feed",
+          "route:panel-evse-direct",
+          "circuit:evse-direct"
+        ],
+        "route_expected": true,
+        "route_ids": [
+          "route:panel-evse-direct"
+        ]
+      },
+      "file": "panel-to-evse.json",
+      "name": "panel-to-evse",
+      "sha256": "43dbcb56b9759334323da62dae1c84f5eb68026a5a54d97a9a9d3ac13535f2ad",
+      "valid": true
+    },
+    {
+      "expectations": {
+        "entity_counts": {
+          "ports": 2,
+          "route_fittings": 2,
+          "routes": 1
+        },
+        "model_id": "model:golden-elevation-change",
+        "required_ids": [
+          "route:elevation-change",
+          "fitting:elev-rise",
+          "fitting:elev-drop"
+        ],
+        "route_expected": true,
+        "route_ids": [
+          "route:elevation-change"
+        ]
+      },
+      "file": "elevation-change.json",
+      "name": "elevation-change",
+      "sha256": "5495760daeb9935b84c79ef672096c3c990e6004df003c0a6a214dd43bd138af",
+      "valid": true
+    },
+    {
+      "expectations": {
+        "entity_counts": {
+          "obstacles": 1,
+          "route_fittings": 4,
+          "routes": 2
+        },
+        "model_id": "model:golden-multiple-valid-routes",
+        "required_ids": [
+          "obstacle:multi-center",
+          "route:multi-north",
+          "route:multi-south"
+        ],
+        "route_expected": true,
+        "route_ids": [
+          "route:multi-north",
+          "route:multi-south"
+        ]
+      },
+      "file": "multiple-valid-routes.json",
+      "name": "multiple-valid-routes",
+      "sha256": "f5dd87ae6fbf2c955105efd09995adb1a30a1104b752bf9ea91f5ea9453ea365",
+      "valid": true
+    },
+    {
+      "expectations": {
+        "entity_counts": {
+          "ports": 2,
+          "route_constraints": 1,
+          "routes": 0
+        },
+        "model_id": "model:golden-impossible-route",
+        "required_ids": [
+          "constraint:impossible-barrier",
+          "port:impossible-start",
+          "port:impossible-end"
+        ],
+        "route_expected": false
+      },
+      "file": "impossible-route.json",
+      "name": "impossible-route",
+      "sha256": "e23a4d8b76c7977900d45e98f8d393fa27d39067e1ea18d97dffe8d2330da86b",
+      "valid": true
+    },
+    {
+      "expectations": {
+        "entity_counts": {
+          "ceilings": 2,
+          "levels": 2,
+          "openings": 1,
+          "routes": 1,
+          "slabs": 2,
+          "spaces": 2,
+          "walls": 8
+        },
+        "level_elevations_m": [
+          0.0,
+          3.0
+        ],
+        "model_id": "model:golden-two-level-building",
+        "required_ids": [
+          "level:two-ground",
+          "level:two-upper",
+          "opening:two-stair",
+          "route:two-level"
+        ],
+        "route_expected": true,
+        "route_ids": [
+          "route:two-level"
+        ]
+      },
+      "file": "two-level-building.json",
+      "name": "two-level-building",
+      "sha256": "e805b909c2c426d1f9b9b910fcbe7a93c56f7b8e44de56f1cf39cd33c98d3d68",
+      "valid": true
+    },
+    {
+      "expectations": {
+        "entity_counts": {
+          "circuits": 1,
+          "conductors": 3,
+          "electrical_devices": 1,
+          "electrical_equipment": 1,
+          "obstacles": 1,
+          "openings": 1,
+          "ports": 2,
+          "route_constraints": 1,
+          "route_fittings": 4,
+          "routes": 1
+        },
+        "model_id": "model:golden-synthetic-garage",
+        "required_ids": [
+          "opening:garage-door",
+          "equip:garage-panel",
+          "device:garage-evse",
+          "obstacle:garage-beam",
+          "constraint:garage-ceiling-corridor",
+          "route:garage-panel-evse",
+          "circuit:garage-evse"
+        ],
+        "route_expected": true,
+        "route_ids": [
+          "route:garage-panel-evse"
+        ]
+      },
+      "file": "synthetic-garage.json",
+      "name": "synthetic-garage",
+      "sha256": "1d8d640f18684bd0898014f6cae1feff02d4e34af399cb7be892b03ac96b9479",
+      "valid": true
+    },
+    {
+      "error_contains": "references missing id",
+      "file": "invalid/missing-reference.json",
+      "name": "invalid-missing-reference",
+      "valid": false
+    },
+    {
+      "error_contains": "connectivity must be symmetric",
+      "file": "invalid/asymmetric-connectivity.json",
+      "name": "invalid-asymmetric-connectivity",
+      "valid": false
+    },
+    {
+      "error_contains": "must start at the start port position",
+      "file": "invalid/route-endpoint-mismatch.json",
+      "name": "invalid-route-endpoint-mismatch",
+      "valid": false
+    },
+    {
+      "error_contains": "route_id does not match route",
+      "file": "invalid/fitting-ownership-mismatch.json",
+      "name": "invalid-fitting-ownership-mismatch",
+      "valid": false
+    },
+    {
+      "error_contains": "confidence must be between 0 and 1",
+      "file": "invalid/confidence-out-of-range.json",
+      "name": "invalid-confidence-out-of-range",
+      "valid": false
+    },
+    {
+      "error_contains": "canonical length unit is metres",
+      "file": "invalid/noncanonical-units.json",
+      "name": "invalid-noncanonical-units",
+      "valid": false
+    },
+    {
+      "error_contains": "duplicate entity id",
+      "file": "invalid/duplicate-id.json",
+      "name": "invalid-duplicate-id",
+      "valid": false
+    },
+    {
+      "error_contains": "unknown field",
+      "file": "invalid/unknown-field.json",
+      "name": "invalid-unknown-field",
+      "valid": false
+    },
+    {
+      "error_contains": "Provenance.source_id is required",
+      "file": "invalid/provenance-source-id-empty.json",
+      "name": "invalid-provenance-source-id-empty",
+      "valid": false
+    },
+    {
+      "error_contains": "cannot contain consecutive duplicate points",
+      "file": "invalid/duplicate-polyline-point.json",
+      "name": "invalid-duplicate-polyline-point",
+      "valid": false
+    }
+  ],
+  "description": "Public-safe synthetic known-answer fixtures for cross-workstream regression.",
+  "suite": "oabm-golden-v1",
+  "suite_version": 1
+}

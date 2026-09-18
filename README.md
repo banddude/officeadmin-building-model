@@ -20,9 +20,14 @@ The model is the source of truth. A floor plan is a derived view of that model.
 - `src/oabm/importers/pdf_electrical`: electrical plan ingestion
 - `src/oabm/quantities`: model-derived takeoff quantities
 - `src/oabm/drawings`: generated plans, elevations, sections, and schedules
+- `src/oabm/qa`: reusable canonical handoff validators and golden regression harness
 - `fixtures`: known-answer synthetic buildings and routes
 
 See `docs/responsibility-relay.md` for the dependency graph.
+
+## Agent entrypoint
+
+Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.
 
 ## CI
 

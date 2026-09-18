@@ -1401,6 +1401,7 @@ class ElectricalPdfImporter:
         unresolved_circuits: list[dict[str, Any]] = []
         unresolved_topology: list[dict[str, Any]] = []
         topology_resolved_callout_ids: set[str] = set()
+        topology_conflicted_callout_ids: set[str] = set()
 
         def port_for(
             entity: ElectricalEquipment | ElectricalDevice,
@@ -1474,6 +1475,7 @@ class ElectricalPdfImporter:
                     "confidence": set(),
                     "evidence_methods": set(),
                     "provenance": [],
+                    "port_provenance": {},
                     "evidence": [],
                 },
             )
@@ -1486,6 +1488,27 @@ class ElectricalPdfImporter:
                     f"circuit {circuit_id} resolved to conflicting circuit numbers"
                 )
             return bucket
+
+        def record_port_provenance(
+            bucket: dict[str, Any],
+            port_ids: Iterable[str],
+            provenances: Iterable[Provenance],
+        ) -> None:
+            provenance_items = tuple(provenances)
+            for port_id in port_ids:
+                bucket["port_provenance"].setdefault(port_id, []).extend(
+                    provenance_items
+                )
+
+        def mark_topology_text_conflict(
+            topology_row: dict[str, Any],
+            nearby_callouts: Iterable[PdfTextObservation],
+        ) -> None:
+            callout_ids = sorted(
+                {observation.element_id for observation in nearby_callouts}
+            )
+            topology_row["circuit_callout_ids"] = callout_ids
+            topology_conflicted_callout_ids.update(callout_ids)
 
         for observation in texts:
             circuit_match = _CIRCUIT_RE.search(observation.text)
@@ -1562,6 +1585,11 @@ class ElectricalPdfImporter:
                 circuit_number=circuit_number,
             )
             bucket["load_port_ids"].update(port.id for port in load_ports)
+            record_port_provenance(
+                bucket,
+                (source_port.id, *(port.id for port in load_ports)),
+                (source_provenance,),
+            )
             if voltage_v is not None:
                 bucket["voltage_v"].add(voltage_v)
             if poles is not None:
@@ -1764,11 +1792,9 @@ class ElectricalPdfImporter:
                         "status": "unresolved",
                         "reason": "conflicting_circuit_callouts",
                         "circuit_numbers": sorted(circuit_numbers),
-                        "circuit_callout_ids": [
-                            item.element_id for item in nearby_callouts
-                        ],
                     }
                 )
+                mark_topology_text_conflict(topology_row, nearby_callouts)
                 unresolved_topology.append(topology_row)
                 continue
 
@@ -1789,6 +1815,7 @@ class ElectricalPdfImporter:
                         "source_entity_id": source_entity.id,
                     }
                 )
+                mark_topology_text_conflict(topology_row, nearby_callouts)
                 unresolved_topology.append(topology_row)
                 continue
 
@@ -1815,6 +1842,7 @@ class ElectricalPdfImporter:
                         "contradictory_load_ids": sorted(contradictory_load_ids),
                     }
                 )
+                mark_topology_text_conflict(topology_row, nearby_callouts)
                 unresolved_topology.append(topology_row)
                 continue
 
@@ -1876,6 +1904,11 @@ class ElectricalPdfImporter:
             bucket["confidence"].add(topology_confidence)
             bucket["evidence_methods"].add("pdf-vector-topology-link")
             bucket["provenance"].extend(topology_provenance)
+            record_port_provenance(
+                bucket,
+                (source_port.id, *(port.id for port in load_ports.values())),
+                topology_provenance,
+            )
 
             voltage_values: set[float] = set()
             pole_values: set[int] = set()
@@ -1934,12 +1967,73 @@ class ElectricalPdfImporter:
                 observation.element_id for observation in nearby_callouts
             )
 
-        if topology_resolved_callout_ids:
+        if topology_conflicted_callout_ids:
+            callout_ids_by_circuit: dict[str, set[str]] = {}
+            conflicted_circuit_ids: set[str] = set()
+            for circuit_id, bucket in circuit_evidence.items():
+                bucket_callout_ids: set[str] = set()
+                for evidence in bucket["evidence"]:
+                    if evidence.get("method") == "pdf-circuit-text-link":
+                        source_element_id = evidence.get("source_element_id")
+                        if source_element_id:
+                            bucket_callout_ids.add(str(source_element_id))
+                    bucket_callout_ids.update(
+                        str(item)
+                        for item in evidence.get("circuit_callout_ids", ())
+                    )
+                callout_ids_by_circuit[circuit_id] = bucket_callout_ids
+                if bucket_callout_ids & topology_conflicted_callout_ids:
+                    conflicted_circuit_ids.add(circuit_id)
+
+            for topology_row in unresolved_topology:
+                row_callout_ids = set(topology_row.get("circuit_callout_ids", ()))
+                suppressed_circuit_ids = sorted(
+                    circuit_id
+                    for circuit_id in conflicted_circuit_ids
+                    if callout_ids_by_circuit[circuit_id] & row_callout_ids
+                )
+                if suppressed_circuit_ids:
+                    topology_row["suppressed_circuit_ids"] = suppressed_circuit_ids
+
+            for circuit_id in conflicted_circuit_ids:
+                circuit_evidence.pop(circuit_id, None)
+
+        effectively_resolved_callout_ids = (
+            topology_resolved_callout_ids - topology_conflicted_callout_ids
+        )
+        if effectively_resolved_callout_ids:
             unresolved_circuits = [
                 item
                 for item in unresolved_circuits
-                if item["source_element_id"] not in topology_resolved_callout_ids
+                if item["source_element_id"] not in effectively_resolved_callout_ids
             ]
+
+        surviving_port_provenance: dict[str, list[Provenance]] = {}
+        for bucket in circuit_evidence.values():
+            for port_id, provenances in bucket["port_provenance"].items():
+                surviving_port_provenance.setdefault(port_id, []).extend(provenances)
+
+        rebuilt_ports: dict[tuple[str, str], Port] = {}
+        for key, port in ports_by_owner_role.items():
+            provenances = surviving_port_provenance.get(port.id)
+            if not provenances:
+                continue
+            merged_provenance = _merge_provenance(provenances)
+            lane_attributes = dict(port.attributes["pdf_electrical"])
+            lane_attributes["evidence_methods"] = sorted(
+                {
+                    item.method
+                    for item in merged_provenance
+                    if item.method is not None
+                }
+            )
+            rebuilt_ports[key] = replace(
+                port,
+                confidence=max(item.confidence for item in merged_provenance),
+                provenance=merged_provenance,
+                attributes={"pdf_electrical": lane_attributes},
+            )
+        ports_by_owner_role = rebuilt_ports
 
         circuits: list[Circuit] = []
         for circuit_id, bucket in sorted(circuit_evidence.items()):

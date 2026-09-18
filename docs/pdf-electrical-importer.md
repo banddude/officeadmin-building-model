@@ -111,7 +111,11 @@ ports plus circuit source/load intent for the routing lane to consume. Multiple
 possible source equipment, ambiguous endpoint attachment, conflicting nearby
 circuit numbers/panel tags/load tags, or a dangling recognized endpoint are
 retained under `model.attributes.pdf_electrical.unresolved_topology` and do not
-materialize a circuit.
+materialize a circuit. When vector topology contradicts nearby text-derived
+circuit intent, every implicated text/topology circuit bucket is quarantined
+before canonical circuits and ports are finalized. Ports that would exist only
+because of the suppressed connectivity are omitted, while the unresolved row
+retains the source vector and circuit-callout IDs.
 
 Curved vector paths, fill-only shapes, and unassociated drafting geometry are
 outside this conservative recognition family.

@@ -427,7 +427,7 @@ def _level_name_from_text(page: PdfPageObservation) -> str | None:
     return None
 
 
-def _elevation_from_text(page: PdfPageObservation) -> tuple[float, str] | None:
+def _elevation_from_text(page: PdfPageObservation) -> tuple[float, PdfTextObservation] | None:
     for item in page.texts:
         text = _clean_text(item.text)
         upper = text.upper()
@@ -435,11 +435,11 @@ def _elevation_from_text(page: PdfPageObservation) -> tuple[float, str] | None:
             continue
         metric = re.search(r"(-?\d+(?:\.\d+)?)\s*M\b", upper)
         if metric:
-            return (float(metric.group(1)), text)
+            return (float(metric.group(1)), item)
         dim = _find_dimension(text)
         if dim:
             sign = -1.0 if re.search(r"(?:ELEVATION|\bEL\.?)\s*[:=]?\s*-", upper) else 1.0
-            return (sign * dim[0], text)
+            return (sign * dim[0], item)
     return None
 
 
@@ -751,7 +751,8 @@ def _resolve_level(
             priority=2,
             method="parsed explicit level elevation",
             page_number=page.page_number,
-            source_text=parsed_elevation[1],
+            source_text=parsed_elevation[1].text,
+            source_element_id=parsed_elevation[1].element_id,
         )
     elif existing is None:
         if not known_levels:

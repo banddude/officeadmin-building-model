@@ -48,7 +48,7 @@ A two-point registration controls scale, rotation, and translation. If its compu
 
 ## Levels and 3D values
 
-Level elevation and level-wide height evidence is reconciled across all architectural plan pages before geometry is materialized. Explicit source evidence upgrades an earlier local-datum/default assumption, and a later `LevelOverride` is authoritative over parsed or assumed values. Conflicting equally authoritative level evidence is retained as an ambiguity and the conflicting page is not materialized until an override resolves it. Level provenance points at the page that actually supplies the selected elevation and, when different, the page that supplies the selected level height.
+Level elevation and level-wide height evidence is reconciled across all architectural plan pages before geometry is materialized. Explicit source evidence upgrades an earlier local-datum/default assumption, and a later `LevelOverride` is authoritative over parsed or assumed values. Conflicting equally authoritative level evidence is retained as an ambiguity, lowers the retained level confidence, and the conflicting page is not materialized until an override resolves it. Conflict diagnostics retain the competing page, value, source text, and source element ID when available. Level provenance points at the page that actually supplies the selected elevation and, when different, the page that supplies the selected level height.
 
 If the first/sole level has no elevation, the importer may establish a project-local `Z=0` datum with reduced confidence. A later distinct level without an elevation relative to known levels is not positioned and is skipped until a `LevelOverride` is supplied.
 

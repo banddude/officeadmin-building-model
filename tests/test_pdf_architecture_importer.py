@@ -359,6 +359,10 @@ def test_conflicting_explicit_level_elevations_are_not_silently_collapsed() -> N
     assert conflict["conflicting_page"] == 2
     assert conflict["existing_value_m"] == pytest.approx(0.0)
     assert conflict["conflicting_value_m"] == pytest.approx(3.048)
+    assert conflict["existing_source_text"] == "ELEVATION: 0'-0\""
+    assert conflict["conflicting_source_text"] == "ELEVATION: 10'-0\""
+    assert conflict["existing_source_element_id"] == "p1:elev"
+    assert conflict["conflicting_source_element_id"] == "p2:elev"
     assert {space.name for space in model.spaces} == {"OFFICE"}
     assert model.attributes["pdf_architecture"]["pages"][1]["status"] == "skipped_unresolved_level"
     validate_model(model)

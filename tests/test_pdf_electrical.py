@@ -18,6 +18,7 @@ from oabm.importers.pdf_electrical import (
     ElectricalPdfImporter,
     PdfElectricalDocument,
     PdfPageTransform,
+    PdfVectorPathObservation,
     extract_pdf,
 )
 from oabm.model import BuildingModel, stable_id, validate_model
@@ -79,6 +80,7 @@ def _write_synthetic_pdf(path: Path, *, unrelated_prefix: bool = False) -> None:
         + b"BT /F1 10 Tf 1 0 0 1 72 700 Tm (PANEL LP 120/240V 1PH) Tj ET\n"
         + b"BT /F1 9 Tf 1 0 0 1 205 505 Tm (EVSE-1 +48\\\" AFF WALL MTD) Tj ET\n"
         + b"BT /F1 8 Tf 1 0 0 1 72 650 Tm (PANEL LP CKT 12 -> EVSE-1 240V 2P) Tj ET\n"
+        + b"72 700 m 200 500 l S\n"
         + b"q 1 0 0 1 200 500 cm /EVSE1 Do Q\n"
     )
     page[NameObject("/Contents")] = writer._add_object(content)
@@ -217,6 +219,11 @@ def test_pdf_extraction_and_import_work_end_to_end(tmp_path: Path) -> None:
     assert extracted.page_count == 1
     assert any(item.name == "/EVSE1" for item in extracted.symbols)
     assert any("PANEL LP" in item.text for item in extracted.texts)
+    assert any(
+        item.points_pt == ((72.0, 700.0), (200.0, 500.0))
+        and not item.closed
+        for item in extracted.vectors
+    )
 
     model = ElectricalPdfImporter().import_pdf(
         pdf_path,
@@ -494,3 +501,344 @@ def test_recognized_symbol_without_stable_identity_stays_unresolved() -> None:
     assert len(unresolved) == 1
     assert unresolved[0]["status"] == "unresolved_identity"
     assert unresolved[0]["recognized_classification"]["canonical_type"] == "evse"
+
+def test_vector_topology_fixture_emits_ports_and_merges_with_callout_evidence() -> None:
+    document = _load_fixture("vector-topology-sheet-e1.json")
+    model = ElectricalPdfImporter().import_document(document)
+    reordered = ElectricalPdfImporter().import_document(
+        PdfElectricalDocument(
+            source_id=document.source_id,
+            page_count=document.page_count,
+            texts=tuple(reversed(document.texts)),
+            symbols=tuple(reversed(document.symbols)),
+            vectors=tuple(reversed(document.vectors)),
+        )
+    )
+
+    assert model.to_json() == reordered.to_json()
+    assert len(model.electrical_equipment) == 1
+    assert len(model.electrical_devices) == 2
+    assert len(model.ports) == 3
+    assert len(model.circuits) == 1
+    assert not model.routes
+
+    panel = model.electrical_equipment[0]
+    evse_by_name = {device.name: device for device in model.electrical_devices}
+    circuit = model.circuits[0]
+    assert panel.equipment_type == "panelboard"
+    assert set(evse_by_name) == {"EVSE-1", "EVSE-2"}
+    assert evse_by_name["EVSE-2"].attributes["pdf_electrical"]["mounting_height_m"] == 1.2192
+    assert evse_by_name["EVSE-2"].attributes["pdf_electrical"]["host_hint"] == "wall"
+    assert "pdf-vector-symbol-outline" in {
+        item.method for item in panel.provenance
+    }
+
+    assert circuit.circuit_number == "12"
+    assert circuit.voltage_v == 240.0
+    assert circuit.poles == 2
+    assert len(circuit.load_port_ids) == 2
+    assert circuit.attributes["pdf_electrical"]["evidence_methods"] == [
+        "pdf-circuit-text-link",
+        "pdf-topology-circuit-callout",
+        "pdf-vector-topology-link",
+    ]
+    assert {
+        item["method"]
+        for item in circuit.attributes["pdf_electrical"]["evidence"]
+    } == {
+        "pdf-circuit-text-link",
+        "pdf-vector-topology-link",
+    }
+    assert not model.attributes["pdf_electrical"]["unresolved_topology"]
+
+    source_port = next(port for port in model.ports if port.id == circuit.source_port_id)
+    assert source_port.owner_id == panel.id
+    assert "pdf-vector-topology-link" in source_port.attributes["pdf_electrical"][
+        "evidence_methods"
+    ]
+    assert {
+        next(port for port in model.ports if port.id == port_id).owner_id
+        for port_id in circuit.load_port_ids
+    } == {device.id for device in model.electrical_devices}
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_vector_topology_can_resolve_incomplete_circuit_callout_without_inventing_route() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:vector-topology-incomplete-callout",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:0010",
+                    "page": 1,
+                    "text": "PANEL LP",
+                    "x_pt": 80,
+                    "y_pt": 500,
+                },
+                {
+                    "element_id": "p1:text:0020",
+                    "page": 1,
+                    "text": "EVSE-1",
+                    "x_pt": 300,
+                    "y_pt": 500,
+                },
+                {
+                    "element_id": "p1:text:0030",
+                    "page": 1,
+                    "text": "CKT 5 208V 2P",
+                    "x_pt": 190,
+                    "y_pt": 515,
+                },
+            ],
+            "vectors": [
+                {
+                    "element_id": "p1:vector:0010",
+                    "page": 1,
+                    "points_pt": [[80, 500], [300, 500]],
+                }
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert len(model.circuits) == 1
+    assert len(model.ports) == 2
+    assert not model.routes
+    circuit = model.circuits[0]
+    assert circuit.circuit_number == "5"
+    assert circuit.voltage_v == 208.0
+    assert circuit.poles == 2
+    assert circuit.attributes["pdf_electrical"]["evidence_methods"] == [
+        "pdf-topology-circuit-callout",
+        "pdf-vector-topology-link",
+    ]
+    assert model.attributes["pdf_electrical"]["unresolved_circuits"] == []
+    assert model.attributes["pdf_electrical"]["unresolved_topology"] == []
+    validate_model(model)
+
+
+def test_ambiguous_vector_topology_remains_unresolved_without_ports_or_circuit() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:ambiguous-vector-topology",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:0010",
+                    "page": 1,
+                    "text": "PANEL LP",
+                    "x_pt": 80,
+                    "y_pt": 500,
+                },
+                {
+                    "element_id": "p1:text:0020",
+                    "page": 1,
+                    "text": "PANEL DP",
+                    "x_pt": 80,
+                    "y_pt": 450,
+                },
+                {
+                    "element_id": "p1:text:0030",
+                    "page": 1,
+                    "text": "EVSE-1",
+                    "x_pt": 300,
+                    "y_pt": 500,
+                },
+            ],
+            "vectors": [
+                {
+                    "element_id": "p1:vector:0010",
+                    "page": 1,
+                    "points_pt": [[80, 500], [200, 500], [300, 500]],
+                },
+                {
+                    "element_id": "p1:vector:0020",
+                    "page": 1,
+                    "points_pt": [[80, 450], [200, 450], [200, 500]],
+                },
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert not model.ports
+    assert not model.circuits
+    unresolved = model.attributes["pdf_electrical"]["unresolved_topology"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["reason"] == "source_or_load_ambiguous"
+    assert len(unresolved[0]["equipment_ids"]) == 2
+    assert len(unresolved[0]["load_candidate_ids"]) == 1
+    validate_model(model)
+
+
+def test_vector_topology_semantic_ids_survive_unrelated_extraction_id_edits() -> None:
+    document = _load_fixture("vector-topology-sheet-e1.json")
+    edited_vectors = (
+        PdfVectorPathObservation(
+            element_id="p1:vector:0001-unrelated",
+            page=1,
+            points_pt=((500.0, 700.0), (540.0, 700.0)),
+        ),
+        *tuple(
+            PdfVectorPathObservation(
+                element_id=f"p1:vector:{100 + index:04d}",
+                page=vector.page,
+                points_pt=vector.points_pt,
+                closed=vector.closed,
+                source_kind=vector.source_kind,
+                metadata=vector.metadata,
+            )
+            for index, vector in enumerate(reversed(document.vectors), start=1)
+        ),
+    )
+    edited = PdfElectricalDocument(
+        source_id=document.source_id,
+        page_count=document.page_count,
+        texts=tuple(reversed(document.texts)),
+        symbols=document.symbols,
+        vectors=edited_vectors,
+    )
+
+    original_model = ElectricalPdfImporter().import_document(document)
+    edited_model = ElectricalPdfImporter().import_document(edited)
+
+    assert [item.id for item in original_model.electrical_equipment] == [
+        item.id for item in edited_model.electrical_equipment
+    ]
+    assert [item.id for item in original_model.electrical_devices] == [
+        item.id for item in edited_model.electrical_devices
+    ]
+    assert [item.id for item in original_model.ports] == [
+        item.id for item in edited_model.ports
+    ]
+    assert [item.id for item in original_model.circuits] == [
+        item.id for item in edited_model.circuits
+    ]
+
+
+
+def test_conflicting_vector_circuit_numbers_quarantine_text_connectivity() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:vector-topology-conflicting-circuit-numbers",
+            "page_count": 1,
+            "texts": [
+                {"element_id": "p1:text:0010", "page": 1, "text": "PANEL LP", "x_pt": 80, "y_pt": 500},
+                {"element_id": "p1:text:0020", "page": 1, "text": "EVSE-1", "x_pt": 300, "y_pt": 500},
+                {"element_id": "p1:text:0030", "page": 1, "text": "PANEL LP CKT 12 -> EVSE-1", "x_pt": 180, "y_pt": 515},
+                {"element_id": "p1:text:0040", "page": 1, "text": "PANEL LP CKT 14 -> EVSE-1", "x_pt": 180, "y_pt": 485},
+            ],
+            "vectors": [
+                {"element_id": "p1:vector:0010", "page": 1, "points_pt": [[80, 500], [300, 500]]}
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+    reordered = ElectricalPdfImporter().import_document(
+        PdfElectricalDocument(
+            source_id=document.source_id,
+            page_count=document.page_count,
+            texts=tuple(reversed(document.texts)),
+            symbols=document.symbols,
+            vectors=tuple(reversed(document.vectors)),
+        )
+    )
+
+    assert model.to_json() == reordered.to_json()
+    assert not model.circuits
+    assert not model.ports
+    assert not model.routes
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_topology"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["reason"] == "conflicting_circuit_callouts"
+    assert unresolved[0]["circuit_numbers"] == ["12", "14"]
+    assert unresolved[0]["circuit_callout_ids"] == ["p1:text:0030", "p1:text:0040"]
+    assert len(unresolved[0]["suppressed_circuit_ids"]) == 2
+    validate_model(model)
+
+
+def test_conflicting_vector_load_tag_quarantines_text_connectivity() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:vector-topology-conflicting-load-tag",
+            "page_count": 1,
+            "texts": [
+                {"element_id": "p1:text:0010", "page": 1, "text": "PANEL LP", "x_pt": 80, "y_pt": 500},
+                {"element_id": "p1:text:0020", "page": 1, "text": "EVSE-1", "x_pt": 300, "y_pt": 500},
+                {"element_id": "p1:text:0030", "page": 1, "text": "EVSE-2", "x_pt": 300, "y_pt": 420},
+                {"element_id": "p1:text:0040", "page": 1, "text": "PANEL LP CKT 12 -> EVSE-2", "x_pt": 180, "y_pt": 520},
+            ],
+            "vectors": [
+                {"element_id": "p1:vector:0010", "page": 1, "points_pt": [[80, 500], [300, 500]]}
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert not model.circuits
+    assert not model.ports
+    assert not model.routes
+
+    evse_by_name = {device.name: device for device in model.electrical_devices}
+    unresolved = model.attributes["pdf_electrical"]["unresolved_topology"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["reason"] == "load_callout_conflict"
+    assert unresolved[0]["circuit_callout_ids"] == ["p1:text:0040"]
+    assert unresolved[0]["contradictory_load_ids"] == [evse_by_name["EVSE-2"].id]
+    assert len(unresolved[0]["suppressed_circuit_ids"]) == 1
+    validate_model(model)
+
+
+def test_topology_conflict_does_not_taint_ports_for_independent_circuit() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:vector-topology-selective-quarantine",
+            "page_count": 1,
+            "texts": [
+                {"element_id": "p1:text:0010", "page": 1, "text": "PANEL LP", "x_pt": 80, "y_pt": 500},
+                {"element_id": "p1:text:0020", "page": 1, "text": "EVSE-1", "x_pt": 300, "y_pt": 500},
+                {"element_id": "p1:text:0030", "page": 1, "text": "EVSE-2", "x_pt": 300, "y_pt": 420},
+                {"element_id": "p1:text:0040", "page": 1, "text": "EVSE-3", "x_pt": 300, "y_pt": 700},
+                {"element_id": "p1:text:0050", "page": 1, "text": "PANEL LP CKT 12 -> EVSE-2", "x_pt": 180, "y_pt": 520},
+                {"element_id": "p1:text:0060", "page": 1, "text": "PANEL LP CKT 20 -> EVSE-3", "x_pt": 180, "y_pt": 700},
+            ],
+            "vectors": [
+                {"element_id": "p1:vector:0010", "page": 1, "points_pt": [[80, 500], [300, 500]]}
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert len(model.circuits) == 1
+    circuit = model.circuits[0]
+    assert circuit.circuit_number == "20"
+    assert len(model.ports) == 2
+
+    devices = {device.name: device for device in model.electrical_devices}
+    load_port = next(port for port in model.ports if port.id in circuit.load_port_ids)
+    assert load_port.owner_id == devices["EVSE-3"].id
+    assert all(
+        provenance.source_element_id != "p1:text:0050"
+        for port in model.ports
+        for provenance in port.provenance
+    )
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_topology"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["reason"] == "load_callout_conflict"
+    assert unresolved[0]["circuit_callout_ids"] == ["p1:text:0050"]
+    assert len(unresolved[0]["suppressed_circuit_ids"]) == 1
+    validate_model(model)

@@ -24,6 +24,10 @@ The model is the source of truth. A floor plan is a derived view of that model.
 
 See `docs/responsibility-relay.md` for the dependency graph.
 
+## Agent entrypoint
+
+Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.
+
 ## CI
 
 CI is intentionally small and isolated from OfficeAdmin. It runs on standard GitHub-hosted Ubuntu runners.

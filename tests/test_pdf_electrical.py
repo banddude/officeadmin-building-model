@@ -256,3 +256,59 @@ def test_unrecognized_graphic_is_preserved_as_unresolved_source_observation() ->
             "metadata": {},
         }
     ]
+
+
+def test_circuit_callout_does_not_materialize_phantom_objects() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:circuit-reference-only",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:0010",
+                    "page": 1,
+                    "text": "PANEL LP CKT 12 -> EVSE-1 240V 2P",
+                    "x_pt": 120,
+                    "y_pt": 620,
+                }
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert not model.electrical_equipment
+    assert not model.electrical_devices
+    assert not model.ports
+    assert not model.circuits
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["panel_tag"] == "LP"
+    assert unresolved[0]["load_ids"] == []
+    assert unresolved[0]["missing"] == ["source_panel", "load"]
+
+
+def test_feet_inches_mounting_height_is_not_double_counted() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:feet-inches-mounting",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:0010",
+                    "page": 1,
+                    "text": "EVSE-1 4'-0\" AFF WALL MTD",
+                    "x_pt": 200,
+                    "y_pt": 300,
+                }
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert len(model.electrical_devices) == 1
+    lane = model.electrical_devices[0].attributes["pdf_electrical"]
+    assert lane["mounting_height_m"] == 1.2192
+    assert "mounting_height_candidates_m" not in lane

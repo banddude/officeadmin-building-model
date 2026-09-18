@@ -24,8 +24,8 @@ No XY projection is used. Sloped polygons, nonzero elevations, object poses, wal
 
 - RoomPlan stories become canonical `Level` objects. Level elevation comes from floor geometry when present, then wall bases, then object bottoms.
 - RoomPlan floors become canonical `Slab` polygons. The largest floor on the CapturedRoom story also supplies the `Space` footprint because a CapturedRoom represents the captured room.
-- RoomPlan walls become canonical `Wall` objects. Their centerline follows the transformed bottom polygon boundary, so a source polygon with more than two bottom points is retained as a 3D polyline.
-- Doors, windows, and generic openings become canonical `Opening` objects hosted on their source `parentIdentifier` wall. If RoomPlan omits the parent, the importer can deterministically resolve the nearest wall on the same story within a configurable tolerance.
+- RoomPlan walls become canonical `Wall` objects. Polygonal/segmented bottoms remain 3D polylines. When RoomPlan supplies `Surface.curve`, the importer deterministically tessellates its local x/z circular arc at no more than 5 degrees per segment and transforms those points into the canonical 3D wall centerline.
+- Doors, windows, and generic openings become canonical `Opening` objects hosted on their source `parentIdentifier` wall. If RoomPlan omits the parent, the importer measures the opening against every segment of every same-story wall polyline. It selects a wall only inside the configurable host tolerance and fails explicitly when the nearest candidates are within the configurable ambiguity band (1 cm by default), rather than using canonical ID order as geometric evidence.
 - RoomPlan objects become canonical `Obstacle` boxes. This keeps their 3D pose, oriented extent, category, story, provenance, and confidence available to later geometry consumers without adding routing behavior to this lane.
 - RoomPlan sections are retained on the model and space attributes. A single non-unidentified section label is also used as `Space.usage`.
 
@@ -33,9 +33,19 @@ RoomPlan surfaces report dimensions but do not necessarily describe physical wal
 
 ## Source fidelity
 
-Canonical v1 has an intentional JSON-compatible `attributes` escape hatch for source-specific metadata. The importer retains native identifiers, categories, confidence labels, stories, dimensions, complete 4x4 transforms, local polygon corners, completed edges, curve metadata, source attributes, and unknown source fields there. Provenance records identify the RoomPlan source and native element ID.
+Canonical v1 has an intentional JSON-compatible `attributes` escape hatch for source-specific metadata. The importer retains native identifiers, categories, confidence labels, stories, dimensions, complete 4x4 transforms, local polygon corners, completed edges, exact curve metadata, source attributes, and unknown source fields there. Provenance records identify the RoomPlan source and native element ID.
 
-This means a curved RoomPlan surface can still carry its native curve description even when the current canonical wall type represents its semantic centerline as a polyline. A future shared need for a first-class curve primitive would require a versioned canonical contract change rather than a RoomPlan-only type.
+Curved RoomPlan surfaces therefore preserve both representations needed by downstream consumers: the untouched native curve description for source fidelity and a deterministic canonical 3D polyline tessellation for geometry consumers. A future shared need for a first-class curve primitive would still require a versioned canonical contract change rather than a RoomPlan-only type.
+
+## Derived confidence
+
+Source entities keep the confidence RoomPlan reports. Derived entities do not default to certainty:
+
+- A `Level` elevation inherits the minimum confidence of the source geometry used by its selected derivation method (floor surfaces, wall bases, or the selected lowest object bottom). A `default-zero` elevation has confidence `0.0`. If level height is derived from wall tops, overall level confidence is additionally bounded by the contributing top-wall confidence.
+- A `Space` confidence is the minimum of its selected source-floor confidence and its derived level confidence.
+- An opening with an explicit `parentIdentifier` keeps its source confidence. When the host must be inferred geometrically, opening confidence is bounded by the inferred host wall confidence. The inference distance, in-tolerance candidates, ambiguity band, and confidence rule are retained in RoomPlan attributes.
+
+The same derived confidence is written to the canonical entity and its provenance record, with derivation evidence recorded in provenance/attributes.
 
 ## Identity and determinism
 

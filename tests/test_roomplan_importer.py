@@ -92,8 +92,13 @@ def test_walls_keep_true_3d_positions_instead_of_plan_projection() -> None:
 
     south = walls["wall-south"]
     assert south.height_m == pytest.approx(2.8)
-    assert [point.z for point in south.centerline.points] == pytest.approx([3.2, 3.2])
-    assert [point.y for point in south.centerline.points] == pytest.approx([-1.5, -1.5])
+    assert len(south.centerline.points) > 2
+    assert all(point.z == pytest.approx(3.2) for point in south.centerline.points)
+    assert south.centerline.points[0].x == pytest.approx(-2.0)
+    assert south.centerline.points[-1].x == pytest.approx(2.0)
+    assert south.centerline.points[0].y == pytest.approx(-1.5)
+    assert south.centerline.points[-1].y == pytest.approx(-1.5)
+    assert max(point.y for point in south.centerline.points) > -1.2
 
     east = walls["wall-east"]
     assert [point.x for point in east.centerline.points] == pytest.approx([2.0, 2.0])
@@ -284,6 +289,7 @@ def test_sloped_floor_polygon_remains_3d() -> None:
 def test_curved_or_segmented_wall_bottom_is_kept_as_polyline() -> None:
     source = _source()
     wall = next(item for item in source["walls"] if item["identifier"] == "wall-south")
+    wall.pop("curve", None)
     wall["polygonCorners"] = [
         [-2.0, -1.4, 0.0],
         [-1.0, -1.4, -0.2],
@@ -303,6 +309,141 @@ def test_curved_or_segmented_wall_bottom_is_kept_as_polyline() -> None:
     assert len(imported.centerline.points) == 5
     assert len({round(point.y, 3) for point in imported.centerline.points}) > 1
     assert imported.attributes["roomplan"]["curve"] == wall["curve"]
+
+
+def test_roomplan_curve_is_tessellated_into_canonical_wall_centerline() -> None:
+    source = _source()
+    source_wall = next(
+        item for item in source["walls"] if item["identifier"] == "wall-south"
+    )
+
+    model = import_captured_room(source, source_id="fixture")
+    wall = _by_source_id(model.walls)["wall-south"]
+
+    assert len(wall.centerline.points) > 2
+    assert wall.centerline.points[0].x == pytest.approx(-2.0)
+    assert wall.centerline.points[-1].x == pytest.approx(2.0)
+    assert wall.centerline.points[0].y == pytest.approx(-1.5)
+    assert wall.centerline.points[-1].y == pytest.approx(-1.5)
+    assert max(point.y for point in wall.centerline.points) > -1.2
+    assert wall.attributes["roomplan"]["curve"] == source_wall["curve"]
+
+
+def test_orphan_opening_host_inference_uses_every_polyline_segment() -> None:
+    source = _source()
+    wall = next(item for item in source["walls"] if item["identifier"] == "wall-south")
+    wall.pop("curve", None)
+    wall["polygonCorners"] = [
+        [-2.0, -1.4, 0.0],
+        [0.0, -1.4, -1.0],
+        [2.0, -1.4, 0.0],
+        [2.0, 1.4, 0.0],
+        [0.0, 1.4, -1.0],
+        [-2.0, 1.4, 0.0],
+    ]
+    source["walls"] = [wall]
+    source["doors"] = []
+    source["windows"] = []
+
+    opening = source["openings"][0]
+    opening["transform"][12] = 0.0
+    opening["transform"][13] = 4.25
+    opening["transform"][14] = 0.5
+    opening.pop("parentIdentifier", None)
+    source["openings"] = [opening]
+
+    model = import_captured_room(source, source_id="fixture")
+    imported = _by_source_id(model.openings)["opening-east"]
+
+    assert imported.host_id == _by_source_id(model.walls)["wall-south"].id
+    assert imported.attributes["roomplan"]["host_inference"]["distance_m"] == pytest.approx(
+        0.0
+    )
+
+
+def test_orphan_opening_host_inference_rejects_equidistant_corner_ambiguity() -> None:
+    source = _source()
+    south = next(item for item in source["walls"] if item["identifier"] == "wall-south")
+    east = next(item for item in source["walls"] if item["identifier"] == "wall-east")
+    south.pop("curve", None)
+    source["walls"] = [south, east]
+    source["doors"] = []
+    source["windows"] = []
+
+    opening = source["openings"][0]
+    opening["transform"][12] = 2.0
+    opening["transform"][13] = 4.25
+    opening["transform"][14] = 1.5
+    opening.pop("parentIdentifier", None)
+    source["openings"] = [opening]
+
+    with pytest.raises(RoomPlanImportError, match="host wall is ambiguous"):
+        import_captured_room(source, source_id="fixture")
+
+
+def test_derived_level_and_space_confidence_follow_low_floor_evidence() -> None:
+    source = _source()
+    source["floors"][0]["confidence"] = {"low": {}}
+
+    model = import_captured_room(source, source_id="fixture")
+    level = model.levels[0]
+    space = model.spaces[0]
+
+    assert level.confidence == pytest.approx(0.33)
+    assert level.provenance[0].confidence == pytest.approx(0.33)
+    assert level.attributes["roomplan"]["elevation_confidence"] == pytest.approx(0.33)
+    assert space.confidence == pytest.approx(0.33)
+    assert space.provenance[0].confidence == pytest.approx(0.33)
+
+
+def test_derived_level_confidence_tracks_medium_wall_evidence() -> None:
+    source = _source()
+    east = next(item for item in source["walls"] if item["identifier"] == "wall-east")
+    source["walls"] = [east]
+    source["floors"] = []
+    source["doors"] = []
+    source["windows"] = []
+    source["openings"] = []
+    source["objects"] = []
+
+    model = import_captured_room(source, source_id="fixture")
+    level = model.levels[0]
+
+    assert level.attributes["roomplan"]["elevation_method"] == "wall-base"
+    assert level.confidence == pytest.approx(0.66)
+    assert level.provenance[0].confidence == pytest.approx(0.66)
+
+
+def test_default_zero_level_elevation_has_zero_derived_confidence() -> None:
+    source = _source()
+    for collection in ("walls", "floors", "doors", "windows", "openings", "objects"):
+        source[collection] = []
+
+    model = import_captured_room(source, source_id="fixture")
+    level = model.levels[0]
+
+    assert level.elevation_m == pytest.approx(0.0)
+    assert level.attributes["roomplan"]["elevation_method"] == "default-zero"
+    assert level.confidence == pytest.approx(0.0)
+    assert level.provenance[0].confidence == pytest.approx(0.0)
+
+
+def test_inferred_opening_host_confidence_is_bounded_by_host_wall() -> None:
+    source = _source()
+    opening = source["openings"][0]
+    opening["confidence"] = {"high": {}}
+
+    model = import_captured_room(source, source_id="fixture")
+    imported = _by_source_id(model.openings)["opening-east"]
+
+    assert imported.attributes["roomplan"]["host_inferred"] is True
+    assert imported.attributes["roomplan"]["source_confidence_value"] == pytest.approx(1.0)
+    assert imported.confidence == pytest.approx(0.66)
+    assert imported.provenance[0].confidence == pytest.approx(0.66)
+    assert (
+        imported.attributes["roomplan"]["host_inference"]["confidence_rule"]
+        == "minimum-of-opening-and-inferred-host-wall-confidence"
+    )
 
 
 @pytest.mark.parametrize(

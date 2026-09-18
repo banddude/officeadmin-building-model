@@ -38,6 +38,13 @@ class RoomPlanImportError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class _OpeningHostInference:
+    wall_id: str
+    distance_m: float
+    candidates_within_tolerance: tuple[tuple[str, float], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RoomPlanImportOptions:
     """Importer choices needed where RoomPlan exposes a surface, not a solid."""
 
@@ -46,6 +53,7 @@ class RoomPlanImportOptions:
     opening_surface_depth_m: float = 0.001
     object_min_dimension_m: float = 0.001
     orphan_opening_host_tolerance_m: float = 0.75
+    orphan_opening_host_ambiguity_m: float = 0.01
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -56,13 +64,12 @@ class RoomPlanImportOptions:
         ):
             if not _is_finite_number(value) or float(value) <= 0:
                 raise RoomPlanImportError(f"{label} must be a finite number > 0")
-        if (
-            not _is_finite_number(self.orphan_opening_host_tolerance_m)
-            or float(self.orphan_opening_host_tolerance_m) < 0
+        for label, value in (
+            ("orphan_opening_host_tolerance_m", self.orphan_opening_host_tolerance_m),
+            ("orphan_opening_host_ambiguity_m", self.orphan_opening_host_ambiguity_m),
         ):
-            raise RoomPlanImportError(
-                "orphan_opening_host_tolerance_m must be a finite number >= 0"
-            )
+            if not _is_finite_number(value) or float(value) < 0:
+                raise RoomPlanImportError(f"{label} must be a finite number >= 0")
 
 
 def load_captured_room(
@@ -143,8 +150,12 @@ def import_captured_room(
     wall_id_by_source: dict[str, str] = {}
     wall_story_by_id: dict[str, int] = {}
     wall_geometry_by_id: dict[str, Polyline3D] = {}
-    wall_base_by_story: dict[int, list[float]] = {story: [] for story in stories}
-    wall_top_by_story: dict[int, list[float]] = {story: [] for story in stories}
+    wall_base_by_story: dict[int, list[tuple[float, float, str]]] = {
+        story: [] for story in stories
+    }
+    wall_top_by_story: dict[int, list[tuple[float, float, str]]] = {
+        story: [] for story in stories
+    }
 
     for item in source_items["walls"]:
         source_element_id = str(item["identifier"])
@@ -153,7 +164,11 @@ def import_captured_room(
         dimensions = _dimensions(item.get("dimensions"), f"wall {source_element_id}")
         polygon = _surface_polygon_points(item, transform, f"wall {source_element_id}")
         centerline, height_m, base_z, top_z = _wall_geometry(
-            transform, dimensions, polygon, f"wall {source_element_id}"
+            transform,
+            dimensions,
+            polygon,
+            item.get("curve"),
+            f"wall {source_element_id}",
         )
         source_thickness = abs(dimensions[2])
         thickness_m = (
@@ -199,14 +214,16 @@ def import_captured_room(
         wall_id_by_source[source_element_id] = entity_id
         wall_story_by_id[entity_id] = story
         wall_geometry_by_id[entity_id] = centerline
-        wall_base_by_story[story].append(base_z)
-        wall_top_by_story[story].append(top_z)
+        wall_base_by_story[story].append((base_z, confidence, source_element_id))
+        wall_top_by_story[story].append((top_z, confidence, source_element_id))
 
     slabs: list[Slab] = []
-    floor_polygons_by_story: dict[int, list[tuple[str, Polygon3D, float]]] = {
+    floor_polygons_by_story: dict[
+        int, list[tuple[str, Polygon3D, float, float]]
+    ] = {story: [] for story in stories}
+    floor_elevations_by_story: dict[int, list[tuple[float, float, str]]] = {
         story: [] for story in stories
     }
-    floor_elevations_by_story: dict[int, list[float]] = {story: [] for story in stories}
 
     for item in source_items["floors"]:
         source_element_id = str(item["identifier"])
@@ -261,11 +278,15 @@ def import_captured_room(
         )
         slabs.append(slab)
         floor_polygons_by_story[story].append(
-            (source_element_id, footprint, _polygon_area_xy(footprint))
+            (source_element_id, footprint, _polygon_area_xy(footprint), confidence)
         )
-        floor_elevations_by_story[story].append(elevation)
+        floor_elevations_by_story[story].append(
+            (elevation, confidence, source_element_id)
+        )
 
-    object_bottom_by_story: dict[int, list[float]] = {story: [] for story in stories}
+    object_bottom_by_story: dict[int, list[tuple[float, float, str]]] = {
+        story: [] for story in stories
+    }
     obstacles: list[Obstacle] = []
     for item in source_items["objects"]:
         source_element_id = str(item["identifier"])
@@ -277,9 +298,11 @@ def import_captured_room(
             min_value=options.object_min_dimension_m,
         )
         pose = transform.canonical_pose()
-        object_bottom_by_story[story].append(pose.position.z - canonical_size.z / 2.0)
         category = _category(item.get("category"), default="object")
         confidence, confidence_label = _confidence(item.get("confidence"))
+        object_bottom_by_story[story].append(
+            (pose.position.z - canonical_size.z / 2.0, confidence, source_element_id)
+        )
         attributes = _element_attributes(
             item,
             collection="objects",
@@ -319,62 +342,101 @@ def import_captured_room(
     levels: list[Level] = []
     for story in sorted(stories):
         elevation_method: str
+        elevation_source_ids: list[str]
         if floor_elevations_by_story[story]:
-            elevation = median(floor_elevations_by_story[story])
+            elevation_evidence = floor_elevations_by_story[story]
+            elevation = median(entry[0] for entry in elevation_evidence)
             elevation_method = "floor-surface"
+            elevation_confidence = min(entry[1] for entry in elevation_evidence)
+            elevation_source_ids = sorted(entry[2] for entry in elevation_evidence)
         elif wall_base_by_story[story]:
-            elevation = median(wall_base_by_story[story])
+            elevation_evidence = wall_base_by_story[story]
+            elevation = median(entry[0] for entry in elevation_evidence)
             elevation_method = "wall-base"
+            elevation_confidence = min(entry[1] for entry in elevation_evidence)
+            elevation_source_ids = sorted(entry[2] for entry in elevation_evidence)
         elif object_bottom_by_story[story]:
-            elevation = min(object_bottom_by_story[story])
+            minimum_bottom = min(entry[0] for entry in object_bottom_by_story[story])
+            elevation_evidence = [
+                entry
+                for entry in object_bottom_by_story[story]
+                if abs(entry[0] - minimum_bottom) <= _EPS
+            ]
+            elevation = minimum_bottom
             elevation_method = "object-bottom"
+            elevation_confidence = min(entry[1] for entry in elevation_evidence)
+            elevation_source_ids = sorted(entry[2] for entry in elevation_evidence)
         else:
             elevation = 0.0
             elevation_method = "default-zero"
+            elevation_confidence = 0.0
+            elevation_source_ids = []
 
+        height_confidence: float | None = None
+        height_source_ids: list[str] = []
+        height_method: str | None = None
         if wall_top_by_story[story]:
-            height = max(wall_top_by_story[story]) - elevation
+            maximum_top = max(entry[0] for entry in wall_top_by_story[story])
+            top_evidence = [
+                entry
+                for entry in wall_top_by_story[story]
+                if abs(entry[0] - maximum_top) <= _EPS
+            ]
+            height = maximum_top - elevation
             height_m = height if height > _EPS else None
+            if height_m is not None:
+                height_confidence = min(entry[1] for entry in top_evidence)
+                height_source_ids = sorted(entry[2] for entry in top_evidence)
+                height_method = "wall-top-minus-elevation"
         else:
             height_m = None
 
+        level_confidence = elevation_confidence
+        if height_confidence is not None:
+            level_confidence = min(level_confidence, height_confidence)
+
+        derivation = {
+            "roomplan_story": story,
+            "elevation_method": elevation_method,
+            "elevation_source_identifiers": elevation_source_ids,
+            "elevation_confidence": elevation_confidence,
+            "height_method": height_method,
+            "height_source_identifiers": height_source_ids,
+            "height_confidence": height_confidence,
+            "confidence_rule": "minimum-confidence-of-contributing-source-geometry",
+        }
         levels.append(
             Level(
                 id=level_ids[story],
                 name=f"Story {story}",
                 elevation_m=elevation,
                 height_m=height_m,
+                confidence=level_confidence,
                 provenance=(
                     Provenance(
                         source_kind="roomplan",
                         source_id=provenance_source_id,
                         source_element_id=f"story:{story}",
                         method="CapturedRoom story grouping",
-                        attributes={
-                            "roomplan_story": story,
-                            "elevation_method": elevation_method,
-                        },
+                        confidence=level_confidence,
+                        attributes=derivation,
                     ),
                 ),
-                attributes={
-                    "roomplan": {
-                        "story": story,
-                        "elevation_method": elevation_method,
-                    }
-                },
+                attributes={"roomplan": dict(derivation)},
             )
         )
 
     spaces: list[Space] = []
     room_floor_candidates = floor_polygons_by_story.get(room_story, [])
     if room_floor_candidates:
-        source_floor_id, footprint, _ = sorted(
+        source_floor_id, footprint, _, floor_confidence = sorted(
             room_floor_candidates,
             key=lambda entry: (-entry[2], entry[0]),
         )[0]
         level = next(level for level in levels if level.id == level_ids[room_story])
         sections = _sections(document.get("sections"), room_story)
         usage = _single_section_usage(sections)
+        space_confidence = min(floor_confidence, level.confidence)
         spaces.append(
             Space(
                 id=stable_id("space", f"roomplan:{room_identifier}:room"),
@@ -383,15 +445,22 @@ def import_captured_room(
                 footprint=footprint,
                 height_m=level.height_m,
                 usage=usage,
+                confidence=space_confidence,
                 provenance=(
                     Provenance(
                         source_kind="roomplan",
                         source_id=provenance_source_id,
                         source_element_id=room_identifier,
                         method="CapturedRoom floor footprint",
+                        confidence=space_confidence,
                         attributes={
                             "roomplan_story": room_story,
                             "source_floor_identifier": source_floor_id,
+                            "source_floor_confidence": floor_confidence,
+                            "level_confidence": level.confidence,
+                            "confidence_rule": (
+                                "minimum-of-source-floor-and-derived-level-confidence"
+                            ),
                         },
                     ),
                 ),
@@ -402,6 +471,11 @@ def import_captured_room(
                         "version": room_version,
                         "sections": sections,
                         "source_floor_identifier": source_floor_id,
+                        "source_floor_confidence": floor_confidence,
+                        "level_confidence": level.confidence,
+                        "confidence_rule": (
+                            "minimum-of-source-floor-and-derived-level-confidence"
+                        ),
                     }
                 },
             )
@@ -425,6 +499,7 @@ def import_captured_room(
             pose = transform.canonical_pose()
             parent_identifier = _optional_identifier(item.get("parentIdentifier"))
             host_id: str | None = None
+            host_inference: _OpeningHostInference | None = None
             host_inferred = False
             if parent_identifier is not None:
                 host_id = wall_id_by_source.get(parent_identifier)
@@ -434,14 +509,17 @@ def import_captured_room(
                         f"parentIdentifier {parent_identifier!r}"
                     )
             else:
-                host_id = _infer_opening_host(
+                host_inference = _infer_opening_host(
                     pose.position,
                     story,
                     wall_story_by_id,
                     wall_geometry_by_id,
                     options.orphan_opening_host_tolerance_m,
+                    options.orphan_opening_host_ambiguity_m,
+                    f"{opening_type} {source_element_id}",
                 )
-                host_inferred = host_id is not None
+                host_id = None if host_inference is None else host_inference.wall_id
+                host_inferred = host_inference is not None
 
             if host_id is None:
                 raise RoomPlanImportError(
@@ -461,7 +539,10 @@ def import_captured_room(
                 if source_depth > _EPS
                 else max(host_wall.thickness_m, options.opening_surface_depth_m)
             )
-            confidence, confidence_label = _confidence(item.get("confidence"))
+            source_confidence, confidence_label = _confidence(item.get("confidence"))
+            confidence = source_confidence
+            if host_inference is not None:
+                confidence = min(source_confidence, host_wall.confidence)
             polygon = _surface_polygon_points(
                 item, transform, f"{opening_type} {source_element_id}"
             )
@@ -475,6 +556,19 @@ def import_captured_room(
                 canonical_polygon=polygon,
             )
             attributes["roomplan"]["host_inferred"] = host_inferred
+            attributes["roomplan"]["source_confidence_value"] = source_confidence
+            if host_inference is not None:
+                attributes["roomplan"]["host_inference"] = {
+                    "distance_m": host_inference.distance_m,
+                    "ambiguity_m": options.orphan_opening_host_ambiguity_m,
+                    "candidate_distances_m": [
+                        {"wall_id": wall_id, "distance_m": distance}
+                        for wall_id, distance in host_inference.candidates_within_tolerance
+                    ],
+                    "confidence_rule": (
+                        "minimum-of-opening-and-inferred-host-wall-confidence"
+                    ),
+                }
             attributes["roomplan"]["surface_depth_m"] = depth
             attributes["roomplan"]["surface_depth_inferred"] = source_depth <= _EPS
             openings.append(
@@ -630,6 +724,7 @@ def _wall_geometry(
     transform: _Transform,
     dimensions: tuple[float, float, float],
     polygon: tuple[Point3, ...],
+    curve: Any,
     label: str,
 ) -> tuple[Polyline3D, float, float, float]:
     width = abs(dimensions[0])
@@ -637,31 +732,46 @@ def _wall_geometry(
     if width <= _EPS or source_height <= _EPS:
         raise RoomPlanImportError(f"{label} requires positive width and height")
 
+    curved_points = _curve_wall_points(curve, transform, source_height, label)
+    if curved_points is not None:
+        centerline_points, curved_top_points = curved_points
+    else:
+        centerline_points = ()
+        curved_top_points = ()
+
     if polygon:
         min_z = min(point.z for point in polygon)
         max_z = max(point.z for point in polygon)
         tolerance = max(0.005, (max_z - min_z) * 0.01)
-        base_points = [point for point in polygon if abs(point.z - min_z) <= tolerance]
-        if len(base_points) >= 2:
-            centerline_points = _ordered_distinct_points(base_points)
-            if len(centerline_points) < 2:
-                raise RoomPlanImportError(
-                    f"{label} polygon base collapses to one point"
+        if not centerline_points:
+            base_points = [point for point in polygon if abs(point.z - min_z) <= tolerance]
+            if len(base_points) >= 2:
+                centerline_points = _ordered_distinct_points(base_points)
+                if len(centerline_points) < 2:
+                    raise RoomPlanImportError(
+                        f"{label} polygon base collapses to one point"
+                    )
+            else:
+                centerline_points = (
+                    transform.canonical_point(
+                        (-width / 2.0, -source_height / 2.0, 0.0)
+                    ),
+                    transform.canonical_point(
+                        (width / 2.0, -source_height / 2.0, 0.0)
+                    ),
                 )
-        else:
-            centerline_points = (
-                transform.canonical_point(
-                    (-width / 2.0, -source_height / 2.0, 0.0)
-                ),
-                transform.canonical_point(
-                    (width / 2.0, -source_height / 2.0, 0.0)
-                ),
-            )
         height_m = max_z - min_z
         if height_m <= _EPS:
             height_m = source_height
         base_z = min_z
         top_z = max_z if max_z - min_z > _EPS else min_z + height_m
+    elif centerline_points:
+        base_z = min(point.z for point in centerline_points)
+        top_z = max(point.z for point in curved_top_points)
+        height_m = top_z - base_z
+        if height_m <= _EPS:
+            height_m = source_height
+            top_z = base_z + height_m
     else:
         centerline_points = (
             transform.canonical_point(
@@ -684,7 +794,88 @@ def _wall_geometry(
             height_m = source_height
             top_z = base_z + height_m
 
-    return Polyline3D(points=centerline_points), height_m, base_z, top_z
+    return Polyline3D(points=tuple(centerline_points)), height_m, base_z, top_z
+
+
+def _curve_wall_points(
+    raw: Any,
+    transform: _Transform,
+    source_height: float,
+    label: str,
+) -> tuple[tuple[Point3, ...], tuple[Point3, ...]] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise RoomPlanImportError(f"{label}.curve must be an object or null")
+
+    radius = _number(raw.get("radius"), f"{label}.curve.radius")
+    if radius <= _EPS:
+        raise RoomPlanImportError(f"{label}.curve.radius must be > 0")
+
+    center_raw = raw.get("center")
+    if isinstance(center_raw, Mapping):
+        center_values = (center_raw.get("x"), center_raw.get("y"))
+    elif isinstance(center_raw, Sequence) and not isinstance(center_raw, (str, bytes)):
+        center_values = tuple(center_raw)
+    else:
+        raise RoomPlanImportError(
+            f"{label}.curve.center must contain local x/z coordinates"
+        )
+    if len(center_values) != 2:
+        raise RoomPlanImportError(
+            f"{label}.curve.center must contain exactly 2 numbers"
+        )
+    center_x = _number(center_values[0], f"{label}.curve.center[0]")
+    center_z = _number(center_values[1], f"{label}.curve.center[1]")
+
+    start_angle = _angle_radians(raw.get("startAngle"), f"{label}.curve.startAngle")
+    end_angle = _angle_radians(raw.get("endAngle"), f"{label}.curve.endAngle")
+    sweep = end_angle - start_angle
+    if abs(sweep) <= _EPS:
+        raise RoomPlanImportError(f"{label}.curve must have a nonzero angular sweep")
+    if abs(sweep) > 2.0 * math.pi + _EPS:
+        raise RoomPlanImportError(f"{label}.curve sweep cannot exceed one full turn")
+
+    max_step = math.radians(5.0)
+    segment_count = max(1, math.ceil(abs(sweep) / max_step))
+    base_points: list[Point3] = []
+    top_points: list[Point3] = []
+    for index in range(segment_count + 1):
+        angle = start_angle + sweep * index / segment_count
+        local_x = center_x + radius * math.cos(angle)
+        local_z = center_z + radius * math.sin(angle)
+        base_points.append(
+            transform.canonical_point(
+                (local_x, -source_height / 2.0, local_z)
+            )
+        )
+        top_points.append(
+            transform.canonical_point(
+                (local_x, source_height / 2.0, local_z)
+            )
+        )
+    return tuple(base_points), tuple(top_points)
+
+
+def _angle_radians(raw: Any, label: str) -> float:
+    if isinstance(raw, Mapping):
+        if "value" not in raw:
+            raise RoomPlanImportError(f"{label} measurement must include value")
+        value = _number(raw.get("value"), f"{label}.value")
+        unit = raw.get("unit")
+        symbol: str | None = None
+        if isinstance(unit, str):
+            symbol = unit
+        elif isinstance(unit, Mapping):
+            candidate = unit.get("symbol")
+            if candidate is not None:
+                symbol = str(candidate)
+        if symbol is None or symbol.lower() in {"rad", "radian", "radians"}:
+            return value
+        if symbol.lower() in {"deg", "degree", "degrees"} or symbol == "°":
+            return math.radians(value)
+        raise RoomPlanImportError(f"{label} uses unsupported angle unit {symbol!r}")
+    return _number(raw, label)
 
 
 def _surface_polygon_points(
@@ -768,21 +959,58 @@ def _infer_opening_host(
     wall_story_by_id: Mapping[str, int],
     wall_geometry_by_id: Mapping[str, Polyline3D],
     tolerance_m: float,
-) -> str | None:
+    ambiguity_m: float,
+    label: str,
+) -> _OpeningHostInference | None:
     candidates: list[tuple[float, str]] = []
     for wall_id, centerline in wall_geometry_by_id.items():
         if wall_story_by_id[wall_id] != story:
             continue
-        distance = _point_to_segment_distance_xy(
-            position,
-            centerline.points[0],
-            centerline.points[-1],
-        )
+        distance = _point_to_polyline_distance_xy(position, centerline)
         candidates.append((distance, wall_id))
-    if not candidates:
+
+    within_tolerance = sorted(
+        (
+            (distance, wall_id)
+            for distance, wall_id in candidates
+            if distance <= tolerance_m
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    if not within_tolerance:
         return None
-    distance, wall_id = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
-    return wall_id if distance <= tolerance_m else None
+
+    nearest_distance = within_tolerance[0][0]
+    ambiguous = [
+        (distance, wall_id)
+        for distance, wall_id in within_tolerance
+        if abs(distance - nearest_distance) <= ambiguity_m
+    ]
+    if len(ambiguous) > 1:
+        details = ", ".join(
+            f"{wall_id} ({distance:.6f} m)"
+            for distance, wall_id in ambiguous
+        )
+        raise RoomPlanImportError(
+            f"{label} host wall is ambiguous within {ambiguity_m:.6f} m: {details}"
+        )
+
+    distance, wall_id = within_tolerance[0]
+    return _OpeningHostInference(
+        wall_id=wall_id,
+        distance_m=distance,
+        candidates_within_tolerance=tuple(
+            (candidate_wall_id, candidate_distance)
+            for candidate_distance, candidate_wall_id in within_tolerance
+        ),
+    )
+
+
+def _point_to_polyline_distance_xy(point: Point3, polyline: Polyline3D) -> float:
+    return min(
+        _point_to_segment_distance_xy(point, a, b)
+        for a, b in zip(polyline.points, polyline.points[1:])
+    )
 
 
 def _point_to_segment_distance_xy(point: Point3, a: Point3, b: Point3) -> float:

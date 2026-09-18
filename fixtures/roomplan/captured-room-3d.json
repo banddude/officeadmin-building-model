@@ -218,9 +218,13 @@
         "high": {}
       },
       "curve": {
-        "endAngle": 0.2,
-        "radius": 9.25,
-        "startAngle": -0.2
+        "endAngle": -1.1592794807274085,
+        "radius": 5,
+        "startAngle": -1.9823131728623846,
+        "center": [
+          0,
+          4.58257569495584
+        ]
       },
       "dimensions": [
         4,

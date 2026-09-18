@@ -20,9 +20,10 @@ from oabm.drawings import (
     generate_drawing_set,
     generate_plan,
     generate_schedules,
+    generate_section,
     view_to_svg,
 )
-from oabm.model import BuildingModel, ElectricalDevice, Point3, Vector3
+from oabm.model import BuildingModel, ElectricalDevice, Point3, Polyline3D, Vector3
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "fixtures" / "drawings" / "v1" / "drawing-model.json"
@@ -119,6 +120,103 @@ def test_plan_visibility_is_level_and_depth_aware() -> None:
     assert "obstacle:beam" in coordination_sources
     assert "constraint:ceiling" in coordination_sources
     assert not [p for p in coordination.primitives if p.layer == "annotations:labels"]
+
+
+def test_plan_clips_route_segments_to_finite_view_depth_before_projection() -> None:
+    model = _model()
+    route = model.routes[0]
+    clipped_route = replace(
+        route,
+        centerline=Polyline3D(
+            points=(
+                Point3(x=0.4, y=0.25, z=1.5),
+                Point3(x=1.0, y=0.25, z=1.5),
+                Point3(x=2.0, y=0.25, z=3.0),
+                Point3(x=4.0, y=0.25, z=3.0),
+                Point3(x=5.0, y=0.25, z=1.2),
+                Point3(x=5.2, y=0.25, z=1.2),
+            )
+        ),
+    )
+    model = replace(model, routes=(clipped_route,))
+
+    view = generate_plan(
+        model,
+        PlanSpec(
+            id="plan:route-depth",
+            level_id="level:ground",
+            cut_height_m=1.5,
+            view_depth_above_m=0.25,
+            bounds=Bounds2(min_x=0.0, min_y=0.0, max_x=6.0, max_y=1.0),
+            visibility=VisibilityPolicy(labels=False, dimensions=False),
+        ),
+    )
+
+    route_primitives = [
+        primitive
+        for primitive in view.primitives
+        if primitive.source_ids == (route.id,) and primitive.layer == "electrical:routes"
+    ]
+    assert len(route_primitives) == 2
+    x_ranges = sorted(
+        (min(point.x for point in primitive.points), max(point.x for point in primitive.points))
+        for primitive in route_primitives
+    )
+    assert x_ranges[0] == pytest.approx((0.4, 1.1666666667))
+    assert x_ranges[1] == pytest.approx((4.6944444444, 5.2))
+    assert all(
+        not (min(point.x for point in primitive.points) < 3.0 < max(point.x for point in primitive.points))
+        for primitive in route_primitives
+    )
+
+
+def test_section_clips_route_segments_to_finite_depth_before_projection() -> None:
+    model = _model()
+    route = model.routes[0]
+    clipped_route = replace(
+        route,
+        centerline=Polyline3D(
+            points=(
+                Point3(x=0.4, y=0.25, z=1.5),
+                Point3(x=1.0, y=0.25, z=1.5),
+                Point3(x=2.0, y=3.0, z=1.5),
+                Point3(x=4.0, y=3.0, z=1.2),
+                Point3(x=5.0, y=0.25, z=1.2),
+                Point3(x=5.2, y=0.25, z=1.2),
+            )
+        ),
+    )
+    model = replace(model, routes=(clipped_route,))
+
+    view = generate_section(
+        model,
+        SectionSpec(
+            id="section:route-depth",
+            origin=Point3(x=0, y=0, z=0),
+            direction=Vector3(x=0, y=1, z=0),
+            depth_m=1.0,
+            back_depth_m=0.2,
+            bounds=Bounds2(min_x=-6.0, min_y=0.0, max_x=0.0, max_y=2.0),
+            visibility=VisibilityPolicy(labels=False, dimensions=False),
+        ),
+    )
+
+    route_primitives = [
+        primitive
+        for primitive in view.primitives
+        if primitive.source_ids == (route.id,) and primitive.layer == "electrical:routes"
+    ]
+    assert len(route_primitives) == 2
+    x_ranges = sorted(
+        (min(point.x for point in primitive.points), max(point.x for point in primitive.points))
+        for primitive in route_primitives
+    )
+    assert x_ranges[0] == pytest.approx((-5.2, -4.7272727273))
+    assert x_ranges[1] == pytest.approx((-1.2727272727, -0.4))
+    assert all(
+        not (min(point.x for point in primitive.points) < -3.0 < max(point.x for point in primitive.points))
+        for primitive in route_primitives
+    )
 
 
 def test_elevation_projects_height_and_section_marks_cut_geometry() -> None:

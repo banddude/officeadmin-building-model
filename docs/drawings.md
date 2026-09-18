@@ -15,7 +15,7 @@ Drawing output has its own presentation version (`1.0.0`). This is deliberately 
 - Bounds clip projected polylines and polygons deterministically. Geometry outside a view is omitted; geometry crossing a boundary is clipped rather than discarded.
 - Sections distinguish geometry crossing the section plane from geometry merely visible within the configured depth.
 - Wall thickness and height are derived from canonical wall centerlines and dimensions. Equipment, devices, openings, obstacles, and fittings use their canonical poses and sizes where available.
-- Routes use their canonical centerlines. The drawings lane never reroutes them or recomputes takeoff lengths.
+- Routes use their canonical centerlines. Each 3D route segment is clipped against the active plan/elevation/section depth interval before 2D projection, so out-of-depth portions cannot leak into a view; crossing segments terminate exactly at the depth boundary. The drawings lane never reroutes them or recomputes takeoff lengths.
 
 ## Visibility and annotation hooks
 

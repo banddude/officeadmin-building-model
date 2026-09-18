@@ -135,6 +135,100 @@ def depth_range(frame: ProjectionFrame, points: Iterable[Point3]) -> tuple[float
     return min(depths), max(depths)
 
 
+def _interpolate_point3(start: Point3, end: Point3, t: float) -> Point3:
+    return Point3(
+        x=start.x + (end.x - start.x) * t,
+        y=start.y + (end.y - start.y) * t,
+        z=start.z + (end.z - start.z) * t,
+    )
+
+
+def _point3_close(a: Point3, b: Point3, *, tolerance: float = _EPS) -> bool:
+    return (
+        abs(a.x - b.x) <= tolerance
+        and abs(a.y - b.y) <= tolerance
+        and abs(a.z - b.z) <= tolerance
+    )
+
+
+def clip_segment_depth(
+    start: Point3,
+    end: Point3,
+    frame: ProjectionFrame,
+    min_depth: float,
+    max_depth: float,
+) -> tuple[Point3, Point3] | None:
+    """Clip a 3D segment to a projection frame's finite depth interval.
+
+    Clipping happens in canonical 3D before 2D projection.  This prevents an
+    entity that merely touches a plan/section depth range from contributing
+    unrelated out-of-range portions of the same segment.
+    """
+    if min_depth > max_depth:
+        raise ValueError("min_depth must be <= max_depth")
+
+    _, start_depth = frame.project(start)
+    _, end_depth = frame.project(end)
+    delta = end_depth - start_depth
+
+    if abs(delta) <= _EPS:
+        if start_depth < min_depth - _EPS or start_depth > max_depth + _EPS:
+            return None
+        return start, end
+
+    t_at_min = (min_depth - start_depth) / delta
+    t_at_max = (max_depth - start_depth) / delta
+    enter = max(0.0, min(t_at_min, t_at_max))
+    leave = min(1.0, max(t_at_min, t_at_max))
+    if enter > leave + _EPS:
+        return None
+
+    # Clamp tiny boundary noise so independently clipped neighboring segments
+    # stitch deterministically.
+    enter = min(1.0, max(0.0, enter))
+    leave = min(1.0, max(0.0, leave))
+    return _interpolate_point3(start, end, enter), _interpolate_point3(start, end, leave)
+
+
+def clip_polyline_depth(
+    points: tuple[Point3, ...],
+    frame: ProjectionFrame,
+    min_depth: float,
+    max_depth: float,
+) -> tuple[tuple[Point3, ...], ...]:
+    """Clip a canonical 3D polyline into contiguous depth-visible fragments."""
+    if len(points) < 2:
+        return ()
+    if min_depth > max_depth:
+        raise ValueError("min_depth must be <= max_depth")
+
+    fragments: list[list[Point3]] = []
+    current: list[Point3] = []
+    for start, end in zip(points, points[1:]):
+        clipped = clip_segment_depth(start, end, frame, min_depth, max_depth)
+        if clipped is None:
+            if len(current) >= 2:
+                fragments.append(current)
+            current = []
+            continue
+
+        a, b = clipped
+        if not current:
+            current = [a, b]
+        elif _point3_close(current[-1], a):
+            if not _point3_close(current[-1], b):
+                current.append(b)
+        else:
+            if len(current) >= 2:
+                fragments.append(current)
+            current = [a, b]
+
+    if len(current) >= 2:
+        fragments.append(current)
+
+    return tuple(tuple(fragment) for fragment in fragments)
+
+
 def clip_segment(start: Point2, end: Point2, bounds: Bounds2) -> tuple[Point2, Point2] | None:
     """Liang-Barsky segment clipping, deterministic at boundaries."""
     dx = end.x - start.x

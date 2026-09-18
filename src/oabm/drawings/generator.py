@@ -49,6 +49,7 @@ from .projection import (
     ProjectionFrame,
     clip_polygon,
     clip_polyline,
+    clip_polyline_depth,
     depth_range,
     frame_from_view_direction,
     geometry_points,
@@ -227,12 +228,24 @@ def generate_plan(
         normal=Vector3(x=0, y=0, z=1),
     )
     entities = _plan_entities(model, spec.level_id, min_z=min_z, max_z=max_z, visibility=spec.visibility)
-    bounds = spec.bounds or _auto_bounds(frame, entities)
+    depth_interval = (min_z - level.elevation_m, max_z - level.elevation_m)
+    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval)
     primitives: list[DrawingPrimitive] = []
     dimensions: list[DrawingDimension] = []
 
     for entity in entities:
-        primitives.extend(_entity_primitives(entity, frame, bounds, "plan", symbol_provider, label_provider if spec.visibility.labels else None, cut_depth=cut_z - level.elevation_m))
+        primitives.extend(
+            _entity_primitives(
+                entity,
+                frame,
+                bounds,
+                "plan",
+                symbol_provider,
+                label_provider if spec.visibility.labels else None,
+                cut_depth=cut_z - level.elevation_m,
+                depth_interval=depth_interval,
+            )
+        )
         if spec.visibility.dimensions and isinstance(entity, Wall):
             dimensions.extend(_wall_dimensions(entity, frame, bounds))
 
@@ -262,11 +275,22 @@ def generate_elevation(
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
     entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, spec.near_m, spec.far_m))
-    bounds = spec.bounds or _auto_bounds(frame, entities)
+    depth_interval = (spec.near_m, spec.far_m)
+    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval)
     primitives: list[DrawingPrimitive] = []
     dimensions: list[DrawingDimension] = []
     for entity in entities:
-        primitives.extend(_entity_primitives(entity, frame, bounds, "elevation", symbol_provider, label_provider if spec.visibility.labels else None))
+        primitives.extend(
+            _entity_primitives(
+                entity,
+                frame,
+                bounds,
+                "elevation",
+                symbol_provider,
+                label_provider if spec.visibility.labels else None,
+                depth_interval=depth_interval,
+            )
+        )
         if spec.visibility.dimensions and isinstance(entity, Opening):
             dimensions.extend(_opening_dimensions(entity, frame, bounds))
     return DrawingView(
@@ -294,7 +318,8 @@ def generate_section(
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
     entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, -spec.back_depth_m, spec.depth_m))
-    bounds = spec.bounds or _auto_bounds(frame, entities)
+    depth_interval = (-spec.back_depth_m, spec.depth_m)
+    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval)
     primitives: list[DrawingPrimitive] = []
     for entity in entities:
         primitives.extend(
@@ -305,6 +330,7 @@ def generate_section(
                 "section",
                 symbol_provider,
                 label_provider if spec.visibility.labels else None,
+                depth_interval=depth_interval,
             )
         )
     return DrawingView(
@@ -449,6 +475,7 @@ def _entity_primitives(
     label_provider: LabelProvider | None,
     *,
     cut_depth: float | None = None,
+    depth_interval: tuple[float, float] | None = None,
 ) -> list[DrawingPrimitive]:
     result: list[DrawingPrimitive] = []
     if isinstance(entity, Wall):
@@ -525,9 +552,34 @@ def _entity_primitives(
         if symbol is not None:
             result.extend(_symbol_primitive(entity, frame, bounds, symbol, "symbols:electrical"))
     elif isinstance(entity, Route):
-        points, depths = project_points(frame, entity.centerline.points)
-        is_cut = view_type == "section" and _depth_spans(depths, 0.0)
-        result.extend(_polyline_primitives(entity.id, points, bounds, layer="electrical:routes", style=LineStyle(stroke="route", weight="heavy" if is_cut else "normal", pattern="dash")))
+        fragments3 = (
+            clip_polyline_depth(
+                entity.centerline.points,
+                frame,
+                depth_interval[0],
+                depth_interval[1],
+            )
+            if depth_interval is not None
+            else (entity.centerline.points,)
+        )
+        for index, fragment3 in enumerate(fragments3):
+            points, depths = project_points(frame, fragment3)
+            is_cut = view_type == "section" and _depth_spans(depths, 0.0)
+            suffix_prefix = "frag" if len(fragments3) == 1 else f"depth:{index}"
+            result.extend(
+                _polyline_primitives(
+                    entity.id,
+                    points,
+                    bounds,
+                    layer="electrical:routes",
+                    style=LineStyle(
+                        stroke="route",
+                        weight="heavy" if is_cut else "normal",
+                        pattern="dash",
+                    ),
+                    suffix_prefix=suffix_prefix,
+                )
+            )
     elif isinstance(entity, RouteFitting):
         symbol = symbol_provider(entity, view_type)
         if symbol is not None:
@@ -540,7 +592,7 @@ def _entity_primitives(
     if label_provider is not None:
         label = label_provider(entity, view_type)
         if label:
-            anchor = _label_anchor(entity, frame)
+            anchor = _label_anchor(entity, frame, depth_interval=depth_interval)
             if anchor is not None and _inside(anchor, bounds):
                 result.append(_primitive(entity.id, "text", "annotations:labels", (anchor,), text=label, style=LineStyle(stroke="annotation"), suffix="label"))
     return result
@@ -825,15 +877,36 @@ def _entity_points(entity: Entity) -> tuple[Point3, ...]:
     return ()
 
 
-def _auto_bounds(frame: ProjectionFrame, entities: tuple[Entity, ...]) -> Bounds2:
+def _auto_bounds(
+    frame: ProjectionFrame,
+    entities: tuple[Entity, ...],
+    *,
+    depth_interval: tuple[float, float] | None = None,
+) -> Bounds2:
     points: list[Point2] = []
     for entity in entities:
+        if isinstance(entity, Route) and depth_interval is not None:
+            fragments = clip_polyline_depth(
+                entity.centerline.points,
+                frame,
+                depth_interval[0],
+                depth_interval[1],
+            )
+            for fragment in fragments:
+                projected, _ = project_points(frame, fragment)
+                points.extend(projected)
+            continue
         projected, _ = project_points(frame, _entity_points(entity))
         points.extend(projected)
     return union_bounds(points, padding=0.5)
 
 
-def _label_anchor(entity: Entity, frame: ProjectionFrame) -> Point2 | None:
+def _label_anchor(
+    entity: Entity,
+    frame: ProjectionFrame,
+    *,
+    depth_interval: tuple[float, float] | None = None,
+) -> Point2 | None:
     if isinstance(entity, Wall):
         points, _ = project_points(frame, entity.centerline.points)
     elif isinstance(entity, (Slab, Ceiling, Space)):
@@ -841,7 +914,16 @@ def _label_anchor(entity: Entity, frame: ProjectionFrame) -> Point2 | None:
     elif isinstance(entity, (Opening, ElectricalEquipment, ElectricalDevice, RouteFitting)):
         return frame.project(entity.pose.position)[0]
     elif isinstance(entity, Route):
-        points, _ = project_points(frame, entity.centerline.points)
+        route_points = entity.centerline.points
+        if depth_interval is not None:
+            fragments = clip_polyline_depth(
+                route_points,
+                frame,
+                depth_interval[0],
+                depth_interval[1],
+            )
+            route_points = tuple(point for fragment in fragments for point in fragment)
+        points, _ = project_points(frame, route_points)
     elif isinstance(entity, (Obstacle, RouteConstraint)):
         points, _ = project_points(frame, geometry_points(entity.geometry))
     else:

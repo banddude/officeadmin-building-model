@@ -500,6 +500,11 @@ def _classify_symbol(
 def _text_entity_hits(text: str) -> list[tuple[str, str, str, float]]:
     if re.match(r"\s*(?:NOTE|KEYNOTE|GENERAL\s+NOTE)\b", text, re.IGNORECASE):
         return []
+    if _CIRCUIT_RE.search(text):
+        # A circuit callout can name equipment and loads without locating them.
+        # Keep those names as circuit evidence, but require independent spatial
+        # recognition before materializing canonical equipment or devices.
+        return []
     hits: list[tuple[str, str, str, float]] = []
     panel = _PANEL_RE.search(text)
     if panel:
@@ -580,11 +585,17 @@ def _extract_voltage(texts: Iterable[str]) -> tuple[float | None, str | None]:
 def _mounting_heights_m(texts: Iterable[str]) -> list[float]:
     values: set[float] = set()
     for text in texts:
-        for match in _MOUNT_FT_RE.finditer(text):
+        foot_matches = tuple(_MOUNT_FT_RE.finditer(text))
+        for match in foot_matches:
             feet = float(match.group("feet"))
             inches = float(match.group("inches") or 0.0)
             values.add(round((feet * 12.0 + inches) * 0.0254, 6))
         for match in _MOUNT_IN_RE.finditer(text):
+            if any(
+                match.start() < foot_match.end() and foot_match.start() < match.end()
+                for foot_match in foot_matches
+            ):
+                continue
             values.add(round(float(match.group("value")) * 0.0254, 6))
     return sorted(values)
 

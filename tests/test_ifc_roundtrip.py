@@ -216,6 +216,28 @@ def test_unexpected_native_connectivity_export_failure_is_not_swallowed(
         to_ifc(model)
 
 
+def test_native_connectivity_export_rejects_unrepresentable_fanout() -> None:
+    document = copy.deepcopy(_garage().to_dict())
+    first, second = document["ports"]
+    third = copy.deepcopy(second)
+    third["id"] = "port:evse-feed-alt"
+    first["connected_port_ids"] = [second["id"], third["id"]]
+    second["connected_port_ids"] = [first["id"]]
+    third["connected_port_ids"] = [first["id"]]
+    document["ports"].append(third)
+    document["routes"] = []
+    document["route_fittings"] = []
+    document["circuits"] = []
+    document["conductors"] = []
+    model = BuildingModel.from_dict(document)
+
+    with pytest.raises(
+        IfcAdapterError,
+        match="cannot be represented natively without loss",
+    ):
+        to_ifc(model)
+
+
 def test_removing_all_native_route_segments_is_rejected() -> None:
     ifc = to_ifc(_garage())
 

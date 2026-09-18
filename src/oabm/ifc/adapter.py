@@ -283,6 +283,15 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
     # Explicit canonical connectivity must be present in native IFC when export
     # succeeds. Never let the JSON shadow conceal an unexpected IfcOpenShell/API
     # failure, because Bonsai edits need a single authoritative representation.
+    fanout_ports = sorted(
+        port.id for port in model.ports if len(port.connected_port_ids) > 1
+    )
+    if fanout_ports:
+        raise IfcAdapterError(
+            "canonical port connectivity cannot be represented natively without loss; "
+            f"IFC ports support one connected peer: {fanout_ports!r}"
+        )
+
     linked: set[tuple[str, str]] = set()
     for port in model.ports:
         for other_id in port.connected_port_ids:
@@ -302,6 +311,21 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
                     f"{port.id!r} <-> {other_id!r}"
                 ) from exc
             linked.add(pair)
+
+    expected_connections = {
+        port.id: set(port.connected_port_ids) for port in model.ports
+    }
+    native_connections = _native_port_connections(ifc, canonical_ports)
+    if native_connections != expected_connections:
+        mismatched = sorted(
+            port_id
+            for port_id, expected in expected_connections.items()
+            if native_connections.get(port_id, set()) != expected
+        )
+        raise IfcAdapterError(
+            "canonical port connectivity cannot be represented natively without loss "
+            f"for ports {mismatched!r}"
+        )
 
     fitting_ifc: dict[str, Any] = {}
     fitting_ports: dict[str, tuple[Any, Any]] = {}
@@ -1022,16 +1046,16 @@ def _route_segments(ifc: ifcopenshell.file) -> dict[str, list[tuple[int, Any]]]:
     return result
 
 
-def _native_canonical_port_connections(
+def _native_port_connections(
     ifc: ifcopenshell.file,
-    canonical_items: Mapping[str, tuple[Any, dict[str, Any], int, str]],
+    ports_by_id: Mapping[str, Any],
 ) -> dict[str, set[str]]:
     id_by_step = {
-        item.id(): canonical_id
-        for canonical_id, (item, _data, _ordinal, kind) in canonical_items.items()
-        if kind == "port"
+        item.id(): canonical_id for canonical_id, item in ports_by_id.items()
     }
-    connections: dict[str, set[str]] = {canonical_id: set() for canonical_id in id_by_step.values()}
+    connections: dict[str, set[str]] = {
+        canonical_id: set() for canonical_id in ports_by_id
+    }
     for rel in ifc.by_type("IfcRelConnectsPorts"):
         left = id_by_step.get(rel.RelatingPort.id())
         right = id_by_step.get(rel.RelatedPort.id())
@@ -1039,6 +1063,18 @@ def _native_canonical_port_connections(
             connections[left].add(right)
             connections[right].add(left)
     return connections
+
+
+def _native_canonical_port_connections(
+    ifc: ifcopenshell.file,
+    canonical_items: Mapping[str, tuple[Any, dict[str, Any], int, str]],
+) -> dict[str, set[str]]:
+    ports_by_id = {
+        canonical_id: item
+        for canonical_id, (item, _data, _ordinal, kind) in canonical_items.items()
+        if kind == "port"
+    }
+    return _native_port_connections(ifc, ports_by_id)
 
 
 def _apply_ifc_overrides(

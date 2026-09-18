@@ -4,7 +4,7 @@ import hashlib
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +116,60 @@ class PdfElectricalDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class PdfPageTransform:
+    """Affine registration from one PDF page's point coordinates into one canonical frame."""
+
+    frame_id: str
+    m11_m_per_pt: float = POINT_TO_M
+    m12_m_per_pt: float = 0.0
+    m21_m_per_pt: float = 0.0
+    m22_m_per_pt: float = POINT_TO_M
+    tx_m: float = 0.0
+    ty_m: float = 0.0
+    z_m: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.frame_id:
+            raise ElectricalPdfError("page transform frame_id is required")
+        values = (
+            self.m11_m_per_pt,
+            self.m12_m_per_pt,
+            self.m21_m_per_pt,
+            self.m22_m_per_pt,
+            self.tx_m,
+            self.ty_m,
+            self.z_m,
+        )
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ElectricalPdfError("page transform coefficients must be finite")
+        determinant = (
+            self.m11_m_per_pt * self.m22_m_per_pt
+            - self.m12_m_per_pt * self.m21_m_per_pt
+        )
+        if abs(determinant) <= 1e-15:
+            raise ElectricalPdfError("page transform must have a non-zero planar determinant")
+
+    def apply(self, x_pt: float, y_pt: float) -> Point3:
+        return Point3(
+            x=self.m11_m_per_pt * x_pt + self.m12_m_per_pt * y_pt + self.tx_m,
+            y=self.m21_m_per_pt * x_pt + self.m22_m_per_pt * y_pt + self.ty_m,
+            z=self.z_m,
+        )
+
+    def to_attributes(self) -> dict[str, float | str]:
+        return {
+            "frame_id": self.frame_id,
+            "m11_m_per_pt": self.m11_m_per_pt,
+            "m12_m_per_pt": self.m12_m_per_pt,
+            "m21_m_per_pt": self.m21_m_per_pt,
+            "m22_m_per_pt": self.m22_m_per_pt,
+            "tx_m": self.tx_m,
+            "ty_m": self.ty_m,
+            "z_m": self.z_m,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SymbolRule:
     pattern: str
     entity_kind: str
@@ -150,6 +204,7 @@ class _EntityCandidate:
     entity_kind: str
     canonical_type: str
     tag: str | None
+    identity_key: str | None
     page: int
     x_pt: float
     y_pt: float
@@ -529,6 +584,73 @@ def _distance_pt(a_x: float, a_y: float, b_x: float, b_y: float) -> float:
     return math.hypot(a_x - b_x, a_y - b_y)
 
 
+def _merge_provenance(
+    *groups: Iterable[Provenance],
+) -> tuple[Provenance, ...]:
+    unique: dict[tuple[str, str, str | None, int | None, str | None], Provenance] = {}
+    for group in groups:
+        for item in group:
+            key = (
+                item.source_kind,
+                item.source_id,
+                item.source_element_id,
+                item.page,
+                item.method,
+            )
+            unique.setdefault(key, item)
+    return tuple(
+        sorted(
+            unique.values(),
+            key=lambda item: (
+                item.page or 0,
+                item.source_element_id or "",
+                item.method or "",
+                item.source_kind,
+            ),
+        )
+    )
+
+
+def _resolve_page_transforms(
+    document: PdfElectricalDocument,
+    page_transforms: Mapping[int, PdfPageTransform] | None,
+) -> tuple[dict[int, PdfPageTransform], bool]:
+    if page_transforms is None:
+        if document.page_count > 1:
+            raise ElectricalPdfError(
+                "multi-page electrical PDFs require an explicit PdfPageTransform "
+                "for every page before canonical geometry can be emitted"
+            )
+        frame_id = stable_id(
+            "frame",
+            f"pdf-electrical:{document.source_id}:page-local:1",
+        )
+        return {1: PdfPageTransform(frame_id=frame_id)}, False
+
+    transforms = dict(page_transforms)
+    expected_pages = set(range(1, document.page_count + 1))
+    actual_pages = set(transforms)
+    if actual_pages != expected_pages:
+        missing = sorted(expected_pages - actual_pages)
+        extra = sorted(actual_pages - expected_pages)
+        details = []
+        if missing:
+            details.append(f"missing pages {missing}")
+        if extra:
+            details.append(f"unknown pages {extra}")
+        raise ElectricalPdfError(
+            "page_transforms must cover every PDF page exactly: " + ", ".join(details)
+        )
+    if not all(isinstance(transform, PdfPageTransform) for transform in transforms.values()):
+        raise ElectricalPdfError("page_transforms values must be PdfPageTransform instances")
+    frame_ids = {transform.frame_id for transform in transforms.values()}
+    if len(frame_ids) != 1:
+        raise ElectricalPdfError(
+            "all page transforms must target the same canonical coordinate frame"
+        )
+    return transforms, True
+
+
 def _provenance(
     document: PdfElectricalDocument,
     *,
@@ -645,10 +767,29 @@ class ElectricalPdfImporter:
         path: str | Path,
         *,
         source_id: str | None = None,
+        page_transforms: Mapping[int, PdfPageTransform] | None = None,
     ) -> BuildingModel:
-        return self.import_document(extract_pdf(path, source_id=source_id))
+        return self.import_document(
+            extract_pdf(path, source_id=source_id),
+            page_transforms=page_transforms,
+        )
 
-    def import_document(self, document: PdfElectricalDocument) -> BuildingModel:
+    def import_document(
+        self,
+        document: PdfElectricalDocument,
+        *,
+        page_transforms: Mapping[int, PdfPageTransform] | None = None,
+    ) -> BuildingModel:
+        transforms, has_explicit_registration = _resolve_page_transforms(
+            document,
+            page_transforms,
+        )
+        frame_id = next(iter(transforms.values())).frame_id
+        spatial_status = (
+            "registered-to-canonical-frame"
+            if has_explicit_registration
+            else "single-page-local-unregistered"
+        )
         texts = tuple(sorted(document.texts, key=lambda item: (item.page, item.element_id)))
         symbols = tuple(sorted(document.symbols, key=lambda item: (item.page, item.element_id)))
         candidates: dict[str, _EntityCandidate] = {}
@@ -673,6 +814,7 @@ class ElectricalPdfImporter:
                         entity_kind=kind,
                         canonical_type=canonical_type,
                         tag=tag,
+                        identity_key=f"tag:{kind}:{canonical_type}:{tag}",
                         page=observation.page,
                         x_pt=observation.x_pt,
                         y_pt=observation.y_pt,
@@ -740,12 +882,37 @@ class ElectricalPdfImporter:
             )
 
             if candidate is None:
-                key = f"p{symbol.page}:{kind}:symbol:{symbol.element_id}"
+                native_id = str(symbol.metadata.get("native_id") or "").strip()
+                if not native_id:
+                    unresolved_observations.append(
+                        {
+                            "kind": "symbol",
+                            "page": symbol.page,
+                            "source_element_id": symbol.element_id,
+                            "name": symbol.name,
+                            "source_kind": symbol.source_kind,
+                            "position_pt": {"x": symbol.x_pt, "y": symbol.y_pt},
+                            "classification_candidates": ranked,
+                            "recognized_classification": {
+                                "entity_kind": kind,
+                                "canonical_type": canonical_type,
+                                "confidence": confidence,
+                            },
+                            "metadata": dict(symbol.metadata),
+                            "status": "unresolved_identity",
+                            "reason": (
+                                "recognized symbol has no stable semantic tag or native identifier"
+                            ),
+                        }
+                    )
+                    continue
+                key = f"p{symbol.page}:{kind}:native:{native_id}"
                 candidate = _EntityCandidate(
                     key=key,
                     entity_kind=kind,
                     canonical_type=canonical_type,
                     tag=None,
+                    identity_key=f"native:{symbol.source_kind}:{native_id}",
                     page=symbol.page,
                     x_pt=symbol.x_pt,
                     y_pt=symbol.y_pt,
@@ -817,29 +984,43 @@ class ElectricalPdfImporter:
         equipment: list[ElectricalEquipment] = []
         devices: list[ElectricalDevice] = []
         entity_by_page_tag: dict[tuple[int, str], ElectricalEquipment | ElectricalDevice] = {}
+        identity_owners: dict[str, str] = {}
 
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
-            source_key = (
-                candidate.source_element_ids[0]
-                if candidate.source_element_ids
-                else candidate.key
-            )
+            if candidate.identity_key is None:
+                raise ElectricalPdfError(
+                    f"{candidate.key} lacks a stable semantic or native identity key"
+                )
+            prior_owner = identity_owners.setdefault(candidate.identity_key, candidate.key)
+            if prior_owner != candidate.key:
+                raise ElectricalPdfError(
+                    "the same stable semantic identity was recognized at multiple source "
+                    f"locations ({prior_owner}, {candidate.key}); reconcile that ambiguity "
+                    "before canonicalizing"
+                )
             id_kind = "equipment" if candidate.entity_kind == "equipment" else "device"
             entity_id = stable_id(
                 id_kind,
-                f"pdf-electrical:{document.source_id}:{source_key}",
+                f"pdf-electrical:{document.source_id}:{candidate.identity_key}",
             )
             all_texts = tuple(dict.fromkeys(candidate.texts))
             mounting = _mounting_heights_m(all_texts)
             hosts = _host_hints(all_texts)
             rated_voltage_v, system = _extract_voltage(all_texts)
 
+            transform = transforms[candidate.page]
             lane_attributes: dict[str, Any] = {
-                "spatial_status": "source-page-local-unregistered",
+                "spatial_status": spatial_status,
                 "source_page": candidate.page,
                 "source_position_pt": {"x": candidate.x_pt, "y": candidate.y_pt},
                 "source_element_ids": sorted(set(candidate.source_element_ids)),
-                "pose_interpretation": "source-page position in metres; z=0 is the PDF page plane",
+                "stable_identity_key": candidate.identity_key,
+                "page_transform": transform.to_attributes(),
+                "pose_interpretation": (
+                    "source-page position transformed into the canonical frame"
+                    if has_explicit_registration
+                    else "single-page PDF-local position in metres; no building registration asserted"
+                ),
             }
             if candidate.tag:
                 lane_attributes["tag"] = candidate.tag
@@ -864,13 +1045,7 @@ class ElectricalPdfImporter:
             common = {
                 "id": entity_id,
                 "name": candidate.tag,
-                "pose": Pose(
-                    position=Point3(
-                        x=candidate.x_pt * POINT_TO_M,
-                        y=candidate.y_pt * POINT_TO_M,
-                        z=0.0,
-                    )
-                ),
+                "pose": Pose(position=transform.apply(candidate.x_pt, candidate.y_pt)),
                 "level_id": None,
                 "space_id": None,
                 "host_id": None,
@@ -906,7 +1081,7 @@ class ElectricalPdfImporter:
                 entity_by_page_tag[(candidate.page, candidate.tag)] = entity
 
         ports_by_owner_role: dict[tuple[str, str], Port] = {}
-        circuits: list[Circuit] = []
+        circuit_evidence: dict[str, dict[str, Any]] = {}
         unresolved_circuits: list[dict[str, Any]] = []
 
         def port_for(
@@ -917,7 +1092,13 @@ class ElectricalPdfImporter:
             key = (entity.id, role)
             existing = ports_by_owner_role.get(key)
             if existing is not None:
-                return existing
+                merged = replace(
+                    existing,
+                    confidence=max(existing.confidence, provenance.confidence),
+                    provenance=_merge_provenance(existing.provenance, (provenance,)),
+                )
+                ports_by_owner_role[key] = merged
+                return merged
             port = Port(
                 id=stable_id("port", f"pdf-electrical:{document.source_id}:{entity.id}:{role}"),
                 owner_id=entity.id,
@@ -930,7 +1111,7 @@ class ElectricalPdfImporter:
                 attributes={
                     "pdf_electrical": {
                         "inferred_for_circuit_semantics": True,
-                        "spatial_status": "source-page-local-unregistered",
+                        "spatial_status": entity.attributes["pdf_electrical"]["spatial_status"],
                     }
                 },
             )
@@ -953,7 +1134,11 @@ class ElectricalPdfImporter:
             for (page, tag), entity in sorted(entity_by_page_tag.items()):
                 if page != observation.page or not isinstance(entity, ElectricalDevice):
                     continue
-                if re.search(rf"(?<![A-Z0-9_.-]){re.escape(tag)}(?![A-Z0-9_.-])", observation.text, re.IGNORECASE):
+                if re.search(
+                    rf"(?<![A-Z0-9_.-]){re.escape(tag)}(?![A-Z0-9_.-])",
+                    observation.text,
+                    re.IGNORECASE,
+                ):
                     load_entities.append(entity)
 
             evidence = {
@@ -980,6 +1165,8 @@ class ElectricalPdfImporter:
             voltage_v, _ = _extract_voltage((observation.text,))
             poles_match = _POLES_RE.search(observation.text)
             phase_match = _PHASE_RE.search(observation.text)
+            poles = int(poles_match.group("poles")) if poles_match else None
+            phase = f"{phase_match.group('phase')}ph" if phase_match else None
             circuit_confidence = 0.92
             source_provenance = _provenance(
                 document,
@@ -994,34 +1181,95 @@ class ElectricalPdfImporter:
                 port_for(entity, "sink", source_provenance)
                 for entity in sorted(load_entities, key=lambda item: item.id)
             )
-            circuit = Circuit(
-                id=stable_id(
-                    "circuit",
-                    f"pdf-electrical:{document.source_id}:p{observation.page}:{panel_tag}:{circuit_number}",
-                ),
-                name=f"{panel_tag} {circuit_number}",
-                source_port_id=source_port.id,
-                load_port_ids=tuple(port.id for port in load_ports),
-                circuit_number=circuit_number,
-                voltage_v=voltage_v,
-                poles=int(poles_match.group("poles")) if poles_match else None,
-                phase=(f"{phase_match.group('phase')}ph" if phase_match else None),
-                confidence=circuit_confidence,
-                provenance=(source_provenance,),
-                attributes={
-                    "pdf_electrical": {
-                        "inference_basis": "same text observation explicitly names panel, circuit, and load tag",
-                        "source_text": observation.text,
-                        "spatial_attachment_pending": True,
-                    }
+            circuit_id = stable_id(
+                "circuit",
+                f"pdf-electrical:{document.source_id}:{source_entity.id}:{circuit_number}",
+            )
+            bucket = circuit_evidence.setdefault(
+                circuit_id,
+                {
+                    "name": f"{panel_tag} {circuit_number}",
+                    "source_port_id": source_port.id,
+                    "load_port_ids": set(),
+                    "circuit_number": circuit_number,
+                    "voltage_v": set(),
+                    "poles": set(),
+                    "phase": set(),
+                    "provenance": [],
+                    "evidence": [],
                 },
             )
-            circuits.append(circuit)
+            if bucket["source_port_id"] != source_port.id:
+                raise ElectricalPdfError(
+                    f"circuit {circuit_number} resolved to more than one source port"
+                )
+            bucket["load_port_ids"].update(port.id for port in load_ports)
+            if voltage_v is not None:
+                bucket["voltage_v"].add(voltage_v)
+            if poles is not None:
+                bucket["poles"].add(poles)
+            if phase is not None:
+                bucket["phase"].add(phase)
+            bucket["provenance"].append(source_provenance)
+            evidence.update(
+                {
+                    "voltage_v": voltage_v,
+                    "poles": poles,
+                    "phase": phase,
+                    "status": "resolved",
+                }
+            )
+            bucket["evidence"].append(evidence)
 
-        # Duplicate circuit text is common in extracted PDFs. Keep one deterministic semantic circuit.
-        unique_circuits: dict[str, Circuit] = {}
-        for circuit in sorted(circuits, key=lambda item: item.id):
-            unique_circuits.setdefault(circuit.id, circuit)
+        circuits: list[Circuit] = []
+        for circuit_id, bucket in sorted(circuit_evidence.items()):
+            conflicts: dict[str, list[Any]] = {}
+
+            def one_or_none(field: str) -> Any:
+                values = sorted(bucket[field])
+                if len(values) == 1:
+                    return values[0]
+                if len(values) > 1:
+                    conflicts[field] = values
+                return None
+
+            evidence_rows = sorted(
+                bucket["evidence"],
+                key=lambda item: (
+                    int(item["page"]),
+                    str(item["source_element_id"]),
+                    str(item["source_text"]),
+                ),
+            )
+            voltage_v = one_or_none("voltage_v")
+            poles = one_or_none("poles")
+            phase = one_or_none("phase")
+            lane_attributes: dict[str, Any] = {
+                "inference_basis": (
+                    "each evidence row explicitly names the source panel, circuit, "
+                    "and independently recognized load tag"
+                ),
+                "spatial_attachment_pending": not has_explicit_registration,
+                "evidence": evidence_rows,
+                "source_texts": sorted({str(item["source_text"]) for item in evidence_rows}),
+            }
+            if conflicts:
+                lane_attributes["conflicting_electrical_evidence"] = conflicts
+            circuits.append(
+                Circuit(
+                    id=circuit_id,
+                    name=bucket["name"],
+                    source_port_id=bucket["source_port_id"],
+                    load_port_ids=tuple(sorted(bucket["load_port_ids"])),
+                    circuit_number=bucket["circuit_number"],
+                    voltage_v=voltage_v,
+                    poles=poles,
+                    phase=phase,
+                    confidence=0.92,
+                    provenance=_merge_provenance(bucket["provenance"]),
+                    attributes={"pdf_electrical": lane_attributes},
+                )
+            )
 
         global_notes = [
             {
@@ -1046,13 +1294,11 @@ class ElectricalPdfImporter:
         return BuildingModel(
             model_id=stable_id("model", f"pdf-electrical:{document.source_id}"),
             name=f"Electrical PDF recognition: {document.source_id}",
-            coordinate_system=CoordinateSystem(
-                frame_id=stable_id("frame", f"pdf-electrical:{document.source_id}")
-            ),
+            coordinate_system=CoordinateSystem(frame_id=frame_id),
             electrical_equipment=tuple(sorted(equipment, key=lambda item: item.id)),
             electrical_devices=tuple(sorted(devices, key=lambda item: item.id)),
             ports=tuple(sorted(ports_by_owner_role.values(), key=lambda item: item.id)),
-            circuits=tuple(unique_circuits.values()),
+            circuits=tuple(circuits),
             provenance=(model_provenance,),
             attributes={
                 "pdf_electrical": {
@@ -1060,9 +1306,10 @@ class ElectricalPdfImporter:
                     "page_count": document.page_count,
                     "source_length_unit": "pt",
                     "canonicalized_length_unit": "m",
-                    "spatial_status": "source-page-local-unregistered",
-                    "registration_pending": True,
-                    "pages_share_no_asserted_building_registration": document.page_count > 1,
+                    "spatial_status": spatial_status,
+                    "registration_pending": not has_explicit_registration,
+                    "page_transforms_supplied": has_explicit_registration,
+                    "registered_frame_id": frame_id,
                     "unresolved_observations": sorted(
                         unresolved_observations,
                         key=lambda item: (
@@ -1089,12 +1336,28 @@ class ElectricalPdfImporter:
         )
 
 
-def import_pdf(path: str | Path, *, source_id: str | None = None) -> BuildingModel:
-    return ElectricalPdfImporter().import_pdf(path, source_id=source_id)
+def import_pdf(
+    path: str | Path,
+    *,
+    source_id: str | None = None,
+    page_transforms: Mapping[int, PdfPageTransform] | None = None,
+) -> BuildingModel:
+    return ElectricalPdfImporter().import_pdf(
+        path,
+        source_id=source_id,
+        page_transforms=page_transforms,
+    )
 
 
-def import_document(document: PdfElectricalDocument) -> BuildingModel:
-    return ElectricalPdfImporter().import_document(document)
+def import_document(
+    document: PdfElectricalDocument,
+    *,
+    page_transforms: Mapping[int, PdfPageTransform] | None = None,
+) -> BuildingModel:
+    return ElectricalPdfImporter().import_document(
+        document,
+        page_transforms=page_transforms,
+    )
 
 
 __all__ = [
@@ -1103,6 +1366,7 @@ __all__ = [
     "ElectricalPdfError",
     "ElectricalPdfImporter",
     "PdfElectricalDocument",
+    "PdfPageTransform",
     "PdfSymbolObservation",
     "PdfTextObservation",
     "SymbolRule",

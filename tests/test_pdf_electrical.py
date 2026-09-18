@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator
 from pypdf import PdfWriter
 from pypdf.generic import (
@@ -13,11 +14,13 @@ from pypdf.generic import (
 
 from oabm.importers.pdf_electrical import (
     POINT_TO_M,
+    ElectricalPdfError,
     ElectricalPdfImporter,
     PdfElectricalDocument,
+    PdfPageTransform,
     extract_pdf,
 )
-from oabm.model import BuildingModel, validate_model
+from oabm.model import BuildingModel, stable_id, validate_model
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_electrical"
@@ -35,7 +38,7 @@ def _schema_validator() -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
-def _write_synthetic_pdf(path: Path) -> None:
+def _write_synthetic_pdf(path: Path, *, unrelated_prefix: bool = False) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=612, height=792)
 
@@ -65,11 +68,18 @@ def _write_synthetic_pdf(path: Path) -> None:
     )
 
     content = DecodedStreamObject()
+    unrelated = (
+        b"BT /F1 7 Tf 1 0 0 1 500 750 Tm (GENERAL NOTE UNRELATED) Tj ET\n"
+        b"0 0 5 5 re S\n"
+        if unrelated_prefix
+        else b""
+    )
     content.set_data(
-        b"BT /F1 10 Tf 1 0 0 1 72 700 Tm (PANEL LP 120/240V 1PH) Tj ET\n"
-        b"BT /F1 9 Tf 1 0 0 1 205 505 Tm (EVSE-1 +48\\\" AFF WALL MTD) Tj ET\n"
-        b"BT /F1 8 Tf 1 0 0 1 72 650 Tm (PANEL LP CKT 12 -> EVSE-1 240V 2P) Tj ET\n"
-        b"q 1 0 0 1 200 500 cm /EVSE1 Do Q\n"
+        unrelated
+        + b"BT /F1 10 Tf 1 0 0 1 72 700 Tm (PANEL LP 120/240V 1PH) Tj ET\n"
+        + b"BT /F1 9 Tf 1 0 0 1 205 505 Tm (EVSE-1 +48\\\" AFF WALL MTD) Tj ET\n"
+        + b"BT /F1 8 Tf 1 0 0 1 72 650 Tm (PANEL LP CKT 12 -> EVSE-1 240V 2P) Tj ET\n"
+        + b"q 1 0 0 1 200 500 cm /EVSE1 Do Q\n"
     )
     page[NameObject("/Contents")] = writer._add_object(content)
 
@@ -107,7 +117,7 @@ def test_fixture_emits_canonical_equipment_devices_circuit_and_metadata() -> Non
     lane = evse.attributes["pdf_electrical"]
     assert lane["mounting_height_m"] == 1.2192
     assert lane["host_hint"] == "wall"
-    assert lane["spatial_status"] == "source-page-local-unregistered"
+    assert lane["spatial_status"] == "single-page-local-unregistered"
     assert lane["symbol_names"] == ["/EVSE1"]
     assert "NOTE: EVSE SHALL BE WALL MOUNTED" in lane["annotations"]
     assert 0.0 < evse.confidence <= 1.0
@@ -312,3 +322,175 @@ def test_feet_inches_mounting_height_is_not_double_counted() -> None:
     lane = model.electrical_devices[0].attributes["pdf_electrical"]
     assert lane["mounting_height_m"] == 1.2192
     assert "mounting_height_candidates_m" not in lane
+
+
+def test_semantic_ids_survive_unrelated_pdf_text_and_graphics_edits(tmp_path: Path) -> None:
+    original_path = tmp_path / "original.pdf"
+    edited_path = tmp_path / "edited.pdf"
+    _write_synthetic_pdf(original_path)
+    _write_synthetic_pdf(edited_path, unrelated_prefix=True)
+
+    original_extracted = extract_pdf(original_path, source_id="synthetic:stable-edit")
+    edited_extracted = extract_pdf(edited_path, source_id="synthetic:stable-edit")
+
+    original_evse_text = next(
+        item for item in original_extracted.texts if "EVSE-1" in item.text and "CKT" not in item.text
+    )
+    edited_evse_text = next(
+        item for item in edited_extracted.texts if "EVSE-1" in item.text and "CKT" not in item.text
+    )
+    original_symbol = next(item for item in original_extracted.symbols if item.name == "/EVSE1")
+    edited_symbol = next(item for item in edited_extracted.symbols if item.name == "/EVSE1")
+    assert original_evse_text.element_id != edited_evse_text.element_id
+    assert original_symbol.element_id != edited_symbol.element_id
+
+    original = ElectricalPdfImporter().import_document(original_extracted)
+    edited = ElectricalPdfImporter().import_document(edited_extracted)
+
+    assert [item.id for item in original.electrical_equipment] == [
+        item.id for item in edited.electrical_equipment
+    ]
+    assert [item.id for item in original.electrical_devices] == [
+        item.id for item in edited.electrical_devices
+    ]
+    assert [item.id for item in original.ports] == [item.id for item in edited.ports]
+    assert [item.id for item in original.circuits] == [item.id for item in edited.circuits]
+
+
+def test_repeated_semantic_circuit_callouts_merge_loads_and_evidence() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:repeated-circuit",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:0010",
+                    "page": 1,
+                    "text": "PANEL LP 120/240V 1PH",
+                    "x_pt": 72,
+                    "y_pt": 700,
+                },
+                {
+                    "element_id": "p1:text:0020",
+                    "page": 1,
+                    "text": "EVSE-1",
+                    "x_pt": 200,
+                    "y_pt": 500,
+                },
+                {
+                    "element_id": "p1:text:0030",
+                    "page": 1,
+                    "text": "EVSE-2",
+                    "x_pt": 300,
+                    "y_pt": 500,
+                },
+                {
+                    "element_id": "p1:text:0040",
+                    "page": 1,
+                    "text": "PANEL LP CKT 12 -> EVSE-1 240V 2P",
+                    "x_pt": 72,
+                    "y_pt": 650,
+                },
+                {
+                    "element_id": "p1:text:0050",
+                    "page": 1,
+                    "text": "PANEL LP CKT 12 -> EVSE-2 240V 2P",
+                    "x_pt": 72,
+                    "y_pt": 625,
+                },
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert len(model.circuits) == 1
+    circuit = model.circuits[0]
+    assert len(circuit.load_port_ids) == 2
+    assert {item.source_element_id for item in circuit.provenance} == {
+        "p1:text:0040",
+        "p1:text:0050",
+    }
+    evidence = circuit.attributes["pdf_electrical"]["evidence"]
+    assert [item["source_element_id"] for item in evidence] == [
+        "p1:text:0040",
+        "p1:text:0050",
+    ]
+    source_port = next(port for port in model.ports if port.id == circuit.source_port_id)
+    assert {item.source_element_id for item in source_port.provenance} == {
+        "p1:text:0040",
+        "p1:text:0050",
+    }
+
+
+def test_unregistered_multi_page_coordinates_never_share_a_canonical_frame() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:multi-page",
+            "page_count": 2,
+            "texts": [
+                {
+                    "element_id": "p1:text:0010",
+                    "page": 1,
+                    "text": "EVSE-1",
+                    "x_pt": 100,
+                    "y_pt": 100,
+                },
+                {
+                    "element_id": "p2:text:0010",
+                    "page": 2,
+                    "text": "EVSE-2",
+                    "x_pt": 100,
+                    "y_pt": 100,
+                },
+            ],
+        }
+    )
+
+    with pytest.raises(ElectricalPdfError, match="multi-page electrical PDFs require"):
+        ElectricalPdfImporter().import_document(document)
+
+    frame_id = stable_id("frame", "synthetic:registered-multi-page")
+    model = ElectricalPdfImporter().import_document(
+        document,
+        page_transforms={
+            1: PdfPageTransform(frame_id=frame_id),
+            2: PdfPageTransform(frame_id=frame_id, tx_m=10.0),
+        },
+    )
+
+    assert model.coordinate_system.frame_id == frame_id
+    assert model.attributes["pdf_electrical"]["registration_pending"] is False
+    assert model.attributes["pdf_electrical"]["page_transforms_supplied"] is True
+    positions = {
+        device.name: (device.pose.position.x, device.pose.position.y)
+        for device in model.electrical_devices
+    }
+    assert positions["EVSE-2"][0] - positions["EVSE-1"][0] == pytest.approx(10.0)
+    assert positions["EVSE-2"][1] == pytest.approx(positions["EVSE-1"][1])
+    validate_model(model)
+
+def test_recognized_symbol_without_stable_identity_stays_unresolved() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:unstable-symbol-identity",
+            "page_count": 1,
+            "symbols": [
+                {
+                    "element_id": "p1:xobject:00042",
+                    "page": 1,
+                    "name": "/EVSE1",
+                    "x_pt": 100,
+                    "y_pt": 100,
+                }
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert not model.electrical_devices
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert len(unresolved) == 1
+    assert unresolved[0]["status"] == "unresolved_identity"
+    assert unresolved[0]["recognized_classification"]["canonical_type"] == "evse"

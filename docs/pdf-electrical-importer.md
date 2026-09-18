@@ -19,21 +19,24 @@ PDF convergence gate.
 
 ## Spatial semantics before convergence
 
-The canonical v1 electrical entities require a pose. Before an architectural
-registration exists, the importer converts PDF points to metres and records the
-symbol or text position in a source-page-local frame. The entity attributes mark
-that pose as `source-page-local-unregistered`; `level_id`, `space_id`, and
-`host_id` remain null.
+The canonical v1 model permits only one coordinate frame per document, so the
+importer never places unrelated page-local coordinate systems into the same
+canonical model.
 
-The source-page `z=0` plane is not a claimed mounting elevation. Mounting
-height, when stated by the plan, is preserved separately in
-`attributes.pdf_electrical.mounting_height_m`. If multiple heights are
-plausible, all candidates are retained and the status is marked ambiguous.
+A single-page electrical PDF can be imported before architectural registration.
+Its PDF points are converted to metres in a dedicated page-local canonical
+frame, and entity attributes mark that geometry as
+`single-page-local-unregistered`. The source-page `z=0` plane is not a
+claimed mounting elevation. Mounting height, when stated by the plan, is
+preserved separately in `attributes.pdf_electrical.mounting_height_m`.
 
-For multi-page files, page provenance remains authoritative and the model states
-that the pages have no asserted building registration. The later architecture
-plus electrical convergence step is responsible for transforming and hosting
-these recognized objects.
+A multi-page PDF requires an explicit `PdfPageTransform` for every page before
+canonical objects are emitted. Every transform must target the same canonical
+`frame_id`. If those transforms are missing, incomplete, or target different
+frames, import fails rather than creating falsely coincident geometry.
+Architectural convergence can supply those transforms once sheet registration
+is known. `level_id`, `space_id`, and `host_id` remain null until real
+canonical hosts are identified.
 
 ## Ambiguity rules
 
@@ -41,11 +44,18 @@ The importer does not create a circuit unless the same text evidence identifies
 a source panel, circuit number, and at least one independently recognized load
 tag. A circuit callout that merely mentions a panel or device does not
 materialize that object at the callout position. Incomplete circuit evidence is
-retained under `model.attributes.pdf_electrical.unresolved_circuits`.
+retained under `model.attributes.pdf_electrical.unresolved_circuits`. Repeated
+callouts for the same semantic source panel and circuit number are merged into
+one canonical circuit. Their load ports and provenance are unioned
+deterministically, and conflicting scalar electrical evidence is preserved as
+explicit ambiguity instead of being selected by extraction order.
 
 A symbol is materialized only when the symbol catalog yields one clear
-classification. Unknown or tied classifications are retained under
-`unresolved_observations`, including the candidate types and confidences.
+classification and the importer also has stable semantic or native identity.
+Unknown or tied classifications are retained under `unresolved_observations`,
+including the candidate types and confidences. Recognized symbols without stable
+identity are also retained there rather than receiving counter-derived
+canonical IDs.
 
 Host words such as `WALL MTD` are hints only. They never become a canonical
 `host_id` without a real canonical host object.
@@ -53,10 +63,20 @@ Host words such as `WALL MTD` are hints only. They never become a canonical
 ## Stable identity
 
 `import_pdf(..., source_id=...)` should receive a stable document identity when
-one is available. Canonical IDs are then derived from that source identity plus
-stable extraction element IDs. If no source ID is supplied, the extractor uses a
-SHA-256 identity for the exact PDF bytes, which guarantees repeatability for an
-unchanged file but intentionally treats a revised PDF as a new source version.
+one is available. Canonical electrical entity IDs are derived from stable
+semantic tags or stable source-native identifiers, never extraction order,
+text counters, graphics-operator counters, or mutable coordinates. Counter-based
+source element IDs remain useful provenance only.
+
+A recognized graphical symbol that has neither a stable semantic tag nor a
+stable native identifier remains unresolved instead of receiving an unstable
+canonical ID. When a stable native annotation identifier is present, it can be
+used as the identity key.
+
+If no source ID is supplied, the extractor uses a SHA-256 identity for the exact
+PDF bytes. That guarantees repeatability for an unchanged file but intentionally
+treats a revised PDF as a new source version. Callers that need identity to
+survive unrelated PDF revisions must provide the same stable `source_id`.
 
 ## Symbol recognition
 
@@ -70,10 +90,12 @@ changing the canonical model contract.
 `extract_pdf(path)` produces deterministic source observations from text,
 form XObjects, and supported PDF annotations.
 
-`ElectricalPdfImporter.import_document(document)` recognizes an extracted
-document and returns a canonical `BuildingModel`.
+`ElectricalPdfImporter.import_document(document, page_transforms=...)`
+recognizes an extracted document and returns a canonical `BuildingModel`.
+Multi-page documents require transforms for every page.
 
-`ElectricalPdfImporter.import_pdf(path)` performs both steps.
+`ElectricalPdfImporter.import_pdf(path, page_transforms=...)` performs both
+steps.
 
 The checked-in fixtures under `fixtures/pdf_electrical/` are synthetic and
 contain no customer plan data.

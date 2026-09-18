@@ -1,0 +1,29 @@
+{
+  "architecture_model": "fixtures/pdf_architecture/v1/simple-floor-plan.expected.json",
+  "electrical_observations": "fixtures/pdf_electrical/synthetic-sheet-e1.json",
+  "page_transform": {
+    "frame_id": "model",
+    "m11_m_per_pt": 0.006578947368421052,
+    "m12_m_per_pt": 0.0,
+    "m21_m_per_pt": 0.0,
+    "m22_m_per_pt": 0.0065,
+    "tx_m": 2.026315789473684,
+    "ty_m": 0.95,
+    "z_m": 0.0
+  },
+  "expected": {
+    "panel": {
+      "tag": "LP",
+      "level": "Ground",
+      "space": "GARAGE",
+      "position_m": [2.5, 5.5, 0.0]
+    },
+    "evse": {
+      "tag": "EVSE-1",
+      "level": "Ground",
+      "space": "GARAGE",
+      "host_source_side": "south",
+      "position_m": [4.0, 4.2, 1.2192]
+    }
+  }
+}

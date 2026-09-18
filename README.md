@@ -20,6 +20,7 @@ The model is the source of truth. A floor plan is a derived view of that model.
 - `src/oabm/importers/pdf_electrical`: electrical plan ingestion
 - `src/oabm/quantities`: model-derived takeoff quantities
 - `src/oabm/drawings`: generated plans, elevations, sections, and schedules
+- `src/oabm/qa`: reusable canonical handoff validators and golden regression harness
 - `fixtures`: known-answer synthetic buildings and routes
 
 See `docs/responsibility-relay.md` for the dependency graph.

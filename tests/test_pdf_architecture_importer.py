@@ -281,8 +281,15 @@ def test_later_explicit_elevation_upgrades_local_datum_and_prior_geometry() -> N
     assert [
         provenance.page
         for provenance in level.provenance
-        if "elevation" in provenance.method
+        if provenance.attributes.get("field") == "elevation_m"
     ] == [2]
+    elevation_provenance = next(
+        provenance
+        for provenance in level.provenance
+        if provenance.attributes.get("field") == "elevation_m"
+    )
+    assert elevation_provenance.source_element_id == "p2:elev"
+    assert elevation_provenance.attributes["source_text"] == "ELEVATION: 10'-0\""
     assert {space.name for space in model.spaces} == {"OFFICE", "STORAGE"}
     assert all(
         point.z == pytest.approx(3.048)
@@ -324,10 +331,14 @@ def test_later_explicit_level_height_upgrades_default_and_prior_geometry() -> No
     level = model.levels[0]
     assert level.height_m == pytest.approx(3.048)
     assert "level_height_reconciled" in _ambiguity_codes(model)
-    assert any(
-        provenance.page == 2 and "ceiling-height" in provenance.method
+    height_provenance = next(
+        provenance
         for provenance in level.provenance
+        if provenance.attributes.get("field") == "height_m"
     )
+    assert height_provenance.page == 2
+    assert height_provenance.source_element_id == "p2:height"
+    assert height_provenance.attributes["source_text"] == "LEVEL CEILING HEIGHT: 10'-0\""
     assert len(model.walls) == 8
     assert all(wall.height_m == pytest.approx(3.048) for wall in model.walls)
     assert all(space.height_m == pytest.approx(3.048) for space in model.spaces)
@@ -398,7 +409,11 @@ def test_level_override_updates_already_seen_level_and_all_geometry() -> None:
     assert level.elevation_m == pytest.approx(3.0)
     assert level.height_m == pytest.approx(3.2)
     assert "level_elevation_reconciled" in _ambiguity_codes(model)
-    assert [provenance.page for provenance in level.provenance] == [2]
+    assert [provenance.page for provenance in level.provenance] == [2, 2]
+    assert {
+        provenance.attributes.get("field")
+        for provenance in level.provenance
+    } == {"elevation_m", "height_m"}
     assert all(
         point.z == pytest.approx(3.0)
         for space in model.spaces

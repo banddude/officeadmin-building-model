@@ -1447,38 +1447,43 @@ def _make_openings(
     return tuple(result)
 
 
+def _level_measurement_provenance(
+    source_id: str,
+    measurement: _Measurement,
+    *,
+    field: str,
+) -> tuple[Provenance, ...]:
+    attributes: dict[str, object] = {"field": field}
+    if measurement.source_text is not None:
+        attributes["source_text"] = measurement.source_text
+    if field == "height_m":
+        attributes["scope"] = "level"
+    return _provenance(
+        source_id,
+        measurement.page_number,
+        method=measurement.method,
+        confidence=measurement.confidence,
+        source_element_id=measurement.source_element_id,
+        attributes=attributes,
+    )
+
+
 def _level_entity(source_id: str, info: _LevelInfo) -> Level:
     confidence = min(
         info.elevation_confidence,
         info.height_confidence if info.height_confidence is not None else 1.0,
     )
-
-    if info.height is not None and info.height.page_number == info.elevation.page_number:
-        method = (
-            info.elevation.method
-            if info.elevation.method == info.height.method
-            else f"{info.elevation.method}; {info.height.method}"
-        )
-        provenance = _provenance(
+    provenance = _level_measurement_provenance(
+        source_id,
+        info.elevation,
+        field="elevation_m",
+    )
+    if info.height is not None:
+        provenance += _level_measurement_provenance(
             source_id,
-            info.elevation.page_number,
-            method=method,
-            confidence=confidence,
+            info.height,
+            field="height_m",
         )
-    else:
-        provenance = _provenance(
-            source_id,
-            info.elevation.page_number,
-            method=info.elevation.method,
-            confidence=info.elevation.confidence,
-        )
-        if info.height is not None:
-            provenance += _provenance(
-                source_id,
-                info.height.page_number,
-                method=info.height.method,
-                confidence=info.height.confidence,
-            )
 
     return Level(
         id=stable_id("level", f"{source_id}|level:{info.anchor}"),

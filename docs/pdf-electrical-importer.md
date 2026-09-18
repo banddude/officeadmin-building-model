@@ -85,6 +85,37 @@ stamp metadata. It intentionally treats a bare `SW` as ambiguous. Projects with
 different CAD export names can pass their own `SymbolRule` sequence without
 changing the canonical model contract.
 
+The extractor also records a deliberately small family of ordinary stroked
+straight-line vector paths. A simple closed rectangular outline can reinforce a
+single already-recognized tagged electrical entity and adds source provenance,
+but vector geometry by itself never creates or classifies an electrical object.
+
+## Vector topology
+
+Open stroked straight-line paths can contribute circuit intent only when one
+connected component has unambiguous endpoint attachment to exactly one
+recognized panelboard/switchboard and at least one independently recognized
+device. Endpoint snapping is bounded and deterministic; T-junctions are joined
+only when a path endpoint actually reaches another path. Crossing lines without
+an endpoint junction are not treated as connected.
+
+A nearby circuit callout may contribute a circuit number, voltage, poles, or
+phase to that topology. Repeated text and vector evidence for the same source
+panel/circuit is merged into one canonical circuit with unioned load ports and
+provenance. A topology-only component may emit a circuit with no circuit number
+when the source/load relationship itself is unambiguous.
+
+The importer does not turn these source lines into canonical routes and does not
+populate explicit port-to-port physical connectivity. It emits canonical owner
+ports plus circuit source/load intent for the routing lane to consume. Multiple
+possible source equipment, ambiguous endpoint attachment, conflicting nearby
+circuit numbers/panel tags/load tags, or a dangling recognized endpoint are
+retained under `model.attributes.pdf_electrical.unresolved_topology` and do not
+materialize a circuit.
+
+Curved vector paths, fill-only shapes, and unassociated drafting geometry are
+outside this conservative recognition family.
+
 ## API
 
 `extract_pdf(path)` produces deterministic source observations from text,
@@ -98,4 +129,5 @@ Multi-page documents require transforms for every page.
 steps.
 
 The checked-in fixtures under `fixtures/pdf_electrical/` are synthetic and
-contain no customer plan data.
+contain no customer plan data. `vector-topology-sheet-e1.json` exercises the
+public-safe rectangular-marker and straight-line topology family.

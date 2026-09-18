@@ -110,6 +110,8 @@ class _Bounds:
 class _Rule:
     id: str
     bounds: _Bounds
+    geometry: Box3D | Polyline3D | Polygon3D | None = None
+    tolerance_m: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +207,7 @@ def route_between_ports(
 
     route_id = stable_id(
         "route",
-        f"{_ALGORITHM}:{model.model_id}:{route_type}:{start_port_id}:{end_port_id}",
+        f"{model.model_id}:{route_type}:{start_port_id}:{end_port_id}",
     )
     provenance = (
         Provenance(
@@ -255,6 +257,17 @@ def _applies(constraint: RouteConstraint, route_type: str) -> bool:
     return not constraint.applies_to or route_type in constraint.applies_to or "*" in constraint.applies_to
 
 
+def _constraint_rule(constraint: RouteConstraint, tolerance_m: float) -> _Rule:
+    if isinstance(constraint.geometry, Polygon3D):
+        _polygon_plane(constraint.geometry, constraint.id)
+    return _Rule(
+        constraint.id,
+        _geometry_bounds(constraint.geometry).expanded(tolerance_m),
+        constraint.geometry,
+        tolerance_m,
+    )
+
+
 def _collect_routing_geometry(
     model: BuildingModel,
     route_type: str,
@@ -280,17 +293,15 @@ def _collect_routing_geometry(
         kind = _normalize_constraint_type(constraint.constraint_type)
         padding = constraint.clearance_m + options.clearance_m + route_radius
         if kind in _KEEP_OUT_TYPES:
-            rule = _Rule(constraint.id, _geometry_bounds(constraint.geometry).expanded(padding))
+            rule = _constraint_rule(constraint, padding)
             if constraint.hard:
                 hard.append(rule)
             else:
                 soft.append(rule)
         elif kind in _REQUIRED_TYPES:
-            rule = _Rule(
-                constraint.id,
-                _geometry_bounds(constraint.geometry).expanded(
-                    padding + options.corridor_tolerance_m
-                ),
+            rule = _constraint_rule(
+                constraint,
+                padding + options.corridor_tolerance_m,
             )
             if constraint.hard:
                 required.append(rule)
@@ -298,15 +309,13 @@ def _collect_routing_geometry(
                 preferred.append(rule)
         elif kind in _PREFERRED_TYPES:
             preferred.append(
-                _Rule(
-                    constraint.id,
-                    _geometry_bounds(constraint.geometry).expanded(
-                        padding + options.corridor_tolerance_m
-                    ),
+                _constraint_rule(
+                    constraint,
+                    padding + options.corridor_tolerance_m,
                 )
             )
         elif kind in _AVOID_TYPES:
-            rule = _Rule(constraint.id, _geometry_bounds(constraint.geometry).expanded(padding))
+            rule = _constraint_rule(constraint, padding)
             if constraint.hard:
                 hard.append(rule)
             else:
@@ -424,6 +433,11 @@ def _candidate_coordinates(
         xs.update({_canon(bounds.min_x - escape, p), _canon(bounds.max_x + escape, p), _canon(bounds.center.x, p)})
         ys.update({_canon(bounds.min_y - escape, p), _canon(bounds.max_y + escape, p), _canon(bounds.center.y, p)})
         zs.update({_canon(bounds.min_z - escape, p), _canon(bounds.max_z + escape, p), _canon(bounds.center.z, p)})
+        if isinstance(rule.geometry, (Polyline3D, Polygon3D)):
+            for point in rule.geometry.points:
+                xs.add(_canon(point.x, p))
+                ys.add(_canon(point.y, p))
+                zs.add(_canon(point.z, p))
 
     for wall in model.walls:
         for point in wall.centerline.points:
@@ -631,9 +645,9 @@ def _edge_base_cost(
     vertical = abs(a.z - b.z) > _EPS and abs(a.x - b.x) <= _EPS and abs(a.y - b.y) <= _EPS
     cost = length * (options.vertical_cost_factor if vertical else 1.0)
     if geometry.soft_blockers:
-        hits = sum(_segment_intersects_bounds(a, b, item.bounds) for item in geometry.soft_blockers)
+        hits = sum(_rule_intersects_segment(a, b, item) for item in geometry.soft_blockers)
         cost += length * options.soft_obstacle_penalty_factor * hits
-    if geometry.preferred and any(_segment_intersects_bounds(a, b, item.bounds) for item in geometry.preferred):
+    if geometry.preferred and any(_rule_intersects_segment(a, b, item) for item in geometry.preferred):
         cost *= 1.0 - options.preferred_corridor_discount
     if geometry.surfaces and any(_segment_midpoint_in_bounds(a, b, item.bounds) for item in geometry.surfaces):
         cost *= 1.0 - options.surface_path_discount
@@ -643,23 +657,23 @@ def _edge_base_cost(
 def _required_mask(mask: int, a: Point3, b: Point3, required: tuple[_Rule, ...]) -> int:
     if _distance(a, b) <= _EPS:
         for index, item in enumerate(required):
-            if _point_in_bounds(a, item.bounds):
+            if _rule_contains_point(a, item):
                 mask |= 1 << index
         return mask
     for index, item in enumerate(required):
-        if _segment_intersects_bounds(a, b, item.bounds):
+        if _rule_intersects_segment(a, b, item):
             mask |= 1 << index
     return mask
 
 
 def _point_blocked(point: Point3, blockers: tuple[_Rule, ...]) -> bool:
-    return any(_point_in_bounds(point, item.bounds) for item in blockers)
+    return any(_rule_contains_point(point, item) for item in blockers)
 
 
 def _segment_clear(a: Point3, b: Point3, blockers: tuple[_Rule, ...]) -> bool:
     if _distance(a, b) <= _EPS:
         return not _point_blocked(a, blockers)
-    return not any(_segment_intersects_bounds(a, b, item.bounds) for item in blockers)
+    return not any(_rule_intersects_segment(a, b, item) for item in blockers)
 
 
 def _point_in_bounds(point: Point3, bounds: _Bounds) -> bool:
@@ -699,6 +713,206 @@ def _segment_intersects_bounds(a: Point3, b: Point3, bounds: _Bounds) -> bool:
         if t_min > t_max + _EPS:
             return False
     return t_max >= -_EPS and t_min <= 1.0 + _EPS
+
+
+
+def _rule_contains_point(point: Point3, rule: _Rule) -> bool:
+    if not _point_in_bounds(point, rule.bounds):
+        return False
+    if isinstance(rule.geometry, Polyline3D):
+        return any(
+            _point_segment_distance(point, start, end) <= rule.tolerance_m + _EPS
+            for start, end in zip(rule.geometry.points, rule.geometry.points[1:])
+        )
+    if isinstance(rule.geometry, Polygon3D):
+        return _point_polygon_distance(point, rule.geometry, rule.id) <= rule.tolerance_m + _EPS
+    return True
+
+
+def _rule_intersects_segment(a: Point3, b: Point3, rule: _Rule) -> bool:
+    if not _segment_intersects_bounds(a, b, rule.bounds):
+        return False
+    if isinstance(rule.geometry, Polyline3D):
+        return any(
+            _segment_segment_distance(a, b, start, end) <= rule.tolerance_m + _EPS
+            for start, end in zip(rule.geometry.points, rule.geometry.points[1:])
+        )
+    if isinstance(rule.geometry, Polygon3D):
+        return _segment_polygon_distance(a, b, rule.geometry, rule.id) <= rule.tolerance_m + _EPS
+    return True
+
+
+def _delta(a: Point3, b: Point3) -> tuple[float, float, float]:
+    return (b.x - a.x, b.y - a.y, b.z - a.z)
+
+
+def _dot(left: tuple[float, float, float], right: tuple[float, float, float]) -> float:
+    return sum(a * b for a, b in zip(left, right))
+
+
+def _cross(left: tuple[float, float, float], right: tuple[float, float, float]) -> tuple[float, float, float]:
+    return (
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    )
+
+
+def _point_segment_distance(point: Point3, start: Point3, end: Point3) -> float:
+    segment = _delta(start, end)
+    length_sq = _dot(segment, segment)
+    if length_sq <= _EPS:
+        return _distance(point, start)
+    from_start = _delta(start, point)
+    t = max(0.0, min(1.0, _dot(from_start, segment) / length_sq))
+    closest = Point3(
+        x=start.x + segment[0] * t,
+        y=start.y + segment[1] * t,
+        z=start.z + segment[2] * t,
+    )
+    return _distance(point, closest)
+
+
+def _segment_segment_distance(a: Point3, b: Point3, c: Point3, d: Point3) -> float:
+    u = _delta(a, b)
+    v = _delta(c, d)
+    w = _delta(c, a)
+    aa = _dot(u, u)
+    cc = _dot(v, v)
+    if aa <= _EPS:
+        return _point_segment_distance(a, c, d)
+    if cc <= _EPS:
+        return _point_segment_distance(c, a, b)
+
+    bb = _dot(u, v)
+    dd = _dot(u, w)
+    ee = _dot(v, w)
+    denominator = aa * cc - bb * bb
+    if denominator <= _EPS:
+        s = 0.0
+    else:
+        s = max(0.0, min(1.0, (bb * ee - cc * dd) / denominator))
+    t = (bb * s + ee) / cc
+    if t < 0.0:
+        t = 0.0
+        s = max(0.0, min(1.0, -dd / aa))
+    elif t > 1.0:
+        t = 1.0
+        s = max(0.0, min(1.0, (bb - dd) / aa))
+
+    left = Point3(x=a.x + u[0] * s, y=a.y + u[1] * s, z=a.z + u[2] * s)
+    right = Point3(x=c.x + v[0] * t, y=c.y + v[1] * t, z=c.z + v[2] * t)
+    return _distance(left, right)
+
+
+def _polygon_plane(
+    polygon: Polygon3D,
+    rule_id: str,
+) -> tuple[Point3, tuple[float, float, float]]:
+    origin = polygon.points[0]
+    normal = None
+    for first, second in zip(polygon.points[1:], polygon.points[2:]):
+        candidate = _cross(_delta(origin, first), _delta(origin, second))
+        magnitude = math.sqrt(_dot(candidate, candidate))
+        if magnitude > _EPS:
+            normal = tuple(value / magnitude for value in candidate)
+            break
+    if normal is None:
+        raise RoutingError(f"route constraint {rule_id!r} has degenerate Polygon3D geometry")
+    for point in polygon.points:
+        if abs(_dot(_delta(origin, point), normal)) > 1e-7:
+            raise RoutingError(f"route constraint {rule_id!r} has non-planar Polygon3D geometry")
+    return origin, normal
+
+
+def _project_2d(point: Point3, normal: tuple[float, float, float]) -> tuple[float, float]:
+    drop = max(range(3), key=lambda index: abs(normal[index]))
+    if drop == 0:
+        return point.y, point.z
+    if drop == 1:
+        return point.x, point.z
+    return point.x, point.y
+
+
+def _point_on_segment_2d(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> bool:
+    cross = (point[0] - start[0]) * (end[1] - start[1]) - (point[1] - start[1]) * (end[0] - start[0])
+    if abs(cross) > 1e-9:
+        return False
+    dot = (point[0] - start[0]) * (point[0] - end[0]) + (point[1] - start[1]) * (point[1] - end[1])
+    return dot <= 1e-9
+
+
+def _point_in_polygon_projection(
+    point: Point3,
+    polygon: Polygon3D,
+    normal: tuple[float, float, float],
+) -> bool:
+    target = _project_2d(point, normal)
+    vertices = [_project_2d(vertex, normal) for vertex in polygon.points]
+    for start, end in zip(vertices, (*vertices[1:], vertices[0])):
+        if _point_on_segment_2d(target, start, end):
+            return True
+
+    inside = False
+    x, y = target
+    previous = vertices[-1]
+    for current in vertices:
+        x1, y1 = previous
+        x2, y2 = current
+        if (y1 > y) != (y2 > y):
+            crossing_x = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < crossing_x:
+                inside = not inside
+        previous = current
+    return inside
+
+
+def _point_polygon_distance(point: Point3, polygon: Polygon3D, rule_id: str) -> float:
+    origin, normal = _polygon_plane(polygon, rule_id)
+    signed_distance = _dot(_delta(origin, point), normal)
+    projected = Point3(
+        x=point.x - normal[0] * signed_distance,
+        y=point.y - normal[1] * signed_distance,
+        z=point.z - normal[2] * signed_distance,
+    )
+    if _point_in_polygon_projection(projected, polygon, normal):
+        return abs(signed_distance)
+    edges = zip(polygon.points, (*polygon.points[1:], polygon.points[0]))
+    return min(_point_segment_distance(point, start, end) for start, end in edges)
+
+
+def _segment_polygon_distance(a: Point3, b: Point3, polygon: Polygon3D, rule_id: str) -> float:
+    origin, normal = _polygon_plane(polygon, rule_id)
+    distance_a = _dot(_delta(origin, a), normal)
+    distance_b = _dot(_delta(origin, b), normal)
+
+    if abs(distance_a) <= _EPS and _point_in_polygon_projection(a, polygon, normal):
+        return 0.0
+    if abs(distance_b) <= _EPS and _point_in_polygon_projection(b, polygon, normal):
+        return 0.0
+    denominator = distance_a - distance_b
+    if abs(denominator) > _EPS:
+        t = distance_a / denominator
+        if -_EPS <= t <= 1.0 + _EPS:
+            intersection = Point3(
+                x=a.x + (b.x - a.x) * t,
+                y=a.y + (b.y - a.y) * t,
+                z=a.z + (b.z - a.z) * t,
+            )
+            if _point_in_polygon_projection(intersection, polygon, normal):
+                return 0.0
+
+    distances = [
+        _point_polygon_distance(a, polygon, rule_id),
+        _point_polygon_distance(b, polygon, rule_id),
+    ]
+    for start, end in zip(polygon.points, (*polygon.points[1:], polygon.points[0])):
+        distances.append(_segment_segment_distance(a, b, start, end))
+    return min(distances)
 
 
 def _unit(vector: Vector3) -> tuple[float, float, float]:

@@ -1,11 +1,12 @@
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from oabm.model import BuildingModel, validate_model
-from oabm.importers.pdf_architecture import ImportOptions, RegistrationHint
+from oabm.importers.pdf_architecture import ImportOptions, LevelOverride, RegistrationHint
 from oabm.importers.pdf_architecture.extract import extract_pdf
 from oabm.importers.pdf_architecture.importer import classify_page, import_architectural_pdf, import_observations
 from oabm.importers.pdf_architecture.types import (
@@ -240,4 +241,212 @@ def test_repeated_room_identity_on_registered_page_is_explicitly_not_replaced() 
     assert len(model.spaces) == 1
     assert len(model.walls) == 4
     assert "duplicate_room_identity_across_pages" in _ambiguity_codes(model)
+    validate_model(model)
+
+
+
+def test_later_explicit_elevation_upgrades_local_datum_and_prior_geometry() -> None:
+    first = _plan_page(page_number=1, room_name="OFFICE")
+    first = replace(
+        first,
+        texts=tuple(item for item in first.texts if "ELEVATION" not in item.text.upper()),
+    )
+    second = _plan_page(page_number=2, room_name="STORAGE", dx=20)
+    second = replace(
+        second,
+        texts=tuple(
+            replace(item, text="ELEVATION: 10'-0\"") if item.element_id == "p2:elev" else item
+            for item in second.texts
+        ),
+    )
+    mpp = 100 * 0.0254 / 72
+    hint = RegistrationHint(
+        page_number=2,
+        source_a_pt=(0, 0),
+        source_b_pt=(72, 0),
+        model_a_m=(8, 0),
+        model_b_m=(8 + 72 * mpp, 0),
+    )
+
+    model = import_observations(
+        _document(first, second),
+        options=ImportOptions(registrations=(hint,)),
+    )
+
+    level = model.levels[0]
+    assert level.elevation_m == pytest.approx(3.048)
+    assert "level_elevation_reconciled" in _ambiguity_codes(model)
+    assert [
+        provenance.page
+        for provenance in level.provenance
+        if "elevation" in provenance.method
+    ] == [2]
+    assert {space.name for space in model.spaces} == {"OFFICE", "STORAGE"}
+    assert all(
+        point.z == pytest.approx(3.048)
+        for space in model.spaces
+        for point in space.footprint.points
+    )
+    validate_model(model)
+
+
+def test_later_explicit_level_height_upgrades_default_and_prior_geometry() -> None:
+    first = _plan_page(page_number=1, room_name="OFFICE", include_height=False)
+    second = _plan_page(page_number=2, room_name="STORAGE", dx=20)
+    second = replace(
+        second,
+        texts=tuple(
+            replace(item, text="LEVEL CEILING HEIGHT: 10'-0\"")
+            if item.element_id == "p2:height"
+            else item
+            for item in second.texts
+        ),
+    )
+    mpp = 100 * 0.0254 / 72
+    hint = RegistrationHint(
+        page_number=2,
+        source_a_pt=(0, 0),
+        source_b_pt=(72, 0),
+        model_a_m=(8, 0),
+        model_b_m=(8 + 72 * mpp, 0),
+    )
+
+    model = import_observations(
+        _document(first, second),
+        options=ImportOptions(
+            registrations=(hint,),
+            default_wall_height_m=2.4,
+        ),
+    )
+
+    level = model.levels[0]
+    assert level.height_m == pytest.approx(3.048)
+    assert "level_height_reconciled" in _ambiguity_codes(model)
+    assert any(
+        provenance.page == 2 and "ceiling-height" in provenance.method
+        for provenance in level.provenance
+    )
+    assert len(model.walls) == 8
+    assert all(wall.height_m == pytest.approx(3.048) for wall in model.walls)
+    assert all(space.height_m == pytest.approx(3.048) for space in model.spaces)
+    validate_model(model)
+
+
+def test_conflicting_explicit_level_elevations_are_not_silently_collapsed() -> None:
+    first = _plan_page(page_number=1, room_name="OFFICE")
+    second = _plan_page(page_number=2, room_name="STORAGE", dx=20)
+    second = replace(
+        second,
+        texts=tuple(
+            replace(item, text="ELEVATION: 10'-0\"") if item.element_id == "p2:elev" else item
+            for item in second.texts
+        ),
+    )
+
+    model = import_observations(_document(first, second))
+
+    assert model.levels[0].elevation_m == pytest.approx(0.0)
+    assert "level_elevation_conflict" in _ambiguity_codes(model)
+    assert {space.name for space in model.spaces} == {"OFFICE"}
+    assert model.attributes["pdf_architecture"]["pages"][1]["status"] == "skipped_unresolved_level"
+    validate_model(model)
+
+
+def test_level_override_updates_already_seen_level_and_all_geometry() -> None:
+    first = _plan_page(page_number=1, room_name="OFFICE")
+    second = _plan_page(page_number=2, room_name="STORAGE", dx=20)
+    mpp = 100 * 0.0254 / 72
+    hint = RegistrationHint(
+        page_number=2,
+        source_a_pt=(0, 0),
+        source_b_pt=(72, 0),
+        model_a_m=(8, 0),
+        model_b_m=(8 + 72 * mpp, 0),
+    )
+    override = LevelOverride(
+        page_number=2,
+        elevation_m=3.0,
+        height_m=3.2,
+        note="review regression override",
+    )
+
+    model = import_observations(
+        _document(first, second),
+        options=ImportOptions(
+            registrations=(hint,),
+            level_overrides=(override,),
+        ),
+    )
+
+    level = model.levels[0]
+    assert level.elevation_m == pytest.approx(3.0)
+    assert level.height_m == pytest.approx(3.2)
+    assert "level_elevation_reconciled" in _ambiguity_codes(model)
+    assert "level_height_reconciled" in _ambiguity_codes(model)
+    assert [provenance.page for provenance in level.provenance] == [2]
+    assert all(
+        point.z == pytest.approx(3.0)
+        for space in model.spaces
+        for point in space.footprint.points
+    )
+    assert all(wall.height_m == pytest.approx(3.2) for wall in model.walls)
+    assert {
+        round(ceiling.footprint.points[0].z, 6)
+        for ceiling in model.ceilings
+    } == {6.2}
+    validate_model(model)
+
+
+def test_room_specific_ceiling_heights_stay_scoped_to_their_rooms() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=(
+            _text("title", "A1.1 FLOOR PLAN", 10, 180),
+            _text("scale", "SCALE: 1:100", 10, 165),
+            _text("level", "LEVEL: GROUND", 10, 150),
+            _text("elev", "ELEVATION: 0'-0\"", 10, 136),
+            _text("office-room", "ROOM: OFFICE", 40, 60),
+            _text("office-height", "CEILING HEIGHT: 9'-0\"", 45, 90),
+            _text("lobby-room", "ROOM: LOBBY", 170, 60),
+            _text("lobby-height", "CEILING HEIGHT: 12'-0\"", 175, 90),
+        ),
+        rects=(
+            PdfRectObservation(element_id="office-outer", bbox_pt=(20, 20, 130, 120)),
+            PdfRectObservation(element_id="office-inner", bbox_pt=(24, 24, 126, 116)),
+            PdfRectObservation(element_id="lobby-outer", bbox_pt=(150, 20, 260, 120)),
+            PdfRectObservation(element_id="lobby-inner", bbox_pt=(154, 24, 256, 116)),
+        ),
+    )
+
+    model = import_observations(_document(page))
+
+    assert model.levels[0].height_m is None
+    spaces = {space.name: space for space in model.spaces}
+    assert spaces["OFFICE"].height_m == pytest.approx(2.7432)
+    assert spaces["LOBBY"].height_m == pytest.approx(3.6576)
+    assert any(
+        provenance.source_element_id == "office-height"
+        and "room-scoped" in provenance.method
+        for provenance in spaces["OFFICE"].provenance
+    )
+    assert any(
+        provenance.source_element_id == "lobby-height"
+        and "room-scoped" in provenance.method
+        for provenance in spaces["LOBBY"].provenance
+    )
+
+    wall_heights = {
+        anchor: {wall.height_m for wall in model.walls if wall.attributes["pdf_architecture"]["room_anchor"] == anchor}
+        for anchor in ("office", "lobby")
+    }
+    assert wall_heights["office"] == {pytest.approx(2.7432)}
+    assert wall_heights["lobby"] == {pytest.approx(3.6576)}
+    assert sorted(
+        ceiling.footprint.points[0].z
+        for ceiling in model.ceilings
+    ) == pytest.approx([2.7432, 3.6576])
+    assert "level_height_conflict" not in _ambiguity_codes(model)
+    assert "ceiling_height_scope_unresolved" not in _ambiguity_codes(model)
     validate_model(model)

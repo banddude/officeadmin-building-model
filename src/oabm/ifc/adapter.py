@@ -280,9 +280,9 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
         entity_ifc[port.id] = item
         canonical_ports[port.id] = item
 
-    # Explicit canonical port connectivity is represented natively where IFC can
-    # express it. The canonical sidecar remains the lossless fallback if a source
-    # model uses a fan-out that IFC ports cannot represent one-to-many.
+    # Explicit canonical connectivity must be present in native IFC when export
+    # succeeds. Never let the JSON shadow conceal an unexpected IfcOpenShell/API
+    # failure, because Bonsai edits need a single authoritative representation.
     linked: set[tuple[str, str]] = set()
     for port in model.ports:
         for other_id in port.connected_port_ids:
@@ -296,10 +296,11 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
                     port2=canonical_ports[other_id],
                     direction="NOTDEFINED",
                 )
-            except Exception:
-                # Preserve exact canonical connectivity in OABM_Canonical when IFC
-                # cardinality prevents another native connection on the same port.
-                pass
+            except Exception as exc:
+                raise IfcAdapterError(
+                    "failed to materialize canonical port connection "
+                    f"{port.id!r} <-> {other_id!r}"
+                ) from exc
             linked.add(pair)
 
     fitting_ifc: dict[str, Any] = {}
@@ -1071,9 +1072,11 @@ def _apply_ifc_overrides(
         owner = _canonical_port_owner(ifc, item, canonical_items)
         if owner is not None:
             data["owner_id"] = owner
-        native = native_connections.get(data["id"], set())
-        if native:
-            data["connected_port_ids"] = sorted(native)
+        if data["id"] not in native_connections:
+            raise IfcAdapterError(
+                f"canonical port {data['id']!r} is missing from native connectivity scan"
+            )
+        data["connected_port_ids"] = sorted(native_connections[data["id"]])
         return
 
     if kind == "wall":
@@ -1087,32 +1090,36 @@ def _apply_ifc_overrides(
 
     if kind == "route":
         segments = route_segments.get(data["id"], [])
-        if segments:
-            points: list[tuple[float, float, float]] = []
-            expected_index = 0
-            for index, segment in segments:
-                if index != expected_index:
-                    raise IfcAdapterError(
-                        f"route {data['id']!r} has non-contiguous segment index {index}"
-                    )
-                segment_points = _polyline_points(segment)
-                if segment_points is None or len(segment_points) != 2:
-                    raise IfcAdapterError(
-                        f"route segment {segment.GlobalId!r} must have a two-point Axis representation"
-                    )
-                start, end = segment_points
-                if points and _tuple_distance(points[-1], start) > 1e-5:
-                    raise IfcAdapterError(
-                        f"route {data['id']!r} segment {index} is disconnected"
-                    )
-                if not points:
-                    points.append(start)
-                points.append(end)
-                expected_index += 1
-            data["centerline"] = {
-                "kind": "polyline3d",
-                "points": [_point_tuple_dict(point) for point in points],
-            }
+        if not segments:
+            raise IfcAdapterError(
+                f"route {data['id']!r} has no native route segments; "
+                "refusing to resurrect deleted geometry from OABM_Canonical"
+            )
+        points: list[tuple[float, float, float]] = []
+        expected_index = 0
+        for index, segment in segments:
+            if index != expected_index:
+                raise IfcAdapterError(
+                    f"route {data['id']!r} has non-contiguous segment index {index}"
+                )
+            segment_points = _polyline_points(segment)
+            if segment_points is None or len(segment_points) != 2:
+                raise IfcAdapterError(
+                    f"route segment {segment.GlobalId!r} must have a two-point Axis representation"
+                )
+            start, end = segment_points
+            if points and _tuple_distance(points[-1], start) > 1e-5:
+                raise IfcAdapterError(
+                    f"route {data['id']!r} segment {index} is disconnected"
+                )
+            if not points:
+                points.append(start)
+            points.append(end)
+            expected_index += 1
+        data["centerline"] = {
+            "kind": "polyline3d",
+            "points": [_point_tuple_dict(point) for point in points],
+        }
         return
 
 

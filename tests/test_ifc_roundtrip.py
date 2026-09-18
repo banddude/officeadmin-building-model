@@ -4,6 +4,7 @@ from pathlib import Path
 
 import ifcopenshell
 import ifcopenshell.api.geometry
+import ifcopenshell.api.system
 import ifcopenshell.guid
 import ifcopenshell.util.placement
 import numpy as np
@@ -173,6 +174,59 @@ def test_explicit_canonical_port_connectivity_is_ifc_native_and_round_trips() ->
         canonical_id_to_ifc_guid(second["id"]),
     }
     assert from_ifc(ifc).to_dict() == model.to_dict()
+
+
+def _connected_port_model() -> BuildingModel:
+    document = copy.deepcopy(_garage().to_dict())
+    first, second = document["ports"]
+    first["connected_port_ids"] = [second["id"]]
+    second["connected_port_ids"] = [first["id"]]
+    document["routes"] = []
+    document["route_fittings"] = []
+    document["circuits"] = []
+    document["conductors"] = []
+    return BuildingModel.from_dict(document)
+
+
+def test_native_port_disconnect_clears_canonical_connectivity() -> None:
+    model = _connected_port_model()
+    ifc = to_ifc(model)
+
+    for relation in list(ifc.by_type("IfcRelConnectsPorts")):
+        ifc.remove(relation)
+
+    edited = from_ifc(ifc)
+    assert all(port.connected_port_ids == () for port in edited.ports)
+
+
+def test_unexpected_native_connectivity_export_failure_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _connected_port_model()
+
+    def fail_connect_port(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("synthetic connect_port failure")
+
+    monkeypatch.setattr(ifcopenshell.api.system, "connect_port", fail_connect_port)
+
+    with pytest.raises(
+        IfcAdapterError,
+        match="failed to materialize canonical port connection",
+    ):
+        to_ifc(model)
+
+
+def test_removing_all_native_route_segments_is_rejected() -> None:
+    ifc = to_ifc(_garage())
+
+    for segment in list(ifc.by_type("IfcCableCarrierSegment")):
+        ifc.remove(segment)
+
+    with pytest.raises(
+        IfcAdapterError,
+        match="has no native route segments",
+    ):
+        from_ifc(ifc)
 
 
 def test_stable_global_id_replacement_is_rejected() -> None:

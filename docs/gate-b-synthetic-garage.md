@@ -27,6 +27,31 @@ This distinction matters: the route that passes Gate B must come from `oabm.rout
 
 ## Bonsai acceptance
 
+### Verified Bonsai open/edit/save/reopen proof
+
+Acceptance was run on 2026-09-18 using **Blender 5.2.1 LTS** with the installed **Bonsai 0.8.5** extension.
+
+The routed public-safe synthetic garage IFC was opened through Bonsai's `bim.load_project` operator. Inside the active Bonsai IFC session:
+
+- the canonical panel was renamed through Bonsai's IFC API layer,
+- the EVSE was moved +0.10 m in Z in Blender and written back with Bonsai's `bim.edit_object_placement` operator,
+- the final conduit segment axis endpoint was moved +0.10 m in Z in the active Bonsai IFC model,
+- the project was saved through Bonsai's `bim.save_project` operator.
+
+The saved IFC was reopened with `oabm.ifc.from_ifc()`. Acceptance verified:
+
+- the full set of **23 canonical IDs** was unchanged,
+- panel identity survived and the edited name round-tripped,
+- EVSE canonical pose Z changed from 1.20 m to 1.30 m,
+- the canonical route retained its stable ID and its endpoint Z changed to 1.30 m,
+- the circuit still referenced the same canonical route,
+- all three conductors still referenced that route,
+- native IFC port connectivity remained continuous from the panel endpoint to the EVSE endpoint,
+- canonical lane validation passed after the Bonsai save/reopen.
+
+This is the required Gate B proof that the emitted connected conduit/fittings are editable through Bonsai itself and can be saved and round-tripped without losing canonical identity, route semantics, or connectivity.
+
+
 The automated edit uses the same native IFC entities and placement/axis data that Bonsai edits. For an interactive inspection, generate an IFC with `oabm.ifc.to_ifc()` from the routed Gate B model, open it in Bonsai, and inspect the distribution path:
 
 - the panel and EVSE retain deterministic canonical identity,

@@ -1,0 +1,188 @@
+{
+  "model_id": "model:quantity-known-answer-v1",
+  "schema_version": "1.0.0",
+  "coordinate_system": {
+    "frame_id": "model",
+    "handedness": "right",
+    "up_axis": "+Z",
+    "length_unit": "m",
+    "angle_unit": "rad"
+  },
+  "electrical_equipment": [
+    {
+      "id": "equip:panel",
+      "equipment_type": "panelboard",
+      "pose": {"position": {"x": 0, "y": 0, "z": 1}},
+      "system": "120/240V-1ph",
+      "rated_voltage_v": 240,
+      "attributes": {"assembly_key": "panelboard-standard"},
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "method": "hand-authored"}
+      ]
+    }
+  ],
+  "electrical_devices": [
+    {
+      "id": "device:jbox",
+      "device_type": "junction-box",
+      "pose": {"position": {"x": 3, "y": 0, "z": 2}},
+      "attributes": {"assembly_key": "jbox-4sq"},
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "jbox"}
+      ]
+    },
+    {
+      "id": "device:evse",
+      "device_type": "evse",
+      "pose": {"position": {"x": 3, "y": 2, "z": 1}},
+      "system": "240V-1ph",
+      "rated_voltage_v": 240,
+      "attributes": {"assembly_key": "evse-wall"},
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "evse"}
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "port:panel-load",
+      "owner_id": "equip:panel",
+      "domain": "power",
+      "role": "source",
+      "pose": {"position": {"x": 0, "y": 0, "z": 1}},
+      "direction": {"x": 0, "y": 0, "z": 1},
+      "nominal_diameter_m": 0.021
+    },
+    {
+      "id": "port:jbox-in",
+      "owner_id": "device:jbox",
+      "domain": "power",
+      "role": "sink",
+      "pose": {"position": {"x": 3, "y": 0, "z": 2}},
+      "direction": {"x": -1, "y": 0, "z": 0},
+      "nominal_diameter_m": 0.021
+    },
+    {
+      "id": "port:jbox-out",
+      "owner_id": "device:jbox",
+      "domain": "power",
+      "role": "source",
+      "pose": {"position": {"x": 3, "y": 0, "z": 2}},
+      "direction": {"x": 0, "y": 1, "z": 0},
+      "nominal_diameter_m": 0.021
+    },
+    {
+      "id": "port:evse-feed",
+      "owner_id": "device:evse",
+      "domain": "power",
+      "role": "sink",
+      "pose": {"position": {"x": 3, "y": 2, "z": 1}},
+      "direction": {"x": 0, "y": -1, "z": 0},
+      "nominal_diameter_m": 0.021
+    }
+  ],
+  "routes": [
+    {
+      "id": "route:panel-jbox",
+      "route_type": "emt",
+      "start_port_id": "port:panel-load",
+      "end_port_id": "port:jbox-in",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {"x": 0, "y": 0, "z": 1},
+          {"x": 0, "y": 0, "z": 2},
+          {"x": 3, "y": 0, "z": 2}
+        ]
+      },
+      "nominal_diameter_m": 0.021,
+      "fitting_ids": ["fitting:panel-rise"],
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "route-a"}
+      ]
+    },
+    {
+      "id": "route:jbox-evse",
+      "route_type": "emt",
+      "start_port_id": "port:jbox-out",
+      "end_port_id": "port:evse-feed",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {"x": 3, "y": 0, "z": 2},
+          {"x": 3, "y": 2, "z": 2},
+          {"x": 3, "y": 2, "z": 1}
+        ]
+      },
+      "nominal_diameter_m": 0.021,
+      "fitting_ids": ["fitting:evse-drop"],
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "route-b"}
+      ]
+    }
+  ],
+  "route_fittings": [
+    {
+      "id": "fitting:panel-rise",
+      "route_id": "route:panel-jbox",
+      "fitting_type": "elbow-90",
+      "pose": {"position": {"x": 0, "y": 0, "z": 2}},
+      "nominal_diameter_m": 0.021,
+      "angle_radians": 1.5707963267948966,
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "fit-a"}
+      ]
+    },
+    {
+      "id": "fitting:evse-drop",
+      "route_id": "route:jbox-evse",
+      "fitting_type": "elbow-90",
+      "pose": {"position": {"x": 3, "y": 2, "z": 2}},
+      "nominal_diameter_m": 0.021,
+      "angle_radians": 1.5707963267948966,
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "fit-b"}
+      ]
+    }
+  ],
+  "circuits": [
+    {
+      "id": "circuit:evse",
+      "source_port_id": "port:panel-load",
+      "load_port_ids": ["port:evse-feed"],
+      "route_ids": ["route:panel-jbox", "route:jbox-evse"],
+      "circuit_number": "12",
+      "voltage_v": 240,
+      "poles": 2,
+      "phase": "1ph"
+    }
+  ],
+  "conductors": [
+    {
+      "id": "conductor:lines",
+      "circuit_id": "circuit:evse",
+      "role": "line",
+      "material": "copper",
+      "size": "#6 AWG",
+      "count": 2,
+      "insulation": "THHN/THWN-2",
+      "route_ids": ["route:panel-jbox", "route:jbox-evse"],
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "lines"}
+      ]
+    },
+    {
+      "id": "conductor:egc",
+      "circuit_id": "circuit:evse",
+      "role": "equipment-ground",
+      "material": "copper",
+      "size": "#10 AWG",
+      "count": 1,
+      "insulation": "THHN/THWN-2",
+      "route_ids": ["route:panel-jbox", "route:jbox-evse"],
+      "provenance": [
+        {"source_kind": "synthetic", "source_id": "fixture:quantity-known-answer-v1", "source_element_id": "egc"}
+      ]
+    }
+  ]
+}

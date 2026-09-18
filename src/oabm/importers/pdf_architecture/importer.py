@@ -469,6 +469,29 @@ def _is_explicit_global_ceiling_height(text: str) -> bool:
     )
 
 
+def _is_level_metadata_ceiling_height(
+    page: PdfPageObservation,
+    observation: PdfTextObservation,
+) -> bool:
+    """Return True only when a generic height note is grouped with level metadata."""
+
+    ox, oy = observation.center_pt
+    for item in page.texts:
+        if item.element_id == observation.element_id:
+            continue
+        upper = _clean_text(item.text).upper()
+        if not (
+            re.search(r"\\bLEVEL\\s*[:#-]", upper)
+            or "ELEVATION" in upper
+            or re.search(r"\\bEL\\.?\\s*[:=]", upper)
+        ):
+            continue
+        ix, iy = item.center_pt
+        if abs(oy - iy) <= 48.0 and abs(ox - ix) <= 160.0:
+            return True
+    return False
+
+
 def _room_scope_boxes(
     page: PdfPageObservation,
     rooms: tuple[_RoomLabel, ...],
@@ -520,10 +543,10 @@ def _ceiling_height_scopes(
             result.append((observation, height_m, "room", contained[0]))
         elif len(contained) > 1:
             result.append((observation, height_m, "unresolved", None))
-        elif boxes or not rooms:
-            # A ceiling-height note placed outside all resolved room enclosures
-            # is page/level evidence. This preserves title/note-area annotations
-            # without promoting notes that are spatially inside a room.
+        elif _is_level_metadata_ceiling_height(page, observation):
+            # Generic notes are level-wide only when their placement groups
+            # them with explicit LEVEL/ELEVATION metadata. Merely sitting
+            # outside a room enclosure is not enough to make a height global.
             result.append((observation, height_m, "global", None))
         else:
             result.append((observation, height_m, "unresolved", None))

@@ -61,18 +61,52 @@ class PdfSymbolObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class PdfVectorPathObservation:
+    element_id: str
+    page: int
+    points_pt: tuple[tuple[float, float], ...]
+    closed: bool = False
+    source_kind: str = "vector-path"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.element_id:
+            raise ElectricalPdfError("vector observations require an element_id")
+        if self.page < 1:
+            raise ElectricalPdfError("source page is 1-based")
+        if len(self.points_pt) < 2:
+            raise ElectricalPdfError("vector observations require at least two points")
+        if self.closed and len(self.points_pt) < 3:
+            raise ElectricalPdfError("closed vector observations require at least three points")
+        for index, point in enumerate(self.points_pt):
+            if len(point) != 2:
+                raise ElectricalPdfError(
+                    f"vector point {index} must contain exactly x/y coordinates"
+                )
+            x_pt, y_pt = point
+            if not math.isfinite(float(x_pt)) or not math.isfinite(float(y_pt)):
+                raise ElectricalPdfError("vector observation coordinates must be finite")
+        for first, second in zip(self.points_pt, self.points_pt[1:]):
+            if math.hypot(first[0] - second[0], first[1] - second[1]) <= 1e-9:
+                raise ElectricalPdfError(
+                    "vector observations cannot contain consecutive duplicate points"
+                )
+
+
+@dataclass(frozen=True, slots=True)
 class PdfElectricalDocument:
     source_id: str
     page_count: int
     texts: tuple[PdfTextObservation, ...] = ()
     symbols: tuple[PdfSymbolObservation, ...] = ()
+    vectors: tuple[PdfVectorPathObservation, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.source_id:
             raise ElectricalPdfError("source_id is required")
         if self.page_count < 1:
             raise ElectricalPdfError("page_count must be >= 1")
-        for item in (*self.texts, *self.symbols):
+        for item in (*self.texts, *self.symbols, *self.vectors):
             if item.page > self.page_count:
                 raise ElectricalPdfError(
                     f"{item.element_id} references page {item.page}, but page_count is {self.page_count}"
@@ -107,11 +141,26 @@ class PdfElectricalDocument:
             )
             for item in data.get("symbols", ())
         )
+        vectors = tuple(
+            PdfVectorPathObservation(
+                element_id=str(item["element_id"]),
+                page=int(item["page"]),
+                points_pt=tuple(
+                    (float(point[0]), float(point[1]))
+                    for point in item["points_pt"]
+                ),
+                closed=bool(item.get("closed", False)),
+                source_kind=str(item.get("source_kind", "vector-path")),
+                metadata=dict(item.get("metadata", {})),
+            )
+            for item in data.get("vectors", ())
+        )
         return cls(
             source_id=str(data["source_id"]),
             page_count=int(data["page_count"]),
             texts=texts,
             symbols=symbols,
+            vectors=vectors,
         )
 
 
@@ -269,15 +318,32 @@ def _transform_text_point(cm: Sequence[float], tm: Sequence[float]) -> tuple[flo
     return x, y
 
 
+def _transform_graphics_point(
+    cm: Sequence[float],
+    x: float,
+    y: float,
+) -> tuple[float, float]:
+    return (
+        float(cm[0]) * float(x) + float(cm[2]) * float(y) + float(cm[4]),
+        float(cm[1]) * float(x) + float(cm[3]) * float(y) + float(cm[5]),
+    )
+
+
 def _make_page_visitors(
     *,
     page_number: int,
     form_names: frozenset[str],
     texts: list[PdfTextObservation],
     symbols: list[PdfSymbolObservation],
+    vectors: list[PdfVectorPathObservation],
 ):
     text_counter = 0
     operator_counter = 0
+    vector_counter = 0
+    current_points: list[tuple[float, float]] = []
+    current_closed = False
+    current_supported = True
+    pending_subpaths: list[tuple[tuple[tuple[float, float], ...], bool, bool]] = []
 
     def visitor_text(
         text: str,
@@ -303,29 +369,124 @@ def _make_page_visitors(
             )
         )
 
+    def finish_current() -> None:
+        nonlocal current_points, current_closed, current_supported
+        if len(current_points) >= 2:
+            pending_subpaths.append(
+                (tuple(current_points), current_closed, current_supported)
+            )
+        current_points = []
+        current_closed = False
+        current_supported = True
+
+    def clear_paths() -> None:
+        nonlocal pending_subpaths
+        finish_current()
+        pending_subpaths = []
+
+    def emit_stroked_paths(operator: bytes) -> None:
+        nonlocal pending_subpaths, vector_counter
+        finish_current()
+        paint_operator = operator.decode("ascii", errors="replace")
+        for points, closed, supported in pending_subpaths:
+            if not supported:
+                continue
+            if not any(
+                math.hypot(first[0] - second[0], first[1] - second[1]) > 1e-9
+                for first, second in zip(points, points[1:])
+            ):
+                continue
+            vector_counter += 1
+            vectors.append(
+                PdfVectorPathObservation(
+                    element_id=f"p{page_number}:vector:{vector_counter:05d}",
+                    page=page_number,
+                    points_pt=points,
+                    closed=closed,
+                    source_kind="pdf-vector-path",
+                    metadata={"paint_operator": paint_operator},
+                )
+            )
+        pending_subpaths = []
+
     def visitor_operand_before(
         operator: bytes,
         operands: Sequence[Any],
         cm: Sequence[float],
         tm: Sequence[float],
     ) -> None:
-        nonlocal operator_counter
+        nonlocal operator_counter, current_points, current_closed, current_supported
         operator_counter += 1
-        if operator != b"Do" or not operands:
+
+        if operator == b"Do" and operands:
+            name = str(operands[0])
+            if not form_names or name in form_names:
+                symbols.append(
+                    PdfSymbolObservation(
+                        element_id=f"p{page_number}:xobject:{operator_counter:05d}",
+                        page=page_number,
+                        name=name,
+                        x_pt=float(cm[4]),
+                        y_pt=float(cm[5]),
+                        source_kind="form-xobject",
+                    )
+                )
             return
-        name = str(operands[0])
-        if form_names and name not in form_names:
+
+        if operator == b"m" and len(operands) >= 2:
+            finish_current()
+            current_points = [
+                _transform_graphics_point(cm, float(operands[0]), float(operands[1]))
+            ]
             return
-        symbols.append(
-            PdfSymbolObservation(
-                element_id=f"p{page_number}:xobject:{operator_counter:05d}",
-                page=page_number,
-                name=name,
-                x_pt=float(cm[4]),
-                y_pt=float(cm[5]),
-                source_kind="form-xobject",
+
+        if operator == b"l" and len(operands) >= 2:
+            if current_points:
+                current_points.append(
+                    _transform_graphics_point(
+                        cm,
+                        float(operands[0]),
+                        float(operands[1]),
+                    )
+                )
+            return
+
+        if operator == b"re" and len(operands) >= 4:
+            finish_current()
+            x, y, width, height = (float(value) for value in operands[:4])
+            pending_subpaths.append(
+                (
+                    (
+                        _transform_graphics_point(cm, x, y),
+                        _transform_graphics_point(cm, x + width, y),
+                        _transform_graphics_point(cm, x + width, y + height),
+                        _transform_graphics_point(cm, x, y + height),
+                    ),
+                    True,
+                    True,
+                )
             )
-        )
+            return
+
+        if operator == b"h":
+            current_closed = True
+            return
+
+        if operator in {b"c", b"v", b"y"}:
+            current_supported = False
+            return
+
+        if operator in {b"s", b"b", b"b*"}:
+            current_closed = True
+            emit_stroked_paths(operator)
+            return
+
+        if operator in {b"S", b"B", b"B*"}:
+            emit_stroked_paths(operator)
+            return
+
+        if operator in {b"f", b"F", b"f*", b"n"}:
+            clear_paths()
 
     return visitor_text, visitor_operand_before
 
@@ -361,6 +522,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
 
     texts: list[PdfTextObservation] = []
     symbols: list[PdfSymbolObservation] = []
+    vectors: list[PdfVectorPathObservation] = []
 
     for page_number, page in enumerate(reader.pages, start=1):
         resources = page.get("/Resources")
@@ -391,6 +553,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             form_names=frozenset(form_names),
             texts=texts,
             symbols=symbols,
+            vectors=vectors,
         )
 
         try:
@@ -457,6 +620,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
         page_count=len(reader.pages),
         texts=tuple(sorted(texts, key=lambda item: (item.page, item.element_id))),
         symbols=tuple(sorted(symbols, key=lambda item: (item.page, item.element_id))),
+        vectors=tuple(sorted(vectors, key=lambda item: (item.page, item.element_id))),
     )
 
 
@@ -582,6 +746,92 @@ def _text_entity_hits(text: str) -> list[tuple[str, str, str, float]]:
 
 def _distance_pt(a_x: float, a_y: float, b_x: float, b_y: float) -> float:
     return math.hypot(a_x - b_x, a_y - b_y)
+
+
+def _vector_segments(
+    observation: PdfVectorPathObservation,
+) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+    segments = list(zip(observation.points_pt, observation.points_pt[1:]))
+    if observation.closed:
+        segments.append((observation.points_pt[-1], observation.points_pt[0]))
+    return tuple(segments)
+
+
+def _point_segment_distance_pt(
+    point: tuple[float, float],
+    first: tuple[float, float],
+    second: tuple[float, float],
+) -> float:
+    dx = second[0] - first[0]
+    dy = second[1] - first[1]
+    length_squared = dx * dx + dy * dy
+    if length_squared <= 1e-12:
+        return _distance_pt(point[0], point[1], first[0], first[1])
+    t = max(
+        0.0,
+        min(
+            1.0,
+            ((point[0] - first[0]) * dx + (point[1] - first[1]) * dy)
+            / length_squared,
+        ),
+    )
+    projected = (first[0] + t * dx, first[1] + t * dy)
+    return _distance_pt(point[0], point[1], projected[0], projected[1])
+
+
+def _point_path_distance_pt(
+    point: tuple[float, float],
+    observation: PdfVectorPathObservation,
+) -> float:
+    return min(
+        _point_segment_distance_pt(point, first, second)
+        for first, second in _vector_segments(observation)
+    )
+
+
+def _paths_touch(
+    first: PdfVectorPathObservation,
+    second: PdfVectorPathObservation,
+    *,
+    tolerance_pt: float,
+) -> bool:
+    if first.page != second.page:
+        return False
+    first_endpoints = (first.points_pt[0], first.points_pt[-1])
+    second_endpoints = (second.points_pt[0], second.points_pt[-1])
+    return any(
+        _point_path_distance_pt(endpoint, second) <= tolerance_pt
+        for endpoint in first_endpoints
+    ) or any(
+        _point_path_distance_pt(endpoint, first) <= tolerance_pt
+        for endpoint in second_endpoints
+    )
+
+
+def _simple_rectangle_marker(
+    observation: PdfVectorPathObservation,
+) -> tuple[float, float, float] | None:
+    if not observation.closed or len(observation.points_pt) != 4:
+        return None
+    points = observation.points_pt
+    edges = [
+        (points[(index + 1) % 4][0] - points[index][0],
+         points[(index + 1) % 4][1] - points[index][1])
+        for index in range(4)
+    ]
+    lengths = [math.hypot(dx, dy) for dx, dy in edges]
+    if min(lengths) < 2.0 or max(lengths) > 72.0:
+        return None
+    if abs(lengths[0] - lengths[2]) > 0.5 or abs(lengths[1] - lengths[3]) > 0.5:
+        return None
+    for first, second in zip(edges, edges[1:] + edges[:1]):
+        dot = first[0] * second[0] + first[1] * second[1]
+        if abs(dot) > 1e-3 * math.hypot(*first) * math.hypot(*second):
+            return None
+    center_x = sum(point[0] for point in points) / 4.0
+    center_y = sum(point[1] for point in points) / 4.0
+    half_diagonal = 0.5 * math.hypot(lengths[0], lengths[1])
+    return center_x, center_y, half_diagonal
 
 
 def _merge_provenance(
@@ -756,11 +1006,19 @@ class ElectricalPdfImporter:
         symbol_label_radius_pt: float = 96.0,
         annotation_radius_pt: float = 144.0,
         ambiguity_margin: float = 0.08,
+        vector_symbol_radius_pt: float = 18.0,
+        topology_snap_radius_pt: float = 4.0,
+        topology_endpoint_radius_pt: float = 18.0,
+        topology_annotation_radius_pt: float = 60.0,
     ) -> None:
         self.symbol_rules = tuple(symbol_rules)
         self.symbol_label_radius_pt = float(symbol_label_radius_pt)
         self.annotation_radius_pt = float(annotation_radius_pt)
         self.ambiguity_margin = float(ambiguity_margin)
+        self.vector_symbol_radius_pt = float(vector_symbol_radius_pt)
+        self.topology_snap_radius_pt = float(topology_snap_radius_pt)
+        self.topology_endpoint_radius_pt = float(topology_endpoint_radius_pt)
+        self.topology_annotation_radius_pt = float(topology_annotation_radius_pt)
 
     def import_pdf(
         self,
@@ -792,6 +1050,7 @@ class ElectricalPdfImporter:
         )
         texts = tuple(sorted(document.texts, key=lambda item: (item.page, item.element_id)))
         symbols = tuple(sorted(document.symbols, key=lambda item: (item.page, item.element_id)))
+        vectors = tuple(sorted(document.vectors, key=lambda item: (item.page, item.element_id)))
         candidates: dict[str, _EntityCandidate] = {}
         unresolved_observations: list[dict[str, Any]] = []
 
@@ -948,6 +1207,57 @@ class ElectricalPdfImporter:
             candidate.x_pt = symbol.x_pt
             candidate.y_pt = symbol.y_pt
 
+        vector_symbol_ids: set[str] = set()
+        for vector in vectors:
+            marker = _simple_rectangle_marker(vector)
+            if marker is None:
+                continue
+            center_x, center_y, half_diagonal = marker
+            nearby = [
+                candidate
+                for candidate in candidates.values()
+                if candidate.page == vector.page
+                and _distance_pt(candidate.x_pt, candidate.y_pt, center_x, center_y)
+                <= half_diagonal + self.vector_symbol_radius_pt
+            ]
+            nearby.sort(
+                key=lambda item: (
+                    _distance_pt(item.x_pt, item.y_pt, center_x, center_y),
+                    item.key,
+                )
+            )
+            if len(nearby) != 1:
+                continue
+            candidate = nearby[0]
+            vector_symbol_ids.add(vector.element_id)
+            vector_provenance = _provenance(
+                document,
+                element_id=vector.element_id,
+                page=vector.page,
+                method="pdf-vector-symbol-outline",
+                confidence=0.84,
+                source_kind=vector.source_kind,
+                attributes={
+                    "shape": "rectangle",
+                    "points_pt": [list(point) for point in vector.points_pt],
+                    **(
+                        {"metadata": dict(vector.metadata)}
+                        if vector.metadata
+                        else {}
+                    ),
+                },
+            )
+            candidate.merge_source(
+                element_id=vector.element_id,
+                text=None,
+                symbol_name=None,
+                x_pt=center_x,
+                y_pt=center_y,
+                confidence=0.84,
+                provenance=vector_provenance,
+                method="pdf-vector-symbol-outline",
+            )
+
         # Attach nearby note/mounting text without pretending it is a host reference.
         attached_note_ids: set[str] = set()
         for candidate in candidates.values():
@@ -984,6 +1294,7 @@ class ElectricalPdfImporter:
         equipment: list[ElectricalEquipment] = []
         devices: list[ElectricalDevice] = []
         entity_by_page_tag: dict[tuple[int, str], ElectricalEquipment | ElectricalDevice] = {}
+        entity_source_positions: dict[str, tuple[int, float, float]] = {}
         identity_owners: dict[str, str] = {}
 
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
@@ -1077,6 +1388,11 @@ class ElectricalPdfImporter:
                 )
                 devices.append(entity)
 
+            entity_source_positions[entity.id] = (
+                candidate.page,
+                candidate.x_pt,
+                candidate.y_pt,
+            )
             if candidate.tag:
                 entity_by_page_tag[(candidate.page, candidate.tag)] = entity
 
@@ -1369,6 +1685,7 @@ __all__ = [
     "PdfPageTransform",
     "PdfSymbolObservation",
     "PdfTextObservation",
+    "PdfVectorPathObservation",
     "SymbolRule",
     "extract_pdf",
     "import_document",

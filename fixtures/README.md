@@ -9,6 +9,14 @@ Only synthetic or explicitly public/cleared fixtures belong here.
 
 The garage-route fixture is a contract example, not the later convergence acceptance fixture.
 
+`pdf_electrical/` contains source-observation fixtures for the electrical PDF
+recognition lane:
+
+1. `synthetic-sheet-e1.json`: panel, EVSE symbol, mounting note, and inferable circuit
+2. `ambiguous-sheet-e1.json`: ambiguous symbol, conflicting mounting heights, and an incomplete circuit reference
+
+These fixtures are synthetic. They contain no customer plan content.
+
 `golden/v1/` is the issue #10 cross-workstream regression suite. It contains the rectangular room, door obstruction, panel-to-EVSE, elevation-change, multiple-valid-route, impossible-route, two-level-building, and synthetic-garage known-answer cases plus intentionally invalid boundary fixtures. See `golden/v1/README.md` and `docs/qa-golden-fixtures.md` for usage.
 
 ## RoomPlan

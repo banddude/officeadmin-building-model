@@ -1,0 +1,41 @@
+{
+  "source_id": "synthetic:electrical-sheet-ambiguous",
+  "page_count": 1,
+  "texts": [
+    {
+      "element_id": "p1:text:0010",
+      "page": 1,
+      "text": "REC-1 48\" AFF",
+      "x_pt": 200.0,
+      "y_pt": 300.0,
+      "font_size_pt": 9.0
+    },
+    {
+      "element_id": "p1:text:0020",
+      "page": 1,
+      "text": "REC-1 54\" AFF",
+      "x_pt": 202.0,
+      "y_pt": 302.0,
+      "font_size_pt": 9.0
+    },
+    {
+      "element_id": "p1:text:0030",
+      "page": 1,
+      "text": "CKT 7 TO REC-1",
+      "x_pt": 180.0,
+      "y_pt": 340.0,
+      "font_size_pt": 8.0
+    }
+  ],
+  "symbols": [
+    {
+      "element_id": "p1:xobject:02000",
+      "page": 1,
+      "name": "/SW",
+      "x_pt": 400.0,
+      "y_pt": 300.0,
+      "source_kind": "form-xobject",
+      "metadata": {}
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "source_id": "synthetic:electrical-sheet-e1",
+  "page_count": 1,
+  "texts": [
+    {
+      "element_id": "p1:text:0010",
+      "page": 1,
+      "text": "PANEL LP 120/240V 1PH",
+      "x_pt": 72.0,
+      "y_pt": 700.0,
+      "font_size_pt": 10.0
+    },
+    {
+      "element_id": "p1:text:0020",
+      "page": 1,
+      "text": "EVSE-1 +48\" AFF WALL MTD",
+      "x_pt": 304.0,
+      "y_pt": 496.0,
+      "font_size_pt": 9.0
+    },
+    {
+      "element_id": "p1:text:0030",
+      "page": 1,
+      "text": "PANEL LP CKT 12 -> EVSE-1 240V 2P",
+      "x_pt": 80.0,
+      "y_pt": 620.0,
+      "font_size_pt": 8.0
+    },
+    {
+      "element_id": "p1:text:0040",
+      "page": 1,
+      "text": "NOTE: EVSE SHALL BE WALL MOUNTED",
+      "x_pt": 310.0,
+      "y_pt": 470.0,
+      "font_size_pt": 8.0
+    }
+  ],
+  "symbols": [
+    {
+      "element_id": "p1:xobject:01000",
+      "page": 1,
+      "name": "/EVSE1",
+      "x_pt": 300.0,
+      "y_pt": 500.0,
+      "source_kind": "form-xobject",
+      "metadata": {}
+    }
+  ]
+}

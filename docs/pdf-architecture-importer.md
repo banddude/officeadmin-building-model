@@ -30,6 +30,7 @@ The current deterministic lane reads vector/text PDF primitives and can promote:
 - two-point registrations that establish scale, plan rotation, and translation in the canonical XY frame;
 - named levels with explicit elevations, or one first/sole local datum at `Z=0` when the source gives no project elevation;
 - labelled rectangular spaces bounded by paired vector wall rectangles;
+- labelled rectangular spaces and walls from untagged ordinary vector lines only when two closed axis-aligned wall-face loops prove one enclosure around a unique room label;
 - walls from those paired boundaries when a supported height is present;
 - additional paired vector wall boundaries when the PDF supplies stable MCIDs and the sheet has a stable printed sheet identifier;
 - marked door/window openings with dimensions when the host wall and vertical placement are supported;
@@ -56,7 +57,7 @@ Ceiling-height annotations are spatially scoped. A note placed inside a resolved
 
 ## Stable identity
 
-Canonical IDs use `oabm.model.stable_id` with semantic anchors, never list positions or mutable geometry. Examples include logical source + level + room label + boundary side, and logical source + sheet identifier + PDF-native MCIDs. Repeated semantic anchors that would collide are preserved as ambiguity and later geometry is not silently substituted.
+Canonical IDs use `oabm.model.stable_id` with semantic anchors, never list positions or mutable geometry. Examples include logical source + level + room label + boundary side, and logical source + sheet identifier + PDF-native MCIDs. For ordinary untagged vector enclosures, contributing line element IDs are retained only as provenance; the canonical room/wall IDs remain anchored by logical source, level, room, and wall side. Repeated semantic anchors that would collide are preserved as ambiguity and later geometry is not silently substituted.
 
 ## Ambiguity and provenance
 
@@ -67,6 +68,7 @@ Typical ambiguity codes include:
 - `scale_unresolved` / `scale_conflict`;
 - `scale_registration_conflict` / `registration_unresolved`;
 - `architectural_geometry_unrecognized`;
+- `ordinary_vector_enclosure_unresolved` / `ordinary_vector_enclosure_ambiguous`;
 - `level_elevation_local_datum` / `level_elevation_unresolved`;
 - `level_elevation_reconciled` / `level_elevation_conflict`;
 - `level_height_reconciled` / `level_height_conflict`;
@@ -75,8 +77,10 @@ Typical ambiguity codes include:
 - `duplicate_room_label` / `duplicate_room_identity_across_pages`;
 - `opening_host_unresolved`, `opening_identity_unresolved`, and `window_vertical_position_unresolved`.
 
+The ordinary-vector fallback is intentionally narrow: only complete axis-aligned four-line loops are considered, wall-face loops must pair within the configured wall-thickness/span limits, and exactly one supported enclosure must contain a unique room label. Open or competing enclosures remain unresolved instead of being selected by extraction order.
+
 The rule is conservative: unresolved facts remain unresolved instead of being converted into precise-looking canonical geometry.
 
 ## Fixtures and tests
 
-`fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe. Its known-answer canonical model is checked in alongside it. Tests also construct synthetic observations for ambiguous scale, missing height, explicit registration, inter-sheet registration, resolved pages that emit no geometry, stable identity, repeatability, and lane isolation. No customer plan set is used.
+`fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe. Its known-answer canonical model is checked in alongside it. `fixtures/pdf_architecture/v1/ordinary-vector-room.json` is a tiny synthetic observation fixture for the ordinary untagged line-loop family. Tests also cover open/competing enclosures, extraction-order independence, ambiguous scale, missing height, explicit registration, inter-sheet registration, resolved pages that emit no geometry, stable identity, repeatability, and lane isolation. No customer plan set is used.

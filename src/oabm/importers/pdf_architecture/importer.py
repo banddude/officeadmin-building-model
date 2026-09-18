@@ -48,6 +48,7 @@ from .types import (
 
 _INCH_M = 0.0254
 _PT_PER_INCH = 72.0
+_VECTOR_AXIS_TOLERANCE_PT = 0.05
 _COMMON_ROOM_NAMES = {
     "GARAGE": "garage",
     "BEDROOM": "bedroom",
@@ -145,12 +146,33 @@ class _RoomLabel:
 
 
 @dataclass(frozen=True, slots=True)
+class _ShellBoundary:
+    bbox_pt: tuple[float, float, float, float]
+    source_element_ids: tuple[str, ...]
+    source_kind: str
+
+    @property
+    def element_id(self) -> str:
+        return "+".join(self.source_element_ids)
+
+    @property
+    def width_pt(self) -> float:
+        return self.bbox_pt[2] - self.bbox_pt[0]
+
+    @property
+    def height_pt(self) -> float:
+        return self.bbox_pt[3] - self.bbox_pt[1]
+
+
+@dataclass(frozen=True, slots=True)
 class _Shell:
-    outer: PdfRectObservation
-    inner: PdfRectObservation
+    outer: _ShellBoundary
+    inner: _ShellBoundary
     room: _RoomLabel
     thickness_x_m: float
     thickness_y_m: float
+    geometry_confidence: float = 1.0
+    recognition_method: str = "paired_vector_rectangles"
 
 
 @dataclass(frozen=True, slots=True)
@@ -945,8 +967,16 @@ def _shell_candidates(
         ox0, oy0, ox1, oy1 = outer.bbox_pt
         selected.append(
             _Shell(
-                outer=outer,
-                inner=inner,
+                outer=_ShellBoundary(
+                    bbox_pt=outer.bbox_pt,
+                    source_element_ids=(outer.element_id,),
+                    source_kind="rect",
+                ),
+                inner=_ShellBoundary(
+                    bbox_pt=inner.bbox_pt,
+                    source_element_ids=(inner.element_id,),
+                    source_kind="rect",
+                ),
                 room=room,
                 thickness_x_m=((ix0 - ox0) + (ox1 - ix1)) * scale.meters_per_point / 2.0,
                 thickness_y_m=((iy0 - oy0) + (oy1 - iy1)) * scale.meters_per_point / 2.0,
@@ -963,6 +993,266 @@ def _shell_candidates(
             }
         )
     return tuple(selected)
+
+def _axis_bucket(value: float) -> int:
+    return int(round(value / _VECTOR_AXIS_TOLERANCE_PT))
+
+
+def _ordinary_vector_rect_loops(page: PdfPageObservation) -> tuple[_ShellBoundary, ...]:
+    """Resolve exact closed rectangular loops from ordinary untagged line primitives.
+
+    This intentionally recognizes only one conservative vector family. Lines must
+    be axis-aligned within a tight PDF-point tolerance and four distinct source
+    elements must close the same rectangle. Tagged/native lines stay owned by the
+    existing native-MCID wall path.
+    """
+
+    horizontal: dict[tuple[int, int], list[tuple[float, float, float, PdfLineObservation]]] = {}
+    vertical: dict[tuple[int, int, int], list[tuple[float, float, float, PdfLineObservation]]] = {}
+
+    for line in page.lines:
+        if line.native_id:
+            continue
+        ax, ay = line.start_pt
+        bx, by = line.end_pt
+        dx = bx - ax
+        dy = by - ay
+        if abs(dy) <= _VECTOR_AXIS_TOLERANCE_PT and abs(dx) > _VECTOR_AXIS_TOLERANCE_PT:
+            x0, x1 = sorted((ax, bx))
+            y = (ay + by) / 2.0
+            horizontal.setdefault((_axis_bucket(x0), _axis_bucket(x1)), []).append((x0, x1, y, line))
+        elif abs(dx) <= _VECTOR_AXIS_TOLERANCE_PT and abs(dy) > _VECTOR_AXIS_TOLERANCE_PT:
+            y0, y1 = sorted((ay, by))
+            x = (ax + bx) / 2.0
+            vertical.setdefault(
+                (_axis_bucket(x), _axis_bucket(y0), _axis_bucket(y1)),
+                [],
+            ).append((x, y0, y1, line))
+
+    by_bbox: dict[
+        tuple[int, int, int, int],
+        dict[tuple[str, ...], tuple[float, float, float, float]],
+    ] = {}
+    for _, horizontals in sorted(horizontal.items()):
+        ordered = sorted(horizontals, key=lambda item: (item[2], item[3].element_id))
+        for index, lower in enumerate(ordered):
+            for upper in ordered[index + 1 :]:
+                if upper[2] - lower[2] <= _VECTOR_AXIS_TOLERANCE_PT:
+                    continue
+                x0 = (lower[0] + upper[0]) / 2.0
+                x1 = (lower[1] + upper[1]) / 2.0
+                y0 = lower[2]
+                y1 = upper[2]
+                left = vertical.get(
+                    (_axis_bucket(x0), _axis_bucket(y0), _axis_bucket(y1)),
+                    [],
+                )
+                right = vertical.get(
+                    (_axis_bucket(x1), _axis_bucket(y0), _axis_bucket(y1)),
+                    [],
+                )
+                for left_item in left:
+                    for right_item in right:
+                        if left_item[3].element_id == right_item[3].element_id:
+                            continue
+                        if not (
+                            abs(left_item[0] - x0) <= _VECTOR_AXIS_TOLERANCE_PT
+                            and abs(right_item[0] - x1) <= _VECTOR_AXIS_TOLERANCE_PT
+                            and abs(left_item[1] - y0) <= _VECTOR_AXIS_TOLERANCE_PT
+                            and abs(left_item[2] - y1) <= _VECTOR_AXIS_TOLERANCE_PT
+                            and abs(right_item[1] - y0) <= _VECTOR_AXIS_TOLERANCE_PT
+                            and abs(right_item[2] - y1) <= _VECTOR_AXIS_TOLERANCE_PT
+                        ):
+                            continue
+                        bbox = (
+                            (lower[0] + upper[0] + 2.0 * left_item[0]) / 4.0,
+                            (2.0 * lower[2] + left_item[1] + right_item[1]) / 4.0,
+                            (lower[1] + upper[1] + 2.0 * right_item[0]) / 4.0,
+                            (2.0 * upper[2] + left_item[2] + right_item[2]) / 4.0,
+                        )
+                        ids = tuple(
+                            sorted(
+                                {
+                                    lower[3].element_id,
+                                    upper[3].element_id,
+                                    left_item[3].element_id,
+                                    right_item[3].element_id,
+                                }
+                            )
+                        )
+                        if len(ids) != 4:
+                            continue
+                        key = tuple(_axis_bucket(value) for value in bbox)
+                        by_bbox.setdefault(key, {})[ids] = bbox
+
+    result: list[_ShellBoundary] = []
+    for key in sorted(by_bbox):
+        source_sets = by_bbox[key]
+        # Multiple distinct four-line proofs for the same loop are not selected
+        # by ordering. Leave that boundary unsupported instead.
+        if len(source_sets) != 1:
+            continue
+        ids, bbox = next(iter(source_sets.items()))
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            continue
+        result.append(
+            _ShellBoundary(
+                bbox_pt=bbox,
+                source_element_ids=ids,
+                source_kind="ordinary_vector_line_loop",
+            )
+        )
+    return tuple(result)
+
+
+def _ordinary_vector_shell_candidates(
+    page: PdfPageObservation,
+    scale: _Scale,
+    rooms: tuple[_RoomLabel, ...],
+    options: ImportOptions,
+    ambiguities: list[dict[str, object]],
+    *,
+    excluded_room_anchors: set[str],
+) -> tuple[_Shell, ...]:
+    loops = _ordinary_vector_rect_loops(page)
+    candidates: list[tuple[float, float, _ShellBoundary, _ShellBoundary]] = []
+    for outer in loops:
+        for inner in loops:
+            if outer is inner:
+                continue
+            ox0, oy0, ox1, oy1 = outer.bbox_pt
+            ix0, iy0, ix1, iy1 = inner.bbox_pt
+            if not (ox0 < ix0 < ix1 < ox1 and oy0 < iy0 < iy1 < oy1):
+                continue
+            tx_left = (ix0 - ox0) * scale.meters_per_point
+            tx_right = (ox1 - ix1) * scale.meters_per_point
+            ty_bottom = (iy0 - oy0) * scale.meters_per_point
+            ty_top = (oy1 - iy1) * scale.meters_per_point
+            thickness_x = (tx_left + tx_right) / 2.0
+            thickness_y = (ty_bottom + ty_top) / 2.0
+            if not (options.min_wall_thickness_m <= thickness_x <= options.max_wall_thickness_m):
+                continue
+            if not (options.min_wall_thickness_m <= thickness_y <= options.max_wall_thickness_m):
+                continue
+            if abs(tx_left - tx_right) > max(0.03, thickness_x * 0.35):
+                continue
+            if abs(ty_bottom - ty_top) > max(0.03, thickness_y * 0.35):
+                continue
+            if inner.width_pt * scale.meters_per_point < options.min_space_span_m:
+                continue
+            if inner.height_pt * scale.meters_per_point < options.min_space_span_m:
+                continue
+            area_m2 = inner.width_pt * inner.height_pt * scale.meters_per_point**2
+            asymmetry = abs(thickness_x - thickness_y)
+            candidates.append((area_m2, asymmetry, outer, inner))
+
+    duplicate_anchors = {
+        room.anchor
+        for room in rooms
+        if sum(item.anchor == room.anchor for item in rooms) > 1
+    }
+    selected: list[_Shell] = []
+    used_pairs: set[tuple[str, str]] = set()
+    for room in sorted(rooms, key=lambda item: (item.anchor, item.observation.element_id)):
+        if room.anchor in duplicate_anchors or room.anchor in excluded_room_anchors:
+            continue
+        containing = [
+            item
+            for item in candidates
+            if _inside(item[3].bbox_pt, room.observation.center_pt)
+        ]
+        if not containing:
+            if any(_inside(loop.bbox_pt, room.observation.center_pt) for loop in loops):
+                ambiguities.append(
+                    {
+                        "page": page.page_number,
+                        "code": "ordinary_vector_enclosure_unresolved",
+                        "detail": (
+                            f"ordinary vector boundaries surround room {room.anchor!r} "
+                            "but do not prove one supported paired closed wall enclosure"
+                        ),
+                        "room_anchor": room.anchor,
+                    }
+                )
+            continue
+        containing.sort(
+            key=lambda item: (
+                item[0],
+                item[1],
+                item[2].element_id,
+                item[3].element_id,
+            )
+        )
+        if len(containing) != 1:
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "ordinary_vector_enclosure_ambiguous",
+                    "detail": (
+                        f"room {room.anchor!r} is contained by multiple supported ordinary "
+                        "vector wall enclosures; none was selected by extraction order"
+                    ),
+                    "room_anchor": room.anchor,
+                    "source_boundaries": [
+                        {
+                            "outer": list(item[2].source_element_ids),
+                            "inner": list(item[3].source_element_ids),
+                        }
+                        for item in containing
+                    ],
+                }
+            )
+            continue
+
+        _, _, outer, inner = containing[0]
+        pair = (outer.element_id, inner.element_id)
+        if pair in used_pairs:
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "multiple_room_labels_in_enclosure",
+                    "detail": "more than one room label resolves to the same ordinary vector wall enclosure",
+                    "source_boundaries": {
+                        "outer": list(outer.source_element_ids),
+                        "inner": list(inner.source_element_ids),
+                    },
+                }
+            )
+            selected = [
+                shell
+                for shell in selected
+                if (shell.outer.element_id, shell.inner.element_id) != pair
+            ]
+            continue
+        used_pairs.add(pair)
+
+        ix0, iy0, ix1, iy1 = inner.bbox_pt
+        ox0, oy0, ox1, oy1 = outer.bbox_pt
+        selected.append(
+            _Shell(
+                outer=outer,
+                inner=inner,
+                room=room,
+                thickness_x_m=((ix0 - ox0) + (ox1 - ix1)) * scale.meters_per_point / 2.0,
+                thickness_y_m=((iy0 - oy0) + (oy1 - iy1)) * scale.meters_per_point / 2.0,
+                geometry_confidence=0.86,
+                recognition_method="ordinary_vector_line_loops",
+            )
+        )
+
+    if candidates and not rooms:
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "unlabeled_enclosure",
+                "detail": (
+                    "paired closed ordinary vector wall loops were found but no stable "
+                    "room/space label anchors their identity"
+                ),
+            }
+        )
+    return tuple(selected)
+
 
 
 def _provenance(
@@ -1020,7 +1310,12 @@ def _shell_entities(
 ) -> tuple[Space, tuple[_WallContext, ...], Slab | None, Ceiling | None]:
     room = shell.room
     identity = f"{source_id}|level:{level_info.anchor}|room:{room.anchor}"
-    base_confidence = min(room.confidence, scale.confidence, transform.confidence)
+    base_confidence = min(
+        room.confidence,
+        scale.confidence,
+        transform.confidence,
+        shell.geometry_confidence,
+    )
     footprint = _polygon_from_bbox(shell.inner.bbox_pt, transform, level.elevation_m)
     level_height = level_info.height
     if room_height_blocked:
@@ -1062,6 +1357,26 @@ def _shell_entities(
         else base_confidence
     )
 
+    if shell.recognition_method == "ordinary_vector_line_loops":
+        space_method = "room label contained by paired closed ordinary vector wall-face loops"
+        space_source_attributes: dict[str, object] = {
+            "outer_boundary_elements": list(shell.outer.source_element_ids),
+            "inner_boundary_elements": list(shell.inner.source_element_ids),
+        }
+        space_attributes = {
+            "pdf_architecture": {
+                "identity_anchor": room.anchor,
+                "recognition": shell.recognition_method,
+            }
+        }
+    else:
+        space_method = "room label contained by a paired wall rectangle enclosure"
+        space_source_attributes = {
+            "outer_rect": shell.outer.element_id,
+            "inner_rect": shell.inner.element_id,
+        }
+        space_attributes = {"pdf_architecture": {"identity_anchor": room.anchor}}
+
     space = Space(
         id=stable_id("space", identity),
         name=room.name,
@@ -1074,17 +1389,14 @@ def _shell_entities(
             _provenance(
                 source_id,
                 page.page_number,
-                method="room label contained by a paired wall rectangle enclosure",
+                method=space_method,
                 confidence=base_confidence,
                 source_element_id=room.observation.element_id,
-                attributes={
-                    "outer_rect": shell.outer.element_id,
-                    "inner_rect": shell.inner.element_id,
-                },
+                attributes=space_source_attributes,
             )
             + height_provenance
         ),
-        attributes={"pdf_architecture": {"identity_anchor": room.anchor}},
+        attributes=space_attributes,
     )
 
     walls: list[_WallContext] = []
@@ -1115,6 +1427,18 @@ def _shell_entities(
         wall_confidence = min(base_confidence, 0.95, height_confidence)
         for side, start, end, thickness in sides:
             wall_id = stable_id("wall", f"{identity}|boundary:{side}")
+            wall_method = (
+                "wall centerline inferred midway between paired closed ordinary vector "
+                "wall-face loops; height from level/ceiling evidence"
+                if shell.recognition_method == "ordinary_vector_line_loops"
+                else "wall centerline inferred midway between paired vector boundaries; height from level/ceiling evidence"
+            )
+            wall_attributes: dict[str, object] = {
+                "room_anchor": room.anchor,
+                "source_side": side,
+            }
+            if shell.recognition_method == "ordinary_vector_line_loops":
+                wall_attributes["recognition"] = shell.recognition_method
             wall = Wall(
                 id=wall_id,
                 level_id=level.id,
@@ -1131,14 +1455,14 @@ def _shell_entities(
                     _provenance(
                         source_id,
                         page.page_number,
-                        method="wall centerline inferred midway between paired vector boundaries; height from level/ceiling evidence",
+                        method=wall_method,
                         confidence=wall_confidence,
                         source_element_id=f"{shell.outer.element_id}+{shell.inner.element_id}:{side}",
                         attributes={"room_anchor": room.anchor, "source_side": side},
                     )
                     + height_provenance
                 ),
-                attributes={"pdf_architecture": {"room_anchor": room.anchor, "source_side": side}},
+                attributes={"pdf_architecture": wall_attributes},
             )
             walls.append(_WallContext(wall, page.page_number, room.anchor, side))
 
@@ -1585,7 +1909,16 @@ def import_observations(
         )
 
         rooms = _room_labels(page)
-        shells = _shell_candidates(page, scale, rooms, options, ambiguities)
+        rectangle_shells = _shell_candidates(page, scale, rooms, options, ambiguities)
+        ordinary_vector_shells = _ordinary_vector_shell_candidates(
+            page,
+            scale,
+            rooms,
+            options,
+            ambiguities,
+            excluded_room_anchors={shell.room.anchor for shell in rectangle_shells},
+        )
+        shells = (*rectangle_shells, *ordinary_vector_shells)
         room_heights, blocked_room_heights = _room_ceiling_height_evidence(page, shells, ambiguities)
         slab_thickness = _slab_thickness_from_text(page)
         page_walls: list[_WallContext] = []
@@ -1684,6 +2017,8 @@ def import_observations(
             )
         page_record["resolved_room_count"] = page_room_count
         page_record["resolved_wall_count"] = len(page_walls)
+        if ordinary_vector_shells:
+            page_record["ordinary_vector_enclosure_count"] = len(ordinary_vector_shells)
         page_record["stable_native_line_count"] = sum(1 for item in page.lines if item.native_id)
         page_record["untagged_vector_line_count"] = sum(1 for item in page.lines if not item.native_id)
         page_metadata.append(page_record)

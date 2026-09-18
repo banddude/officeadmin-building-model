@@ -1,0 +1,24 @@
+{
+  "page_number": 1,
+  "width_pt": 300,
+  "height_pt": 220,
+  "texts": [
+    {"element_id": "ov:title", "text": "A2.1 FLOOR PLAN", "bbox_pt": [10, 190, 90, 200]},
+    {"element_id": "ov:scale", "text": "SCALE: 1:100", "bbox_pt": [10, 176, 90, 186]},
+    {"element_id": "ov:level", "text": "LEVEL: GROUND", "bbox_pt": [10, 162, 90, 172]},
+    {"element_id": "ov:elev", "text": "ELEVATION: 0'-0\"", "bbox_pt": [10, 148, 105, 158]},
+    {"element_id": "ov:height", "text": "LEVEL CEILING HEIGHT: 9'-0\"", "bbox_pt": [10, 134, 155, 144]},
+    {"element_id": "ov:room", "text": "ROOM: OFFICE", "bbox_pt": [95, 65, 155, 75]}
+  ],
+  "lines": [
+    {"element_id": "ov:detail-diagonal", "start_pt": [250, 30], "end_pt": [265, 45]},
+    {"element_id": "ov:inner-north", "start_pt": [24, 116], "end_pt": [216, 116]},
+    {"element_id": "ov:outer-west", "start_pt": [20, 20], "end_pt": [20, 120]},
+    {"element_id": "ov:inner-east", "start_pt": [216, 24], "end_pt": [216, 116]},
+    {"element_id": "ov:outer-south", "start_pt": [20, 20], "end_pt": [220, 20]},
+    {"element_id": "ov:inner-west", "start_pt": [24, 24], "end_pt": [24, 116]},
+    {"element_id": "ov:outer-east", "start_pt": [220, 20], "end_pt": [220, 120]},
+    {"element_id": "ov:inner-south", "start_pt": [24, 24], "end_pt": [216, 24]},
+    {"element_id": "ov:outer-north", "start_pt": [20, 120], "end_pt": [220, 120]}
+  ]
+}

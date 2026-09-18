@@ -396,6 +396,7 @@ def import_captured_room(
             level_confidence = min(level_confidence, height_confidence)
 
         derivation = {
+            "story": story,
             "roomplan_story": story,
             "elevation_method": elevation_method,
             "elevation_source_identifiers": elevation_source_ids,

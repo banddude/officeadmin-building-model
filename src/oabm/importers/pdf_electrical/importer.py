@@ -1399,6 +1399,8 @@ class ElectricalPdfImporter:
         ports_by_owner_role: dict[tuple[str, str], Port] = {}
         circuit_evidence: dict[str, dict[str, Any]] = {}
         unresolved_circuits: list[dict[str, Any]] = []
+        unresolved_topology: list[dict[str, Any]] = []
+        topology_resolved_callout_ids: set[str] = set()
 
         def port_for(
             entity: ElectricalEquipment | ElectricalDevice,
@@ -1408,10 +1410,23 @@ class ElectricalPdfImporter:
             key = (entity.id, role)
             existing = ports_by_owner_role.get(key)
             if existing is not None:
+                merged_provenance = _merge_provenance(
+                    existing.provenance,
+                    (provenance,),
+                )
+                lane_attributes = dict(existing.attributes["pdf_electrical"])
+                lane_attributes["evidence_methods"] = sorted(
+                    {
+                        item.method
+                        for item in merged_provenance
+                        if item.method is not None
+                    }
+                )
                 merged = replace(
                     existing,
                     confidence=max(existing.confidence, provenance.confidence),
-                    provenance=_merge_provenance(existing.provenance, (provenance,)),
+                    provenance=merged_provenance,
+                    attributes={"pdf_electrical": lane_attributes},
                 )
                 ports_by_owner_role[key] = merged
                 return merged
@@ -1428,11 +1443,49 @@ class ElectricalPdfImporter:
                     "pdf_electrical": {
                         "inferred_for_circuit_semantics": True,
                         "spatial_status": entity.attributes["pdf_electrical"]["spatial_status"],
+                        "evidence_methods": (
+                            [provenance.method]
+                            if provenance.method is not None
+                            else []
+                        ),
                     }
                 },
             )
             ports_by_owner_role[key] = port
             return port
+
+        def evidence_bucket(
+            *,
+            circuit_id: str,
+            name: str,
+            source_port_id: str,
+            circuit_number: str | None,
+        ) -> dict[str, Any]:
+            bucket = circuit_evidence.setdefault(
+                circuit_id,
+                {
+                    "name": name,
+                    "source_port_id": source_port_id,
+                    "load_port_ids": set(),
+                    "circuit_number": circuit_number,
+                    "voltage_v": set(),
+                    "poles": set(),
+                    "phase": set(),
+                    "confidence": set(),
+                    "evidence_methods": set(),
+                    "provenance": [],
+                    "evidence": [],
+                },
+            )
+            if bucket["source_port_id"] != source_port_id:
+                raise ElectricalPdfError(
+                    f"circuit {circuit_number or circuit_id} resolved to more than one source port"
+                )
+            if bucket["circuit_number"] != circuit_number:
+                raise ElectricalPdfError(
+                    f"circuit {circuit_id} resolved to conflicting circuit numbers"
+                )
+            return bucket
 
         for observation in texts:
             circuit_match = _CIRCUIT_RE.search(observation.text)
@@ -1461,6 +1514,7 @@ class ElectricalPdfImporter:
                 "page": observation.page,
                 "source_element_id": observation.element_id,
                 "source_text": observation.text,
+                "method": "pdf-circuit-text-link",
                 "circuit_number": circuit_number,
                 "panel_tag": panel_tag,
                 "load_ids": [entity.id for entity in load_entities],
@@ -1501,24 +1555,12 @@ class ElectricalPdfImporter:
                 "circuit",
                 f"pdf-electrical:{document.source_id}:{source_entity.id}:{circuit_number}",
             )
-            bucket = circuit_evidence.setdefault(
-                circuit_id,
-                {
-                    "name": f"{panel_tag} {circuit_number}",
-                    "source_port_id": source_port.id,
-                    "load_port_ids": set(),
-                    "circuit_number": circuit_number,
-                    "voltage_v": set(),
-                    "poles": set(),
-                    "phase": set(),
-                    "provenance": [],
-                    "evidence": [],
-                },
+            bucket = evidence_bucket(
+                circuit_id=circuit_id,
+                name=f"{panel_tag} {circuit_number}",
+                source_port_id=source_port.id,
+                circuit_number=circuit_number,
             )
-            if bucket["source_port_id"] != source_port.id:
-                raise ElectricalPdfError(
-                    f"circuit {circuit_number} resolved to more than one source port"
-                )
             bucket["load_port_ids"].update(port.id for port in load_ports)
             if voltage_v is not None:
                 bucket["voltage_v"].add(voltage_v)
@@ -1526,6 +1568,8 @@ class ElectricalPdfImporter:
                 bucket["poles"].add(poles)
             if phase is not None:
                 bucket["phase"].add(phase)
+            bucket["confidence"].add(circuit_confidence)
+            bucket["evidence_methods"].add("pdf-circuit-text-link")
             bucket["provenance"].append(source_provenance)
             evidence.update(
                 {
@@ -1536,6 +1580,366 @@ class ElectricalPdfImporter:
                 }
             )
             bucket["evidence"].append(evidence)
+
+        topology_vectors = [
+            vector
+            for vector in vectors
+            if not vector.closed
+            and vector.element_id not in vector_symbol_ids
+            and sum(
+                _distance_pt(first[0], first[1], second[0], second[1])
+                for first, second in _vector_segments(vector)
+            )
+            >= 12.0
+        ]
+        parent = list(range(len(topology_vectors)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(first_index: int, second_index: int) -> None:
+            first_root = find(first_index)
+            second_root = find(second_index)
+            if first_root != second_root:
+                if first_root < second_root:
+                    parent[second_root] = first_root
+                else:
+                    parent[first_root] = second_root
+
+        for first_index, first_vector in enumerate(topology_vectors):
+            for second_index in range(first_index + 1, len(topology_vectors)):
+                second_vector = topology_vectors[second_index]
+                if _paths_touch(
+                    first_vector,
+                    second_vector,
+                    tolerance_pt=self.topology_snap_radius_pt,
+                ):
+                    union(first_index, second_index)
+
+        topology_components: dict[int, list[PdfVectorPathObservation]] = {}
+        for index, vector in enumerate(topology_vectors):
+            topology_components.setdefault(find(index), []).append(vector)
+
+        all_entities: tuple[ElectricalEquipment | ElectricalDevice, ...] = tuple(
+            sorted((*equipment, *devices), key=lambda item: item.id)
+        )
+        supported_sources = {"panelboard", "switchboard"}
+
+        for component in sorted(
+            topology_components.values(),
+            key=lambda items: (
+                items[0].page,
+                tuple(sorted(item.element_id for item in items)),
+            ),
+        ):
+            page = component[0].page
+            element_ids = sorted(item.element_id for item in component)
+            attached: dict[str, ElectricalEquipment | ElectricalDevice] = {}
+            ambiguous_endpoints: list[dict[str, Any]] = []
+
+            for vector in component:
+                for endpoint in (vector.points_pt[0], vector.points_pt[-1]):
+                    nearby: list[
+                        tuple[float, ElectricalEquipment | ElectricalDevice]
+                    ] = []
+                    for entity in all_entities:
+                        source_page, x_pt, y_pt = entity_source_positions[entity.id]
+                        if source_page != page:
+                            continue
+                        distance = _distance_pt(
+                            endpoint[0],
+                            endpoint[1],
+                            x_pt,
+                            y_pt,
+                        )
+                        if distance <= self.topology_endpoint_radius_pt:
+                            nearby.append((distance, entity))
+                    nearby.sort(key=lambda item: (item[0], item[1].id))
+                    if len(nearby) > 1:
+                        ambiguous_endpoints.append(
+                            {
+                                "point_pt": {"x": endpoint[0], "y": endpoint[1]},
+                                "candidate_entity_ids": [
+                                    entity.id for _, entity in nearby
+                                ],
+                            }
+                        )
+                    elif nearby:
+                        attached[nearby[0][1].id] = nearby[0][1]
+
+            if not attached:
+                continue
+
+            topology_row: dict[str, Any] = {
+                "page": page,
+                "source_element_ids": element_ids,
+                "attached_entity_ids": sorted(attached),
+            }
+            if ambiguous_endpoints:
+                topology_row.update(
+                    {
+                        "status": "unresolved",
+                        "reason": "ambiguous_endpoint_attachment",
+                        "ambiguous_endpoints": ambiguous_endpoints,
+                    }
+                )
+                unresolved_topology.append(topology_row)
+                continue
+
+            if len(attached) < 2:
+                topology_row.update(
+                    {
+                        "status": "unresolved",
+                        "reason": "incomplete_topology",
+                    }
+                )
+                unresolved_topology.append(topology_row)
+                continue
+
+            attached_equipment = [
+                entity
+                for entity in attached.values()
+                if isinstance(entity, ElectricalEquipment)
+            ]
+            source_entities = [
+                entity
+                for entity in attached_equipment
+                if entity.equipment_type in supported_sources
+            ]
+            load_entities = [
+                entity
+                for entity in attached.values()
+                if isinstance(entity, ElectricalDevice)
+            ]
+            if (
+                len(source_entities) != 1
+                or len(attached_equipment) != 1
+                or not load_entities
+            ):
+                topology_row.update(
+                    {
+                        "status": "unresolved",
+                        "reason": "source_or_load_ambiguous",
+                        "source_candidate_ids": sorted(
+                            entity.id for entity in source_entities
+                        ),
+                        "equipment_ids": sorted(
+                            entity.id for entity in attached_equipment
+                        ),
+                        "load_candidate_ids": sorted(
+                            entity.id for entity in load_entities
+                        ),
+                    }
+                )
+                unresolved_topology.append(topology_row)
+                continue
+
+            source_entity = source_entities[0]
+            nearby_callouts = [
+                observation
+                for observation in texts
+                if observation.page == page
+                and _CIRCUIT_RE.search(observation.text)
+                and min(
+                    _point_path_distance_pt(
+                        (observation.x_pt, observation.y_pt),
+                        vector,
+                    )
+                    for vector in component
+                )
+                <= self.topology_annotation_radius_pt
+            ]
+            nearby_callouts.sort(key=lambda item: item.element_id)
+            circuit_numbers = {
+                match.group("number").upper()
+                for observation in nearby_callouts
+                if (match := _CIRCUIT_RE.search(observation.text))
+            }
+            if len(circuit_numbers) > 1:
+                topology_row.update(
+                    {
+                        "status": "unresolved",
+                        "reason": "conflicting_circuit_callouts",
+                        "circuit_numbers": sorted(circuit_numbers),
+                        "circuit_callout_ids": [
+                            item.element_id for item in nearby_callouts
+                        ],
+                    }
+                )
+                unresolved_topology.append(topology_row)
+                continue
+
+            panel_tags = {
+                _normalize_tag(match.group("tag"))
+                for observation in nearby_callouts
+                if (match := _PANEL_RE.search(observation.text))
+            }
+            if panel_tags and (
+                source_entity.name is None
+                or any(tag != source_entity.name for tag in panel_tags)
+            ):
+                topology_row.update(
+                    {
+                        "status": "unresolved",
+                        "reason": "panel_callout_conflict",
+                        "panel_tags": sorted(panel_tags),
+                        "source_entity_id": source_entity.id,
+                    }
+                )
+                unresolved_topology.append(topology_row)
+                continue
+
+            attached_load_ids = {entity.id for entity in load_entities}
+            contradictory_load_ids: set[str] = set()
+            for observation in nearby_callouts:
+                for (tag_page, tag), entity in entity_by_page_tag.items():
+                    if (
+                        tag_page == page
+                        and isinstance(entity, ElectricalDevice)
+                        and re.search(
+                            rf"(?<![A-Z0-9_.-]){re.escape(tag)}(?![A-Z0-9_.-])",
+                            observation.text,
+                            re.IGNORECASE,
+                        )
+                        and entity.id not in attached_load_ids
+                    ):
+                        contradictory_load_ids.add(entity.id)
+            if contradictory_load_ids:
+                topology_row.update(
+                    {
+                        "status": "unresolved",
+                        "reason": "load_callout_conflict",
+                        "contradictory_load_ids": sorted(contradictory_load_ids),
+                    }
+                )
+                unresolved_topology.append(topology_row)
+                continue
+
+            circuit_number = (
+                next(iter(circuit_numbers))
+                if circuit_numbers
+                else None
+            )
+            topology_confidence = 0.88
+            topology_provenance = [
+                _provenance(
+                    document,
+                    element_id=vector.element_id,
+                    page=vector.page,
+                    method="pdf-vector-topology-link",
+                    confidence=topology_confidence,
+                    source_kind=vector.source_kind,
+                    attributes={
+                        "points_pt": [list(point) for point in vector.points_pt],
+                        **(
+                            {"metadata": dict(vector.metadata)}
+                            if vector.metadata
+                            else {}
+                        ),
+                    },
+                )
+                for vector in component
+            ]
+            source_port: Port | None = None
+            load_ports: dict[str, Port] = {}
+            for provenance in topology_provenance:
+                source_port = port_for(source_entity, "source", provenance)
+                for entity in sorted(load_entities, key=lambda item: item.id):
+                    load_ports[entity.id] = port_for(entity, "sink", provenance)
+            if source_port is None:
+                raise ElectricalPdfError("resolved topology did not produce source provenance")
+
+            if circuit_number is not None:
+                circuit_identity = circuit_number
+                circuit_name = f"{source_entity.name or source_entity.id} {circuit_number}"
+            else:
+                semantic_load_key = ",".join(sorted(attached_load_ids))
+                circuit_identity = f"topology:{semantic_load_key}"
+                circuit_name = f"{source_entity.name or source_entity.id} topology"
+
+            circuit_id = stable_id(
+                "circuit",
+                f"pdf-electrical:{document.source_id}:{source_entity.id}:{circuit_identity}",
+            )
+            bucket = evidence_bucket(
+                circuit_id=circuit_id,
+                name=circuit_name,
+                source_port_id=source_port.id,
+                circuit_number=circuit_number,
+            )
+            bucket["load_port_ids"].update(
+                port.id for port in load_ports.values()
+            )
+            bucket["confidence"].add(topology_confidence)
+            bucket["evidence_methods"].add("pdf-vector-topology-link")
+            bucket["provenance"].extend(topology_provenance)
+
+            voltage_values: set[float] = set()
+            pole_values: set[int] = set()
+            phase_values: set[str] = set()
+            callout_provenance: list[Provenance] = []
+            for observation in nearby_callouts:
+                voltage_v, _ = _extract_voltage((observation.text,))
+                poles_match = _POLES_RE.search(observation.text)
+                phase_match = _PHASE_RE.search(observation.text)
+                if voltage_v is not None:
+                    voltage_values.add(voltage_v)
+                    bucket["voltage_v"].add(voltage_v)
+                if poles_match:
+                    pole_value = int(poles_match.group("poles"))
+                    pole_values.add(pole_value)
+                    bucket["poles"].add(pole_value)
+                if phase_match:
+                    phase_value = f"{phase_match.group('phase')}ph"
+                    phase_values.add(phase_value)
+                    bucket["phase"].add(phase_value)
+                callout_provenance.append(
+                    _provenance(
+                        document,
+                        element_id=observation.element_id,
+                        page=observation.page,
+                        method="pdf-topology-circuit-callout",
+                        confidence=0.86,
+                        attributes={"source_text": observation.text},
+                    )
+                )
+            bucket["provenance"].extend(callout_provenance)
+            if callout_provenance:
+                bucket["evidence_methods"].add("pdf-topology-circuit-callout")
+
+            topology_evidence = {
+                "page": page,
+                "source_element_id": element_ids[0],
+                "source_element_ids": element_ids,
+                "source_text": " | ".join(
+                    sorted(observation.text for observation in nearby_callouts)
+                ),
+                "method": "pdf-vector-topology-link",
+                "circuit_number": circuit_number,
+                "panel_tag": source_entity.name,
+                "load_ids": sorted(attached_load_ids),
+                "circuit_callout_ids": [
+                    observation.element_id for observation in nearby_callouts
+                ],
+                "voltage_v_candidates": sorted(voltage_values),
+                "poles_candidates": sorted(pole_values),
+                "phase_candidates": sorted(phase_values),
+                "status": "resolved",
+            }
+            bucket["evidence"].append(topology_evidence)
+            topology_resolved_callout_ids.update(
+                observation.element_id for observation in nearby_callouts
+            )
+
+        if topology_resolved_callout_ids:
+            unresolved_circuits = [
+                item
+                for item in unresolved_circuits
+                if item["source_element_id"] not in topology_resolved_callout_ids
+            ]
 
         circuits: list[Circuit] = []
         for circuit_id, bucket in sorted(circuit_evidence.items()):
@@ -1562,12 +1966,20 @@ class ElectricalPdfImporter:
             phase = one_or_none("phase")
             lane_attributes: dict[str, Any] = {
                 "inference_basis": (
-                    "each evidence row explicitly names the source panel, circuit, "
-                    "and independently recognized load tag"
+                    "source-supported electrical callout and/or unambiguous vector "
+                    "topology evidence; the importer emits semantic endpoints and "
+                    "circuit intent but never route geometry"
                 ),
+                "evidence_methods": sorted(bucket["evidence_methods"]),
                 "spatial_attachment_pending": not has_explicit_registration,
                 "evidence": evidence_rows,
-                "source_texts": sorted({str(item["source_text"]) for item in evidence_rows}),
+                "source_texts": sorted(
+                    {
+                        str(item["source_text"])
+                        for item in evidence_rows
+                        if item.get("source_text")
+                    }
+                ),
             }
             if conflicts:
                 lane_attributes["conflicting_electrical_evidence"] = conflicts
@@ -1581,7 +1993,7 @@ class ElectricalPdfImporter:
                     voltage_v=voltage_v,
                     poles=poles,
                     phase=phase,
-                    confidence=0.92,
+                    confidence=max(bucket["confidence"], default=0.0),
                     provenance=_merge_provenance(bucket["provenance"]),
                     attributes={"pdf_electrical": lane_attributes},
                 )
@@ -1602,7 +2014,7 @@ class ElectricalPdfImporter:
         model_provenance = Provenance(
             source_kind="pdf-electrical",
             source_id=document.source_id,
-            method="pypdf-text-xobject-annotation extraction",
+            method="pypdf-text-xobject-annotation-vector extraction",
             confidence=1.0,
             attributes={"page_count": document.page_count},
         )
@@ -1638,6 +2050,13 @@ class ElectricalPdfImporter:
                         key=lambda item: (
                             int(item["page"]),
                             str(item["source_element_id"]),
+                        ),
+                    ),
+                    "unresolved_topology": sorted(
+                        unresolved_topology,
+                        key=lambda item: (
+                            int(item["page"]),
+                            tuple(item["source_element_ids"]),
                         ),
                     ),
                     "global_annotations": sorted(

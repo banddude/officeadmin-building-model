@@ -635,22 +635,35 @@ _EQUIPMENT_TEXT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
         "transformer",
     ),
 )
+_TAG_SUFFIX_RE = r"(?:[-_.][A-Z0-9]+|[0-9][A-Z0-9]*)?"
 _DEVICE_TEXT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(?P<tag>EVSE(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE), "evse"),
+    (re.compile(rf"\b(?P<tag>EVSE{_TAG_SUFFIX_RE})\b", re.IGNORECASE), "evse"),
     (
-        re.compile(r"\b(?P<tag>(?:GFCI|GFI|RECEPT|REC)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>(?:GFCI|GFI|RECEPTACLE|RECEPT|REC){_TAG_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "receptacle",
     ),
     (
-        re.compile(r"\b(?P<tag>(?:JBOX|J-?BOX|JB)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>(?:JBOX|J-?BOX|JB){_TAG_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "junction_box",
     ),
     (
-        re.compile(r"\b(?P<tag>(?:LIGHT|LTG|LUM)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>(?:LUMINAIRE|LIGHT|LTG|LUM){_TAG_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "luminaire",
     ),
     (
-        re.compile(r"\b(?P<tag>(?:DISC|DISCONNECT)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>(?:DISCONNECT|DISC){_TAG_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "disconnect",
     ),
 )
@@ -673,6 +686,15 @@ _MOUNT_FT_RE = re.compile(
 
 def _normalize_tag(value: str) -> str:
     return value.strip().strip(".,:;()[]{}").upper()
+
+
+def _looks_like_semantic_tag(value: str) -> bool:
+    cleaned = value.strip().strip(".,:;()[]{}")
+    if not cleaned:
+        return False
+    if re.search(r"[0-9_.-]", cleaned):
+        return True
+    return bool(re.fullmatch(r"[A-Z]{1,12}", cleaned))
 
 
 def _semantic_text(symbol: PdfSymbolObservation) -> str:
@@ -726,13 +748,17 @@ def _text_entity_hits(text: str) -> list[tuple[str, str, str, float]]:
         return []
     hits: list[tuple[str, str, str, float]] = []
     panel = _PANEL_RE.search(text)
-    if panel:
+    if panel and _looks_like_semantic_tag(panel.group("tag")):
         hits.append(("equipment", "panelboard", _normalize_tag(panel.group("tag")), 0.97))
     for pattern, canonical_type in _EQUIPMENT_TEXT_RULES:
         for match in pattern.finditer(text):
+            if not _looks_like_semantic_tag(match.group("tag")):
+                continue
             hits.append(("equipment", canonical_type, _normalize_tag(match.group("tag")), 0.95))
     for pattern, canonical_type in _DEVICE_TEXT_RULES:
         for match in pattern.finditer(text):
+            if not _looks_like_semantic_tag(match.group("tag")):
+                continue
             hits.append(("device", canonical_type, _normalize_tag(match.group("tag")), 0.95))
     dedup: dict[tuple[str, str, str], float] = {}
     for kind, canonical_type, tag, confidence in hits:

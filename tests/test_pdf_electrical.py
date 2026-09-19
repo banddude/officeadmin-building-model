@@ -14,6 +14,7 @@ from pypdf.generic import (
 
 from oabm.importers.pdf_electrical import (
     POINT_TO_M,
+    ElectricalInstanceHint,
     ElectricalPdfError,
     ElectricalPdfImporter,
     PdfElectricalDocument,
@@ -97,6 +98,150 @@ def _write_synthetic_pdf(
 
     with path.open("wb") as handle:
         writer.write(handle)
+
+
+def test_device_text_rules_do_not_match_longer_nontechnical_words() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:nontechnical-word-prefixes",
+            "page_count": 1,
+            "texts": [
+                {"element_id": "t1", "page": 1, "text": "RECORD", "x_pt": 10, "y_pt": 10},
+                {"element_id": "t2", "page": 1, "text": "RECESSED", "x_pt": 20, "y_pt": 20},
+                {"element_id": "t3", "page": 1, "text": "LIGHTING", "x_pt": 30, "y_pt": 30},
+                {"element_id": "t4", "page": 1, "text": "LIGHTINGS", "x_pt": 40, "y_pt": 40},
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert not model.electrical_devices
+    assert not model.electrical_equipment
+
+
+def test_generic_device_class_labels_remain_unresolved_without_instance_identity() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:generic-device-labels",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:left",
+                    "page": 1,
+                    "text": "GFCI",
+                    "x_pt": 100.0,
+                    "y_pt": 200.0,
+                },
+                {
+                    "element_id": "p1:text:right",
+                    "page": 1,
+                    "text": "GFCI",
+                    "x_pt": 300.0,
+                    "y_pt": 200.0,
+                },
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert not model.electrical_devices
+    unresolved = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("reason")
+        == "generic device class label has no stable instance identity"
+    ]
+    assert len(unresolved) == 2
+
+
+def test_explicit_instance_hints_materialize_repeated_generic_devices_deterministically() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:hinted-generic-devices",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:left",
+                    "page": 1,
+                    "text": "GFCI",
+                    "x_pt": 100.0,
+                    "y_pt": 200.0,
+                },
+                {
+                    "element_id": "p1:text:right",
+                    "page": 1,
+                    "text": "GFCI",
+                    "x_pt": 300.0,
+                    "y_pt": 200.0,
+                },
+            ],
+        }
+    )
+    hints = (
+        ElectricalInstanceHint(
+            identity_key="receptacle:left",
+            page=1,
+            entity_kind="device",
+            canonical_type="receptacle",
+            tag="R-LEFT",
+            x_pt=100.0,
+            y_pt=200.0,
+            source_element_id="p1:text:left",
+            confidence=0.99,
+        ),
+        ElectricalInstanceHint(
+            identity_key="receptacle:right",
+            page=1,
+            entity_kind="device",
+            canonical_type="receptacle",
+            tag="R-RIGHT",
+            x_pt=300.0,
+            y_pt=200.0,
+            source_element_id="p1:text:right",
+            confidence=0.99,
+        ),
+    )
+
+    first = ElectricalPdfImporter(instance_hints=hints).import_document(document)
+    reordered = ElectricalPdfImporter(instance_hints=tuple(reversed(hints))).import_document(
+        PdfElectricalDocument(
+            source_id=document.source_id,
+            page_count=document.page_count,
+            texts=tuple(reversed(document.texts)),
+        )
+    )
+
+    assert {item.name for item in first.electrical_devices} == {"R-LEFT", "R-RIGHT"}
+    assert {item.id for item in first.electrical_devices} == {
+        item.id for item in reordered.electrical_devices
+    }
+    assert first.to_json() == reordered.to_json()
+    assert all(
+        any(source.source_kind == "caller-instance-hint" for source in item.provenance)
+        for item in first.electrical_devices
+    )
+    assert not first.attributes["pdf_electrical"]["unresolved_observations"]
+
+
+def test_instance_hint_rejects_unknown_claimed_source_element() -> None:
+    document = PdfElectricalDocument(
+        source_id="fixture:stale-instance-hint",
+        page_count=1,
+    )
+    hint = ElectricalInstanceHint(
+        identity_key="device:one",
+        page=1,
+        entity_kind="device",
+        canonical_type="receptacle",
+        x_pt=100.0,
+        y_pt=100.0,
+        source_element_id="p1:text:missing",
+    )
+
+    with pytest.raises(ElectricalPdfError, match="unknown source element"):
+        ElectricalPdfImporter(instance_hints=(hint,)).import_document(document)
 
 
 def test_fixture_emits_canonical_equipment_devices_circuit_and_metadata() -> None:

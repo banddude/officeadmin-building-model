@@ -219,6 +219,45 @@ class PdfPageTransform:
 
 
 @dataclass(frozen=True, slots=True)
+class ElectricalInstanceHint:
+    """Explicit stable identity for one source-page electrical instance.
+
+    Use this only when the source itself does not expose a stable semantic/native
+    identifier. Coordinates locate the recognized source instance; ``identity_key``
+    is the caller-owned stable semantic anchor used for canonical identity.
+    """
+
+    identity_key: str
+    page: int
+    entity_kind: str
+    canonical_type: str
+    x_pt: float
+    y_pt: float
+    tag: str | None = None
+    source_element_id: str | None = None
+    confidence: float = 1.0
+    note: str = "explicit electrical instance hint"
+
+    def __post_init__(self) -> None:
+        if not self.identity_key.strip():
+            raise ElectricalPdfError("instance hint identity_key is required")
+        if self.page < 1:
+            raise ElectricalPdfError("instance hint page is 1-based")
+        if self.entity_kind not in {"device", "equipment"}:
+            raise ElectricalPdfError("instance hint entity_kind must be device or equipment")
+        if not self.canonical_type.strip():
+            raise ElectricalPdfError("instance hint canonical_type is required")
+        if not math.isfinite(float(self.x_pt)) or not math.isfinite(float(self.y_pt)):
+            raise ElectricalPdfError("instance hint coordinates must be finite")
+        if self.tag is not None and not self.tag.strip():
+            raise ElectricalPdfError("instance hint tag cannot be blank")
+        if self.source_element_id is not None and not self.source_element_id.strip():
+            raise ElectricalPdfError("instance hint source_element_id cannot be blank")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ElectricalPdfError("instance hint confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
 class SymbolRule:
     pattern: str
     entity_kind: str
@@ -644,25 +683,62 @@ _EQUIPMENT_TEXT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
         "transformer",
     ),
 )
+_INSTANCE_SUFFIX_RE = r"(?:[0-9]+|[-_.][A-Z0-9]+)?"
 _DEVICE_TEXT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"\b(?P<tag>EVSE(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE), "evse"),
     (
-        re.compile(r"\b(?P<tag>(?:GFCI|GFI|RECEPT|REC)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>EVSE{_INSTANCE_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
+        "evse",
+    ),
+    (
+        re.compile(
+            rf"\b(?P<tag>(?:GFCI|GFI|RECEPT|REC){_INSTANCE_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "receptacle",
     ),
     (
-        re.compile(r"\b(?P<tag>(?:JBOX|J-?BOX|JB)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>(?:JBOX|J-?BOX|JB){_INSTANCE_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "junction_box",
     ),
     (
-        re.compile(r"\b(?P<tag>(?:LIGHT|LTG|LUM)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>(?:LIGHT|LTG|LUM){_INSTANCE_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "luminaire",
     ),
     (
-        re.compile(r"\b(?P<tag>(?:DISC|DISCONNECT)(?:[-_.]?[A-Z0-9]+)?)\b", re.IGNORECASE),
+        re.compile(
+            rf"\b(?P<tag>(?:DISC|DISCONNECT){_INSTANCE_SUFFIX_RE})\b",
+            re.IGNORECASE,
+        ),
         "disconnect",
     ),
 )
+_GENERIC_DEVICE_TAGS: frozenset[str] = frozenset(
+    {
+        "EVSE",
+        "GFCI",
+        "GFI",
+        "RECEPT",
+        "REC",
+        "JBOX",
+        "J-BOX",
+        "JB",
+        "LIGHT",
+        "LTG",
+        "LUM",
+        "DISC",
+        "DISCONNECT",
+    }
+)
+
 _CIRCUIT_RE = re.compile(r"\b(?:CKT|CIRCUIT)\s*#?\s*(?P<number>[A-Z0-9.-]+)\b", re.IGNORECASE)
 _POLES_RE = re.compile(r"\b(?P<poles>[1234])\s*P\b", re.IGNORECASE)
 _PHASE_RE = re.compile(r"\b(?P<phase>[123])\s*PH\b", re.IGNORECASE)
@@ -1012,6 +1088,7 @@ class ElectricalPdfImporter:
         self,
         *,
         symbol_rules: Sequence[SymbolRule] = DEFAULT_SYMBOL_RULES,
+        instance_hints: Sequence[ElectricalInstanceHint] = (),
         symbol_label_radius_pt: float = 96.0,
         annotation_radius_pt: float = 144.0,
         ambiguity_margin: float = 0.08,
@@ -1021,6 +1098,14 @@ class ElectricalPdfImporter:
         topology_annotation_radius_pt: float = 60.0,
     ) -> None:
         self.symbol_rules = tuple(symbol_rules)
+        self.instance_hints = tuple(instance_hints)
+        seen_hint_ids: set[str] = set()
+        for hint in self.instance_hints:
+            if hint.identity_key in seen_hint_ids:
+                raise ElectricalPdfError(
+                    f"duplicate instance hint identity_key {hint.identity_key!r}"
+                )
+            seen_hint_ids.add(hint.identity_key)
         self.symbol_label_radius_pt = float(symbol_label_radius_pt)
         self.annotation_radius_pt = float(annotation_radius_pt)
         self.ambiguity_margin = float(ambiguity_margin)
@@ -1062,10 +1147,97 @@ class ElectricalPdfImporter:
         vectors = tuple(sorted(document.vectors, key=lambda item: (item.page, item.element_id)))
         candidates: dict[str, _EntityCandidate] = {}
         unresolved_observations: list[dict[str, Any]] = []
+        text_by_key = {(item.page, item.element_id): item for item in texts}
+        symbol_by_key = {(item.page, item.element_id): item for item in symbols}
+        claimed_source_ids: set[tuple[int, str]] = set()
+
+        for hint in sorted(self.instance_hints, key=lambda item: item.identity_key):
+            if hint.page > document.page_count:
+                raise ElectricalPdfError(
+                    f"instance hint {hint.identity_key!r} references page {hint.page}, "
+                    f"but page_count is {document.page_count}"
+                )
+            source_observation: PdfTextObservation | PdfSymbolObservation | None = None
+            if hint.source_element_id is not None:
+                lookup = (hint.page, hint.source_element_id)
+                source_observation = text_by_key.get(lookup) or symbol_by_key.get(lookup)
+                if source_observation is None:
+                    raise ElectricalPdfError(
+                        f"instance hint {hint.identity_key!r} references unknown source element "
+                        f"{hint.source_element_id!r} on page {hint.page}"
+                    )
+                claimed_source_ids.add(lookup)
+            key = f"hint:{hint.identity_key}"
+            candidate = _EntityCandidate(
+                key=key,
+                entity_kind=hint.entity_kind,
+                canonical_type=hint.canonical_type,
+                tag=(hint.tag.strip() if hint.tag is not None else None),
+                identity_key=f"hint:{hint.identity_key}",
+                page=hint.page,
+                x_pt=float(hint.x_pt),
+                y_pt=float(hint.y_pt),
+                confidence=hint.confidence,
+                primary_method="explicit-instance-hint",
+            )
+            source_element_id = hint.source_element_id or f"instance-hint:{hint.identity_key}"
+            source_text = (
+                source_observation.text
+                if isinstance(source_observation, PdfTextObservation)
+                else None
+            )
+            candidate.merge_source(
+                element_id=source_element_id,
+                text=source_text,
+                symbol_name=(
+                    source_observation.name
+                    if isinstance(source_observation, PdfSymbolObservation)
+                    else None
+                ),
+                x_pt=float(hint.x_pt),
+                y_pt=float(hint.y_pt),
+                confidence=hint.confidence,
+                provenance=_provenance(
+                    document,
+                    element_id=source_element_id,
+                    page=hint.page,
+                    method=hint.note,
+                    confidence=hint.confidence,
+                    source_kind="caller-instance-hint",
+                    attributes={
+                        "stable_identity_key": hint.identity_key,
+                        "entity_kind": hint.entity_kind,
+                        "canonical_type": hint.canonical_type,
+                    },
+                ),
+                method="explicit-instance-hint",
+            )
+            candidates[key] = candidate
 
         # Text recognition comes first so recognized symbols can bind to nearby labels.
         for observation in texts:
+            if (observation.page, observation.element_id) in claimed_source_ids:
+                continue
             for kind, canonical_type, tag, confidence in _text_entity_hits(observation.text):
+                if kind == "device" and tag in _GENERIC_DEVICE_TAGS:
+                    unresolved_observations.append(
+                        {
+                            "kind": "text",
+                            "page": observation.page,
+                            "source_element_id": observation.element_id,
+                            "position_pt": {"x": observation.x_pt, "y": observation.y_pt},
+                            "recognized_classification": {
+                                "entity_kind": kind,
+                                "canonical_type": canonical_type,
+                                "confidence": confidence,
+                            },
+                            "status": "unresolved_identity",
+                            "reason": (
+                                "generic device class label has no stable instance identity"
+                            ),
+                        }
+                    )
+                    continue
                 key = f"p{observation.page}:{kind}:{tag}"
                 source = _provenance(
                     document,
@@ -2179,8 +2351,9 @@ def import_pdf(
     *,
     source_id: str | None = None,
     page_transforms: Mapping[int, PdfPageTransform] | None = None,
+    instance_hints: Sequence[ElectricalInstanceHint] = (),
 ) -> BuildingModel:
-    return ElectricalPdfImporter().import_pdf(
+    return ElectricalPdfImporter(instance_hints=instance_hints).import_pdf(
         path,
         source_id=source_id,
         page_transforms=page_transforms,
@@ -2191,8 +2364,9 @@ def import_document(
     document: PdfElectricalDocument,
     *,
     page_transforms: Mapping[int, PdfPageTransform] | None = None,
+    instance_hints: Sequence[ElectricalInstanceHint] = (),
 ) -> BuildingModel:
-    return ElectricalPdfImporter().import_document(
+    return ElectricalPdfImporter(instance_hints=instance_hints).import_document(
         document,
         page_transforms=page_transforms,
     )
@@ -2203,6 +2377,7 @@ __all__ = [
     "POINT_TO_M",
     "ElectricalPdfError",
     "ElectricalPdfImporter",
+    "ElectricalInstanceHint",
     "PdfElectricalDocument",
     "PdfPageTransform",
     "PdfSymbolObservation",

@@ -55,7 +55,17 @@ classification and the importer also has stable semantic or native identity.
 Unknown or tied classifications are retained under `unresolved_observations`,
 including the candidate types and confidences. Recognized symbols without stable
 identity are also retained there rather than receiving counter-derived
-canonical IDs.
+canonical IDs. Bare device-class labels such as an unnumbered generic receptacle
+or light abbreviation are class evidence, not instance identity, and therefore
+remain unresolved by default.
+
+For real plan families that repeat a legitimate symbol but expose no stable PDF
+native identifier, callers may supply `ElectricalInstanceHint` entries. Each hint
+must provide a caller-owned stable semantic `identity_key`, the source page and
+position, and the canonical device/equipment type. A hint may also claim one
+existing source element for traceable provenance. Hints never weaken the default
+fail-closed behavior: they are explicit human/project inputs analogous to scale
+or registration overrides, and stale claimed source elements are rejected.
 
 Host words such as `WALL MTD` are hints only. They never become a canonical
 `host_id` without a real canonical host object.
@@ -127,7 +137,9 @@ form XObjects, and supported PDF annotations.
 
 `ElectricalPdfImporter.import_document(document, page_transforms=...)`
 recognizes an extracted document and returns a canonical `BuildingModel`.
-Multi-page documents require transforms for every page.
+Multi-page documents require transforms for every page. Construct the importer
+with `instance_hints=(...)` when explicit stable identity must be supplied for
+source instances that otherwise have only repeated generic class labels.
 
 `ElectricalPdfImporter.import_pdf(path, page_transforms=...)` performs both
 steps.

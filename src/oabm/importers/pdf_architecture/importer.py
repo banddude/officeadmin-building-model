@@ -1162,14 +1162,102 @@ def _ordinary_vector_shell_candidates(
             if _inside(item[3].bbox_pt, room.observation.center_pt)
         ]
         if not containing:
-            if any(_inside(loop.bbox_pt, room.observation.center_pt) for loop in loops):
+            single_loops = [
+                loop
+                for loop in loops
+                if _inside(loop.bbox_pt, room.observation.center_pt)
+                and loop.width_pt * scale.meters_per_point >= options.min_space_span_m
+                and loop.height_pt * scale.meters_per_point >= options.min_space_span_m
+            ]
+            if len(single_loops) == 1:
+                boundary = single_loops[0]
+                bx0, by0, bx1, by1 = boundary.bbox_pt
+                boundary_width = bx1 - bx0
+                boundary_height = by1 - by0
+                min_offset_pt = options.min_wall_thickness_m / scale.meters_per_point
+                max_offset_pt = options.max_wall_thickness_m / scale.meters_per_point
+                partial_sides: set[str] = set()
+                for line in page.lines:
+                    if line.native_id:
+                        continue
+                    ax, ay = line.start_pt
+                    bx, by = line.end_pt
+                    dx = bx - ax
+                    dy = by - ay
+                    if (
+                        abs(dy) <= _VECTOR_AXIS_TOLERANCE_PT
+                        and abs(dx) >= boundary_width * 0.7
+                    ):
+                        x0, x1 = sorted((ax, bx))
+                        y = (ay + by) / 2.0
+                        if (
+                            x0 >= bx0 - _VECTOR_AXIS_TOLERANCE_PT
+                            and x1 <= bx1 + _VECTOR_AXIS_TOLERANCE_PT
+                        ):
+                            if min_offset_pt <= y - by0 <= max_offset_pt:
+                                partial_sides.add("south")
+                            if min_offset_pt <= by1 - y <= max_offset_pt:
+                                partial_sides.add("north")
+                    elif (
+                        abs(dx) <= _VECTOR_AXIS_TOLERANCE_PT
+                        and abs(dy) >= boundary_height * 0.7
+                    ):
+                        y0, y1 = sorted((ay, by))
+                        x = (ax + bx) / 2.0
+                        if (
+                            y0 >= by0 - _VECTOR_AXIS_TOLERANCE_PT
+                            and y1 <= by1 + _VECTOR_AXIS_TOLERANCE_PT
+                        ):
+                            if min_offset_pt <= x - bx0 <= max_offset_pt:
+                                partial_sides.add("west")
+                            if min_offset_pt <= bx1 - x <= max_offset_pt:
+                                partial_sides.add("east")
+                if len(partial_sides) < 3:
+                    pair = (boundary.element_id, boundary.element_id)
+                    if pair in used_pairs:
+                        ambiguities.append(
+                            {
+                                "page": page.page_number,
+                                "code": "multiple_room_labels_in_enclosure",
+                                "detail": (
+                                    "more than one room label resolves to the same ordinary "
+                                    "vector single-loop enclosure"
+                                ),
+                                "source_boundaries": {
+                                    "boundary": list(boundary.source_element_ids),
+                                },
+                            }
+                        )
+                        selected = [
+                            shell
+                            for shell in selected
+                            if (shell.outer.element_id, shell.inner.element_id) != pair
+                        ]
+                        continue
+                    used_pairs.add(pair)
+                    selected.append(
+                        _Shell(
+                            outer=boundary,
+                            inner=boundary,
+                            room=room,
+                            thickness_x_m=0.0,
+                            thickness_y_m=0.0,
+                            geometry_confidence=0.68,
+                            recognition_method="ordinary_vector_single_loop_space",
+                        )
+                    )
+                    continue
+                single_loops = []
+            if single_loops or any(
+                _inside(loop.bbox_pt, room.observation.center_pt) for loop in loops
+            ):
                 ambiguities.append(
                     {
                         "page": page.page_number,
                         "code": "ordinary_vector_enclosure_unresolved",
                         "detail": (
                             f"ordinary vector boundaries surround room {room.anchor!r} "
-                            "but do not prove one supported paired closed wall enclosure"
+                            "but do not prove one unique supported room enclosure"
                         ),
                         "room_anchor": room.anchor,
                     }
@@ -1369,6 +1457,17 @@ def _shell_entities(
                 "recognition": shell.recognition_method,
             }
         }
+    elif shell.recognition_method == "ordinary_vector_single_loop_space":
+        space_method = "room label contained by one unique closed ordinary vector boundary"
+        space_source_attributes = {
+            "boundary_elements": list(shell.inner.source_element_ids),
+        }
+        space_attributes = {
+            "pdf_architecture": {
+                "identity_anchor": room.anchor,
+                "recognition": shell.recognition_method,
+            }
+        }
     else:
         space_method = "room label contained by a paired wall rectangle enclosure"
         space_source_attributes = {
@@ -1400,7 +1499,18 @@ def _shell_entities(
     )
 
     walls: list[_WallContext] = []
-    if resolved_height_m is None:
+    if shell.recognition_method == "ordinary_vector_single_loop_space":
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "wall_thickness_unresolved",
+                "detail": (
+                    f"room {room.name!r} has one supported closed boundary but no paired "
+                    "wall-face evidence; the 2D space was promoted without inventing walls"
+                ),
+            }
+        )
+    elif resolved_height_m is None:
         ambiguities.append(
             {
                 "page": page.page_number,

@@ -39,7 +39,12 @@ def _schema_validator() -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
-def _write_synthetic_pdf(path: Path, *, unrelated_prefix: bool = False) -> None:
+def _write_synthetic_pdf(
+    path: Path,
+    *,
+    unrelated_prefix: bool = False,
+    duplicate_vector_point: bool = False,
+) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=612, height=792)
 
@@ -75,12 +80,17 @@ def _write_synthetic_pdf(path: Path, *, unrelated_prefix: bool = False) -> None:
         if unrelated_prefix
         else b""
     )
+    vector_path = (
+        b"72 700 m 72 700 l 200 500 l S\n"
+        if duplicate_vector_point
+        else b"72 700 m 200 500 l S\n"
+    )
     content.set_data(
         unrelated
         + b"BT /F1 10 Tf 1 0 0 1 72 700 Tm (PANEL LP 120/240V 1PH) Tj ET\n"
         + b"BT /F1 9 Tf 1 0 0 1 205 505 Tm (EVSE-1 +48\\\" AFF WALL MTD) Tj ET\n"
         + b"BT /F1 8 Tf 1 0 0 1 72 650 Tm (PANEL LP CKT 12 -> EVSE-1 240V 2P) Tj ET\n"
-        + b"72 700 m 200 500 l S\n"
+        + vector_path
         + b"q 1 0 0 1 200 500 cm /EVSE1 Do Q\n"
     )
     page[NameObject("/Contents")] = writer._add_object(content)
@@ -238,6 +248,27 @@ def test_pdf_extraction_and_import_work_end_to_end(tmp_path: Path) -> None:
 
     reparsed = BuildingModel.from_json(model.to_json())
     assert reparsed.to_dict() == model.to_dict()
+
+
+def test_pdf_extraction_collapses_consecutive_duplicate_vector_points(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "duplicate-vector-point.pdf"
+    _write_synthetic_pdf(pdf_path, duplicate_vector_point=True)
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="synthetic:duplicate-vector-point",
+    )
+
+    assert any(
+        item.points_pt == ((72.0, 700.0), (200.0, 500.0))
+        and not item.closed
+        for item in extracted.vectors
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert len(model.circuits) == 1
+    validate_model(model)
 
 
 def test_unrecognized_graphic_is_preserved_as_unresolved_source_observation() -> None:

@@ -842,3 +842,51 @@ def test_topology_conflict_does_not_taint_ports_for_independent_circuit() -> Non
     assert unresolved[0]["circuit_callout_ids"] == ["p1:text:0050"]
     assert len(unresolved[0]["suppressed_circuit_ids"]) == 1
     validate_model(model)
+
+
+def test_narrative_prose_tokens_fail_closed_instead_of_becoming_entities() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "synthetic:narrative-prose-fail-closed",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:0010",
+                    "page": 1,
+                    "text": "Sub panel schedule and load coordination is by others.",
+                    "x_pt": 80,
+                    "y_pt": 500,
+                },
+                {
+                    "element_id": "p1:text:0020",
+                    "page": 1,
+                    "text": "Provide transformer to service equipment.",
+                    "x_pt": 80,
+                    "y_pt": 470,
+                },
+                {
+                    "element_id": "p1:text:0030",
+                    "page": 1,
+                    "text": "Existing switchgear but final rating is pending.",
+                    "x_pt": 80,
+                    "y_pt": 440,
+                },
+                {
+                    "element_id": "p1:text:0040",
+                    "page": 1,
+                    "text": "Coordinate lighting controls and discharge clearance.",
+                    "x_pt": 80,
+                    "y_pt": 410,
+                },
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert not model.electrical_equipment
+    assert not model.electrical_devices
+    assert not model.ports
+    assert not model.circuits
+    assert not model.routes
+    validate_model(model)

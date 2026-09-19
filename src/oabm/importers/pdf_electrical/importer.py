@@ -391,17 +391,26 @@ def _make_page_visitors(
         for points, closed, supported in pending_subpaths:
             if not supported:
                 continue
-            if not any(
-                math.hypot(first[0] - second[0], first[1] - second[1]) > 1e-9
-                for first, second in zip(points, points[1:])
-            ):
+            normalized_points: list[tuple[float, float]] = []
+            for point in points:
+                if (
+                    normalized_points
+                    and math.hypot(
+                        normalized_points[-1][0] - point[0],
+                        normalized_points[-1][1] - point[1],
+                    )
+                    <= 1e-9
+                ):
+                    continue
+                normalized_points.append(point)
+            if len(normalized_points) < 2 or (closed and len(normalized_points) < 3):
                 continue
             vector_counter += 1
             vectors.append(
                 PdfVectorPathObservation(
                     element_id=f"p{page_number}:vector:{vector_counter:05d}",
                     page=page_number,
-                    points_pt=points,
+                    points_pt=tuple(normalized_points),
                     closed=closed,
                     source_kind="pdf-vector-path",
                     metadata={"paint_operator": paint_operator},

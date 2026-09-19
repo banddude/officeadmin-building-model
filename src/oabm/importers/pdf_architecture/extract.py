@@ -53,23 +53,44 @@ def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ..
     page_height = float(page.height)  # type: ignore[attr-defined]
     for row in rows:
         row.sort(key=lambda item: float(item["x0"]))
-        text = " ".join(str(item["text"]) for item in row).strip()
-        if not text:
-            continue
-        x0 = min(float(item["x0"]) for item in row)
-        x1 = max(float(item["x1"]) for item in row)
-        top = min(float(item["top"]) for item in row)
-        bottom = max(float(item["bottom"]) for item in row)
-        y0 = page_height - bottom
-        y1 = page_height - top
-        signature = f"{text}|{x0:.3f}|{y0:.3f}|{x1:.3f}|{y1:.3f}"
-        result.append(
-            PdfTextObservation(
-                element_id=_element_id("text", page_number, signature),
-                text=text,
-                bbox_pt=(x0, y0, x1, y1),
+        groups: list[list[dict[str, object]]] = []
+        current: list[dict[str, object]] = []
+        for word in row:
+            if current:
+                previous = current[-1]
+                gap = float(word["x0"]) - float(previous["x1"])
+                previous_height = float(previous["bottom"]) - float(previous["top"])
+                word_height = float(word["bottom"]) - float(word["top"])
+                # PDF plans often place unrelated room labels, dimensions, and
+                # keynotes on the same text baseline.  Keep normal word spacing
+                # together, but do not merge widely separated annotations into
+                # one synthetic source observation.
+                split_gap = max(6.0, 1.5 * max(previous_height, word_height))
+                if gap > split_gap:
+                    groups.append(current)
+                    current = []
+            current.append(word)
+        if current:
+            groups.append(current)
+
+        for group in groups:
+            text = " ".join(str(item["text"]) for item in group).strip()
+            if not text:
+                continue
+            x0 = min(float(item["x0"]) for item in group)
+            x1 = max(float(item["x1"]) for item in group)
+            top = min(float(item["top"]) for item in group)
+            bottom = max(float(item["bottom"]) for item in group)
+            y0 = page_height - bottom
+            y1 = page_height - top
+            signature = f"{text}|{x0:.3f}|{y0:.3f}|{x1:.3f}|{y1:.3f}"
+            result.append(
+                PdfTextObservation(
+                    element_id=_element_id("text", page_number, signature),
+                    text=text,
+                    bbox_pt=(x0, y0, x1, y1),
+                )
             )
-        )
     return tuple(result)
 
 

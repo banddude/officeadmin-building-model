@@ -7,7 +7,7 @@ import pytest
 
 from oabm.model import BuildingModel, validate_model
 from oabm.importers.pdf_architecture import ImportOptions, LevelOverride, RegistrationHint
-from oabm.importers.pdf_architecture.extract import extract_pdf
+from oabm.importers.pdf_architecture.extract import _group_words, extract_pdf
 from oabm.importers.pdf_architecture.importer import classify_page, import_architectural_pdf, import_observations
 from oabm.importers.pdf_architecture.types import (
     PdfDocumentObservation,
@@ -110,6 +110,36 @@ def _ambiguity_codes(model: BuildingModel) -> set[str]:
     return {item["code"] for item in model.attributes["pdf_architecture"]["ambiguities"]}
 
 
+
+
+def test_pdf_text_extraction_splits_widely_separated_same_row_annotations() -> None:
+    class FakePage:
+        height = 200.0
+
+        @staticmethod
+        def extract_words(**_kwargs):
+            return [
+                {"text": "BEDROOM", "x0": 10.0, "x1": 55.0, "top": 20.0, "bottom": 30.0},
+                {"text": "1", "x0": 58.0, "x1": 63.0, "top": 20.0, "bottom": 30.0},
+                {"text": "D-12", "x0": 140.0, "x1": 165.0, "top": 20.0, "bottom": 30.0},
+            ]
+
+    observations = _group_words(FakePage(), 1)
+
+    assert [item.text for item in observations] == ["BEDROOM 1", "D-12"]
+    bedroom = observations[0]
+
+    class WithUnrelatedFarWord(FakePage):
+        @staticmethod
+        def extract_words(**_kwargs):
+            return FakePage.extract_words() + [
+                {"text": "A-5.2", "x0": 220.0, "x1": 250.0, "top": 20.0, "bottom": 30.0},
+            ]
+
+    edited = _group_words(WithUnrelatedFarWord(), 1)
+    assert edited[0].text == "BEDROOM 1"
+    assert edited[0].element_id == bedroom.element_id
+
 def test_synthetic_pdf_matches_known_answer_and_canonical_contract() -> None:
     pdf_path = FIXTURE_DIR / "simple-floor-plan.pdf"
     expected = json.loads((FIXTURE_DIR / "simple-floor-plan.expected.json").read_text(encoding="utf-8"))
@@ -150,6 +180,52 @@ def test_repeatability_and_stable_semantic_identity_survive_geometry_change() ->
     assert {item.id for item in first.spaces} == {item.id for item in moved.spaces}
     assert {item.id for item in first.walls} == {item.id for item in moved.walls}
     assert first.spaces[0].footprint != moved.spaces[0].footprint
+
+
+def test_single_ordinary_vector_loop_promotes_only_a_2d_space() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=(
+            _text("title", "A1.1 FLOOR PLAN", 10, 180),
+            _text("scale", "SCALE: 1:100", 10, 165),
+            _text("room", "ROOM: GARAGE", 80, 70),
+        ),
+        lines=_loop_lines("single", (40.0, 35.0, 220.0, 125.0)),
+    )
+
+    model = import_observations(_document(page))
+
+    assert len(model.spaces) == 1
+    assert model.spaces[0].name == "GARAGE"
+    assert not model.walls
+    assert model.spaces[0].attributes["pdf_architecture"]["recognition"] == (
+        "ordinary_vector_single_loop_space"
+    )
+    assert "wall_thickness_unresolved" in _ambiguity_codes(model)
+
+
+def test_competing_single_ordinary_vector_loops_stay_unresolved() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=(
+            _text("title", "A1.1 FLOOR PLAN", 10, 180),
+            _text("scale", "SCALE: 1:100", 10, 165),
+            _text("room", "ROOM: GARAGE", 100, 80),
+        ),
+        lines=(
+            *_loop_lines("outer", (30.0, 25.0, 240.0, 145.0)),
+            *_loop_lines("inner", (45.0, 40.0, 225.0, 130.0)),
+        ),
+    )
+
+    model = import_observations(_document(page))
+
+    assert not model.spaces
+    assert "ordinary_vector_enclosure_unresolved" in _ambiguity_codes(model)
 
 
 def test_conflicting_scale_is_preserved_as_ambiguity_not_fabricated_geometry() -> None:

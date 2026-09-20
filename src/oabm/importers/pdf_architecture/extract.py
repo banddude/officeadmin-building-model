@@ -128,6 +128,7 @@ def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple
                 element_id=_element_id("rect", page_number, signature),
                 bbox_pt=bbox,
                 native_id=_native_id(obj, "rect"),
+                filled=bool(obj.get("fill", False)),
             )
         )
     return tuple(sorted(result, key=lambda item: item.bbox_pt))
@@ -170,6 +171,7 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
                 native_id=_native_id(obj, "line"),
                 primitive_family=primitive_family,
                 dashed=bool(obj.get("_oabm_dashed", False)),
+                filled=bool(obj.get("_oabm_filled", False)),
             )
         )
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
@@ -216,6 +218,7 @@ def _curve_polyline_segments(
 
         primitive_family = _curve_primitive_family(curve)
         dashed = _dash_present(curve.get("dash"))
+        filled = bool(curve.get("fill", False))
         for start, end in zip(points, points[1:]):
             if start == end:
                 continue
@@ -227,6 +230,7 @@ def _curve_polyline_segments(
                 "tag": curve.get("tag") or primitive_family,
                 "_oabm_primitive_family": primitive_family,
                 "_oabm_dashed": dashed,
+                "_oabm_filled": filled,
             }
             if isinstance(curve.get("mcid"), int):
                 segment["mcid"] = curve["mcid"]
@@ -256,6 +260,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                                     **line,
                                     "_oabm_primitive_family": "line",
                                     "_oabm_dashed": _dash_present(line.get("dash")),
+                                    "_oabm_filled": bool(line.get("fill", False)),
                                 }
                                 for line in page.lines
                             ),

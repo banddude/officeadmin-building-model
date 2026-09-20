@@ -20,6 +20,7 @@ recognition lane:
 6. `geometry-only-power-sheet-dense-legend.pdf`: Slice 7 source-only regression PDF with no legend heading. The importer must find the aligned three-row glyph/label table by density and repeated symbol geometry. There is no paired expected-output artifact.
 7. `separate-sheet-explicit-legend-reference.pdf`: Slice 7 source-only three-page regression PDF. Page 1 carries `GENERAL NOTES AND LEGEND` on sheet `E-001`; pages 2 and 3 contain field glyphs and explicit references by sheet name and legend title. Cross-sheet typing is allowed only through those source references. There is no paired expected-output artifact.
 8. `geometry-only-power-sheet-notes-column-legend.pdf`: Slice 9 source-only acceptance PDF with a right-hand notes column, separate bottom title block, KEY NOTES and GENERAL NOTES sections, a six-row ruled `SYMBOL | FUNCTION` legend, and field glyphs tagged E/N/R with bare height annotations. There is no paired expected-output artifact.
+9. Slice 10 rotated electrical fixtures: `geometry-only-power-sheet-notes-column-legend-rotate-{90,270}.pdf`, `geometry-only-power-sheet-edge-legend-rotate-{90,270}.pdf`, and `geometry-only-power-sheet-dense-legend-rotate-{90,270}.pdf`. Each stores the same synthetic content sideways with the matching page `/Rotate` flag so its displayed geometry is identical to the unrotated source. They are source input only and have no paired expected-output artifacts.
 
 These fixtures are synthetic. They contain no customer plan content.
 

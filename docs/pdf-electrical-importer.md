@@ -43,6 +43,15 @@ Architectural convergence can replace best-effort placement once sheet
 registration is known. `level_id`, `space_id`, and `host_id` remain null until
 real canonical hosts are identified.
 
+PDF extraction normalizes page `/Rotate` values of 0, 90, 180, and 270 degrees
+into the orientation shown by a PDF viewer before any electrical recognition
+runs. For quarter turns, page width and height are swapped and every text,
+form-symbol, annotation, and vector-path coordinate is rotated into the displayed
+bottom-origin page space. Per-page extraction provenance records `page_rotation`
+and the displayed page dimensions. `PdfPageTransform` always consumes these
+displayed coordinates, so caller-supplied registration does not need to account
+for the PDF storage rotation separately.
+
 ## Ambiguity rules
 
 The importer does not create a circuit unless the same text evidence identifies

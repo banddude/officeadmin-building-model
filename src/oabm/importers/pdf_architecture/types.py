@@ -43,6 +43,7 @@ class PdfLineObservation:
     native_id: str | None = None
     primitive_family: str = "line"
     dashed: bool = False
+    filled: bool = False
 
     def __post_init__(self) -> None:
         _point2(self.start_pt, "start_pt")
@@ -56,6 +57,7 @@ class PdfRectObservation:
     element_id: str
     bbox_pt: tuple[float, float, float, float]
     native_id: str | None = None
+    filled: bool = False
 
     def __post_init__(self) -> None:
         x0, y0, x1, y1 = self.bbox_pt

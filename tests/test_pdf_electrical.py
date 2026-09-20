@@ -27,6 +27,8 @@ from oabm.model import BuildingModel, stable_id, validate_model
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_electrical"
 CAD_GEOMETRY_FIXTURE = ROOT / "fixtures" / "pdf_architecture" / "v1" / "cad-export-geometry-only.pdf"
+LEGEND_SHAPE_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-with-legend.pdf"
+TWO_PAGE_LEGEND_LOCALITY_FIXTURE = FIXTURE_DIR / "two-page-sheet-local-legend.pdf"
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
 
@@ -99,6 +101,172 @@ def _write_synthetic_pdf(
 
     with path.open("wb") as handle:
         writer.write(handle)
+
+
+def test_geometry_only_power_sheet_matches_drawn_glyphs_to_its_own_legend() -> None:
+    assert not LEGEND_SHAPE_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        LEGEND_SHAPE_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-with-legend",
+    )
+    repeated = extract_pdf(
+        LEGEND_SHAPE_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-with-legend",
+    )
+
+    assert extracted == repeated
+    assert not extracted.symbols
+    assert {item.text for item in extracted.texts} == {
+        "ELECTRICAL SYMBOL LEGEND",
+        "GFCI",
+        "JBOX",
+        "LIGHT",
+    }
+    # The plan field is geometry only. All semantic text is confined to the
+    # drawn legend block, well away from the six field glyphs.
+    assert all(item.x_pt >= 350.0 for item in extracted.texts)
+
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert len(model.electrical_devices) == 6
+    assert not model.electrical_equipment
+    device_types = [device.device_type for device in model.electrical_devices]
+    assert device_types.count("receptacle") == 2
+    assert device_types.count("junction_box") == 2
+    assert device_types.count("luminaire") == 2
+    assert all(device.confidence >= 0.9 for device in model.electrical_devices)
+
+    for device in model.electrical_devices:
+        lane = device.attributes["pdf_electrical"]
+        shape = lane["shape_recognition"]
+        assert shape["method"] == "sheet-legend-geometry-match"
+        assert shape["legend_label"] in {"GFCI", "JBOX", "LIGHT"}
+        assert shape["shape_signature"]
+        assert shape["source_geometry_key"]
+        methods = {item.method for item in device.provenance}
+        assert "pdf-legend-shape-match" in methods
+        assert "pdf-sheet-legend-type-label" in methods
+        assert "pdf-text-pattern" not in methods
+
+    unresolved = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "vector_cluster"
+    ]
+    assert len(unresolved) == 2
+    assert len({item["shape_signature"] for item in unresolved}) == 1
+    assert {
+        item["reason"] for item in unresolved
+    } == {"glyph cluster has no unique matching type in the sheet legend"}
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_legend_shape_device_ids_ignore_vector_extraction_ids_and_order() -> None:
+    extracted = extract_pdf(
+        LEGEND_SHAPE_FIXTURE,
+        source_id="fixture:legend-shape-stable-identity",
+    )
+    renamed_vectors = tuple(
+        PdfVectorPathObservation(
+            element_id=f"renamed:vector:{index:04d}",
+            page=vector.page,
+            points_pt=vector.points_pt,
+            closed=vector.closed,
+            source_kind=vector.source_kind,
+            metadata=vector.metadata,
+        )
+        for index, vector in enumerate(reversed(extracted.vectors), start=1)
+    )
+    edited = PdfElectricalDocument(
+        source_id=extracted.source_id,
+        page_count=extracted.page_count,
+        texts=tuple(reversed(extracted.texts)),
+        symbols=extracted.symbols,
+        vectors=renamed_vectors,
+    )
+
+    original = ElectricalPdfImporter().import_document(extracted)
+    reordered = ElectricalPdfImporter().import_document(edited)
+
+    original_ids = {
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"], 6),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"], 6),
+        ): device.id
+        for device in original.electrical_devices
+    }
+    reordered_ids = {
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"], 6),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"], 6),
+        ): device.id
+        for device in reordered.electrical_devices
+    }
+    assert original_ids == reordered_ids
+
+
+def test_legend_shape_matching_never_inherits_another_pages_legend() -> None:
+    assert not TWO_PAGE_LEGEND_LOCALITY_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        TWO_PAGE_LEGEND_LOCALITY_FIXTURE,
+        source_id="fixture:two-page-sheet-local-legend",
+    )
+
+    assert extracted.page_count == 2
+    assert {item.page for item in extracted.texts} == {1}
+
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    devices_by_page = {
+        page: [
+            device
+            for device in model.electrical_devices
+            if device.attributes["pdf_electrical"]["source_page"] == page
+        ]
+        for page in (1, 2)
+    }
+    assert len(devices_by_page[1]) == 6
+    assert devices_by_page[2] == []
+
+    page_two_unresolved = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "vector_cluster" and item.get("page") == 2
+    ]
+    assert len(page_two_unresolved) == 8
+    assert {
+        item["reason"] for item in page_two_unresolved
+    } == {
+        "page has no recognized legend; glyph remains unresolved and "
+        "cross-page legend inheritance is disabled"
+    }
+    assert all(
+        item["recognition_provenance"] == {
+            "method": "sheet-local-legend-geometry-match",
+            "legend_scope": "same-page-only",
+            "page": 2,
+            "page_has_recognized_legend": False,
+        }
+        for item in page_two_unresolved
+    )
+    assert all(
+        provenance.page == 1
+        for device in model.electrical_devices
+        for provenance in device.provenance
+        if provenance.method == "pdf-sheet-legend-type-label"
+    )
+
+    validate_model(model)
 
 
 def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> None:
@@ -1072,7 +1240,7 @@ def test_repeated_semantic_circuit_callouts_merge_loads_and_evidence() -> None:
     }
 
 
-def test_unregistered_multi_page_coordinates_never_share_a_canonical_frame() -> None:
+def test_unregistered_multi_page_uses_separated_best_effort_page_tiles() -> None:
     document = PdfElectricalDocument.from_dict(
         {
             "source_id": "synthetic:multi-page",
@@ -1096,11 +1264,41 @@ def test_unregistered_multi_page_coordinates_never_share_a_canonical_frame() -> 
         }
     )
 
-    with pytest.raises(ElectricalPdfError, match="multi-page electrical PDFs require"):
-        ElectricalPdfImporter().import_document(document)
+    best_effort = ElectricalPdfImporter().import_document(document)
+    lane = best_effort.attributes["pdf_electrical"]
+    assert lane["registration_pending"] is True
+    assert lane["page_transforms_supplied"] is False
+    assert lane["registration_mode"] == (
+        "deterministic-separated-page-local-best-effort"
+    )
+    assert set(lane["best_effort_page_transforms"]) == {"1", "2"}
+    assert lane["best_effort_page_transforms"]["1"]["tx_m"] == 0.0
+    assert lane["best_effort_page_transforms"]["2"]["tx_m"] == pytest.approx(100.0)
+
+    best_effort_positions = {
+        device.name: (device.pose.position.x, device.pose.position.y)
+        for device in best_effort.electrical_devices
+    }
+    assert best_effort_positions["EVSE-2"][0] - best_effort_positions["EVSE-1"][0] == (
+        pytest.approx(100.0)
+    )
+    assert best_effort_positions["EVSE-2"][1] == pytest.approx(
+        best_effort_positions["EVSE-1"][1]
+    )
+    assert {
+        item.page
+        for item in best_effort.provenance
+        if item.method == "deterministic per-page best-effort unregistered placement"
+    } == {1, 2}
+    assert all(
+        device.attributes["pdf_electrical"]["spatial_status"]
+        == "multi-page-local-best-effort-unregistered"
+        for device in best_effort.electrical_devices
+    )
+    validate_model(best_effort)
 
     frame_id = stable_id("frame", "synthetic:registered-multi-page")
-    model = ElectricalPdfImporter().import_document(
+    registered = ElectricalPdfImporter().import_document(
         document,
         page_transforms={
             1: PdfPageTransform(frame_id=frame_id),
@@ -1108,16 +1306,25 @@ def test_unregistered_multi_page_coordinates_never_share_a_canonical_frame() -> 
         },
     )
 
-    assert model.coordinate_system.frame_id == frame_id
-    assert model.attributes["pdf_electrical"]["registration_pending"] is False
-    assert model.attributes["pdf_electrical"]["page_transforms_supplied"] is True
-    positions = {
+    assert registered.coordinate_system.frame_id == frame_id
+    assert registered.attributes["pdf_electrical"]["registration_pending"] is False
+    assert registered.attributes["pdf_electrical"]["page_transforms_supplied"] is True
+    assert registered.attributes["pdf_electrical"]["registration_mode"] == (
+        "explicit-page-transforms"
+    )
+    assert registered.attributes["pdf_electrical"]["best_effort_page_transforms"] == {}
+    registered_positions = {
         device.name: (device.pose.position.x, device.pose.position.y)
-        for device in model.electrical_devices
+        for device in registered.electrical_devices
     }
-    assert positions["EVSE-2"][0] - positions["EVSE-1"][0] == pytest.approx(10.0)
-    assert positions["EVSE-2"][1] == pytest.approx(positions["EVSE-1"][1])
-    validate_model(model)
+    assert registered_positions["EVSE-2"][0] - registered_positions["EVSE-1"][0] == (
+        pytest.approx(10.0)
+    )
+    assert registered_positions["EVSE-2"][1] == pytest.approx(
+        registered_positions["EVSE-1"][1]
+    )
+    validate_model(registered)
+
 
 def test_recognized_symbol_without_stable_identity_stays_unresolved() -> None:
     document = PdfElectricalDocument.from_dict(

@@ -302,6 +302,7 @@ class _EntityCandidate:
     texts: list[str] = field(default_factory=list)
     symbol_names: list[str] = field(default_factory=list)
     provenance: list[Provenance] = field(default_factory=list)
+    shape_recognition: dict[str, Any] | None = None
 
     def merge_source(
         self,
@@ -324,9 +325,24 @@ class _EntityCandidate:
             self.symbol_names.append(symbol_name)
         if confidence > self.confidence:
             self.confidence = confidence
-            self.x_pt = x_pt
-            self.y_pt = y_pt
-            self.primary_method = method
+            if self.shape_recognition is None or method == "pdf-legend-shape-match":
+                self.x_pt = x_pt
+                self.y_pt = y_pt
+                self.primary_method = method
+
+
+@dataclass(frozen=True, slots=True)
+class _VectorCluster:
+    page: int
+    vectors: tuple[PdfVectorPathObservation, ...]
+    bbox_pt: tuple[float, float, float, float]
+    center_pt: tuple[float, float]
+    shape_signature: str
+    geometry_key: str
+
+    @property
+    def source_element_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(vector.element_id for vector in self.vectors))
 
 
 def _validate_source_observation(element_id: str, page: int, x_pt: float, y_pt: float) -> None:
@@ -903,13 +919,12 @@ def _semantic_text(symbol: PdfSymbolObservation) -> str:
     return " ".join(parts).replace("/", " ").replace("_", " ").replace("-", " ").upper()
 
 
-def _classify_symbol(
-    symbol: PdfSymbolObservation,
+def _classify_semantic_text(
+    semantic: str,
     rules: Sequence[SymbolRule],
     *,
     ambiguity_margin: float,
 ) -> tuple[tuple[str, str, float] | None, list[dict[str, Any]]]:
-    semantic = _semantic_text(symbol)
     matches: dict[tuple[str, str], float] = {}
     for rule in rules:
         if re.search(rule.pattern, semantic, re.IGNORECASE):
@@ -933,6 +948,19 @@ def _classify_symbol(
         str(top["canonical_type"]),
         float(top["confidence"]),
     ), ranked
+
+
+def _classify_symbol(
+    symbol: PdfSymbolObservation,
+    rules: Sequence[SymbolRule],
+    *,
+    ambiguity_margin: float,
+) -> tuple[tuple[str, str, float] | None, list[dict[str, Any]]]:
+    return _classify_semantic_text(
+        _semantic_text(symbol),
+        rules,
+        ambiguity_margin=ambiguity_margin,
+    )
 
 
 def _text_entity_hits(text: str) -> list[tuple[str, str, str, float]]:
@@ -1086,21 +1114,307 @@ def _merge_provenance(
     )
 
 
+
+_GLYPH_PATH_MAX_EXTENT_PT = 54.0
+_GLYPH_CLUSTER_GAP_PT = 2.5
+_LEGEND_LABEL_RADIUS_PT = 72.0
+_LEGEND_REGION_RADIUS_PT = 300.0
+_UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
+_LEGEND_HEADING_RE = re.compile(
+    r"\b(?:ELECTRICAL\s+)?(?:SYMBOLS?\s+)?LEGEND\b",
+    re.IGNORECASE,
+)
+
+
+def _vector_bbox(
+    observation: PdfVectorPathObservation,
+) -> tuple[float, float, float, float]:
+    xs = [point[0] for point in observation.points_pt]
+    ys = [point[1] for point in observation.points_pt]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bbox_union(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    return (
+        min(first[0], second[0]),
+        min(first[1], second[1]),
+        max(first[2], second[2]),
+        max(first[3], second[3]),
+    )
+
+
+def _bbox_gap_pt(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    dx = max(first[0] - second[2], second[0] - first[2], 0.0)
+    dy = max(first[1] - second[3], second[1] - first[3], 0.0)
+    return math.hypot(dx, dy)
+
+
+def _paint_family(observation: PdfVectorPathObservation) -> str:
+    operator = str(observation.metadata.get("paint_operator") or "")
+    if operator in {"f", "F", "f*"}:
+        return "fill"
+    if operator in {"b", "b*", "B", "B*"}:
+        return "fill-stroke"
+    return "stroke"
+
+
+def _canonical_point_sequence(
+    points: tuple[tuple[float, float], ...],
+    *,
+    closed: bool,
+) -> tuple[tuple[float, float], ...]:
+    if not points:
+        return ()
+    if not closed:
+        reversed_points = tuple(reversed(points))
+        return min(points, reversed_points)
+
+    candidates: list[tuple[tuple[float, float], ...]] = []
+    for source in (points, tuple(reversed(points))):
+        for offset in range(len(source)):
+            candidates.append(source[offset:] + source[:offset])
+    return min(candidates)
+
+
+def _cluster_shape_signature(
+    vectors: Sequence[PdfVectorPathObservation],
+    bbox: tuple[float, float, float, float],
+) -> str:
+    center_x = (bbox[0] + bbox[2]) / 2.0
+    center_y = (bbox[1] + bbox[3]) / 2.0
+    scale = max(bbox[2] - bbox[0], bbox[3] - bbox[1], 1e-9)
+    variants: list[tuple[Any, ...]] = []
+
+    for rotation in range(4):
+        records: list[tuple[Any, ...]] = []
+        for vector in vectors:
+            normalized: list[tuple[float, float]] = []
+            for x_pt, y_pt in vector.points_pt:
+                x = (x_pt - center_x) / scale
+                y = (y_pt - center_y) / scale
+                if rotation == 1:
+                    x, y = -y, x
+                elif rotation == 2:
+                    x, y = -x, -y
+                elif rotation == 3:
+                    x, y = y, -x
+                normalized.append((round(x, 4), round(y, 4)))
+            points = _canonical_point_sequence(
+                tuple(normalized),
+                closed=vector.closed,
+            )
+            records.append(
+                (
+                    _paint_family(vector),
+                    vector.closed,
+                    _vector_contains_bezier(vector),
+                    points,
+                )
+            )
+        variants.append(tuple(sorted(records)))
+
+    canonical = min(variants)
+    return hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:24]
+
+
+def _cluster_geometry_key(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> str:
+    records: list[tuple[Any, ...]] = []
+    for vector in vectors:
+        rounded = tuple(
+            (round(point[0], 3), round(point[1], 3))
+            for point in vector.points_pt
+        )
+        records.append(
+            (
+                _paint_family(vector),
+                vector.closed,
+                _vector_contains_bezier(vector),
+                _canonical_point_sequence(rounded, closed=vector.closed),
+            )
+        )
+    canonical = tuple(sorted(records))
+    return hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:24]
+
+
+def _cluster_small_vector_glyphs(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[_VectorCluster, ...]:
+    small: list[
+        tuple[
+            PdfVectorPathObservation,
+            tuple[float, float, float, float],
+        ]
+    ] = []
+    for vector in vectors:
+        bbox = _vector_bbox(vector)
+        if (
+            bbox[2] - bbox[0] <= _GLYPH_PATH_MAX_EXTENT_PT
+            and bbox[3] - bbox[1] <= _GLYPH_PATH_MAX_EXTENT_PT
+        ):
+            small.append((vector, bbox))
+
+    small.sort(
+        key=lambda item: (
+            item[0].page,
+            round(item[1][0], 6),
+            round(item[1][1], 6),
+            round(item[1][2], 6),
+            round(item[1][3], 6),
+            _cluster_geometry_key((item[0],)),
+        )
+    )
+    parent = list(range(len(small)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first_index: int, second_index: int) -> None:
+        first_root = find(first_index)
+        second_root = find(second_index)
+        if first_root == second_root:
+            return
+        if first_root < second_root:
+            parent[second_root] = first_root
+        else:
+            parent[first_root] = second_root
+
+    cell_size = _GLYPH_PATH_MAX_EXTENT_PT + _GLYPH_CLUSTER_GAP_PT
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    for second_index, (second, second_bbox) in enumerate(small):
+        min_cell_x = math.floor(
+            (second_bbox[0] - _GLYPH_CLUSTER_GAP_PT) / cell_size
+        )
+        max_cell_x = math.floor(
+            (second_bbox[2] + _GLYPH_CLUSTER_GAP_PT) / cell_size
+        )
+        min_cell_y = math.floor(
+            (second_bbox[1] - _GLYPH_CLUSTER_GAP_PT) / cell_size
+        )
+        max_cell_y = math.floor(
+            (second_bbox[3] + _GLYPH_CLUSTER_GAP_PT) / cell_size
+        )
+        nearby_indexes: set[int] = set()
+        for cell_x in range(min_cell_x, max_cell_x + 1):
+            for cell_y in range(min_cell_y, max_cell_y + 1):
+                nearby_indexes.update(
+                    buckets.get((second.page, cell_x, cell_y), ())
+                )
+
+        for first_index in sorted(nearby_indexes):
+            first, first_bbox = small[first_index]
+            combined = _bbox_union(first_bbox, second_bbox)
+            if (
+                combined[2] - combined[0] > _GLYPH_PATH_MAX_EXTENT_PT
+                or combined[3] - combined[1] > _GLYPH_PATH_MAX_EXTENT_PT
+            ):
+                continue
+            if _bbox_gap_pt(first_bbox, second_bbox) <= _GLYPH_CLUSTER_GAP_PT:
+                union(first_index, second_index)
+
+        own_min_cell_x = math.floor(second_bbox[0] / cell_size)
+        own_max_cell_x = math.floor(second_bbox[2] / cell_size)
+        own_min_cell_y = math.floor(second_bbox[1] / cell_size)
+        own_max_cell_y = math.floor(second_bbox[3] / cell_size)
+        for cell_x in range(own_min_cell_x, own_max_cell_x + 1):
+            for cell_y in range(own_min_cell_y, own_max_cell_y + 1):
+                buckets.setdefault(
+                    (second.page, cell_x, cell_y),
+                    [],
+                ).append(second_index)
+
+    grouped: dict[int, list[tuple[PdfVectorPathObservation, tuple[float, float, float, float]]]] = {}
+    for index, item in enumerate(small):
+        grouped.setdefault(find(index), []).append(item)
+
+    clusters: list[_VectorCluster] = []
+    for group in grouped.values():
+        vectors_in_group = tuple(
+            sorted(
+                (item[0] for item in group),
+                key=lambda vector: (
+                    _vector_bbox(vector),
+                    _cluster_geometry_key((vector,)),
+                    vector.element_id,
+                ),
+            )
+        )
+        bbox = group[0][1]
+        for _vector, vector_bbox in group[1:]:
+            bbox = _bbox_union(bbox, vector_bbox)
+        if (
+            bbox[2] - bbox[0] > _GLYPH_PATH_MAX_EXTENT_PT
+            or bbox[3] - bbox[1] > _GLYPH_PATH_MAX_EXTENT_PT
+        ):
+            continue
+        clusters.append(
+            _VectorCluster(
+                page=vectors_in_group[0].page,
+                vectors=vectors_in_group,
+                bbox_pt=bbox,
+                center_pt=((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0),
+                shape_signature=_cluster_shape_signature(vectors_in_group, bbox),
+                geometry_key=_cluster_geometry_key(vectors_in_group),
+            )
+        )
+
+    return tuple(
+        sorted(
+            clusters,
+            key=lambda cluster: (
+                cluster.page,
+                cluster.bbox_pt,
+                cluster.geometry_key,
+            ),
+        )
+    )
+
+
+def _is_glyph_cluster(cluster: _VectorCluster) -> bool:
+    return bool(
+        len(cluster.vectors) > 1
+        or any(
+            vector.closed
+            or _vector_contains_bezier(vector)
+            or _paint_family(vector) != "stroke"
+            for vector in cluster.vectors
+        )
+    )
+
+
 def _resolve_page_transforms(
     document: PdfElectricalDocument,
     page_transforms: Mapping[int, PdfPageTransform] | None,
 ) -> tuple[dict[int, PdfPageTransform], bool]:
     if page_transforms is None:
-        if document.page_count > 1:
-            raise ElectricalPdfError(
-                "multi-page electrical PDFs require an explicit PdfPageTransform "
-                "for every page before canonical geometry can be emitted"
+        if document.page_count == 1:
+            frame_id = stable_id(
+                "frame",
+                f"pdf-electrical:{document.source_id}:page-local:1",
             )
+            return {1: PdfPageTransform(frame_id=frame_id)}, False
+
         frame_id = stable_id(
             "frame",
-            f"pdf-electrical:{document.source_id}:page-local:1",
+            f"pdf-electrical:{document.source_id}:page-local-best-effort",
         )
-        return {1: PdfPageTransform(frame_id=frame_id)}, False
+        return {
+            page: PdfPageTransform(
+                frame_id=frame_id,
+                tx_m=(page - 1) * _UNREGISTERED_PAGE_TILE_OFFSET_M,
+            )
+            for page in range(1, document.page_count + 1)
+        }, False
 
     transforms = dict(page_transforms)
     expected_pages = set(range(1, document.page_count + 1))
@@ -1144,6 +1458,363 @@ def _provenance(
         method=method,
         confidence=confidence,
         attributes=dict(attributes or {}),
+    )
+
+
+
+def _recognize_legend_shapes(
+    document: PdfElectricalDocument,
+    *,
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+    rules: Sequence[SymbolRule],
+    ambiguity_margin: float,
+) -> tuple[
+    dict[str, _EntityCandidate],
+    set[str],
+    set[str],
+    set[str],
+    list[dict[str, Any]],
+]:
+    clusters = tuple(
+        cluster
+        for cluster in _cluster_small_vector_glyphs(vectors)
+        if _is_glyph_cluster(cluster)
+    )
+    glyph_vector_ids = {
+        element_id
+        for cluster in clusters
+        for element_id in cluster.source_element_ids
+    }
+    headings = tuple(
+        observation
+        for observation in texts
+        if _LEGEND_HEADING_RE.search(observation.text)
+    )
+    legend_text_ids = {observation.element_id for observation in headings}
+    prototype_geometry_keys: set[tuple[int, str]] = set()
+    entries_by_signature: dict[
+        tuple[int, str],
+        list[
+            tuple[
+                str,
+                str,
+                float,
+                _VectorCluster,
+                PdfTextObservation,
+                PdfTextObservation,
+            ]
+        ],
+    ] = {}
+    unresolved: list[dict[str, Any]] = []
+    legend_pages = {heading.page for heading in headings}
+
+    for label in texts:
+        if label.element_id in legend_text_ids:
+            continue
+        nearby_headings = [
+            heading
+            for heading in headings
+            if heading.page == label.page
+            and _distance_pt(
+                label.x_pt,
+                label.y_pt,
+                heading.x_pt,
+                heading.y_pt,
+            )
+            <= _LEGEND_REGION_RADIUS_PT
+        ]
+        if not nearby_headings:
+            continue
+        classification, ranked = _classify_semantic_text(
+            label.text,
+            rules,
+            ambiguity_margin=ambiguity_margin,
+        )
+        if classification is None:
+            continue
+
+        candidate_clusters = [
+            cluster
+            for cluster in clusters
+            if cluster.page == label.page
+            and _distance_pt(
+                label.x_pt,
+                label.y_pt,
+                cluster.center_pt[0],
+                cluster.center_pt[1],
+            )
+            <= _LEGEND_LABEL_RADIUS_PT
+        ]
+        candidate_clusters.sort(
+            key=lambda cluster: (
+                _distance_pt(
+                    label.x_pt,
+                    label.y_pt,
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                ),
+                cluster.geometry_key,
+            )
+        )
+        if not candidate_clusters:
+            continue
+        nearest_distance = _distance_pt(
+            label.x_pt,
+            label.y_pt,
+            candidate_clusters[0].center_pt[0],
+            candidate_clusters[0].center_pt[1],
+        )
+        tied = [
+            cluster
+            for cluster in candidate_clusters
+            if abs(
+                _distance_pt(
+                    label.x_pt,
+                    label.y_pt,
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                )
+                - nearest_distance
+            )
+            <= 0.5
+        ]
+        if len(tied) != 1:
+            unresolved.append(
+                {
+                    "kind": "legend_label",
+                    "page": label.page,
+                    "source_element_id": label.element_id,
+                    "text": label.text,
+                    "classification_candidates": ranked,
+                    "status": "unresolved_legend_geometry",
+                    "reason": "legend label is equally close to multiple glyph clusters",
+                    "candidate_cluster_geometry_keys": sorted(
+                        cluster.geometry_key for cluster in tied
+                    ),
+                }
+            )
+            legend_text_ids.add(label.element_id)
+            continue
+
+        prototype = tied[0]
+        prototype_key = (prototype.page, prototype.geometry_key)
+        if prototype_key in prototype_geometry_keys:
+            unresolved.append(
+                {
+                    "kind": "legend_label",
+                    "page": label.page,
+                    "source_element_id": label.element_id,
+                    "text": label.text,
+                    "classification_candidates": ranked,
+                    "status": "unresolved_legend_geometry",
+                    "reason": "legend glyph cluster is claimed by more than one label",
+                    "candidate_cluster_geometry_keys": [prototype.geometry_key],
+                }
+            )
+            legend_text_ids.add(label.element_id)
+            continue
+
+        header = min(
+            nearby_headings,
+            key=lambda item: (
+                _distance_pt(label.x_pt, label.y_pt, item.x_pt, item.y_pt),
+                item.element_id,
+            ),
+        )
+        entity_kind, canonical_type, confidence = classification
+        entries_by_signature.setdefault(
+            (prototype.page, prototype.shape_signature), []
+        ).append(
+            (
+                entity_kind,
+                canonical_type,
+                confidence,
+                prototype,
+                label,
+                header,
+            )
+        )
+        prototype_geometry_keys.add(prototype_key)
+        legend_text_ids.add(label.element_id)
+
+    legend_by_signature: dict[
+        tuple[int, str],
+        tuple[
+            str,
+            str,
+            float,
+            _VectorCluster,
+            PdfTextObservation,
+            PdfTextObservation,
+        ],
+    ] = {}
+    for (page, signature), entries in sorted(entries_by_signature.items()):
+        classifications = {
+            (entry[0], entry[1])
+            for entry in entries
+        }
+        if len(classifications) != 1:
+            for _kind, _canonical_type, _confidence, prototype, label, _header in entries:
+                unresolved.append(
+                    {
+                        "kind": "legend_glyph",
+                        "page": prototype.page,
+                        "source_element_id": prototype.source_element_ids[0],
+                        "source_element_ids": list(prototype.source_element_ids),
+                        "shape_signature": signature,
+                        "legend_label_element_id": label.element_id,
+                        "legend_label": label.text,
+                        "status": "unresolved_legend_classification",
+                        "reason": "the same legend glyph shape maps to conflicting types",
+                        "classification_candidates": [
+                            {
+                                "entity_kind": kind,
+                                "canonical_type": canonical_type,
+                            }
+                            for kind, canonical_type in sorted(classifications)
+                        ],
+                    }
+                )
+            continue
+        legend_by_signature[(page, signature)] = sorted(
+            entries,
+            key=lambda entry: (
+                -entry[2],
+                entry[4].element_id,
+                entry[3].geometry_key,
+            ),
+        )[0]
+
+    candidates: dict[str, _EntityCandidate] = {}
+    matched_vector_ids: set[str] = {
+        element_id
+        for cluster in clusters
+        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys
+        for element_id in cluster.source_element_ids
+    }
+
+    for cluster in clusters:
+        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
+            continue
+        legend_entry = legend_by_signature.get(
+            (cluster.page, cluster.shape_signature)
+        )
+        if legend_entry is None:
+            unresolved.append(
+                {
+                    "kind": "vector_cluster",
+                    "page": cluster.page,
+                    "source_element_id": cluster.source_element_ids[0],
+                    "source_element_ids": list(cluster.source_element_ids),
+                    "position_pt": {
+                        "x": cluster.center_pt[0],
+                        "y": cluster.center_pt[1],
+                    },
+                    "bbox_pt": list(cluster.bbox_pt),
+                    "shape_signature": cluster.shape_signature,
+                    "status": "unresolved_classification",
+                    "reason": (
+                        "page has no recognized legend; glyph remains unresolved and "
+                        "cross-page legend inheritance is disabled"
+                        if cluster.page not in legend_pages
+                        else "glyph cluster has no unique matching type in the sheet legend"
+                    ),
+                    "recognition_provenance": {
+                        "method": "sheet-local-legend-geometry-match",
+                        "legend_scope": "same-page-only",
+                        "page": cluster.page,
+                        "page_has_recognized_legend": cluster.page in legend_pages,
+                    },
+                }
+            )
+            continue
+
+        (
+            entity_kind,
+            canonical_type,
+            legend_confidence,
+            prototype,
+            label,
+            header,
+        ) = legend_entry
+        confidence = min(0.93, legend_confidence)
+        key = f"p{cluster.page}:shape:{cluster.geometry_key}"
+        shape_recognition = {
+            "method": "sheet-legend-geometry-match",
+            "shape_signature": cluster.shape_signature,
+            "source_geometry_key": cluster.geometry_key,
+            "legend_header_element_id": header.element_id,
+            "legend_label_element_id": label.element_id,
+            "legend_page": label.page,
+            "legend_label": label.text,
+            "legend_source_element_ids": list(prototype.source_element_ids),
+            "source_element_ids": list(cluster.source_element_ids),
+        }
+        candidate = _EntityCandidate(
+            key=key,
+            entity_kind=entity_kind,
+            canonical_type=canonical_type,
+            tag=None,
+            identity_key=f"geometry:p{cluster.page}:{cluster.geometry_key}",
+            page=cluster.page,
+            x_pt=cluster.center_pt[0],
+            y_pt=cluster.center_pt[1],
+            confidence=confidence,
+            primary_method="pdf-legend-shape-match",
+            shape_recognition=shape_recognition,
+        )
+        for vector in cluster.vectors:
+            candidate.merge_source(
+                element_id=vector.element_id,
+                text=None,
+                symbol_name=None,
+                x_pt=cluster.center_pt[0],
+                y_pt=cluster.center_pt[1],
+                confidence=confidence,
+                provenance=_provenance(
+                    document,
+                    element_id=vector.element_id,
+                    page=cluster.page,
+                    method="pdf-legend-shape-match",
+                    confidence=confidence,
+                    source_kind=vector.source_kind,
+                    attributes={
+                        "shape_signature": cluster.shape_signature,
+                        "source_geometry_key": cluster.geometry_key,
+                        "legend_label_element_id": label.element_id,
+                        "legend_label": label.text,
+                        "legend_source_element_ids": list(
+                            prototype.source_element_ids
+                        ),
+                    },
+                ),
+                method="pdf-legend-shape-match",
+            )
+        candidate.source_element_ids.append(label.element_id)
+        candidate.provenance.append(
+            _provenance(
+                document,
+                element_id=label.element_id,
+                page=label.page,
+                method="pdf-sheet-legend-type-label",
+                confidence=legend_confidence,
+                attributes={
+                    "source_text": label.text,
+                    "shape_signature": cluster.shape_signature,
+                    "legend_header_element_id": header.element_id,
+                },
+            )
+        )
+        candidates[key] = candidate
+        matched_vector_ids.update(cluster.source_element_ids)
+
+    return (
+        candidates,
+        matched_vector_ids,
+        glyph_vector_ids,
+        legend_text_ids,
+        unresolved,
     )
 
 
@@ -1388,15 +2059,29 @@ class ElectricalPdfImporter:
             page_transforms,
         )
         frame_id = next(iter(transforms.values())).frame_id
-        spatial_status = (
-            "registered-to-canonical-frame"
-            if has_explicit_registration
-            else "single-page-local-unregistered"
-        )
+        if has_explicit_registration:
+            spatial_status = "registered-to-canonical-frame"
+        elif document.page_count > 1:
+            spatial_status = "multi-page-local-best-effort-unregistered"
+        else:
+            spatial_status = "single-page-local-unregistered"
         texts = tuple(sorted(document.texts, key=lambda item: (item.page, item.element_id)))
         symbols = tuple(sorted(document.symbols, key=lambda item: (item.page, item.element_id)))
         vectors = tuple(sorted(document.vectors, key=lambda item: (item.page, item.element_id)))
-        candidates: dict[str, _EntityCandidate] = {}
+        (
+            shape_candidates,
+            shape_matched_vector_ids,
+            glyph_vector_ids,
+            legend_text_ids,
+            unresolved_shape_rows,
+        ) = _recognize_legend_shapes(
+            document,
+            texts=texts,
+            vectors=vectors,
+            rules=self.symbol_rules,
+            ambiguity_margin=self.ambiguity_margin,
+        )
+        candidates: dict[str, _EntityCandidate] = dict(shape_candidates)
         unresolved_observations: list[dict[str, Any]] = []
         source_by_key: dict[
             tuple[int, str],
@@ -1537,11 +2222,88 @@ class ElectricalPdfImporter:
             )
             candidates[key] = candidate
 
-        # Text recognition comes first so recognized symbols can bind to nearby labels.
+        # Shape recognition is primary when the sheet carries its own legend.
+        # Text remains independent or reinforcing evidence, never a prerequisite
+        # for a legend-matched drawn device.
         for observation in texts:
+            if observation.element_id in legend_text_ids:
+                continue
             if (observation.page, observation.element_id) in claimed_source_ids:
                 continue
             for kind, canonical_type, tag, confidence in _text_entity_hits(observation.text):
+                shape_compatible = [
+                    candidate
+                    for candidate in candidates.values()
+                    if candidate.shape_recognition is not None
+                    and candidate.page == observation.page
+                    and candidate.entity_kind == kind
+                    and candidate.canonical_type == canonical_type
+                    and _distance_pt(
+                        candidate.x_pt,
+                        candidate.y_pt,
+                        observation.x_pt,
+                        observation.y_pt,
+                    )
+                    <= self.symbol_label_radius_pt
+                ]
+                shape_compatible.sort(
+                    key=lambda item: (
+                        _distance_pt(
+                            item.x_pt,
+                            item.y_pt,
+                            observation.x_pt,
+                            observation.y_pt,
+                        ),
+                        item.key,
+                    )
+                )
+                if len(shape_compatible) == 1:
+                    candidate = shape_compatible[0]
+                    if not (kind == "device" and tag in _GENERIC_DEVICE_TAGS):
+                        if candidate.tag is None:
+                            candidate.tag = tag
+                            candidate.identity_key = (
+                                f"tag:{kind}:{canonical_type}:{tag}"
+                            )
+                        elif candidate.tag != tag:
+                            unresolved_observations.append(
+                                {
+                                    "kind": "text_shape_binding",
+                                    "page": observation.page,
+                                    "source_element_id": observation.element_id,
+                                    "position_pt": {
+                                        "x": observation.x_pt,
+                                        "y": observation.y_pt,
+                                    },
+                                    "status": "unresolved_identity",
+                                    "reason": (
+                                        "nearby legend-matched glyph already carries "
+                                        "a different stable semantic tag"
+                                    ),
+                                    "existing_tag": candidate.tag,
+                                    "candidate_tag": tag,
+                                }
+                            )
+                            continue
+                    candidate.merge_source(
+                        element_id=observation.element_id,
+                        text=observation.text,
+                        symbol_name=None,
+                        x_pt=observation.x_pt,
+                        y_pt=observation.y_pt,
+                        confidence=confidence,
+                        provenance=_provenance(
+                            document,
+                            element_id=observation.element_id,
+                            page=observation.page,
+                            method="pdf-text-pattern",
+                            confidence=confidence,
+                            attributes={"source_text": observation.text},
+                        ),
+                        method="pdf-text-pattern",
+                    )
+                    continue
+
                 if kind == "device" and tag in _GENERIC_DEVICE_TAGS:
                     unresolved_observations.append(
                         {
@@ -1709,11 +2471,13 @@ class ElectricalPdfImporter:
                 method="pdf-symbol-catalog",
             )
 
-            # A graphical symbol centroid is a better source-page position than label text.
-            candidate.x_pt = symbol.x_pt
-            candidate.y_pt = symbol.y_pt
+            # A form symbol centroid is useful for text-led recognition, but a
+            # legend-matched geometry centroid remains the primary source position.
+            if candidate.shape_recognition is None:
+                candidate.x_pt = symbol.x_pt
+                candidate.y_pt = symbol.y_pt
 
-        vector_symbol_ids: set[str] = set()
+        vector_symbol_ids: set[str] = set(shape_matched_vector_ids)
         for vector in vectors:
             marker = _simple_rectangle_marker(vector)
             if marker is None:
@@ -1763,6 +2527,16 @@ class ElectricalPdfImporter:
                 provenance=vector_provenance,
                 method="pdf-vector-symbol-outline",
             )
+
+        for row in unresolved_shape_rows:
+            source_ids = set(row.get("source_element_ids", ()))
+            if (
+                row.get("kind") == "vector_cluster"
+                and source_ids
+                and source_ids.issubset(vector_symbol_ids)
+            ):
+                continue
+            unresolved_observations.append(row)
 
         # Attach nearby note/mounting text without pretending it is a host reference.
         attached_note_ids: set[str] = set()
@@ -1836,13 +2610,23 @@ class ElectricalPdfImporter:
                 "pose_interpretation": (
                     "source-page position transformed into the canonical frame"
                     if has_explicit_registration
-                    else "single-page PDF-local position in metres; no building registration asserted"
+                    else (
+                        "page-local PDF position placed in a deterministic separated "
+                        "document-local tile; no cross-page or building registration asserted"
+                        if document.page_count > 1
+                        else (
+                            "single-page PDF-local position in metres; no building "
+                            "registration asserted"
+                        )
+                    )
                 ),
             }
             if candidate.tag:
                 lane_attributes["tag"] = candidate.tag
             if candidate.symbol_names:
                 lane_attributes["symbol_names"] = sorted(set(candidate.symbol_names))
+            if candidate.shape_recognition is not None:
+                lane_attributes["shape_recognition"] = dict(candidate.shape_recognition)
             if mounting:
                 if len(mounting) == 1:
                     lane_attributes["mounting_height_m"] = mounting[0]
@@ -2121,6 +2905,7 @@ class ElectricalPdfImporter:
             if not vector.closed
             and not _vector_contains_bezier(vector)
             and vector.element_id not in vector_symbol_ids
+            and vector.element_id not in glyph_vector_ids
             and sum(
                 _distance_pt(first[0], first[1], second[0], second[1])
                 for first, second in _vector_segments(vector)
@@ -2612,12 +3397,40 @@ class ElectricalPdfImporter:
             and observation.element_id not in attached_note_ids
         ]
 
-        model_provenance = Provenance(
-            source_kind="pdf-electrical",
-            source_id=document.source_id,
-            method="pypdf-text-xobject-annotation-vector extraction",
-            confidence=1.0,
-            attributes={"page_count": document.page_count},
+        model_provenance: list[Provenance] = [
+            Provenance(
+                source_kind="pdf-electrical",
+                source_id=document.source_id,
+                method="pypdf-text-xobject-annotation-vector extraction",
+                confidence=1.0,
+                attributes={"page_count": document.page_count},
+            )
+        ]
+        if not has_explicit_registration and document.page_count > 1:
+            for page in range(1, document.page_count + 1):
+                model_provenance.append(
+                    Provenance(
+                        source_kind="pdf-electrical",
+                        source_id=document.source_id,
+                        page=page,
+                        method="deterministic per-page best-effort unregistered placement",
+                        confidence=0.25,
+                        attributes={
+                            "registration_status": "unregistered-best-effort",
+                            "page_transform": transforms[page].to_attributes(),
+                            "cross_page_registration_asserted": False,
+                        },
+                    )
+                )
+
+        registration_mode = (
+            "explicit-page-transforms"
+            if has_explicit_registration
+            else (
+                "deterministic-separated-page-local-best-effort"
+                if document.page_count > 1
+                else "single-page-local"
+            )
         )
 
         return BuildingModel(
@@ -2628,7 +3441,7 @@ class ElectricalPdfImporter:
             electrical_devices=tuple(sorted(devices, key=lambda item: item.id)),
             ports=tuple(sorted(ports_by_owner_role.values(), key=lambda item: item.id)),
             circuits=tuple(circuits),
-            provenance=(model_provenance,),
+            provenance=tuple(model_provenance),
             attributes={
                 "pdf_electrical": {
                     "lane": "pdf_electrical",
@@ -2638,7 +3451,16 @@ class ElectricalPdfImporter:
                     "spatial_status": spatial_status,
                     "registration_pending": not has_explicit_registration,
                     "page_transforms_supplied": has_explicit_registration,
+                    "registration_mode": registration_mode,
                     "registered_frame_id": frame_id,
+                    "best_effort_page_transforms": (
+                        {
+                            str(page): transforms[page].to_attributes()
+                            for page in range(1, document.page_count + 1)
+                        }
+                        if not has_explicit_registration and document.page_count > 1
+                        else {}
+                    ),
                     "unresolved_observations": sorted(
                         unresolved_observations,
                         key=lambda item: (

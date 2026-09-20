@@ -3731,8 +3731,9 @@ def _recognize_legend_shapes(
                     "legend_scope": "same-page-only",
                     "page": cluster.page,
                     "page_has_recognized_legend": cluster.page in legend_pages,
-                    "match_diagnostics": match_diagnostics,
                 }
+                if cluster.page in legend_pages:
+                    recognition_provenance["match_diagnostics"] = match_diagnostics
             unresolved.append(
                 {
                     "kind": "vector_cluster",

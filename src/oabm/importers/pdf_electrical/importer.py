@@ -423,7 +423,7 @@ def _make_page_visitors(
         finish_current()
         pending_subpaths = []
 
-    def emit_stroked_paths(operator: bytes) -> None:
+    def emit_paths(operator: bytes, *, close_subpaths: bool = False) -> None:
         nonlocal pending_subpaths, vector_counter
         finish_current()
         paint_operator = operator.decode("ascii", errors="replace")
@@ -450,7 +450,7 @@ def _make_page_visitors(
                     element_id=f"p{page_number}:vector:{vector_counter:05d}",
                     page=page_number,
                     points_pt=tuple(normalized_points),
-                    closed=closed,
+                    closed=closed or close_subpaths,
                     source_kind="pdf-vector-path",
                     metadata={"paint_operator": paint_operator},
                 )
@@ -520,20 +520,42 @@ def _make_page_visitors(
             current_closed = True
             return
 
-        if operator in {b"c", b"v", b"y"}:
-            current_supported = False
+        if operator == b"c" and len(operands) >= 6:
+            if current_points:
+                current_points.append(
+                    _transform_graphics_point(
+                        cm,
+                        float(operands[4]),
+                        float(operands[5]),
+                    )
+                )
+            return
+
+        if operator in {b"v", b"y"} and len(operands) >= 4:
+            if current_points:
+                current_points.append(
+                    _transform_graphics_point(
+                        cm,
+                        float(operands[2]),
+                        float(operands[3]),
+                    )
+                )
             return
 
         if operator in {b"s", b"b", b"b*"}:
             current_closed = True
-            emit_stroked_paths(operator)
+            emit_paths(operator)
             return
 
         if operator in {b"S", b"B", b"B*"}:
-            emit_stroked_paths(operator)
+            emit_paths(operator)
             return
 
-        if operator in {b"f", b"F", b"f*", b"n"}:
+        if operator in {b"f", b"F", b"f*"}:
+            emit_paths(operator, close_subpaths=True)
+            return
+
+        if operator == b"n":
             clear_paths()
 
     return visitor_text, visitor_operand_before

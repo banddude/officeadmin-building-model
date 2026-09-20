@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_architecture" / "v1"
 CAD_GEOMETRY_FIXTURE = FIXTURE_DIR / "cad-export-geometry-only.pdf"
 CAD_GEOMETRY_TEXT_FIXTURE = FIXTURE_DIR / "cad-export-geometry-plus-text.pdf"
+REGISTRATION_FALLBACK_FIXTURE = FIXTURE_DIR / "cad-export-scale-no-registration.pdf"
 
 
 def _text(element_id: str, text: str, x: float, y: float, width: float = 80, height: float = 10) -> PdfTextObservation:
@@ -208,6 +209,55 @@ def test_cad_export_fixture_extracts_to_untagged_walls_and_space() -> None:
     assert page_meta["status"] == "geometry_imported"
     assert page_meta["resolved_wall_count"] > 0
     assert page_meta["resolved_room_count"] >= 1
+
+
+def test_scale_known_page_without_registration_cue_uses_sheet_geometry_fallback() -> None:
+    assert not REGISTRATION_FALLBACK_FIXTURE.with_suffix(".expected.json").exists()
+
+    observations = extract_pdf(
+        REGISTRATION_FALLBACK_FIXTURE,
+        source_id="fixture:cad-export-scale-no-registration",
+    )
+    assert len(observations.pages) == 2
+    assert all(page.lines for page in observations.pages)
+
+    model = import_architectural_pdf(
+        REGISTRATION_FALLBACK_FIXTURE,
+        source_id="fixture:cad-export-scale-no-registration",
+    )
+
+    validate_model(model)
+    pages = model.attributes["pdf_architecture"]["pages"]
+    assert pages[0]["status"] == "geometry_imported"
+    fallback = pages[1]
+    assert fallback["status"] == "geometry_imported"
+    assert fallback["resolved_wall_count"] > 0
+    assert fallback["registration_method"] == (
+        "sheet geometry largest_closed_wall_loop_bbox lower-left registration fallback"
+    )
+    assert fallback["registration_confidence"] == pytest.approx(0.40)
+    registration = fallback["registration_provenance"]
+    assert registration["anchor_basis"] == "largest_closed_wall_loop_bbox"
+    assert registration["title_block_excluded"] is True
+    assert registration["source_anchor_pt"][0] > 150.0
+    assert registration["source_anchor_pt"][1] > 90.0
+    assert sum(
+        1
+        for wall in model.walls
+        if wall.provenance and wall.provenance[0].page == 2
+    ) > 0
+    provenance = [
+        item
+        for item in model.provenance
+        if item.page == 2 and item.method == fallback["registration_method"]
+    ]
+    assert len(provenance) == 1
+    assert provenance[0].confidence == pytest.approx(0.40)
+    assert provenance[0].attributes["source_anchor_pt"] == registration["source_anchor_pt"]
+    assert not any(
+        item["page"] == 2 and item["code"] == "registration_unresolved"
+        for item in model.attributes["pdf_architecture"]["ambiguities"]
+    )
 
 
 def test_geometry_plus_text_fixture_labels_geometric_space_by_position() -> None:

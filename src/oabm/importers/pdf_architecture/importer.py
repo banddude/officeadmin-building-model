@@ -51,6 +51,11 @@ _PT_PER_INCH = 72.0
 _VECTOR_AXIS_TOLERANCE_PT = 0.05
 _DEFAULT_GEOMETRIC_WALL_HEIGHT_M = 2.7432
 _WALL_ID_ROUND_DIGITS = 4
+_SHEET_GEOMETRY_REGISTRATION_CONFIDENCE = 0.40
+_STRONG_TITLE_BLOCK_RE = re.compile(
+    r"^(?:SHEET|DRAWING|PROJECT|TITLE|DATE|DRAWN(?:\s+BY)?|CHECKED(?:\s+BY)?|REVISION|REV|ISSUE)\b",
+    re.IGNORECASE,
+)
 _EXPLICIT_ROOM_LABEL_RE = re.compile(
     r"^(?:ROOM|SPACE)\s*[:#-]?\s*(.+)$",
     re.IGNORECASE,
@@ -381,6 +386,123 @@ def _registration_from_hint(hint: RegistrationHint) -> _Transform2D:
     )
 
 
+def _bbox_area(bbox: tuple[float, float, float, float]) -> float:
+    return max(0.0, bbox[2] - bbox[0]) * max(0.0, bbox[3] - bbox[1])
+
+
+def _title_block_exclusion(
+    page: PdfPageObservation,
+) -> tuple[tuple[tuple[float, float, float, float], ...], set[str]]:
+    strong_centers = [
+        item.center_pt
+        for item in page.texts
+        if _STRONG_TITLE_BLOCK_RE.search(_clean_text(item.text))
+    ]
+    if not strong_centers:
+        return (), set()
+
+    candidate_boxes = [
+        item.bbox_pt for item in _ordinary_vector_rect_loops(page)
+    ] + [item.bbox_pt for item in page.rects]
+    multi_label_boxes = [
+        bbox
+        for bbox in candidate_boxes
+        if sum(_inside(bbox, center) for center in strong_centers) >= 2
+    ]
+    exclusion_boxes: list[tuple[float, float, float, float]] = []
+    if multi_label_boxes:
+        exclusion_boxes.append(
+            min(multi_label_boxes, key=lambda bbox: (_bbox_area(bbox), bbox))
+        )
+    else:
+        for center in strong_centers:
+            containing = [bbox for bbox in candidate_boxes if _inside(bbox, center)]
+            if containing:
+                exclusion_boxes.append(
+                    min(containing, key=lambda bbox: (_bbox_area(bbox), bbox))
+                )
+
+    unique_boxes = tuple(sorted(set(exclusion_boxes)))
+    excluded_ids = {
+        line.element_id
+        for line in page.lines
+        if any(
+            _inside(bbox, line.start_pt) and _inside(bbox, line.end_pt)
+            for bbox in unique_boxes
+        )
+    }
+    return unique_boxes, excluded_ids
+
+
+def _sheet_geometry_registration(
+    page: PdfPageObservation,
+    scale: _Scale,
+    options: ImportOptions,
+) -> tuple[_Transform2D, dict[str, object]] | None:
+    if not page.lines:
+        return None
+
+    title_block_boxes, excluded_ids = _title_block_exclusion(page)
+    provisional = _Transform2D(
+        meters_per_point=scale.meters_per_point,
+        rotation_radians=0.0,
+        tx_m=0.0,
+        ty_m=0.0,
+        method="scale-only provisional geometry frame",
+        confidence=_SHEET_GEOMETRY_REGISTRATION_CONFIDENCE,
+    )
+    pairs = _geometric_wall_face_pairs(
+        page,
+        provisional,
+        options,
+        excluded_element_ids=excluded_ids,
+    )
+    loops = _wall_pair_closed_loops(pairs, provisional, options)
+
+    anchor_basis = "drawing_extents"
+    if loops:
+        _, polygon, _ = max(
+            loops,
+            key=lambda item: (
+                _polygon_area(item[1]),
+                tuple(round(value, 9) for point in item[1] for value in point),
+            ),
+        )
+        xs = [point[0] / scale.meters_per_point for point in polygon]
+        ys = [point[1] / scale.meters_per_point for point in polygon]
+        source_bbox = (min(xs), min(ys), max(xs), max(ys))
+        anchor_basis = "largest_closed_wall_loop_bbox"
+    else:
+        usable = [line for line in page.lines if line.element_id not in excluded_ids]
+        if not usable:
+            return None
+        xs = [value for line in usable for value in (line.start_pt[0], line.end_pt[0])]
+        ys = [value for line in usable for value in (line.start_pt[1], line.end_pt[1])]
+        source_bbox = (min(xs), min(ys), max(xs), max(ys))
+
+    x0, y0, _, _ = source_bbox
+    method = f"sheet geometry {anchor_basis} lower-left registration fallback"
+    confidence = min(scale.confidence, _SHEET_GEOMETRY_REGISTRATION_CONFIDENCE)
+    transform = _Transform2D(
+        meters_per_point=scale.meters_per_point,
+        rotation_radians=0.0,
+        tx_m=-x0 * scale.meters_per_point,
+        ty_m=-y0 * scale.meters_per_point,
+        method=method,
+        confidence=confidence,
+    )
+    metadata: dict[str, object] = {
+        "method": method,
+        "confidence": confidence,
+        "anchor_basis": anchor_basis,
+        "source_bbox_pt": list(source_bbox),
+        "source_anchor_pt": [x0, y0],
+        "title_block_excluded": bool(title_block_boxes),
+        "title_block_exclusion_boxes_pt": [list(bbox) for bbox in title_block_boxes],
+    }
+    return transform, metadata
+
+
 def _resolve_transform(
     page: PdfPageObservation,
     scale: _Scale | None,
@@ -388,7 +510,7 @@ def _resolve_transform(
     *,
     allow_page_local_origin: bool,
     ambiguities: list[dict[str, object]],
-) -> tuple[_Transform2D | None, _Scale | None]:
+) -> tuple[_Transform2D | None, _Scale | None, dict[str, object] | None]:
     hint = _find_registration(page.page_number, options.registrations)
     if hint:
         transform = _registration_from_hint(hint)
@@ -404,7 +526,7 @@ def _resolve_transform(
                         "registered_meters_per_point": transform.meters_per_point,
                     }
                 )
-                return None, scale
+                return None, scale, None
         else:
             scale = _Scale(
                 transform.meters_per_point,
@@ -412,10 +534,10 @@ def _resolve_transform(
                 "scale resolved by two-point registration",
                 None,
             )
-        return transform, scale
+        return transform, scale, None
 
     if scale is None:
-        return None, None
+        return None, None, None
     if allow_page_local_origin:
         return (
             _Transform2D(
@@ -427,7 +549,14 @@ def _resolve_transform(
                 confidence=1.0,
             ),
             scale,
+            None,
         )
+
+    fallback = _sheet_geometry_registration(page, scale, options)
+    if fallback is not None:
+        transform, metadata = fallback
+        return transform, scale, metadata
+
     ambiguities.append(
         {
             "page": page.page_number,
@@ -435,7 +564,7 @@ def _resolve_transform(
             "detail": "additional architectural plan page requires RegistrationHint before geometry can share the canonical frame",
         }
     )
-    return None, scale
+    return None, scale, None
 
 
 def _find_level_override(page_number: int, overrides: Iterable[LevelOverride]) -> LevelOverride | None:
@@ -2630,6 +2759,7 @@ def import_observations(
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
     base_geometry_page: int | None = None
+    registration_fallback_provenance: list[Provenance] = []
 
     for page in ordered_pages:
         classification = classify_page(page)
@@ -2654,7 +2784,7 @@ def import_observations(
         level = levels_by_anchor[level_anchor]
 
         scale = _resolve_scale(page, options, ambiguities)
-        transform, scale = _resolve_transform(
+        transform, scale, registration_fallback = _resolve_transform(
             page,
             scale,
             options,
@@ -2676,6 +2806,19 @@ def import_observations(
                 "level": level.name,
             }
         )
+        if registration_fallback is not None:
+            page_record["registration_confidence"] = transform.confidence
+            page_record["registration_provenance"] = registration_fallback
+            registration_fallback_provenance.append(
+                Provenance(
+                    source_kind="architectural_pdf",
+                    source_id=document.source_id,
+                    page=page.page_number,
+                    method=transform.method,
+                    confidence=transform.confidence,
+                    attributes=registration_fallback,
+                )
+            )
 
         rooms = _room_labels(page)
         rectangle_shells = _shell_candidates(page, scale, rooms, options, ambiguities)
@@ -2900,6 +3043,7 @@ def import_observations(
             confidence=model_confidence,
             attributes={"content_sha256": document.content_sha256},
         ),
+        *registration_fallback_provenance,
     )
     attributes = {
         "pdf_architecture": {

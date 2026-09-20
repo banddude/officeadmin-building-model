@@ -132,6 +132,8 @@ tables that are mostly numeric or text-only. It also requires repeated glyph
 signatures elsewhere on the same page so ordinary title-block and drafting
 geometry do not become legend prototypes merely because text is nearby.
 
+For ruled notes-column legends, page-frame detection is deliberately sheet-level: it uses the largest axis-aligned closed rectangle or a rectangle formed by four long rules only when that rectangle covers at least 85% of the displayed media box, and otherwise falls back to the displayed media box. Interior plan/view borders therefore cannot become the sheet frame. The notes-column title-block exclusion is limited to a ruled bottom band and is capped at 12% of the sheet-frame height. If a candidate legend header nevertheless falls outside a detected frame, the importer re-derives the frame from the displayed media box and records that recovery in legend/model provenance.
+
 Within the selected block, the importer associates each unambiguous type label
 with its paired glyph, builds a translation/scale/quarter-turn invariant shape
 signature, and matches field glyph clusters against those prototypes. Legend

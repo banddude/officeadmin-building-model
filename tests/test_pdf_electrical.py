@@ -225,6 +225,297 @@ def test_explicit_instance_hints_materialize_repeated_generic_devices_determinis
     assert not first.attributes["pdf_electrical"]["unresolved_observations"]
 
 
+def test_instance_hint_rejects_mismatched_source_type() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:hint-source-type-mismatch",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:light",
+                    "page": 1,
+                    "text": "LIGHT",
+                    "x_pt": 100.0,
+                    "y_pt": 100.0,
+                }
+            ],
+        }
+    )
+    hint = ElectricalInstanceHint(
+        identity_key="receptacle:one",
+        page=1,
+        entity_kind="device",
+        canonical_type="receptacle",
+        x_pt=100.0,
+        y_pt=100.0,
+        source_element_id="p1:text:light",
+    )
+
+    model = ElectricalPdfImporter(instance_hints=(hint,)).import_document(document)
+
+    assert not model.electrical_devices
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    rejected = [
+        item
+        for item in unresolved
+        if item.get("status") == "rejected_instance_hint"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "claimed source semantics do not match instance hint"
+    assert any(
+        item.get("source_element_id") == "p1:text:light"
+        and item.get("status") == "unresolved_identity"
+        for item in unresolved
+    )
+
+
+def test_instance_hint_rejects_mismatched_source_location() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:hint-source-location-mismatch",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:receptacle",
+                    "page": 1,
+                    "text": "GFCI",
+                    "x_pt": 100.0,
+                    "y_pt": 100.0,
+                }
+            ],
+        }
+    )
+    hint = ElectricalInstanceHint(
+        identity_key="receptacle:one",
+        page=1,
+        entity_kind="device",
+        canonical_type="receptacle",
+        x_pt=140.0,
+        y_pt=100.0,
+        source_element_id="p1:text:receptacle",
+    )
+
+    model = ElectricalPdfImporter(instance_hints=(hint,)).import_document(document)
+
+    assert not model.electrical_devices
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    rejected = [
+        item
+        for item in unresolved
+        if item.get("status") == "rejected_instance_hint"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "claimed source position does not agree with instance hint"
+    assert any(
+        item.get("source_element_id") == "p1:text:receptacle"
+        and item.get("status") == "unresolved_identity"
+        for item in unresolved
+    )
+
+
+def test_instance_hint_duplicate_source_claims_fail_closed_deterministically() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:duplicate-hint-source-claim",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:receptacle",
+                    "page": 1,
+                    "text": "GFCI",
+                    "x_pt": 100.0,
+                    "y_pt": 100.0,
+                }
+            ],
+        }
+    )
+    hints = (
+        ElectricalInstanceHint(
+            identity_key="receptacle:left",
+            page=1,
+            entity_kind="device",
+            canonical_type="receptacle",
+            tag="R-LEFT",
+            x_pt=100.0,
+            y_pt=100.0,
+            source_element_id="p1:text:receptacle",
+        ),
+        ElectricalInstanceHint(
+            identity_key="receptacle:right",
+            page=1,
+            entity_kind="device",
+            canonical_type="receptacle",
+            tag="R-RIGHT",
+            x_pt=100.0,
+            y_pt=100.0,
+            source_element_id="p1:text:receptacle",
+        ),
+    )
+
+    first = ElectricalPdfImporter(instance_hints=hints).import_document(document)
+    reordered = ElectricalPdfImporter(instance_hints=tuple(reversed(hints))).import_document(
+        document
+    )
+
+    assert first.to_json() == reordered.to_json()
+    assert not first.electrical_devices
+    unresolved = first.attributes["pdf_electrical"]["unresolved_observations"]
+    rejected = [
+        item
+        for item in unresolved
+        if item.get("status") == "rejected_instance_hint"
+    ]
+    assert len(rejected) == 2
+    assert {
+        item["reason"] for item in rejected
+    } == {"claimed source element is claimed by multiple instance hints"}
+    assert all(
+        item["claiming_hint_identity_keys"]
+        == ["receptacle:left", "receptacle:right"]
+        for item in rejected
+    )
+    assert any(
+        item.get("source_element_id") == "p1:text:receptacle"
+        and item.get("status") == "unresolved_identity"
+        for item in unresolved
+    )
+
+
+def test_rejected_instance_hint_preserves_original_source_semantics() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:rejected-hint-preserves-source",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:panel",
+                    "page": 1,
+                    "text": "PANEL LP",
+                    "x_pt": 10.0,
+                    "y_pt": 10.0,
+                }
+            ],
+        }
+    )
+    hint = ElectricalInstanceHint(
+        identity_key="receptacle:one",
+        page=1,
+        entity_kind="device",
+        canonical_type="receptacle",
+        x_pt=10.0,
+        y_pt=10.0,
+        source_element_id="p1:text:panel",
+    )
+
+    model = ElectricalPdfImporter(instance_hints=(hint,)).import_document(document)
+
+    assert not model.electrical_devices
+    assert len(model.electrical_equipment) == 1
+    panel = model.electrical_equipment[0]
+    assert panel.equipment_type == "panelboard"
+    assert panel.name == "LP"
+    assert {
+        item.source_element_id for item in panel.provenance
+    } == {"p1:text:panel"}
+    assert panel.attributes["pdf_electrical"]["stable_identity_key"] == (
+        "tag:equipment:panelboard:LP"
+    )
+    rejected = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("status") == "rejected_instance_hint"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == "claimed source semantics do not match instance hint"
+
+
+def test_instance_hint_rejects_source_that_already_has_stable_semantic_identity() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:hint-not-needed-for-stable-source",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:evse",
+                    "page": 1,
+                    "text": "EVSE-1",
+                    "x_pt": 100.0,
+                    "y_pt": 100.0,
+                }
+            ],
+        }
+    )
+    hint = ElectricalInstanceHint(
+        identity_key="evse:caller-owned",
+        page=1,
+        entity_kind="device",
+        canonical_type="evse",
+        tag="HINTED-EVSE",
+        x_pt=100.0,
+        y_pt=100.0,
+        source_element_id="p1:text:evse",
+    )
+
+    model = ElectricalPdfImporter(instance_hints=(hint,)).import_document(document)
+
+    assert [item.name for item in model.electrical_devices] == ["EVSE-1"]
+    assert model.electrical_devices[0].attributes["pdf_electrical"][
+        "stable_identity_key"
+    ] == "tag:device:evse:EVSE-1"
+    rejected = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("status") == "rejected_instance_hint"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["reason"] == (
+        "claimed source already has stable semantic identity and does not need an "
+        "instance hint"
+    )
+
+
+def test_instance_hint_accepts_compatible_identityless_symbol_claim() -> None:
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:hinted-identityless-symbol",
+            "page_count": 1,
+            "symbols": [
+                {
+                    "element_id": "p1:symbol:evse",
+                    "page": 1,
+                    "name": "/EVSE1",
+                    "x_pt": 100.0,
+                    "y_pt": 100.0,
+                }
+            ],
+        }
+    )
+    hint = ElectricalInstanceHint(
+        identity_key="evse:west",
+        page=1,
+        entity_kind="device",
+        canonical_type="evse",
+        tag="EVSE-WEST",
+        x_pt=100.0,
+        y_pt=100.0,
+        source_element_id="p1:symbol:evse",
+        confidence=0.99,
+    )
+
+    model = ElectricalPdfImporter(instance_hints=(hint,)).import_document(document)
+
+    assert [item.name for item in model.electrical_devices] == ["EVSE-WEST"]
+    device = model.electrical_devices[0]
+    assert device.attributes["pdf_electrical"]["stable_identity_key"] == "hint:evse:west"
+    assert device.attributes["pdf_electrical"]["source_element_ids"] == [
+        "p1:symbol:evse"
+    ]
+    assert {
+        item.source_kind for item in device.provenance
+    } == {"caller-instance-hint"}
+    assert not model.attributes["pdf_electrical"]["unresolved_observations"]
+
+
 def test_instance_hint_rejects_unknown_claimed_source_element() -> None:
     document = PdfElectricalDocument(
         source_id="fixture:stale-instance-hint",

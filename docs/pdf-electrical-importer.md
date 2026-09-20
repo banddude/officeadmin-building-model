@@ -63,9 +63,15 @@ For real plan families that repeat a legitimate symbol but expose no stable PDF
 native identifier, callers may supply `ElectricalInstanceHint` entries. Each hint
 must provide a caller-owned stable semantic `identity_key`, the source page and
 position, and the canonical device/equipment type. A hint may also claim one
-existing source element for traceable provenance. Hints never weaken the default
-fail-closed behavior: they are explicit human/project inputs analogous to scale
-or registration overrides, and stale claimed source elements are rejected.
+existing source element for traceable provenance. A claimed source must identify
+one unique observation, agree with the hint position within the configured
+source radius, classify compatibly with the hinted device/equipment type, still
+lack a stable source identity, and be owned by exactly one hint. Semantic,
+position, appropriateness, and duplicate-ownership mismatches reject the hint
+without suppressing normal recognition of the original source observation.
+Hints never weaken the default fail-closed behavior: they are explicit
+human/project inputs analogous to scale or registration overrides, and unknown
+claimed source elements are rejected.
 
 Host words such as `WALL MTD` are hints only. They never become a canonical
 `host_id` without a real canonical host object.

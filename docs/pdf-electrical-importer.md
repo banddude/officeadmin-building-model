@@ -254,3 +254,19 @@ device records `attributes.pdf_electrical.status` as the source letter plus a
 normalized `status_meaning`, with dedicated source provenance. Existing
 page-local legend ownership and the Slice 7 keynote/schedule false-positive
 guards remain unchanged.
+
+Unresolved vector glyph clusters retain tuning evidence instead of only a
+generic failure string. Each unresolved cluster exposes the nearest and
+second-nearest canonical types and scores, the active threshold, a normalized
+failure reason, its point-space bounding-box size, and stroke count. The
+earlier detailed prototype diagnostics remain present for compatibility.
+
+Short `/Square` annotation contents are also treated as sheet-legend code
+evidence. Known abbreviations such as `CR`, `TV`, `J`/`JB`, and `D`/`DATA` resolve only
+through classified rows on that sheet, and a short code appearing verbatim in
+one legend row can resolve the same way. Successful evidence uses the
+`annotation-code` provenance method and preserves an adjacent `E`/`N`/`R` status;
+unknown or non-unique codes remain unresolved with the source code recorded.
+Long legend descriptions remain semantic labels in full, so an explanatory
+trailing sentence does not prevent a leading tele/data J-box phrase from
+classifying as `junction_box_data`.

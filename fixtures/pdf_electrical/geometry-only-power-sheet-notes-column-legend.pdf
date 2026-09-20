@@ -1,17 +1,71 @@
 %PDF-1.4
-%synthetic-oabm-fixture
+%‚„œ”
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
+<<
+/Producer (pypdf)
+>>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+<<
+/Type /Pages
+/Count 1
+/Kids [ 4 0 R ]
+>>
 endobj
 3 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
 endobj
 4 0 obj
-<< /Length 7660 >>
+<<
+/Type /Page
+/MediaBox [ 0 0 792 612 ]
+/Resources <<
+/Font <<
+/F1 5 0 R
+/F1-0 6 0 R
+/F2 7 0 R
+>>
+/ProcSet [ /ImageB /ImageC /ImageI /PDF /Text ]
+>>
+/Contents 8 0 R
+/Annots [ 9 0 R 10 0 R ]
+/Parent 2 0 R
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
+>>
+endobj
+6 0 obj
+<<
+/BaseFont /Helvetica
+/Encoding /WinAnsiEncoding
+/Name /F1
+/Subtype /Type1
+/Type /Font
+>>
+endobj
+7 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica-Bold
+/Encoding /WinAnsiEncoding
+>>
+endobj
+8 0 obj
+<<
+/Length 7869
+>>
 stream
+q
 .8 w
 n 18 18 756 576 re S
 n 36 96 528 468 re S
@@ -108,9 +162,9 @@ S
 n 611 230 m 619 238 l S
 n 611 238 m 619 230 l S
 n 613 234 m 617 234 l S
-BT /F1 5.2 Tf 1 0 0 1 640 242.4 Tm (tele/data J-box to feed furniture) Tj ET
-BT /F1 5.2 Tf 1 0 0 1 640 234 Tm (system with pull string above) Tj ET
-BT /F1 5.2 Tf 1 0 0 1 640 225.6 Tm (ceiling) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 242.4 Tm (TELE/DATA J-BOX TO FEED FURNITURE) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 234 Tm (SYSTEM W/PULLSTRING ABOVE CEILING.) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 225.6 Tm () Tj ET
 .9 w
 n 615 203 m
 620 198 l
@@ -327,25 +381,70 @@ n 403.6 170 m 408.4 170 l S
 n 406 170 m 408.4 167.6 l S
 BT /F2 6 Tf 1 0 0 1 416 174 Tm (N) Tj ET
 BT /F1 5.5 Tf 1 0 0 1 422 164 Tm (+44") Tj ET
+
+Q
+q
+0.0 0.0 792 612 re
+W
+n
+1 0 0 1 0 0 cm
+BT
+/F1-0 12 Tf
+14.4 TL
+ET
+q
+1 0 0 1 640 218 cm
+BT
+/F1-0 3.2 Tf
+3.84 TL
+ET
+BT
+1 0 0 1 0 0 Tm
+(NUMBER ADJACENT TO SYMBOL INDICATES NUMBER OF LINES SERVED) Tj
+T*
+ET
+Q
+Q
+
 endstream
 endobj
-5 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+9 0 obj
+<<
+/Type /Annot
+/Subtype /Square
+/Rect [ 80 166 88 174 ]
+/Contents (CR)
+/P 4 0 R
+>>
 endobj
-6 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+10 0 obj
+<<
+/Type /Annot
+/Subtype /Square
+/Rect [ 296 166 304 174 ]
+/Contents (TV)
+/P 4 0 R
+>>
 endobj
 xref
-0 7
+0 11
 0000000000 65535 f 
-0000000033 00000 n 
-0000000082 00000 n 
-0000000139 00000 n 
-0000000275 00000 n 
-0000007986 00000 n 
-0000008083 00000 n 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000113 00000 n 
+0000000162 00000 n 
+0000000385 00000 n 
+0000000482 00000 n 
+0000000589 00000 n 
+0000000691 00000 n 
+0000008612 00000 n 
+0000008711 00000 n 
 trailer
-<< /Size 7 /Root 1 0 R >>
+<<
+/Size 11
+/Root 3 0 R
+/Info 1 0 R
+>>
 startxref
-8185
+8813
 %%EOF

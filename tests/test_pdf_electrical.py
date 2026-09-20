@@ -21,6 +21,7 @@ from oabm.importers.pdf_electrical import (
     ElectricalPdfImporter,
     PdfElectricalDocument,
     PdfPageTransform,
+    PdfSymbolObservation,
     PdfTextObservation,
     PdfVectorPathObservation,
     extract_pdf,
@@ -542,7 +543,16 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
         source_id="fixture:geometry-only-power-sheet-notes-column-legend",
     )
     assert extracted == repeated
-    assert not extracted.symbols
+    assert {
+        (
+            symbol.source_kind,
+            symbol.metadata.get("contents"),
+        )
+        for symbol in extracted.symbols
+    } == {
+        ("annotation:square", "CR"),
+        ("annotation:square", "TV"),
+    }
 
     expected_labels = {
         "receptacle_duplex": "duplex electrical outlet",
@@ -556,8 +566,9 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
             "indicates number of circuits"
         ),
         "junction_box_data": (
-            "tele/data J-box to feed furniture system with pull string "
-            "above ceiling"
+            "TELE/DATA J-BOX TO FEED FURNITURE SYSTEM W/PULLSTRING ABOVE "
+            "CEILING. NUMBER ADJACENT TO SYMBOL INDICATES NUMBER OF LINES "
+            "SERVED"
         ),
         "access_control_device": (
             "card reader electric lock release with electric hinge"
@@ -646,6 +657,27 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
         == expected_labels[device.device_type]
         for device in model.electrical_devices
     )
+
+    annotation_devices = {
+        device.attributes["pdf_electrical"].get("annotation_code"): device
+        for device in model.electrical_devices
+        if device.attributes["pdf_electrical"].get("annotation_code")
+    }
+    assert set(annotation_devices) == {"CR", "TV"}
+    assert annotation_devices["CR"].device_type == "access_control_device"
+    assert annotation_devices["TV"].device_type == "catv_outlet"
+    assert annotation_devices["CR"].attributes["pdf_electrical"]["status"] == "E"
+    assert annotation_devices["TV"].attributes["pdf_electrical"]["status"] == "E"
+    for code, device in annotation_devices.items():
+        recognition = device.attributes["pdf_electrical"]["annotation_recognition"]
+        assert recognition["method"] == "annotation-code"
+        assert recognition["annotation_code"] == code
+        assert recognition["legend_row_label"] == expected_labels[device.device_type]
+        assert any(
+            provenance.method == "annotation-code"
+            and provenance.attributes["annotation_code"] == code
+            for provenance in device.provenance
+        )
 
     regions = lane["legend_recognition"]["regions"]
     assert len(regions) == 1
@@ -764,11 +796,158 @@ def test_unresolved_legend_glyph_records_nearest_two_match_diagnostics() -> None
     ]
     assert unresolved
     for item in unresolved:
-        diagnostics = item["recognition_provenance"]["match_diagnostics"]
+        diagnostics = item["match_diagnostics"]
+        assert diagnostics == item["recognition_provenance"]["match_diagnostics"]
         assert diagnostics["nearest_prototype"] is not None
         assert diagnostics["score"] is not None
         assert diagnostics["second_best"] is not None
         assert diagnostics["non_unique_reason"]
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    tuple(sorted(FIXTURE_DIR.glob("*.pdf")))
+    + tuple(sorted(FIXTURE_DIR.glob("*.json"))),
+    ids=lambda path: path.name,
+)
+def test_every_unresolved_vector_cluster_has_issue68_match_diagnostics(
+    fixture: Path,
+) -> None:
+    document = (
+        extract_pdf(fixture, source_id=f"fixture:{fixture.stem}:issue68-diagnostics")
+        if fixture.suffix == ".pdf"
+        else PdfElectricalDocument.from_dict(
+            json.loads(fixture.read_text(encoding="utf-8"))
+        )
+    )
+    model = ElectricalPdfImporter().import_document(document)
+    unresolved = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "vector_cluster"
+    ]
+    required = {
+        "nearest_type",
+        "nearest_score",
+        "second_type",
+        "second_score",
+        "threshold",
+        "reason",
+        "bbox_size_pt",
+        "stroke_count",
+    }
+    allowed_reasons = {
+        "below threshold",
+        "tie within margin",
+        "cluster too large",
+        "cluster too small",
+        "contains text",
+    }
+    for item in unresolved:
+        diagnostics = item["match_diagnostics"]
+        assert required <= diagnostics.keys()
+        assert diagnostics["threshold"] == pdf_electrical_importer._GLYPH_MATCH_SCORE_MIN
+        assert diagnostics["reason"] in allowed_reasons
+        assert set(diagnostics["bbox_size_pt"]) == {"width", "height"}
+        assert diagnostics["bbox_size_pt"]["width"] >= 0.0
+        assert diagnostics["bbox_size_pt"]["height"] >= 0.0
+        assert diagnostics["stroke_count"] >= 1
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_type", "x_pt", "y_pt"),
+    (
+        ("J", "junction_box_power", 84.0, 280.0),
+        ("JB", "junction_box_power", 84.0, 280.0),
+        ("D", "data_outlet", 84.0, 390.0),
+        ("DATA", "data_outlet", 84.0, 390.0),
+        ("QUADRUPLEX", "receptacle_quad", 300.0, 500.0),
+    ),
+)
+def test_square_annotation_legend_codes_classify_without_text_duplicates(
+    code: str,
+    expected_type: str,
+    x_pt: float,
+    y_pt: float,
+) -> None:
+    extracted = extract_pdf(
+        NOTES_COLUMN_LEGEND_FIXTURE,
+        source_id=f"fixture:annotation-code-{code.lower()}",
+    )
+    element_id = f"p1:annotation:issue68:{code.lower()}"
+    symbol = PdfSymbolObservation(
+        element_id=element_id,
+        page=1,
+        name="/Square",
+        x_pt=x_pt,
+        y_pt=y_pt,
+        source_kind="annotation:square",
+        metadata={"contents": code},
+    )
+    code_text = PdfTextObservation(
+        element_id=f"{element_id}:text",
+        page=1,
+        text=code,
+        x_pt=x_pt,
+        y_pt=y_pt,
+    )
+    document = replace(
+        extracted,
+        symbols=tuple((*extracted.symbols, symbol)),
+        texts=tuple((*extracted.texts, code_text)),
+    )
+    model = ElectricalPdfImporter().import_document(document)
+    matched = [
+        device
+        for device in model.electrical_devices
+        if any(
+            provenance.source_element_id == element_id
+            and provenance.method == "annotation-code"
+            for provenance in device.provenance
+        )
+    ]
+    assert len(matched) == 1
+    assert matched[0].device_type == expected_type
+    assert matched[0].attributes["pdf_electrical"]["annotation_code"] == code
+    assert matched[0].attributes["pdf_electrical"]["status"] == "E"
+
+    unresolved_ids = {
+        item.get("source_element_id")
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+    }
+    assert element_id not in unresolved_ids
+    assert code_text.element_id not in unresolved_ids
+
+
+def test_unmatched_square_annotation_code_remains_unresolved_with_code() -> None:
+    extracted = extract_pdf(
+        NOTES_COLUMN_LEGEND_FIXTURE,
+        source_id="fixture:annotation-code-unmatched",
+    )
+    unmatched = PdfSymbolObservation(
+        element_id="p1:annotation:9999",
+        page=1,
+        name="/Square",
+        x_pt=520.0,
+        y_pt=500.0,
+        source_kind="annotation:square",
+        metadata={"contents": "ZZ"},
+    )
+    document = replace(
+        extracted,
+        symbols=tuple((*extracted.symbols, unmatched)),
+    )
+    model = ElectricalPdfImporter().import_document(document)
+    rows = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("source_element_id") == unmatched.element_id
+    ]
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "symbol"
+    assert rows[0]["annotation_code"] == "ZZ"
+    assert rows[0]["annotation_code_recognition"]["normalized_code"] == "ZZ"
+    assert rows[0]["status"] == "unresolved_classification"
 
 
 

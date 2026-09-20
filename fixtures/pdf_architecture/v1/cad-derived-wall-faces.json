@@ -1,0 +1,17 @@
+{
+  "page_number": 1,
+  "width_pt": 300,
+  "height_pt": 220,
+  "lines": [
+    {"element_id": "cad:curve-segment-1", "start_pt": [18.0, 24.0], "end_pt": [66.0, 38.0]},
+    {"element_id": "cad:curve-segment-2", "start_pt": [66.0, 38.0], "end_pt": [108.0, 24.0]},
+    {"element_id": "cad:south-face-a", "start_pt": [40.0, 40.0], "end_pt": [240.0, 40.0]},
+    {"element_id": "cad:south-face-b", "start_pt": [40.0, 44.0], "end_pt": [240.0, 44.0]},
+    {"element_id": "cad:east-face-a", "start_pt": [236.0, 40.0], "end_pt": [236.0, 140.0]},
+    {"element_id": "cad:east-face-b", "start_pt": [240.0, 40.0], "end_pt": [240.0, 140.0]},
+    {"element_id": "cad:north-face-a", "start_pt": [40.0, 136.0], "end_pt": [240.0, 136.0]},
+    {"element_id": "cad:north-face-b", "start_pt": [40.0, 140.0], "end_pt": [240.0, 140.0]},
+    {"element_id": "cad:west-face-a", "start_pt": [40.0, 40.0], "end_pt": [40.0, 140.0]},
+    {"element_id": "cad:west-face-b", "start_pt": [44.0, 40.0], "end_pt": [44.0, 140.0]}
+  ]
+}

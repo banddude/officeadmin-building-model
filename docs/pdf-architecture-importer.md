@@ -31,9 +31,10 @@ The current deterministic lane reads vector/text PDF primitives and can promote:
 - named levels with explicit elevations, or one first/sole local datum at `Z=0` when the source gives no project elevation;
 - labelled rectangular spaces bounded by paired vector wall rectangles;
 - labelled rectangular spaces and walls from untagged ordinary vector lines when two closed axis-aligned wall-face loops prove one enclosure around a unique room label;
+- walls from untagged parallel wall faces paired by geometry rather than PDF native IDs, but only when uniquely paired segments can be joined into an unambiguous closed loop; the same loop may emit an unlabeled Space pending later room-label association;
 - a conservative 2D-only space from one unique closed ordinary-vector boundary around a unique room label when no partial paired wall-face evidence is present; wall thickness and walls remain unresolved rather than being invented;
 - walls from those paired boundaries when a supported height is present;
-- additional paired vector wall boundaries when the PDF supplies stable MCIDs and the sheet has a stable printed sheet identifier;
+- geometric wall-pair identity is anchored by rounded canonical centerline endpoints plus stable sheet and level anchors; source element/native IDs remain provenance only;
 - marked door/window openings with dimensions when the host wall and vertical placement are supported;
 - slabs only when an explicit floor/slab thickness is present;
 - ceiling surfaces when an explicit or caller-supplied room/level height is present.
@@ -54,11 +55,11 @@ Level elevation and level-wide height evidence is reconciled across all architec
 
 If the first/sole level has no elevation, the importer may establish a project-local `Z=0` datum with reduced confidence. A later distinct level without an elevation relative to known levels is not positioned and is skipped until a `LevelOverride` is supplied.
 
-Ceiling-height annotations are spatially scoped. A note placed inside a resolved room enclosure or explicitly naming one room applies only to that room's `Space.height_m`, wall heights, and ceiling Z. An otherwise-unqualified note can be scoped to a room when exactly one resolved room exists on the page; it is never promoted to the level merely because it sits outside room geometry. Only text that explicitly states a level/floor/typical global ceiling height can supply parsed level-wide height evidence. Multiple distinct room heights on the same level therefore remain independent instead of being collapsed into one story height. `LevelOverride.height_m` is authoritative over parsed heights, while a parsed room height overrides a same/lower-priority global/default height for that room. An explicitly supplied `ImportOptions.default_wall_height_m` remains a low-confidence level-wide input. If neither room-scoped nor level-wide height is supported, the importer may emit a 2D footprint-backed canonical `Space` but will not fabricate 3D walls or a ceiling.
+Ceiling-height annotations are spatially scoped. A note placed inside a resolved room enclosure or explicitly naming one room applies only to that room's `Space.height_m`, wall heights, and ceiling Z. An otherwise-unqualified note can be scoped to a room when exactly one resolved room exists on the page; it is never promoted to the level merely because it sits outside room geometry. Only text that explicitly states a level/floor/typical global ceiling height can supply parsed level-wide height evidence. Multiple distinct room heights on the same level therefore remain independent instead of being collapsed into one story height. `LevelOverride.height_m` is authoritative over parsed heights, while a parsed room height overrides a same/lower-priority global/default height for that room. An explicitly supplied `ImportOptions.default_wall_height_m` remains a low-confidence level-wide input. For vector-geometry pages with no explicit/caller-supplied height, #44 may retain a 9 ft (2.7432 m) level default at `assumed_value_confidence` solely so proven geometric wall-face loops can materialize; provenance and the `level_height_default_assumed` diagnostic make that assumption explicit and later higher-priority evidence replaces it. The conservative single-boundary 2D fallback still never invents walls or a ceiling.
 
 ## Stable identity
 
-Canonical IDs use `oabm.model.stable_id` with semantic anchors, never list positions or mutable geometry. Examples include logical source + level + room label + boundary side, and logical source + sheet identifier + PDF-native MCIDs. For ordinary untagged vector enclosures, contributing line element IDs are retained only as provenance; the canonical room/wall IDs remain anchored by logical source, level, room, and wall side. Repeated semantic anchors that would collide are preserved as ambiguity and later geometry is not silently substituted.
+Canonical IDs use `oabm.model.stable_id` with semantic anchors, never list positions or mutable geometry. Examples include logical source + level + room label + boundary side, and logical source + sheet identifier + PDF-native MCIDs. For ordinary untagged vector enclosures, contributing line element IDs are retained only as provenance; the canonical room/wall IDs remain anchored by logical source, level, room, and wall side. For #44 geometric wall-face loops without room labels, canonical wall IDs use logical source + printed sheet anchor + level + rounded canonical centerline endpoints, and loop Space IDs use the ordered set of those geometric wall anchors. Extraction order and `native_id` therefore do not control semantic identity. Repeated semantic anchors that would collide are preserved as ambiguity and later geometry is not silently substituted.
 
 ## Ambiguity and provenance
 
@@ -72,7 +73,7 @@ Typical ambiguity codes include:
 - `ordinary_vector_enclosure_unresolved` / `ordinary_vector_enclosure_ambiguous`;
 - `level_elevation_local_datum` / `level_elevation_unresolved`;
 - `level_elevation_reconciled` / `level_elevation_conflict`;
-- `level_height_reconciled` / `level_height_conflict`;
+- `level_height_reconciled` / `level_height_conflict` / `level_height_default_assumed`;
 - `ceiling_height_scope_unresolved` / `room_ceiling_height_conflict`;
 - `wall_height_unresolved`;
 - `duplicate_room_label` / `duplicate_room_identity_across_pages`;
@@ -86,4 +87,4 @@ The rule is conservative: unresolved facts remain unresolved instead of being co
 
 ## Fixtures and tests
 
-`fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe. Its known-answer canonical model is checked in alongside it. `fixtures/pdf_architecture/v1/ordinary-vector-room.json` is a tiny synthetic observation fixture for the ordinary untagged line-loop family. Tests also cover open/competing enclosures, extraction-order independence, ambiguous scale, missing height, explicit registration, inter-sheet registration, resolved pages that emit no geometry, stable identity, repeatability, and lane isolation. No customer plan set is used.
+`fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe. Its known-answer canonical model is checked in alongside it. `fixtures/pdf_architecture/v1/ordinary-vector-room.json` is a tiny synthetic observation fixture for the ordinary untagged line-loop family. `fixtures/pdf_architecture/v1/cad-derived-wall-faces.json` is a geometry-only, public-safe derivative for #44 with no native IDs or customer text; it is source input only, not an expected-output artifact. Tests also cover open/competing enclosures, extraction-order independence, ambiguous scale, missing height, explicit registration, inter-sheet registration, resolved pages that emit no geometry, stable identity, repeatability, and lane isolation. No customer plan set is used.

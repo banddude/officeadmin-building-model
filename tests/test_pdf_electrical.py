@@ -114,9 +114,9 @@ def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> N
     assert document == repeated
     assert not document.texts
     assert not document.symbols
-    assert len(document.vectors) == 3
+    assert len(document.vectors) == 11
     assert [vector.metadata["paint_operator"] for vector in document.vectors] == [
-        "S",
+        *("S",) * 9,
         "f",
         "f*",
     ]
@@ -144,14 +144,27 @@ def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> N
     assert curve.points_pt[-1] == (108.0, 24.0)
     assert curve.points_pt[4] != pytest.approx((42.0, 31.0))
 
-    assert document.vectors[1].closed is True
-    assert document.vectors[1].points_pt == (
+    wall_faces = document.vectors[1:9]
+    assert all(vector.closed is False for vector in wall_faces)
+    assert {vector.points_pt for vector in wall_faces} == {
+        ((40.0, 40.0), (240.0, 40.0)),
+        ((40.0, 44.0), (240.0, 44.0)),
+        ((236.0, 40.0), (236.0, 140.0)),
+        ((240.0, 40.0), (240.0, 140.0)),
+        ((40.0, 136.0), (240.0, 136.0)),
+        ((40.0, 140.0), (240.0, 140.0)),
+        ((40.0, 40.0), (40.0, 140.0)),
+        ((44.0, 40.0), (44.0, 140.0)),
+    }
+
+    assert document.vectors[9].closed is True
+    assert document.vectors[9].points_pt == (
         (132.0, 24.0),
         (154.0, 24.0),
         (154.0, 46.0),
         (132.0, 46.0),
     )
-    filled_curve = document.vectors[2]
+    filled_curve = document.vectors[10]
     assert filled_curve.closed is True
     assert filled_curve.metadata["geometry_kind"] == "bezier-flattened"
     assert filled_curve.metadata["curve_commands"] == [

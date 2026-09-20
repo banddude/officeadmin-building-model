@@ -94,6 +94,30 @@ def _ordinary_vector_fixture_page() -> PdfPageObservation:
     )
 
 
+def _cad_derived_wall_face_page() -> PdfPageObservation:
+    payload = json.loads(
+        (FIXTURE_DIR / "cad-derived-wall-faces.json").read_text(encoding="utf-8")
+    )
+    return PdfPageObservation(
+        page_number=payload["page_number"],
+        width_pt=payload["width_pt"],
+        height_pt=payload["height_pt"],
+        texts=(
+            _text("cad:title", "A44 FLOOR PLAN", 10, 190),
+            _text("cad:scale", "SCALE: 1:100", 10, 176),
+            _text("cad:level", "LEVEL: GROUND", 10, 162),
+        ),
+        lines=tuple(
+            PdfLineObservation(
+                element_id=item["element_id"],
+                start_pt=tuple(item["start_pt"]),
+                end_pt=tuple(item["end_pt"]),
+            )
+            for item in payload["lines"]
+        ),
+    )
+
+
 def _loop_lines(
     prefix: str,
     bbox: tuple[float, float, float, float],
@@ -128,11 +152,154 @@ def test_cad_export_curves_survive_architectural_extraction_as_lines() -> None:
     page = document.pages[0]
     assert not page.texts
     assert not page.rects
-    assert len(page.lines) == 9
+    assert len(page.lines) == 17
+    assert all(line.native_id is None for line in page.lines)
     segments = {(line.start_pt, line.end_pt) for line in page.lines}
     assert ((18.0, 24.0), (66.0, 38.0)) in segments
     assert ((66.0, 38.0), (108.0, 24.0)) in segments
     assert ((132.0, 24.0), (154.0, 24.0)) in segments
+    assert {
+        ((40.0, 40.0), (240.0, 40.0)),
+        ((40.0, 44.0), (240.0, 44.0)),
+        ((236.0, 40.0), (236.0, 140.0)),
+        ((240.0, 40.0), (240.0, 140.0)),
+        ((40.0, 136.0), (240.0, 136.0)),
+        ((40.0, 140.0), (240.0, 140.0)),
+        ((40.0, 40.0), (40.0, 140.0)),
+        ((44.0, 40.0), (44.0, 140.0)),
+    }.issubset(segments)
+
+
+def test_cad_export_fixture_extracts_to_untagged_walls_and_space() -> None:
+    document = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+    assert len(document.pages) == 1
+    extracted_page = document.pages[0]
+    assert extracted_page.lines
+    assert all(line.native_id is None for line in extracted_page.lines)
+
+    contextual_page = replace(
+        extracted_page,
+        texts=(
+            _text("acceptance:title", "A44 FLOOR PLAN", 10, 160),
+            _text("acceptance:scale", "SCALE: 1:100", 10, 146),
+            _text("acceptance:level", "LEVEL: GROUND", 10, 132),
+        ),
+    )
+    model = import_observations(replace(document, pages=(contextual_page,)))
+
+    validate_model(model)
+    assert len(model.walls) > 0
+    assert len(model.spaces) >= 1
+    assert all(
+        wall.attributes["pdf_architecture"]["recognition"]
+        == "geometric_parallel_wall_faces"
+        for wall in model.walls
+    )
+    assert any(
+        space.attributes["pdf_architecture"]["recognition"]
+        == "geometric_parallel_wall_closed_loop"
+        for space in model.spaces
+    )
+    page_meta = model.attributes["pdf_architecture"]["pages"][0]
+    assert page_meta["status"] == "geometry_imported"
+    assert page_meta["resolved_wall_count"] > 0
+    assert page_meta["resolved_room_count"] >= 1
+
+
+def test_cad_derived_untagged_wall_faces_emit_closed_space_with_low_confidence_height() -> None:
+    page = _cad_derived_wall_face_page()
+    assert page.lines
+    assert all(line.native_id is None for line in page.lines)
+
+    model = import_observations(
+        _document(page, source_id="fixture:cad-derived-wall-faces")
+    )
+
+    validate_model(model)
+    assert len(model.levels) == 1
+    assert len(model.walls) == 4
+    assert len(model.spaces) == 1
+    assert model.spaces[0].name is None
+    assert model.spaces[0].attributes["pdf_architecture"]["recognition"] == (
+        "geometric_parallel_wall_closed_loop"
+    )
+    assert model.levels[0].height_m == pytest.approx(2.7432)
+    assert model.levels[0].confidence == pytest.approx(0.45)
+    assert all(wall.height_m == pytest.approx(2.7432) for wall in model.walls)
+    assert all(wall.confidence <= 0.45 for wall in model.walls)
+    assert model.spaces[0].confidence <= 0.45
+    assert all(
+        wall.attributes["pdf_architecture"]["recognition"]
+        == "geometric_parallel_wall_faces"
+        for wall in model.walls
+    )
+    assert "level_height_default_assumed" in _ambiguity_codes(model)
+    page_meta = model.attributes["pdf_architecture"]["pages"][0]
+    assert page_meta["status"] == "geometry_imported"
+    assert page_meta["resolved_wall_count"] == 4
+    assert page_meta["resolved_room_count"] == 1
+    assert page_meta["geometric_wall_loop_count"] == 1
+
+
+def test_cad_derived_wall_ids_and_serialization_are_order_independent() -> None:
+    page = _cad_derived_wall_face_page()
+    baseline = import_observations(
+        _document(page, source_id="fixture:cad-derived-wall-faces")
+    )
+    reordered = import_observations(
+        _document(
+            replace(page, lines=tuple(reversed(page.lines))),
+            source_id="fixture:cad-derived-wall-faces",
+        )
+    )
+
+    validate_model(baseline)
+    validate_model(reordered)
+    assert baseline.to_json() == reordered.to_json()
+    assert {wall.id for wall in baseline.walls} == {wall.id for wall in reordered.walls}
+    assert {space.id for space in baseline.spaces} == {space.id for space in reordered.spaces}
+
+
+def test_cad_derived_geometric_pairing_fails_closed_on_ambiguous_parallel_face() -> None:
+    page = _cad_derived_wall_face_page()
+    ambiguous = _line("cad:south-face-c", (40.0, 48.0), (240.0, 48.0))
+    page = replace(page, lines=(*page.lines, ambiguous))
+
+    model = import_observations(
+        _document(page, source_id="fixture:cad-derived-wall-faces-ambiguous")
+    )
+
+    validate_model(model)
+    assert not model.walls
+    assert not model.spaces
+    assert model.attributes["pdf_architecture"]["pages"][0]["status"] == (
+        "no_supported_geometry_recognized"
+    )
+
+
+def test_cad_derived_wall_geometry_uses_explicit_level_height_when_present() -> None:
+    page = _cad_derived_wall_face_page()
+    page = replace(
+        page,
+        texts=(
+            *page.texts,
+            _text("cad:height", "LEVEL CEILING HEIGHT: 10'-0\"", 10, 148),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:cad-derived-wall-faces-explicit-height")
+    )
+
+    validate_model(model)
+    assert len(model.walls) == 4
+    assert len(model.spaces) == 1
+    assert model.levels[0].height_m == pytest.approx(3.048)
+    assert all(wall.height_m == pytest.approx(3.048) for wall in model.walls)
+    assert "level_height_default_assumed" not in _ambiguity_codes(model)
 
 
 def test_pdf_text_extraction_splits_widely_separated_same_row_annotations() -> None:

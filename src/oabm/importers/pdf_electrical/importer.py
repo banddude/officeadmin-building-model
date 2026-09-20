@@ -386,6 +386,13 @@ class _LegendRegion:
     confidence: float
     header_element_ids: tuple[str, ...] = ()
     table_bbox_pt: tuple[float, float, float, float] | None = None
+    frame_provenance: tuple[Mapping[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _PageFrameDetection:
+    bbox_pt: tuple[float, float, float, float]
+    method: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1225,6 +1232,10 @@ _LEGEND_RULE_AXIS_TOLERANCE_PT = 1.5
 _LEGEND_RULE_EDGE_TOLERANCE_PT = 12.0
 _LEGEND_TABLE_HEADER_MAX_HEIGHT_PT = 42.0
 _LEGEND_TABLE_MAX_ROW_HEIGHT_PT = 60.0
+_PAGE_FRAME_MIN_MEDIA_AREA_RATIO = 0.85
+_PAGE_FRAME_MIN_DIMENSION_PT = 300.0
+_NOTES_COLUMN_START_FRACTION = 0.68
+_NOTES_TITLE_BAND_MAX_FRACTION = 0.12
 _FIELD_STATUS_RADIUS_PT = 28.0
 _FIELD_STATUS_AMBIGUITY_PT = 2.0
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
@@ -2049,28 +2060,277 @@ def _rule_segments(
     return tuple(horizontal), tuple(vertical)
 
 
+def _displayed_media_box_bbox(
+    document: PdfElectricalDocument,
+    *,
+    page: int,
+) -> tuple[float, float, float, float] | None:
+    provenance = document.page_provenance.get(page)
+    if not provenance:
+        return None
+    try:
+        width = float(provenance["displayed_page_width_pt"])
+        height = float(provenance["displayed_page_height_pt"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(width)
+        or not math.isfinite(height)
+        or width <= 0.0
+        or height <= 0.0
+    ):
+        return None
+    return (0.0, 0.0, width, height)
+
+
+def _axis_aligned_closed_rectangle_bbox(
+    vector: PdfVectorPathObservation,
+) -> tuple[float, float, float, float] | None:
+    if not vector.closed or len(vector.points_pt) < 4:
+        return None
+    bbox = _vector_bbox(vector)
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    if width <= _LEGEND_RULE_AXIS_TOLERANCE_PT or height <= _LEGEND_RULE_AXIS_TOLERANCE_PT:
+        return None
+
+    points = tuple(vector.points_pt)
+    pairs = list(zip(points, points[1:]))
+    pairs.append((points[-1], points[0]))
+    if any(
+        abs(second[0] - first[0]) > _LEGEND_RULE_AXIS_TOLERANCE_PT
+        and abs(second[1] - first[1]) > _LEGEND_RULE_AXIS_TOLERANCE_PT
+        for first, second in pairs
+    ):
+        return None
+
+    corners = (
+        (bbox[0], bbox[1]),
+        (bbox[2], bbox[1]),
+        (bbox[2], bbox[3]),
+        (bbox[0], bbox[3]),
+    )
+    if not all(
+        any(
+            _distance_pt(corner[0], corner[1], point[0], point[1])
+            <= _LEGEND_RULE_EDGE_TOLERANCE_PT
+            for point in points
+        )
+        for corner in corners
+    ):
+        return None
+    return bbox
+
+
+def _four_long_rule_rectangles(
+    horizontal_rules: Sequence[tuple[float, float, float]],
+    vertical_rules: Sequence[tuple[float, float, float]],
+    *,
+    media_box_pt: tuple[float, float, float, float] | None,
+) -> tuple[tuple[float, float, float, float], ...]:
+    if media_box_pt is not None:
+        media_width = media_box_pt[2] - media_box_pt[0]
+        media_height = media_box_pt[3] - media_box_pt[1]
+        min_horizontal_length = _PAGE_FRAME_MIN_MEDIA_AREA_RATIO * media_width
+        min_vertical_length = _PAGE_FRAME_MIN_MEDIA_AREA_RATIO * media_height
+    else:
+        min_horizontal_length = _PAGE_FRAME_MIN_DIMENSION_PT
+        min_vertical_length = _PAGE_FRAME_MIN_DIMENSION_PT
+
+    horizontals = [
+        rule
+        for rule in horizontal_rules
+        if rule[2] - rule[0] >= min_horizontal_length
+    ]
+    verticals = [
+        rule
+        for rule in vertical_rules
+        if rule[2] - rule[1] >= min_vertical_length
+    ]
+
+    rectangles: set[tuple[float, float, float, float]] = set()
+    for first_index, first in enumerate(horizontals):
+        for second in horizontals[first_index + 1 :]:
+            bottom, top = (
+                (first, second)
+                if first[1] <= second[1]
+                else (second, first)
+            )
+            if top[1] - bottom[1] < min_vertical_length:
+                continue
+            if (
+                abs(bottom[0] - top[0]) > _LEGEND_RULE_EDGE_TOLERANCE_PT
+                or abs(bottom[2] - top[2]) > _LEGEND_RULE_EDGE_TOLERANCE_PT
+            ):
+                continue
+
+            left_x = (bottom[0] + top[0]) / 2.0
+            right_x = (bottom[2] + top[2]) / 2.0
+            if right_x - left_x < min_horizontal_length:
+                continue
+            left_found = any(
+                abs(rule[0] - left_x) <= _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and rule[1] <= bottom[1] + _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and rule[2] >= top[1] - _LEGEND_RULE_EDGE_TOLERANCE_PT
+                for rule in verticals
+            )
+            right_found = any(
+                abs(rule[0] - right_x) <= _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and rule[1] <= bottom[1] + _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and rule[2] >= top[1] - _LEGEND_RULE_EDGE_TOLERANCE_PT
+                for rule in verticals
+            )
+            if left_found and right_found:
+                rectangles.add(
+                    (
+                        round(left_x, 6),
+                        round(bottom[1], 6),
+                        round(right_x, 6),
+                        round(top[1], 6),
+                    )
+                )
+    return tuple(sorted(rectangles))
+
+
+def _page_frame_detection(
+    vectors: Sequence[PdfVectorPathObservation],
+    *,
+    page: int,
+    media_box_pt: tuple[float, float, float, float] | None,
+) -> _PageFrameDetection | None:
+    candidates: list[
+        tuple[
+            float,
+            int,
+            tuple[float, float, float, float],
+            str,
+        ]
+    ] = []
+    media_area = (
+        (media_box_pt[2] - media_box_pt[0])
+        * (media_box_pt[3] - media_box_pt[1])
+        if media_box_pt is not None
+        else None
+    )
+
+    def consider(
+        bbox: tuple[float, float, float, float],
+        *,
+        method: str,
+        method_priority: int,
+    ) -> None:
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        if (
+            width < _PAGE_FRAME_MIN_DIMENSION_PT
+            or height < _PAGE_FRAME_MIN_DIMENSION_PT
+        ):
+            return
+        area = width * height
+        if media_box_pt is not None:
+            assert media_area is not None
+            if area / media_area < _PAGE_FRAME_MIN_MEDIA_AREA_RATIO:
+                return
+            if (
+                bbox[0] < media_box_pt[0] - _LEGEND_RULE_EDGE_TOLERANCE_PT
+                or bbox[1] < media_box_pt[1] - _LEGEND_RULE_EDGE_TOLERANCE_PT
+                or bbox[2] > media_box_pt[2] + _LEGEND_RULE_EDGE_TOLERANCE_PT
+                or bbox[3] > media_box_pt[3] + _LEGEND_RULE_EDGE_TOLERANCE_PT
+            ):
+                return
+        candidates.append((area, method_priority, bbox, method))
+
+    for vector in vectors:
+        if vector.page != page:
+            continue
+        bbox = _axis_aligned_closed_rectangle_bbox(vector)
+        if bbox is not None:
+            consider(
+                bbox,
+                method="closed-rectangle",
+                method_priority=1,
+            )
+
+    horizontal_rules, vertical_rules = _rule_segments(vectors, page=page)
+    for bbox in _four_long_rule_rectangles(
+        horizontal_rules,
+        vertical_rules,
+        media_box_pt=media_box_pt,
+    ):
+        consider(
+            bbox,
+            method="four-long-rules",
+            method_priority=0,
+        )
+
+    if candidates:
+        _area, _priority, bbox, method = max(
+            candidates,
+            key=lambda item: (item[0], item[1], item[2]),
+        )
+        return _PageFrameDetection(bbox_pt=bbox, method=method)
+    if media_box_pt is not None:
+        return _PageFrameDetection(
+            bbox_pt=media_box_pt,
+            method="media-box-fallback",
+        )
+    return None
+
+
 def _page_frame_bbox(
     vectors: Sequence[PdfVectorPathObservation],
     *,
     page: int,
+    media_box_pt: tuple[float, float, float, float] | None = None,
 ) -> tuple[float, float, float, float] | None:
-    candidates: list[tuple[float, tuple[float, float, float, float]]] = []
-    for vector in vectors:
-        if vector.page != page:
-            continue
-        bbox = _vector_bbox(vector)
-        width = bbox[2] - bbox[0]
-        height = bbox[3] - bbox[1]
-        if width < 300.0 or height < 300.0:
-            continue
-        candidates.append((width * height, bbox))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1]
+    detection = _page_frame_detection(
+        vectors,
+        page=page,
+        media_box_pt=media_box_pt,
+    )
+    return detection.bbox_pt if detection is not None else None
+
+
+def _bbox_contains_point(
+    bbox: tuple[float, float, float, float],
+    *,
+    x_pt: float,
+    y_pt: float,
+) -> bool:
+    return (
+        bbox[0] - _LEGEND_RULE_EDGE_TOLERANCE_PT
+        <= x_pt
+        <= bbox[2] + _LEGEND_RULE_EDGE_TOLERANCE_PT
+        and bbox[1] - _LEGEND_RULE_EDGE_TOLERANCE_PT
+        <= y_pt
+        <= bbox[3] + _LEGEND_RULE_EDGE_TOLERANCE_PT
+    )
+
+
+def _notes_column_title_band_top(
+    frame: tuple[float, float, float, float],
+    horizontal_rules: Sequence[tuple[float, float, float]],
+    *,
+    column_left: float,
+    column_right: float,
+) -> float:
+    frame_height = frame[3] - frame[1]
+    cap = frame[1] + _NOTES_TITLE_BAND_MAX_FRACTION * frame_height
+    ruled_levels = [
+        rule[1]
+        for rule in horizontal_rules
+        if frame[1] + _LEGEND_RULE_AXIS_TOLERANCE_PT < rule[1] <= cap
+        and rule[0] <= column_left + _LEGEND_RULE_EDGE_TOLERANCE_PT
+        and rule[2] >= column_right - _LEGEND_RULE_EDGE_TOLERANCE_PT
+    ]
+    if ruled_levels:
+        return min(cap, max(ruled_levels))
+    return cap
 
 
 def _symbol_function_legend_regions(
     *,
+    document: PdfElectricalDocument,
     texts: Sequence[PdfTextObservation],
     clusters: Sequence[_VectorCluster],
     vectors: Sequence[PdfVectorPathObservation],
@@ -2147,16 +2407,54 @@ def _symbol_function_legend_regions(
             )
             split_x = divider[0]
 
-            frame = _page_frame_bbox(vectors, page=page)
-            if frame is not None:
+            media_box = _displayed_media_box_bbox(document, page=page)
+            frame_detection = _page_frame_detection(
+                vectors,
+                page=page,
+                media_box_pt=media_box,
+            )
+            frame_provenance: tuple[Mapping[str, Any], ...] = ()
+            if frame_detection is not None:
+                frame = frame_detection.bbox_pt
+                headers_outside_frame = [
+                    header
+                    for header in (symbol_header, function_header)
+                    if not _bbox_contains_point(
+                        frame,
+                        x_pt=header.x_pt,
+                        y_pt=header.y_pt,
+                    )
+                ]
+                if headers_outside_frame and media_box is not None:
+                    detected_frame = frame
+                    frame = media_box
+                    frame_provenance = (
+                        {
+                            "method": "media-box-rederivation",
+                            "reason": "candidate legend header outside detected page frame",
+                            "source_element_id": headers_outside_frame[0].element_id,
+                            "header_element_ids": [
+                                header.element_id
+                                for header in headers_outside_frame
+                            ],
+                            "detected_frame_method": frame_detection.method,
+                            "detected_frame_bbox_pt": list(detected_frame),
+                            "rederived_frame_bbox_pt": list(media_box),
+                        },
+                    )
+
                 frame_width = frame[2] - frame[0]
-                frame_height = frame[3] - frame[1]
                 in_right_notes_column = (
-                    symbol_header.x_pt >= frame[0] + 0.68 * frame_width
+                    symbol_header.x_pt
+                    >= frame[0] + _NOTES_COLUMN_START_FRACTION * frame_width
                 )
-                in_bottom_title_band = (
-                    symbol_header.y_pt <= frame[1] + 0.20 * frame_height
+                title_band_top = _notes_column_title_band_top(
+                    frame,
+                    horizontal_rules,
+                    column_left=table_left,
+                    column_right=table_right,
                 )
+                in_bottom_title_band = symbol_header.y_pt <= title_band_top
                 if in_right_notes_column and in_bottom_title_band:
                     continue
 
@@ -2302,6 +2600,7 @@ def _symbol_function_legend_regions(
                         table_right,
                         top_rule[1],
                     ),
+                    frame_provenance=frame_provenance,
                 )
             )
 
@@ -2686,6 +2985,7 @@ def _recognize_legend_shapes(
         ambiguity_margin=ambiguity_margin,
     )
     preferred_regions = _symbol_function_legend_regions(
+        document=document,
         texts=texts,
         clusters=clusters,
         vectors=vectors,
@@ -2854,8 +3154,26 @@ def _recognize_legend_shapes(
                     and region.table_bbox_pt is not None
                     else {}
                 ),
+                **(
+                    {
+                        "frame_provenance": [
+                            dict(item)
+                            for item in region.frame_provenance
+                        ]
+                    }
+                    if region.frame_provenance
+                    else {}
+                ),
             }
             for region in regions
+        ],
+        "frame_rederivations": [
+            {
+                "page": region.page,
+                **dict(item),
+            }
+            for region in regions
+            for item in region.frame_provenance
         ],
         "explicit_cross_sheet_references": [
             {
@@ -4778,6 +5096,22 @@ class ElectricalPdfImporter:
                     method="pypdf-page-display-normalization",
                     confidence=1.0,
                     attributes=dict(document.page_provenance[page]),
+                )
+            )
+        for note in legend_recognition.get("frame_rederivations", ()):
+            model_provenance.append(
+                Provenance(
+                    source_kind="pdf-electrical",
+                    source_id=document.source_id,
+                    source_element_id=str(note["source_element_id"]),
+                    page=int(note["page"]),
+                    method="pdf-page-frame-media-box-rederivation",
+                    confidence=1.0,
+                    attributes={
+                        key: value
+                        for key, value in note.items()
+                        if key not in {"page", "source_element_id"}
+                    },
                 )
             )
         if not has_explicit_registration and document.page_count > 1:

@@ -1724,12 +1724,72 @@ def _geometric_wall_face_pairs(
         by_geometry.setdefault(key, []).append(line)
     duplicate_geometry.update(key for key, values in by_geometry.items() if len(values) != 1)
 
+    minimum_overlap_m = options.min_space_span_m * 0.5
+    minimum_overlap_pt = minimum_overlap_m / transform.meters_per_point
     lines = [
         values[0]
         for key, values in sorted(by_geometry.items())
         if key not in duplicate_geometry
+        and math.dist(values[0].start_pt, values[0].end_pt) >= minimum_overlap_pt
     ]
     records = [_line_record(line) for line in lines]
+
+    # The audited CAD page contains tens of thousands of line primitives. Build
+    # deterministic coarse orientation/spatial buckets so only nearby,
+    # sufficiently-overlapping lines reach the exact parallel-pair checks below.
+    angle_tolerance = math.radians(2.0)
+    orientation_bucket_count = max(1, int(round(math.pi / angle_tolerance)))
+    max_offset_pt = options.max_wall_thickness_m / transform.meters_per_point
+    normal_bin_size = max(max_offset_pt, 1.0)
+    tangent_bin_size = max(minimum_overlap_pt, max_offset_pt * 2.0, 16.0)
+    candidate_cells: dict[tuple[int, int, int], set[int]] = {}
+    for line_index, line in enumerate(lines):
+        start, end = _canonical_segment(line.start_pt, line.end_pt)
+        ux, uy, _, _, _ = records[line_index]
+        theta = math.atan2(uy, ux) % math.pi
+        base_bucket = int(round(theta / angle_tolerance)) % orientation_bucket_count
+        for orientation_bucket in {
+            (base_bucket - 1) % orientation_bucket_count,
+            base_bucket,
+            (base_bucket + 1) % orientation_bucket_count,
+        }:
+            reference_angle = orientation_bucket * angle_tolerance
+            tx, ty = math.cos(reference_angle), math.sin(reference_angle)
+            nx, ny = -ty, tx
+            tangent_values = sorted(
+                (
+                    start[0] * tx + start[1] * ty,
+                    end[0] * tx + end[1] * ty,
+                )
+            )
+            normal_values = sorted(
+                (
+                    start[0] * nx + start[1] * ny,
+                    end[0] * nx + end[1] * ny,
+                )
+            )
+            tangent_start = math.floor(tangent_values[0] / tangent_bin_size)
+            tangent_end = math.floor(tangent_values[1] / tangent_bin_size)
+            normal_start = math.floor(
+                (normal_values[0] - max_offset_pt) / normal_bin_size
+            )
+            normal_end = math.floor(
+                (normal_values[1] + max_offset_pt) / normal_bin_size
+            )
+            for normal_bucket in range(normal_start, normal_end + 1):
+                for tangent_bucket in range(tangent_start, tangent_end + 1):
+                    candidate_cells.setdefault(
+                        (orientation_bucket, normal_bucket, tangent_bucket),
+                        set(),
+                    ).add(line_index)
+
+    candidate_pairs: set[tuple[int, int]] = set()
+    for cell_lines in candidate_cells.values():
+        ordered = sorted(cell_lines)
+        for position, first_index in enumerate(ordered):
+            for second_index in ordered[position + 1 :]:
+                candidate_pairs.add((first_index, second_index))
+
     candidates: list[
         tuple[
             int,
@@ -1741,52 +1801,52 @@ def _geometric_wall_face_pairs(
             tuple[float, float],
         ]
     ] = []
-    max_cross = math.sin(math.radians(2.0))
-    for first_index, first in enumerate(lines):
+    max_cross = math.sin(angle_tolerance)
+    for first_index, second_index in sorted(candidate_pairs):
+        first = lines[first_index]
         ux, uy, a0, a1, first_normal = records[first_index]
+        sux, suy, _, _, _ = records[second_index]
+        if abs(ux * suy - uy * sux) > max_cross:
+            continue
         nx, ny = -uy, ux
-        for second_index in range(first_index + 1, len(lines)):
-            sux, suy, _, _, _ = records[second_index]
-            if abs(ux * suy - uy * sux) > max_cross:
-                continue
-            second = lines[second_index]
-            cx, cy = second.start_pt
-            ex, ey = second.end_pt
-            b0, b1 = sorted((cx * ux + cy * uy, ex * ux + ey * uy))
-            overlap0 = max(a0, b0)
-            overlap1 = min(a1, b1)
-            overlap_pt = overlap1 - overlap0
-            overlap_m = overlap_pt * transform.meters_per_point
-            if overlap_m < options.min_space_span_m * 0.5:
-                continue
-            second_normal = ((cx + ex) / 2.0) * nx + ((cy + ey) / 2.0) * ny
-            offset_m = abs(second_normal - first_normal) * transform.meters_per_point
-            if not (options.min_wall_thickness_m <= offset_m <= options.max_wall_thickness_m):
-                continue
-            mean_normal = (first_normal + second_normal) / 2.0
-            start_source = (
-                overlap0 * ux + mean_normal * nx,
-                overlap0 * uy + mean_normal * ny,
+        second = lines[second_index]
+        cx, cy = second.start_pt
+        ex, ey = second.end_pt
+        b0, b1 = sorted((cx * ux + cy * uy, ex * ux + ey * uy))
+        overlap0 = max(a0, b0)
+        overlap1 = min(a1, b1)
+        overlap_pt = overlap1 - overlap0
+        overlap_m = overlap_pt * transform.meters_per_point
+        if overlap_m < minimum_overlap_m:
+            continue
+        second_normal = ((cx + ex) / 2.0) * nx + ((cy + ey) / 2.0) * ny
+        offset_m = abs(second_normal - first_normal) * transform.meters_per_point
+        if not (options.min_wall_thickness_m <= offset_m <= options.max_wall_thickness_m):
+            continue
+        mean_normal = (first_normal + second_normal) / 2.0
+        start_source = (
+            overlap0 * ux + mean_normal * nx,
+            overlap0 * uy + mean_normal * ny,
+        )
+        end_source = (
+            overlap1 * ux + mean_normal * nx,
+            overlap1 * uy + mean_normal * ny,
+        )
+        score = (
+            -round(overlap_m, 6),
+            round(offset_m, 6),
+        )
+        candidates.append(
+            (
+                first_index,
+                second_index,
+                overlap_m,
+                offset_m,
+                start_source,
+                end_source,
+                score,
             )
-            end_source = (
-                overlap1 * ux + mean_normal * nx,
-                overlap1 * uy + mean_normal * ny,
-            )
-            score = (
-                -round(overlap_m, 6),
-                round(offset_m, 6),
-            )
-            candidates.append(
-                (
-                    first_index,
-                    second_index,
-                    overlap_m,
-                    offset_m,
-                    start_source,
-                    end_source,
-                    score,
-                )
-            )
+        )
 
     by_line: dict[int, list[int]] = {}
     for candidate_index, candidate in enumerate(candidates):

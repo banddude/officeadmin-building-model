@@ -24,6 +24,7 @@ CAD_GEOMETRY_TEXT_FIXTURE = FIXTURE_DIR / "cad-export-geometry-plus-text.pdf"
 REGISTRATION_FALLBACK_FIXTURE = FIXTURE_DIR / "cad-export-scale-no-registration.pdf"
 DENSE_LABEL_FIXTURE = FIXTURE_DIR / "dense-room-labels.pdf"
 ADJACENT_LABEL_PAIR_FIXTURE = FIXTURE_DIR / "adjacent-room-label-pairs.pdf"
+WALL_PRIMITIVE_FAMILIES_FIXTURE = FIXTURE_DIR / "cad-wall-primitive-families.pdf"
 
 
 def _text(element_id: str, text: str, x: float, y: float, width: float = 80, height: float = 10) -> PdfTextObservation:
@@ -211,6 +212,333 @@ def test_cad_export_fixture_extracts_to_untagged_walls_and_space() -> None:
     assert page_meta["status"] == "geometry_imported"
     assert page_meta["resolved_wall_count"] > 0
     assert page_meta["resolved_room_count"] >= 1
+
+
+
+def test_realistic_wall_primitive_families_join_before_pairing() -> None:
+    assert not WALL_PRIMITIVE_FAMILIES_FIXTURE.with_suffix(".expected.json").exists()
+
+    document = extract_pdf(
+        WALL_PRIMITIVE_FAMILIES_FIXTURE,
+        source_id="fixture:cad-wall-primitive-families",
+    )
+    assert len(document.pages) == 1
+    extracted_page = document.pages[0]
+    assert not extracted_page.texts
+    assert not extracted_page.rects
+    assert {line.primitive_family for line in extracted_page.lines} == {
+        "line",
+        "polyline",
+        "curve",
+    }
+    assert any(line.dashed for line in extracted_page.lines)
+
+    contextual_page = replace(
+        extracted_page,
+        texts=(
+            _text("a55:title", "A55 FLOOR PLAN", 10, 180),
+            _text("a55:scale", "SCALE: 1:100", 10, 166),
+            _text("a55:level", "LEVEL: GROUND", 10, 152),
+        ),
+    )
+    model = import_observations(replace(document, pages=(contextual_page,)))
+
+    validate_model(model)
+    assert len(model.walls) > 0
+    assert len(model.spaces) == 1
+    assert all(
+        wall.attributes["pdf_architecture"]["recognition"]
+        == "geometric_parallel_wall_faces"
+        for wall in model.walls
+    )
+    page_meta = model.attributes["pdf_architecture"]["pages"][0]
+    diagnostics = page_meta["geometric_wall_pair_diagnostics"]
+    assert diagnostics["input_segment_count"] == len(extracted_page.lines)
+    assert diagnostics["joined_run_count"] < diagnostics["unique_segment_count"]
+    assert diagnostics["collinear_join_component_count"] > 0
+    assert diagnostics["primitive_family_counts"]["polyline"] > 0
+    assert diagnostics["primitive_family_counts"]["curve"] > 0
+    assert diagnostics["dashed_input_segment_count"] > 0
+    assert diagnostics["wall_gap_range_m"] == pytest.approx([0.0508, 0.4572])
+    assert diagnostics["accepted_pair_count"] > 0
+    assert diagnostics["style_or_layer_gate_applied"] is False
+    assert set(diagnostics["rejected"]) == {
+        "parallel",
+        "overlap_ratio",
+        "gap_range",
+        "ambiguous_or_non_mutual",
+    }
+
+
+def test_open_unique_wall_pair_emits_lower_confidence_partial_wall() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("partial:title", "A55 FLOOR PLAN", 10, 180),
+            _text("partial:scale", "SCALE: 1:100", 10, 166),
+            _text("partial:level", "LEVEL: GROUND", 10, 152),
+        ),
+        lines=(
+            PdfLineObservation(
+                element_id="partial:face-a:1",
+                start_pt=(40.0, 40.0),
+                end_pt=(90.0, 40.0),
+                primitive_family="polyline",
+            ),
+            PdfLineObservation(
+                element_id="partial:face-a:2",
+                start_pt=(92.0, 40.0),
+                end_pt=(160.0, 40.0),
+                primitive_family="polyline",
+            ),
+            PdfLineObservation(
+                element_id="partial:face-b",
+                start_pt=(40.0, 44.0),
+                end_pt=(160.0, 44.0),
+                primitive_family="curve",
+                dashed=True,
+            ),
+            _line("partial:junction", (40.0, 42.0), (40.0, 70.0)),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:partial-wall-face")
+    )
+
+    validate_model(model)
+    assert len(model.walls) == 1
+    assert not model.spaces
+    wall = model.walls[0]
+    assert wall.confidence <= 0.42
+    assert wall.attributes["pdf_architecture"]["recognition"] == (
+        "geometric_parallel_wall_face_partial"
+    )
+    assert wall.attributes["pdf_architecture"]["primitive_families"] == [
+        "curve",
+        "polyline",
+    ]
+    assert wall.attributes["pdf_architecture"]["dashed_source"] is True
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["partial_pair_count"] == 1
+    assert diagnostics["partial_no_junction_rejected_count"] == 0
+    assert diagnostics["closed_loop_pair_count"] == 0
+    assert wall.attributes["pdf_architecture"]["junction_supported"] is True
+
+
+def test_isolated_open_wall_pair_without_junction_is_not_promoted() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("isolated:title", "A55 FLOOR PLAN", 10, 180),
+            _text("isolated:scale", "SCALE: 1:100", 10, 166),
+            _text("isolated:level", "LEVEL: GROUND", 10, 152),
+        ),
+        lines=(
+            _line("isolated:face-a", (40.0, 40.0), (160.0, 40.0)),
+            _line("isolated:face-b", (40.0, 44.0), (160.0, 44.0)),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:isolated-partial-wall-face")
+    )
+
+    validate_model(model)
+    assert not model.walls
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["accepted_pair_count"] == 1
+    assert diagnostics["partial_candidate_pair_count"] == 1
+    assert diagnostics["partial_no_junction_rejected_count"] == 1
+    assert diagnostics["partial_pair_count"] == 0
+
+
+def test_short_open_wall_pair_with_junction_is_not_promoted() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("short:title", "A55 FLOOR PLAN", 10, 180),
+            _text("short:scale", "SCALE: 1:100", 10, 166),
+            _text("short:level", "LEVEL: GROUND", 10, 152),
+        ),
+        lines=(
+            _line("short:face-a", (40.0, 40.0), (52.0, 40.0)),
+            _line("short:face-b", (40.0, 44.0), (52.0, 44.0)),
+            _line("short:junction", (40.0, 42.0), (40.0, 70.0)),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:short-partial-wall-face")
+    )
+
+    validate_model(model)
+    assert not model.walls
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["accepted_pair_count"] == 1
+    assert diagnostics["partial_candidate_pair_count"] == 1
+    assert diagnostics["partial_short_rejected_count"] == 1
+    assert diagnostics["partial_pair_count"] == 0
+
+
+@pytest.mark.parametrize("dimension_text", ("6'-0\"", "1830"))
+def test_dimension_string_parallel_pair_is_not_wall_evidence(
+    dimension_text: str,
+) -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("dim:title", "A55 FLOOR PLAN", 10, 180),
+            _text("dim:scale", "SCALE: 1:100", 10, 166),
+            _text("dim:level", "LEVEL: GROUND", 10, 152),
+            _text("dim:value", dimension_text, 90, 38, width=40, height=8),
+        ),
+        lines=(
+            _line("dim:face-a", (40.0, 40.0), (180.0, 40.0)),
+            _line("dim:face-b", (40.0, 44.32), (180.0, 44.32)),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id=f"fixture:dimension-wall-{dimension_text}")
+    )
+
+    validate_model(model)
+    assert not model.walls
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["dimension_evidence_rejected_count"] == 2
+    assert diagnostics["accepted_pair_count"] == 0
+
+
+def test_regular_hatch_field_is_not_wall_evidence() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("hatch:title", "A55 FLOOR PLAN", 10, 180),
+            _text("hatch:scale", "SCALE: 1:100", 10, 166),
+            _text("hatch:level", "LEVEL: GROUND", 10, 152),
+        ),
+        lines=tuple(
+            _line(
+                f"hatch:{index}",
+                (50.0, 40.0 + index * 4.0),
+                (90.0, 40.0 + index * 4.0),
+            )
+            for index in range(6)
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:regular-hatch-field")
+    )
+
+    validate_model(model)
+    assert not model.walls
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["hatch_evidence_rejected_count"] == 6
+    assert diagnostics["accepted_pair_count"] == 0
+
+
+def test_filled_region_parallel_lines_are_not_wall_evidence() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("filled:title", "A55 FLOOR PLAN", 10, 180),
+            _text("filled:scale", "SCALE: 1:100", 10, 166),
+            _text("filled:level", "LEVEL: GROUND", 10, 152),
+        ),
+        lines=(
+            _line("filled:line-a", (50.0, 40.0), (90.0, 40.0)),
+            _line("filled:line-b", (50.0, 44.0), (90.0, 44.0)),
+        ),
+        rects=(
+            PdfRectObservation(
+                element_id="filled:region",
+                bbox_pt=(45.0, 35.0, 95.0, 50.0),
+                filled=True,
+            ),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:filled-hatch-region")
+    )
+
+    validate_model(model)
+    assert not model.walls
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["hatch_evidence_rejected_count"] == 2
+    assert diagnostics["accepted_pair_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("gap_inches", "expected_wall_count"),
+    ((1.0, 0), (2.0, 1), (18.0, 1), (19.0, 0)),
+)
+def test_wall_gap_range_is_two_to_eighteen_inches_at_sheet_scale(
+    gap_inches: float,
+    expected_wall_count: int,
+) -> None:
+    meters_per_point = 100.0 * 0.0254 / 72.0
+    gap_pt = gap_inches * 0.0254 / meters_per_point
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("gap:title", "A55 FLOOR PLAN", 10, 180),
+            _text("gap:scale", "SCALE: 1:100", 10, 166),
+            _text("gap:level", "LEVEL: GROUND", 10, 152),
+        ),
+        lines=(
+            _line("gap:face-a", (40.0, 40.0), (160.0, 40.0)),
+            _line("gap:face-b", (40.0, 40.0 + gap_pt), (160.0, 40.0 + gap_pt)),
+            _line(
+                "gap:junction",
+                (40.0, 40.0 + gap_pt / 2.0),
+                (40.0, 70.0),
+            ),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id=f"fixture:wall-gap-{gap_inches:g}in")
+    )
+
+    validate_model(model)
+    assert len(model.walls) == expected_wall_count
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["wall_gap_range_m"] == pytest.approx([0.0508, 0.4572])
+    if expected_wall_count:
+        assert model.walls[0].thickness_m == pytest.approx(gap_inches * 0.0254)
+    else:
+        assert diagnostics["rejected"]["gap_range"] >= 1
 
 
 def test_scale_known_page_without_registration_cue_uses_sheet_geometry_fallback() -> None:

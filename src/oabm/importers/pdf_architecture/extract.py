@@ -128,9 +128,24 @@ def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple
                 element_id=_element_id("rect", page_number, signature),
                 bbox_pt=bbox,
                 native_id=_native_id(obj, "rect"),
+                filled=bool(obj.get("fill", False)),
             )
         )
     return tuple(sorted(result, key=lambda item: item.bbox_pt))
+
+
+def _dash_present(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (tuple, list)) and value:
+        pattern = value[0]
+        if isinstance(pattern, (tuple, list)):
+            return any(float(item) > 0 for item in pattern)
+        try:
+            return float(pattern) > 0
+        except (TypeError, ValueError):
+            return True
+    return bool(value)
 
 
 def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple[PdfLineObservation, ...]:
@@ -147,27 +162,42 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
             continue
         seen.add(signature_tuple)
         signature = "|".join(f"{value:.4f}" for value in signature_tuple)
+        primitive_family = str(obj.get("_oabm_primitive_family") or "line")
         result.append(
             PdfLineObservation(
                 element_id=_element_id("line", page_number, signature),
                 start_pt=start,
                 end_pt=end,
                 native_id=_native_id(obj, "line"),
+                primitive_family=primitive_family,
+                dashed=bool(obj.get("_oabm_dashed", False)),
+                filled=bool(obj.get("_oabm_filled", False)),
             )
         )
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
+
+
+def _curve_primitive_family(curve: dict[str, object]) -> str:
+    path = curve.get("path")
+    if not isinstance(path, (list, tuple)):
+        return "curve"
+    for item in path:
+        if not isinstance(item, (list, tuple)) or not item:
+            continue
+        operation = str(item[0]).lower()
+        if operation in {"c", "v", "y"}:
+            return "curve"
+    return "polyline"
 
 
 def _curve_polyline_segments(
     curves: Iterable[dict[str, object]],
     page_height: float,
 ) -> tuple[dict[str, object], ...]:
-    """Flatten pdfplumber curve points into bottom-origin line primitives.
+    """Flatten pdfplumber curve/polyline points into bottom-origin line primitives.
 
-    pdfplumber exposes curve points in its top-origin page frame while the
-    existing line/rectangle observations use PDF bottom-origin coordinates.
-    Keeping the result as ordinary line observations preserves the downstream
-    architectural recognition boundary while retaining curve path geometry.
+    The primitive family and dash state stay attached to each segment so the
+    wall recognizer can diagnose which CAD path families contributed evidence.
     """
 
     segments: list[dict[str, object]] = []
@@ -186,6 +216,9 @@ def _curve_polyline_segments(
                 break
             points.append((x, page_height - top))
 
+        primitive_family = _curve_primitive_family(curve)
+        dashed = _dash_present(curve.get("dash"))
+        filled = bool(curve.get("fill", False))
         for start, end in zip(points, points[1:]):
             if start == end:
                 continue
@@ -194,7 +227,10 @@ def _curve_polyline_segments(
                 "y0": start[1],
                 "x1": end[0],
                 "y1": end[1],
-                "tag": curve.get("tag") or "curve",
+                "tag": curve.get("tag") or primitive_family,
+                "_oabm_primitive_family": primitive_family,
+                "_oabm_dashed": dashed,
+                "_oabm_filled": filled,
             }
             if isinstance(curve.get("mcid"), int):
                 segment["mcid"] = curve["mcid"]
@@ -218,7 +254,18 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                     height_pt=float(page.height),
                     texts=_group_words(page, index),
                     lines=_unique_lines(
-                        (*page.lines, *_curve_polyline_segments(page.curves, float(page.height))),
+                        (
+                            *(
+                                {
+                                    **line,
+                                    "_oabm_primitive_family": "line",
+                                    "_oabm_dashed": _dash_present(line.get("dash")),
+                                    "_oabm_filled": bool(line.get("fill", False)),
+                                }
+                                for line in page.lines
+                            ),
+                            *_curve_polyline_segments(page.curves, float(page.height)),
+                        ),
                         index,
                     ),
                     rects=_unique_rects(page.rects, index),

@@ -353,6 +353,7 @@ class _LegendRow:
     classification_candidates: tuple[Mapping[str, Any], ...]
     orientation: int
     horizontal_gap_pt: float
+    label_source_element_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +363,8 @@ class _LegendRegion:
     rows: tuple[_LegendRow, ...]
     heading: PdfTextObservation | None
     confidence: float
+    header_element_ids: tuple[str, ...] = ()
+    table_bbox_pt: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +384,7 @@ class _LegendEntry:
     prototype: _VectorCluster
     label: PdfTextObservation
     region: _LegendRegion
+    label_source_element_ids: tuple[str, ...] = ()
 
 
 def _validate_source_observation(element_id: str, page: int, x_pt: float, y_pt: float) -> None:
@@ -1167,6 +1171,13 @@ _LEGEND_MAX_LABEL_CHARS = 48
 _LEGEND_MAX_LABEL_WORDS = 6
 _LEGEND_SECTION_HEADING_MAX_CHARS = 80
 _LEGEND_SECTION_HEADING_MAX_WORDS = 8
+_LEGEND_HEADER_ROW_VERTICAL_TOLERANCE_PT = 10.0
+_LEGEND_RULE_AXIS_TOLERANCE_PT = 1.5
+_LEGEND_RULE_EDGE_TOLERANCE_PT = 12.0
+_LEGEND_TABLE_HEADER_MAX_HEIGHT_PT = 42.0
+_LEGEND_TABLE_MAX_ROW_HEIGHT_PT = 60.0
+_FIELD_STATUS_RADIUS_PT = 28.0
+_FIELD_STATUS_AMBIGUITY_PT = 2.0
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
 _LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
 _LEGEND_REJECTED_HEADING_WORDS = frozenset(
@@ -1192,6 +1203,16 @@ _LEGEND_REFERENCE_CUE_RE = re.compile(
     r"\b(?:SEE|REFER(?:\s+TO)?|REFERENCE|LEGEND\s+(?:ON|AT|SHEET))\b",
     re.IGNORECASE,
 )
+_FIELD_STATUS_RE = re.compile(r"^\s*(?P<status>[ENR])\s*$", re.IGNORECASE)
+_FIELD_HEIGHT_TAG_RE = re.compile(
+    r'^\s*\+\s*\d+(?:\.\d+)?\s*(?:"|IN(?:CH(?:ES)?)?)?\s*$',
+    re.IGNORECASE,
+)
+_FIELD_STATUS_MEANINGS: Mapping[str, str] = {
+    "E": "existing_to_remain",
+    "N": "new",
+    "R": "existing_to_be_removed",
+}
 
 
 def _vector_bbox(
@@ -1465,6 +1486,53 @@ def _normalize_legend_alias(value: str) -> str:
     return " ".join(cleaned.split())
 
 
+def _field_modifier_text(value: str) -> tuple[str, str] | None:
+    cleaned = " ".join(value.split())
+    status_match = _FIELD_STATUS_RE.fullmatch(cleaned)
+    if status_match:
+        status = status_match.group("status").upper()
+        return "status", status
+    if _FIELD_HEIGHT_TAG_RE.fullmatch(cleaned):
+        return "height", cleaned
+    return None
+
+
+def _field_status_for_cluster(
+    cluster: _VectorCluster,
+    texts: Sequence[PdfTextObservation],
+) -> tuple[PdfTextObservation, str, str] | None:
+    candidates: list[tuple[float, str, PdfTextObservation]] = []
+    for observation in texts:
+        if observation.page != cluster.page:
+            continue
+        modifier = _field_modifier_text(observation.text)
+        if modifier is None or modifier[0] != "status":
+            continue
+        distance = _distance_pt(
+            cluster.center_pt[0],
+            cluster.center_pt[1],
+            observation.x_pt,
+            observation.y_pt,
+        )
+        if distance > _FIELD_STATUS_RADIUS_PT:
+            continue
+        candidates.append((distance, modifier[1], observation))
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (item[0], item[2].element_id))
+    nearest_distance = candidates[0][0]
+    nearest = [
+        item
+        for item in candidates
+        if item[0] <= nearest_distance + _FIELD_STATUS_AMBIGUITY_PT
+    ]
+    if len({item[1] for item in nearest}) != 1:
+        return None
+    _distance, status, observation = nearest[0]
+    return observation, status, _FIELD_STATUS_MEANINGS[status]
+
+
 def _legend_heading_words(
     observation: PdfTextObservation,
 ) -> tuple[str, ...]:
@@ -1495,6 +1563,8 @@ def _is_legend_heading(observation: PdfTextObservation) -> bool:
 
 def _is_short_legend_label(observation: PdfTextObservation) -> bool:
     text = " ".join(observation.text.split())
+    if _field_modifier_text(text) is not None:
+        return False
     if not text or len(text) > _LEGEND_MAX_LABEL_CHARS:
         return False
     if len(text.split()) > _LEGEND_MAX_LABEL_WORDS:
@@ -1514,6 +1584,8 @@ def _is_short_legend_label(observation: PdfTextObservation) -> bool:
 
 def _looks_like_section_heading(observation: PdfTextObservation) -> bool:
     text = " ".join(observation.text.split())
+    if _field_modifier_text(text) is not None:
+        return False
     if not text or len(text) > _LEGEND_SECTION_HEADING_MAX_CHARS:
         return False
     if _LEGEND_REFERENCE_PREFIX_RE.search(text):
@@ -1888,14 +1960,331 @@ def _leader_connects_heading_to_rows(
     return False
 
 
+
+def _rule_segments(
+    vectors: Sequence[PdfVectorPathObservation],
+    *,
+    page: int,
+) -> tuple[
+    tuple[tuple[float, float, float], ...],
+    tuple[tuple[float, float, float], ...],
+]:
+    horizontal: list[tuple[float, float, float]] = []
+    vertical: list[tuple[float, float, float]] = []
+    for vector in vectors:
+        if vector.page != page:
+            continue
+        points = list(vector.points_pt)
+        pairs = list(zip(points, points[1:]))
+        if vector.closed:
+            pairs.append((points[-1], points[0]))
+        for first, second in pairs:
+            dx = second[0] - first[0]
+            dy = second[1] - first[1]
+            if abs(dy) <= _LEGEND_RULE_AXIS_TOLERANCE_PT and abs(dx) >= 24.0:
+                horizontal.append(
+                    (
+                        min(first[0], second[0]),
+                        (first[1] + second[1]) / 2.0,
+                        max(first[0], second[0]),
+                    )
+                )
+            if abs(dx) <= _LEGEND_RULE_AXIS_TOLERANCE_PT and abs(dy) >= 24.0:
+                vertical.append(
+                    (
+                        (first[0] + second[0]) / 2.0,
+                        min(first[1], second[1]),
+                        max(first[1], second[1]),
+                    )
+                )
+    return tuple(horizontal), tuple(vertical)
+
+
+def _page_frame_bbox(
+    vectors: Sequence[PdfVectorPathObservation],
+    *,
+    page: int,
+) -> tuple[float, float, float, float] | None:
+    candidates: list[tuple[float, tuple[float, float, float, float]]] = []
+    for vector in vectors:
+        if vector.page != page:
+            continue
+        bbox = _vector_bbox(vector)
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        if width < 300.0 or height < 300.0:
+            continue
+        candidates.append((width * height, bbox))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _symbol_function_legend_regions(
+    *,
+    texts: Sequence[PdfTextObservation],
+    clusters: Sequence[_VectorCluster],
+    vectors: Sequence[PdfVectorPathObservation],
+    rules: Sequence[SymbolRule],
+    ambiguity_margin: float,
+) -> tuple[_LegendRegion, ...]:
+    symbol_headers = [
+        observation
+        for observation in texts
+        if _normalize_legend_alias(observation.text) == "SYMBOL"
+    ]
+    function_headers = [
+        observation
+        for observation in texts
+        if _normalize_legend_alias(observation.text) == "FUNCTION"
+    ]
+    regions: list[_LegendRegion] = []
+
+    for symbol_header in symbol_headers:
+        for function_header in function_headers:
+            if function_header.page != symbol_header.page:
+                continue
+            if function_header.x_pt <= symbol_header.x_pt:
+                continue
+            if (
+                abs(function_header.y_pt - symbol_header.y_pt)
+                > _LEGEND_HEADER_ROW_VERTICAL_TOLERANCE_PT
+            ):
+                continue
+
+            page = symbol_header.page
+            horizontal_rules, vertical_rules = _rule_segments(vectors, page=page)
+            spanning_rules = [
+                rule
+                for rule in horizontal_rules
+                if rule[0] <= symbol_header.x_pt + _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and rule[2] >= function_header.x_pt + 18.0
+            ]
+            above = [rule for rule in spanning_rules if rule[1] > symbol_header.y_pt]
+            below = [rule for rule in spanning_rules if rule[1] < symbol_header.y_pt]
+            if not above or not below:
+                continue
+            top_rule = min(above, key=lambda rule: (rule[1] - symbol_header.y_pt, rule))
+            header_bottom_rule = min(
+                below,
+                key=lambda rule: (symbol_header.y_pt - rule[1], rule),
+            )
+            if (
+                top_rule[1] - header_bottom_rule[1]
+                > _LEGEND_TABLE_HEADER_MAX_HEIGHT_PT
+            ):
+                continue
+
+            table_left = min(top_rule[0], header_bottom_rule[0])
+            table_right = max(top_rule[2], header_bottom_rule[2])
+            divider_candidates = [
+                rule
+                for rule in vertical_rules
+                if symbol_header.x_pt + 8.0
+                <= rule[0]
+                <= function_header.x_pt + 2.0
+                and rule[1] <= header_bottom_rule[1] + _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and rule[2] >= top_rule[1] - _LEGEND_RULE_EDGE_TOLERANCE_PT
+            ]
+            if not divider_candidates:
+                continue
+            divider = min(
+                divider_candidates,
+                key=lambda rule: (
+                    abs(rule[0] - function_header.x_pt),
+                    -rule[2] + rule[1],
+                    rule[0],
+                ),
+            )
+            split_x = divider[0]
+
+            frame = _page_frame_bbox(vectors, page=page)
+            if frame is not None:
+                frame_width = frame[2] - frame[0]
+                frame_height = frame[3] - frame[1]
+                in_right_notes_column = (
+                    symbol_header.x_pt >= frame[0] + 0.68 * frame_width
+                )
+                in_bottom_title_band = (
+                    symbol_header.y_pt <= frame[1] + 0.20 * frame_height
+                )
+                if in_right_notes_column and in_bottom_title_band:
+                    continue
+
+            matching_rules = [
+                rule
+                for rule in spanning_rules
+                if abs(rule[0] - table_left) <= _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and abs(rule[2] - table_right) <= _LEGEND_RULE_EDGE_TOLERANCE_PT
+                and rule[1] <= header_bottom_rule[1] + _LEGEND_RULE_AXIS_TOLERANCE_PT
+                and rule[1] >= divider[1] - _LEGEND_RULE_AXIS_TOLERANCE_PT
+            ]
+            y_levels = sorted(
+                {round(rule[1], 3) for rule in matching_rules},
+                reverse=True,
+            )
+            if not y_levels or abs(y_levels[0] - header_bottom_rule[1]) > 2.0:
+                y_levels.insert(0, round(header_bottom_rule[1], 3))
+
+            table_rows: list[_LegendRow] = []
+            used_clusters: set[tuple[int, str]] = set()
+            for upper_y, lower_y in zip(y_levels, y_levels[1:]):
+                if upper_y - lower_y > _LEGEND_TABLE_MAX_ROW_HEIGHT_PT:
+                    continue
+                row_clusters = [
+                    cluster
+                    for cluster in clusters
+                    if cluster.page == page
+                    and (page, cluster.geometry_key) not in used_clusters
+                    and table_left - 1.0 <= cluster.center_pt[0] < split_x - 1.0
+                    and lower_y + 1.0
+                    <= cluster.center_pt[1]
+                    <= upper_y - 1.0
+                ]
+                if len(row_clusters) != 1:
+                    continue
+                label_parts = [
+                    observation
+                    for observation in texts
+                    if observation.page == page
+                    and observation.element_id
+                    not in {symbol_header.element_id, function_header.element_id}
+                    and split_x + 1.0 <= observation.x_pt <= table_right + 2.0
+                    and lower_y + 1.0 <= observation.y_pt <= upper_y - 1.0
+                    and _field_modifier_text(observation.text) is None
+                ]
+                if not label_parts:
+                    continue
+                label_parts.sort(
+                    key=lambda observation: (
+                        -observation.y_pt,
+                        observation.x_pt,
+                        observation.element_id,
+                    )
+                )
+                combined_text = " ".join(
+                    " ".join(observation.text.split())
+                    for observation in label_parts
+                )
+                combined_label = replace(
+                    label_parts[0],
+                    text=combined_text,
+                    x_pt=min(observation.x_pt for observation in label_parts),
+                    y_pt=sum(observation.y_pt for observation in label_parts)
+                    / len(label_parts),
+                    font_size_pt=max(
+                        (
+                            observation.font_size_pt or 0.0
+                            for observation in label_parts
+                        ),
+                        default=None,
+                    ),
+                )
+                classification, ranked = _classify_semantic_text(
+                    combined_label.text,
+                    rules,
+                    ambiguity_margin=ambiguity_margin,
+                )
+                cluster = row_clusters[0]
+                used_clusters.add((page, cluster.geometry_key))
+                table_rows.append(
+                    _LegendRow(
+                        cluster=cluster,
+                        label=combined_label,
+                        classification=classification,
+                        classification_candidates=tuple(ranked),
+                        orientation=1,
+                        horizontal_gap_pt=max(
+                            0.0,
+                            combined_label.x_pt - cluster.bbox_pt[2],
+                        ),
+                        label_source_element_ids=tuple(
+                            observation.element_id
+                            for observation in label_parts
+                        ),
+                    )
+                )
+
+            if len(table_rows) < _LEGEND_TABLE_MIN_ROWS:
+                continue
+
+            legend_headings = [
+                observation
+                for observation in texts
+                if observation.page == page
+                and _normalize_legend_alias(observation.text) == "LEGEND"
+                and table_left <= observation.x_pt <= table_right
+                and top_rule[1] <= observation.y_pt <= top_rule[1] + 48.0
+            ]
+            heading = (
+                min(
+                    legend_headings,
+                    key=lambda observation: (
+                        observation.y_pt - top_rule[1],
+                        observation.element_id,
+                    ),
+                )
+                if legend_headings
+                else None
+            )
+            regions.append(
+                _LegendRegion(
+                    page=page,
+                    method="symbol-function-table",
+                    rows=tuple(
+                        sorted(
+                            table_rows,
+                            key=lambda row: (
+                                -row.cluster.center_pt[1],
+                                row.cluster.center_pt[0],
+                                row.label.element_id,
+                            ),
+                        )
+                    ),
+                    heading=heading,
+                    confidence=0.995,
+                    header_element_ids=(
+                        symbol_header.element_id,
+                        function_header.element_id,
+                    ),
+                    table_bbox_pt=(
+                        table_left,
+                        min(y_levels),
+                        table_right,
+                        top_rule[1],
+                    ),
+                )
+            )
+
+    best_by_page: dict[int, _LegendRegion] = {}
+    for region in regions:
+        existing = best_by_page.get(region.page)
+        if existing is None or (
+            len(region.rows),
+            sum(row.classification is not None for row in region.rows),
+            region.table_bbox_pt or (),
+            region.header_element_ids,
+        ) > (
+            len(existing.rows),
+            sum(row.classification is not None for row in existing.rows),
+            existing.table_bbox_pt or (),
+            existing.header_element_ids,
+        ):
+            best_by_page[region.page] = region
+    return tuple(best_by_page[page] for page in sorted(best_by_page))
+
+
 def _detect_legend_regions(
     *,
     texts: Sequence[PdfTextObservation],
     rows: Sequence[_LegendRow],
     clusters: Sequence[_VectorCluster],
     vectors: Sequence[PdfVectorPathObservation],
+    preferred_regions: Sequence[_LegendRegion] = (),
 ) -> tuple[_LegendRegion, ...]:
-    regions_by_page: dict[int, _LegendRegion] = {}
+    regions_by_page: dict[int, _LegendRegion] = {
+        region.page: region for region in preferred_regions
+    }
     rows_by_page: dict[int, list[_LegendRow]] = {}
     for row in rows:
         rows_by_page.setdefault(row.cluster.page, []).append(row)
@@ -1907,6 +2296,8 @@ def _detect_legend_regions(
             require_adjacent_rows=False,
         )
         page_groups_by_page[page] = page_groups
+        if page in regions_by_page:
+            continue
         candidates: list[_LegendRegion] = []
         for group in page_groups:
             heading = _nearest_section_heading(
@@ -2245,17 +2636,31 @@ def _recognize_legend_shapes(
         rules,
         ambiguity_margin=ambiguity_margin,
     )
+    preferred_regions = _symbol_function_legend_regions(
+        texts=texts,
+        clusters=clusters,
+        vectors=vectors,
+        rules=rules,
+        ambiguity_margin=ambiguity_margin,
+    )
     regions = _detect_legend_regions(
         texts=texts,
         rows=rows,
         clusters=clusters,
         vectors=vectors,
+        preferred_regions=preferred_regions,
     )
     legend_text_ids = {
         region.heading.element_id
         for region in regions
         if region.heading is not None
     }
+    for region in regions:
+        legend_text_ids.update(region.header_element_ids)
+        for row in region.rows:
+            legend_text_ids.update(
+                row.label_source_element_ids or (row.label.element_id,)
+            )
     prototype_geometry_keys: set[tuple[int, str]] = set()
     entries_by_signature: dict[tuple[int, str], list[_LegendEntry]] = {}
     unresolved: list[dict[str, Any]] = []
@@ -2315,6 +2720,9 @@ def _recognize_legend_shapes(
                     prototype=prototype,
                     label=label,
                     region=region,
+                    label_source_element_ids=(
+                        row.label_source_element_ids or (label.element_id,)
+                    ),
                 )
             )
 
@@ -2388,6 +2796,15 @@ def _recognize_legend_shapes(
                     row.classification is not None for row in region.rows
                 ),
                 "sheet_aliases": list(aliases_by_page.get(region.page, ())),
+                **(
+                    {
+                        "header_element_ids": list(region.header_element_ids),
+                        "table_bbox_pt": list(region.table_bbox_pt),
+                    }
+                    if region.header_element_ids
+                    and region.table_bbox_pt is not None
+                    else {}
+                ),
             }
             for region in regions
         ],
@@ -2577,6 +2994,24 @@ def _recognize_legend_shapes(
                     "legend_reference_target": reference.target_alias,
                 }
             )
+        label_source_element_ids = (
+            legend_entry.label_source_element_ids or (label.element_id,)
+        )
+        if len(label_source_element_ids) > 1:
+            shape_recognition["legend_label_element_ids"] = list(
+                label_source_element_ids
+            )
+
+        status_evidence = _field_status_for_cluster(cluster, texts)
+        if status_evidence is not None:
+            status_observation, status_code, status_meaning = status_evidence
+            shape_recognition.update(
+                {
+                    "status": status_code,
+                    "status_meaning": status_meaning,
+                    "status_source_element_id": status_observation.element_id,
+                }
+            )
 
         candidate = _EntityCandidate(
             key=key,
@@ -2621,8 +3056,28 @@ def _recognize_legend_shapes(
                 ),
                 method="pdf-legend-shape-match",
             )
-        if label.element_id not in candidate.source_element_ids:
-            candidate.source_element_ids.append(label.element_id)
+        for label_element_id in label_source_element_ids:
+            if label_element_id not in candidate.source_element_ids:
+                candidate.source_element_ids.append(label_element_id)
+        if status_evidence is not None:
+            status_observation, status_code, status_meaning = status_evidence
+            if status_observation.element_id not in candidate.source_element_ids:
+                candidate.source_element_ids.append(status_observation.element_id)
+            candidate.provenance.append(
+                _provenance(
+                    document,
+                    element_id=status_observation.element_id,
+                    page=status_observation.page,
+                    method="pdf-field-status-tag",
+                    confidence=0.92,
+                    attributes={
+                        "source_text": status_observation.text,
+                        "status": status_code,
+                        "status_meaning": status_meaning,
+                        "source_geometry_key": cluster.geometry_key,
+                    },
+                )
+            )
         label_attributes: dict[str, Any] = {
             "source_text": label.text,
             "shape_signature": cluster.shape_signature,
@@ -3481,6 +3936,11 @@ class ElectricalPdfImporter:
                 lane_attributes["symbol_names"] = sorted(set(candidate.symbol_names))
             if candidate.shape_recognition is not None:
                 lane_attributes["shape_recognition"] = dict(candidate.shape_recognition)
+                if "status" in candidate.shape_recognition:
+                    lane_attributes["status"] = candidate.shape_recognition["status"]
+                    lane_attributes["status_meaning"] = candidate.shape_recognition[
+                        "status_meaning"
+                    ]
             if mounting:
                 if len(mounting) == 1:
                     lane_attributes["mounting_height_m"] = mounting[0]

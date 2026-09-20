@@ -34,6 +34,9 @@ TWO_PAGE_LEGEND_LOCALITY_FIXTURE = FIXTURE_DIR / "two-page-sheet-local-legend.pd
 EDGE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-edge-legend.pdf"
 DENSE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-dense-legend.pdf"
 SEPARATE_LEGEND_REFERENCE_FIXTURE = FIXTURE_DIR / "separate-sheet-explicit-legend-reference.pdf"
+NOTES_COLUMN_LEGEND_FIXTURE = (
+    FIXTURE_DIR / "geometry-only-power-sheet-notes-column-legend.pdf"
+)
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
 
@@ -507,6 +510,184 @@ def test_explicit_separate_legend_sheet_reference_never_inherits_silently() -> N
             assert reference_provenance[0].attributes["legend_page"] == 1
             assert len(label_provenance) == 1
             assert label_provenance[0].page == 1
+
+    validate_model(model)
+
+
+
+def test_notes_column_symbol_function_legend_records_field_status() -> None:
+    assert not NOTES_COLUMN_LEGEND_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        NOTES_COLUMN_LEGEND_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-notes-column-legend",
+    )
+    repeated = extract_pdf(
+        NOTES_COLUMN_LEGEND_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-notes-column-legend",
+    )
+    assert extracted == repeated
+    assert not extracted.symbols
+
+    texts = {observation.text for observation in extracted.texts}
+    assert {
+        "KEY NOTES",
+        "GENERAL NOTES",
+        "LEGEND",
+        "SYMBOL",
+        "FUNCTION",
+        "E",
+        "N",
+        "R",
+        '+44"',
+        '+66"',
+        "A2.1",
+    } <= texts
+
+    symbol_header = next(
+        observation for observation in extracted.texts
+        if observation.text == "SYMBOL"
+    )
+    title_block_sheet = next(
+        observation for observation in extracted.texts
+        if observation.text == "A2.1"
+    )
+    assert symbol_header.x_pt > 590.0
+    assert symbol_header.y_pt > title_block_sheet.y_pt + 200.0
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    lane = model.attributes["pdf_electrical"]
+    assert len(model.electrical_devices) == 6
+    assert len(model.electrical_devices) > 2
+    assert not model.electrical_equipment
+
+    devices_by_type = {
+        device.device_type: device
+        for device in model.electrical_devices
+    }
+    assert set(devices_by_type) == {
+        "receptacle",
+        "junction_box",
+        "luminaire",
+        "disconnect",
+        "switch",
+        "evse",
+    }
+    assert {
+        device_type: device.attributes["pdf_electrical"]["status"]
+        for device_type, device in devices_by_type.items()
+    } == {
+        "receptacle": "E",
+        "junction_box": "N",
+        "luminaire": "R",
+        "disconnect": "N",
+        "switch": "E",
+        "evse": "R",
+    }
+    assert {
+        device_type: device.attributes["pdf_electrical"]["status_meaning"]
+        for device_type, device in devices_by_type.items()
+    } == {
+        "receptacle": "existing_to_remain",
+        "junction_box": "new",
+        "luminaire": "existing_to_be_removed",
+        "disconnect": "new",
+        "switch": "existing_to_remain",
+        "evse": "existing_to_be_removed",
+    }
+    assert all(
+        any(
+            provenance.method == "pdf-field-status-tag"
+            for provenance in device.provenance
+        )
+        for device in model.electrical_devices
+    )
+
+    regions = lane["legend_recognition"]["regions"]
+    assert len(regions) == 1
+    assert regions[0]["method"] == "symbol-function-table"
+    assert regions[0]["heading_text"] == "LEGEND"
+    assert regions[0]["row_count"] == 6
+    assert regions[0]["classified_row_count"] == 6
+    assert len(regions[0]["header_element_ids"]) == 2
+    assert all(
+        device.attributes["pdf_electrical"]["shape_recognition"][
+            "legend_detection_method"
+        ]
+        == "symbol-function-table"
+        for device in model.electrical_devices
+    )
+
+    # E/N/R and bare mounting-height tags are modifiers, not glyph geometry.
+    without_modifiers = PdfElectricalDocument(
+        source_id=extracted.source_id + ":without-field-modifiers",
+        page_count=extracted.page_count,
+        texts=tuple(
+            observation
+            for observation in extracted.texts
+            if observation.text not in {"E", "N", "R", '+44"', '+66"'}
+        ),
+        symbols=extracted.symbols,
+        vectors=extracted.vectors,
+    )
+    without_modifier_model = ElectricalPdfImporter().import_document(
+        without_modifiers
+    )
+    assert {
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"]["shape_recognition"][
+                "source_geometry_key"
+            ],
+        )
+        for device in without_modifier_model.electrical_devices
+    } == {
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"]["shape_recognition"][
+                "source_geometry_key"
+            ],
+        )
+        for device in model.electrical_devices
+    }
+
+    # SYMBOL | FUNCTION is sufficient even without a separate LEGEND title.
+    without_legend_title = PdfElectricalDocument(
+        source_id=extracted.source_id + ":without-legend-title",
+        page_count=extracted.page_count,
+        texts=tuple(
+            observation
+            for observation in extracted.texts
+            if observation.text != "LEGEND"
+        ),
+        symbols=extracted.symbols,
+        vectors=extracted.vectors,
+    )
+    header_only_model = ElectricalPdfImporter().import_document(
+        without_legend_title
+    )
+    assert len(header_only_model.electrical_devices) == 6
+    assert header_only_model.attributes["pdf_electrical"][
+        "legend_recognition"
+    ]["regions"][0]["method"] == "symbol-function-table"
+
+    # With all actual legend signals removed, nearby notes must not become a
+    # legend heading. This also protects the #58 fail-closed behavior.
+    notes_only = PdfElectricalDocument(
+        source_id=extracted.source_id + ":notes-only",
+        page_count=extracted.page_count,
+        texts=tuple(
+            observation
+            for observation in extracted.texts
+            if observation.text not in {"LEGEND", "SYMBOL", "FUNCTION"}
+        ),
+        symbols=extracted.symbols,
+        vectors=extracted.vectors,
+    )
+    notes_only_model = ElectricalPdfImporter().import_document(notes_only)
+    assert notes_only_model.attributes["pdf_electrical"][
+        "legend_recognition"
+    ]["regions"] == []
 
     validate_model(model)
 

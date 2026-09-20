@@ -215,3 +215,23 @@ public-safe rectangular-marker and straight-line topology family.
 fixture. Its plan field contains drawn glyph geometry only; semantic type text
 appears only inside the sheet's drawn legend. It has no paired expected-output
 artifact.
+
+
+### Notes-column legend tables and field status
+
+A right-hand notes column is not treated as one monolithic title block. Only the
+bottom title-band portion of that column is excluded from the strongest ruled
+legend-table path; framed content above it remains eligible. A ruled header row
+whose columns are exactly `SYMBOL` and `FUNCTION` is accepted as a strong
+legend signal even when a separate `LEGEND` title is absent. Glyphs are paired
+with description text from the same ruled row rather than relying on a fixed
+horizontal label radius.
+
+Single-letter field modifiers `E`, `N`, and `R` and bare mounting-height
+tags such as `+44"` are excluded from legend-label and section-heading
+detection. The letters do not alter glyph clustering or shape signatures. When
+one unambiguous status letter is adjacent to a legend-matched field glyph, the
+device records `attributes.pdf_electrical.status` as the source letter plus a
+normalized `status_meaning`, with dedicated source provenance. Existing
+page-local legend ownership and the Slice 7 keynote/schedule false-positive
+guards remain unchanged.

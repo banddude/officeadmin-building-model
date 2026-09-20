@@ -277,7 +277,7 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
     SymbolRule(r"\b(?:XFMR|TRANSFORMER)\b", "equipment", "transformer", 0.97),
     SymbolRule(r"\b(?:EVSE|CHARGER)[A-Z0-9]*\b", "device", "evse", 0.98),
     SymbolRule(r"\b(?:GFCI|GFI|RECEPTACLE|RECEPT|DUPLEX|REC)[A-Z0-9]*\b", "device", "receptacle", 0.94),
-    SymbolRule(r"\b(?:JBOX|J-?BOX|JB)[A-Z0-9]*\b", "device", "junction_box", 0.94),
+    SymbolRule(r"\b(?:(?:JBOX|J-?BOX|JB)[A-Z0-9]*|JUNCTION\s+BOX)\b", "device", "junction_box", 0.94),
     SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE)\b", "device", "luminaire", 0.91),
     SymbolRule(r"\b(?:DISCONNECT|DISC)\b", "device", "disconnect", 0.92),
     SymbolRule(r"\b(?:SWITCH|SW)\b", "device", "switch", 0.75),

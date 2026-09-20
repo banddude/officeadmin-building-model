@@ -626,7 +626,18 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             vectors=vectors,
         )
 
+        temporary_font_resource = False
         try:
+            # pypdf 6.19 short-circuits extract_text before visitor callbacks
+            # when /Resources is an empty dictionary. Geometry-only CAD pages can
+            # validly have no resources, so temporarily add an empty /Font entry
+            # solely to force content-stream traversal for the operator visitor.
+            if isinstance(resources, dict) and not resources:
+                from pypdf.generic import DictionaryObject, NameObject
+
+                resources[NameObject("/Font")] = DictionaryObject()
+                temporary_font_resource = True
+
             page.extract_text(
                 visitor_text=visitor_text,
                 visitor_operand_before=visitor_operand_before,
@@ -635,6 +646,9 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             raise ElectricalPdfError(
                 f"failed to extract page {page_number}: {exc}"
             ) from exc
+        finally:
+            if temporary_font_resource:
+                resources.pop(NameObject("/Font"), None)
 
         annotations = page.get("/Annots") or ()
         for annotation_index, annotation_ref in enumerate(annotations, start=1):

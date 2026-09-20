@@ -2566,15 +2566,29 @@ def import_observations(
             if boundary.source_kind == "ordinary_vector_line_loop"
             for source_element_id in boundary.source_element_ids
         }
-        geometric_line_walls, geometric_spaces = _geometric_wall_loop_entities(
-            page,
-            transform,
-            level,
-            level_info,
-            document.source_id,
-            options,
-            excluded_element_ids=consumed_vector_line_ids,
+        blocking_enclosure_codes = {
+            "duplicate_room_label",
+            "multiple_room_labels_in_enclosure",
+            "ordinary_vector_enclosure_unresolved",
+            "ordinary_vector_enclosure_ambiguous",
+        }
+        page_has_blocking_enclosure_ambiguity = any(
+            item.get("page") == page.page_number
+            and item.get("code") in blocking_enclosure_codes
+            for item in ambiguities
         )
+        if page_has_blocking_enclosure_ambiguity:
+            geometric_line_walls, geometric_spaces = (), ()
+        else:
+            geometric_line_walls, geometric_spaces = _geometric_wall_loop_entities(
+                page,
+                transform,
+                level,
+                level_info,
+                document.source_id,
+                options,
+                excluded_element_ids=consumed_vector_line_ids,
+            )
         existing_wall_geometry = {
             (
                 tuple(

@@ -30,7 +30,8 @@ The current deterministic lane reads vector/text PDF primitives and can promote:
 - two-point registrations that establish scale, plan rotation, and translation in the canonical XY frame;
 - named levels with explicit elevations, or one first/sole local datum at `Z=0` when the source gives no project elevation;
 - labelled rectangular spaces bounded by paired vector wall rectangles;
-- labelled rectangular spaces and walls from untagged ordinary vector lines only when two closed axis-aligned wall-face loops prove one enclosure around a unique room label;
+- labelled rectangular spaces and walls from untagged ordinary vector lines when two closed axis-aligned wall-face loops prove one enclosure around a unique room label;
+- a conservative 2D-only space from one unique closed ordinary-vector boundary around a unique room label when no partial paired wall-face evidence is present; wall thickness and walls remain unresolved rather than being invented;
 - walls from those paired boundaries when a supported height is present;
 - additional paired vector wall boundaries when the PDF supplies stable MCIDs and the sheet has a stable printed sheet identifier;
 - marked door/window openings with dimensions when the host wall and vertical placement are supported;
@@ -77,7 +78,9 @@ Typical ambiguity codes include:
 - `duplicate_room_label` / `duplicate_room_identity_across_pages`;
 - `opening_host_unresolved`, `opening_identity_unresolved`, and `window_vertical_position_unresolved`.
 
-The ordinary-vector fallback is intentionally narrow: only complete axis-aligned four-line loops are considered, wall-face loops must pair within the configured wall-thickness/span limits, and exactly one supported enclosure must contain a unique room label. Open or competing enclosures remain unresolved instead of being selected by extraction order.
+The ordinary-vector fallback is intentionally narrow: only complete axis-aligned four-line loops are considered. Paired wall-face loops must satisfy the configured wall-thickness/span limits. If paired wall faces are unavailable, exactly one sufficiently large closed loop may support only a 2D Space around a unique room label; any supported inset wall-face side is treated as evidence of an incomplete pair and the single-loop fallback fails closed. Open or competing enclosures remain unresolved instead of being selected by extraction order.
+
+Text extraction also keeps source observations local: words sharing a text baseline are split when a large horizontal gap indicates separate plan annotations. This prevents a room label from being fused with an unrelated distant dimension or keynote while preserving stable text-observation IDs for unchanged local labels.
 
 The rule is conservative: unresolved facts remain unresolved instead of being converted into precise-looking canonical geometry.
 

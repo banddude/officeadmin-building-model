@@ -76,3 +76,5 @@ def test_pr66_north_arrow_near_legend_does_not_match_electrical_type() -> None:
     assert diagnostics["score"] < pdf_electrical_importer._GLYPH_MATCH_SCORE_MIN
     assert diagnostics["second_best"] is not None
     assert diagnostics["non_unique_reason"] == "nearest prototype score is below the match threshold"
+
+# Reviewer-authored acceptance probe only.

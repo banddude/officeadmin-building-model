@@ -685,7 +685,17 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
         texts=tuple(
             observation
             for observation in extracted.texts
-            if observation.text not in {"LEGEND", "SYMBOL", "FUNCTION"}
+            if observation.text not in {
+                "LEGEND",
+                "SYMBOL",
+                "FUNCTION",
+                "GFCI RECEPTACLE",
+                "JUNCTION BOX",
+                "LIGHT FIXTURE",
+                "DISCONNECT",
+                "SWITCH",
+                "EVSE CHARGER",
+            }
         ),
         symbols=extracted.symbols,
         vectors=extracted.vectors,

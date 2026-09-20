@@ -3701,7 +3701,6 @@ def _recognize_legend_shapes(
                     match_diagnostics["legend_page"] = best_remote[0].legend_page
 
         if legend_entry is None:
-            page_references = references_by_page.get(cluster.page, ())        if legend_entry is None:
             page_references = references_by_page.get(cluster.page, ())
             if page_references:
                 reason = (

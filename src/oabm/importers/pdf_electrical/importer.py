@@ -345,6 +345,44 @@ class _VectorCluster:
         return tuple(sorted(vector.element_id for vector in self.vectors))
 
 
+@dataclass(frozen=True, slots=True)
+class _LegendRow:
+    cluster: _VectorCluster
+    label: PdfTextObservation
+    classification: tuple[str, str, float] | None
+    classification_candidates: tuple[Mapping[str, Any], ...]
+    orientation: int
+    horizontal_gap_pt: float
+
+
+@dataclass(frozen=True, slots=True)
+class _LegendRegion:
+    page: int
+    method: str
+    rows: tuple[_LegendRow, ...]
+    heading: PdfTextObservation | None
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
+class _LegendReference:
+    page: int
+    source_element_id: str
+    text: str
+    target_alias: str
+    legend_page: int
+
+
+@dataclass(frozen=True, slots=True)
+class _LegendEntry:
+    entity_kind: str
+    canonical_type: str
+    confidence: float
+    prototype: _VectorCluster
+    label: PdfTextObservation
+    region: _LegendRegion
+
+
 def _validate_source_observation(element_id: str, page: int, x_pt: float, y_pt: float) -> None:
     if not element_id:
         raise ElectricalPdfError("source element_id is required")
@@ -1117,11 +1155,41 @@ def _merge_provenance(
 
 _GLYPH_PATH_MAX_EXTENT_PT = 54.0
 _GLYPH_CLUSTER_GAP_PT = 2.5
-_LEGEND_LABEL_RADIUS_PT = 72.0
-_LEGEND_REGION_RADIUS_PT = 300.0
+_LEGEND_LABEL_HORIZONTAL_DISTANCE_PT = 120.0
+_LEGEND_ROW_VERTICAL_TOLERANCE_PT = 12.0
+_LEGEND_TITLE_REGION_RADIUS_PT = 320.0
+_LEGEND_LEADER_ENDPOINT_RADIUS_PT = 54.0
+_LEGEND_TABLE_COLUMN_TOLERANCE_PT = 24.0
+_LEGEND_TABLE_LABEL_COLUMN_TOLERANCE_PT = 48.0
+_LEGEND_TABLE_ROW_GAP_PT = 84.0
+_LEGEND_TABLE_MIN_ROWS = 3
+_LEGEND_MAX_LABEL_CHARS = 48
+_LEGEND_MAX_LABEL_WORDS = 6
+_LEGEND_SECTION_HEADING_MAX_CHARS = 80
+_LEGEND_SECTION_HEADING_MAX_WORDS = 8
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
-_LEGEND_HEADING_RE = re.compile(
-    r"\b(?:ELECTRICAL\s+)?(?:SYMBOLS?\s+)?LEGEND\b",
+_LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
+_LEGEND_REJECTED_HEADING_WORDS = frozenset(
+    {
+        "KEYNOTE",
+        "KEYNOTES",
+        "SCHEDULE",
+        "PANEL",
+        "NOTES",
+        "ABBREVIATIONS",
+        "DETAIL",
+    }
+)
+_LEGEND_SHEET_ID_RE = re.compile(
+    r"\bE(?:-\d{1,4}|\d{1,3}(?:\.\d{1,3})?)\b",
+    re.IGNORECASE,
+)
+_LEGEND_REFERENCE_PREFIX_RE = re.compile(
+    r"^\s*(?:SEE|REFER(?:\s+TO)?|REFERENCE)\b",
+    re.IGNORECASE,
+)
+_LEGEND_REFERENCE_CUE_RE = re.compile(
+    r"\b(?:SEE|REFER(?:\s+TO)?|REFERENCE|LEGEND\s+(?:ON|AT|SHEET))\b",
     re.IGNORECASE,
 )
 
@@ -1392,6 +1460,690 @@ def _is_glyph_cluster(cluster: _VectorCluster) -> bool:
     )
 
 
+def _normalize_legend_alias(value: str) -> str:
+    cleaned = re.sub(r"[^A-Z0-9.\-]+", " ", value.upper())
+    return " ".join(cleaned.split())
+
+
+def _legend_heading_words(
+    observation: PdfTextObservation,
+) -> tuple[str, ...]:
+    return tuple(_normalize_legend_alias(observation.text).split())
+
+
+def _heading_has_rejected_legend_context(
+    observation: PdfTextObservation,
+) -> bool:
+    normalized = _normalize_legend_alias(observation.text)
+    return any(
+        rejected in normalized
+        for rejected in _LEGEND_REJECTED_HEADING_WORDS
+    )
+
+
+def _is_legend_heading(observation: PdfTextObservation) -> bool:
+    text = " ".join(observation.text.split())
+    if _LEGEND_REFERENCE_PREFIX_RE.search(text):
+        return False
+    words = _legend_heading_words(observation)
+    if not words or len(words) > _LEGEND_SECTION_HEADING_MAX_WORDS:
+        return False
+    if _heading_has_rejected_legend_context(observation):
+        return False
+    return words[-1] in _LEGEND_TITLE_WORDS
+
+
+def _is_short_legend_label(observation: PdfTextObservation) -> bool:
+    text = " ".join(observation.text.split())
+    if not text or len(text) > _LEGEND_MAX_LABEL_CHARS:
+        return False
+    if len(text.split()) > _LEGEND_MAX_LABEL_WORDS:
+        return False
+    if not re.search(r"[A-Za-z]", text):
+        return False
+    if observation.font_size_pt is not None and observation.font_size_pt > 18.0:
+        return False
+    if _is_legend_heading(observation):
+        return False
+    if _LEGEND_REFERENCE_CUE_RE.search(text):
+        return False
+    if _LEGEND_SHEET_ID_RE.fullmatch(text.strip()):
+        return False
+    return True
+
+
+def _looks_like_section_heading(observation: PdfTextObservation) -> bool:
+    text = " ".join(observation.text.split())
+    if not text or len(text) > _LEGEND_SECTION_HEADING_MAX_CHARS:
+        return False
+    if _LEGEND_REFERENCE_PREFIX_RE.search(text):
+        return False
+    if _LEGEND_SHEET_ID_RE.fullmatch(text.strip()):
+        return False
+    words = _legend_heading_words(observation)
+    if not words or len(words) > _LEGEND_SECTION_HEADING_MAX_WORDS:
+        return False
+    return bool(re.search(r"[A-Za-z]", text))
+
+
+def _legend_group_bounds(
+    rows: Sequence[_LegendRow],
+) -> tuple[float, float, float, float]:
+    return (
+        min(min(row.cluster.bbox_pt[0], row.label.x_pt) for row in rows),
+        min(min(row.cluster.bbox_pt[1], row.label.y_pt) for row in rows),
+        max(max(row.cluster.bbox_pt[2], row.label.x_pt) for row in rows),
+        max(max(row.cluster.bbox_pt[3], row.label.y_pt) for row in rows),
+    )
+
+
+def _heading_distance_to_group(
+    heading: PdfTextObservation,
+    rows: Sequence[_LegendRow],
+    vectors: Sequence[PdfVectorPathObservation],
+    *,
+    allow_beside: bool,
+) -> float | None:
+    min_x, min_y, max_x, max_y = _legend_group_bounds(rows)
+    connected = _leader_connects_heading_to_rows(heading, rows, vectors)
+    above = heading.y_pt >= max_y + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+    beside = (
+        allow_beside
+        and min_y - _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+        <= heading.y_pt
+        <= max_y + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+        and (heading.x_pt <= min_x or heading.x_pt >= max_x)
+    )
+    if not above and not beside:
+        return None
+
+    dx = max(min_x - heading.x_pt, heading.x_pt - max_x, 0.0)
+    dy = max(min_y - heading.y_pt, heading.y_pt - max_y, 0.0)
+    distance = math.hypot(dx, dy)
+    if not connected and distance > _LEGEND_TITLE_REGION_RADIUS_PT:
+        return None
+    return distance
+
+
+def _nearest_section_heading(
+    rows: Sequence[_LegendRow],
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+    *,
+    allow_beside: bool,
+) -> PdfTextObservation | None:
+    if not rows:
+        return None
+    page = rows[0].cluster.page
+    row_label_ids = {row.label.element_id for row in rows}
+    candidates: list[tuple[float, float, str, PdfTextObservation]] = []
+    for observation in texts:
+        if observation.page != page or observation.element_id in row_label_ids:
+            continue
+        if not _looks_like_section_heading(observation):
+            continue
+        distance = _heading_distance_to_group(
+            observation,
+            rows,
+            vectors,
+            allow_beside=allow_beside,
+        )
+        if distance is None:
+            continue
+        candidates.append(
+            (
+                distance,
+                -(observation.font_size_pt or 0.0),
+                observation.element_id,
+                observation,
+            )
+        )
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[:3])[3]
+
+
+def _dense_legend_group_is_valid(
+    rows: Sequence[_LegendRow],
+    texts: Sequence[PdfTextObservation],
+) -> bool:
+    if len(rows) < _LEGEND_TABLE_MIN_ROWS:
+        return False
+    if not all(
+        _is_glyph_cluster(row.cluster) and _is_short_legend_label(row.label)
+        for row in rows
+    ):
+        return False
+
+    page = rows[0].cluster.page
+    label_xs = [row.label.x_pt for row in rows]
+    min_y = min(min(row.cluster.center_pt[1], row.label.y_pt) for row in rows)
+    max_y = max(max(row.cluster.center_pt[1], row.label.y_pt) for row in rows)
+    nearby_text = [
+        observation
+        for observation in texts
+        if observation.page == page
+        and min_y - _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+        <= observation.y_pt
+        <= max_y + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+        and min(label_xs) - _LEGEND_TABLE_LABEL_COLUMN_TOLERANCE_PT
+        <= observation.x_pt
+        <= max(label_xs) + _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT
+    ]
+    if not nearby_text:
+        return False
+
+    numeric_rows = sum(
+        not re.search(r"[A-Za-z]", " ".join(observation.text.split()))
+        for observation in nearby_text
+    )
+    if numeric_rows * 2 >= len(nearby_text):
+        return False
+
+    paired_label_ids = {row.label.element_id for row in rows}
+    if len(paired_label_ids) * 2 <= len(nearby_text):
+        return False
+    return True
+
+
+def _heading_is_explicitly_referenced_from_other_page(
+    heading: PdfTextObservation,
+    texts: Sequence[PdfTextObservation],
+) -> bool:
+    words = _legend_heading_words(heading)
+    if not words or words[-1] != "LEGEND":
+        return False
+
+    aliases = {_normalize_legend_alias(heading.text)}
+    for observation in texts:
+        if observation.page != heading.page:
+            continue
+        normalized = _normalize_legend_alias(observation.text)
+        sheet_match = re.fullmatch(
+            r"(?:SHEET\s+)?(E(?:-\d{1,4}|\d{1,3}(?:\.\d{1,3})?))",
+            normalized,
+            re.IGNORECASE,
+        )
+        if sheet_match:
+            aliases.add(sheet_match.group(1).upper())
+
+    for observation in texts:
+        if observation.page == heading.page:
+            continue
+        if not _LEGEND_REFERENCE_CUE_RE.search(observation.text):
+            continue
+        normalized = _normalize_legend_alias(observation.text)
+        if any(
+            alias
+            and re.search(
+                rf"(?<![A-Z0-9]){re.escape(alias)}(?![A-Z0-9])",
+                normalized,
+            )
+            for alias in aliases
+        ):
+            return True
+    return False
+
+
+def _legend_row_candidates(
+    clusters: Sequence[_VectorCluster],
+    texts: Sequence[PdfTextObservation],
+    rules: Sequence[SymbolRule],
+    *,
+    ambiguity_margin: float,
+) -> tuple[_LegendRow, ...]:
+    possible: list[
+        tuple[
+            float,
+            float,
+            str,
+            str,
+            _VectorCluster,
+            PdfTextObservation,
+            tuple[str, str, float] | None,
+            tuple[Mapping[str, Any], ...],
+        ]
+    ] = []
+    for label in texts:
+        if not _is_short_legend_label(label):
+            continue
+        classification, ranked = _classify_semantic_text(
+            label.text,
+            rules,
+            ambiguity_margin=ambiguity_margin,
+        )
+        for cluster in clusters:
+            if cluster.page != label.page:
+                continue
+            vertical_delta = abs(label.y_pt - cluster.center_pt[1])
+            if vertical_delta > _LEGEND_ROW_VERTICAL_TOLERANCE_PT:
+                continue
+            horizontal_gap = label.x_pt - cluster.bbox_pt[2]
+            if not 0.0 <= horizontal_gap <= _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT:
+                continue
+            possible.append(
+                (
+                    vertical_delta,
+                    horizontal_gap,
+                    label.element_id,
+                    cluster.geometry_key,
+                    cluster,
+                    label,
+                    classification,
+                    tuple(ranked),
+                )
+            )
+
+    possible.sort(key=lambda item: item[:4])
+    used_labels: set[str] = set()
+    used_clusters: set[tuple[int, str]] = set()
+    rows: list[_LegendRow] = []
+    for (
+        _vertical_delta,
+        horizontal_gap,
+        _label_id,
+        _geometry_key,
+        cluster,
+        label,
+        classification,
+        ranked,
+    ) in possible:
+        cluster_key = (cluster.page, cluster.geometry_key)
+        if label.element_id in used_labels or cluster_key in used_clusters:
+            continue
+        used_labels.add(label.element_id)
+        used_clusters.add(cluster_key)
+        rows.append(
+            _LegendRow(
+                cluster=cluster,
+                label=label,
+                classification=classification,
+                classification_candidates=ranked,
+                orientation=1,
+                horizontal_gap_pt=horizontal_gap,
+            )
+        )
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (
+                row.cluster.page,
+                -row.cluster.center_pt[1],
+                row.cluster.center_pt[0],
+                row.label.element_id,
+            ),
+        )
+    )
+
+
+def _aligned_legend_row_groups(
+    rows: Sequence[_LegendRow],
+    *,
+    require_adjacent_rows: bool,
+) -> tuple[tuple[_LegendRow, ...], ...]:
+    rows = tuple(rows)
+    if not rows:
+        return ()
+    parent = list(range(len(rows)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first_index: int, second_index: int) -> None:
+        first_root = find(first_index)
+        second_root = find(second_index)
+        if first_root == second_root:
+            return
+        if first_root < second_root:
+            parent[second_root] = first_root
+        else:
+            parent[first_root] = second_root
+
+    for first_index, first in enumerate(rows):
+        for second_index in range(first_index + 1, len(rows)):
+            second = rows[second_index]
+            if first.cluster.page != second.cluster.page:
+                continue
+            if first.orientation != second.orientation:
+                continue
+            if (
+                abs(first.cluster.center_pt[0] - second.cluster.center_pt[0])
+                > _LEGEND_TABLE_COLUMN_TOLERANCE_PT
+            ):
+                continue
+            if (
+                abs(first.label.x_pt - second.label.x_pt)
+                > _LEGEND_TABLE_LABEL_COLUMN_TOLERANCE_PT
+            ):
+                continue
+            if require_adjacent_rows and (
+                abs(first.cluster.center_pt[1] - second.cluster.center_pt[1])
+                > _LEGEND_TABLE_ROW_GAP_PT
+            ):
+                continue
+            union(first_index, second_index)
+
+    grouped: dict[int, list[_LegendRow]] = {}
+    for index, row in enumerate(rows):
+        grouped.setdefault(find(index), []).append(row)
+    return tuple(
+        tuple(
+            sorted(
+                group,
+                key=lambda row: (
+                    -row.cluster.center_pt[1],
+                    row.cluster.center_pt[0],
+                    row.label.element_id,
+                ),
+            )
+        )
+        for _root, group in sorted(grouped.items())
+    )
+
+
+def _legend_group_density(rows: Sequence[_LegendRow]) -> float:
+    ys = [row.cluster.center_pt[1] for row in rows]
+    span = max(ys) - min(ys) if len(ys) > 1 else 1.0
+    return len(rows) / max(span, 1.0)
+
+
+def _leader_connects_heading_to_rows(
+    heading: PdfTextObservation,
+    rows: Sequence[_LegendRow],
+    vectors: Sequence[PdfVectorPathObservation],
+) -> bool:
+    def distance_to_rows(point: tuple[float, float]) -> float:
+        return min(
+            min(
+                _distance_pt(point[0], point[1], row.label.x_pt, row.label.y_pt),
+                _distance_pt(
+                    point[0],
+                    point[1],
+                    row.cluster.center_pt[0],
+                    row.cluster.center_pt[1],
+                ),
+            )
+            for row in rows
+        )
+
+    for vector in vectors:
+        if vector.page != heading.page or vector.closed or len(vector.points_pt) < 2:
+            continue
+        endpoints = (vector.points_pt[0], vector.points_pt[-1])
+        for heading_end, legend_end in (endpoints, tuple(reversed(endpoints))):
+            if (
+                _distance_pt(
+                    heading.x_pt,
+                    heading.y_pt,
+                    heading_end[0],
+                    heading_end[1],
+                )
+                <= _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+                and distance_to_rows(legend_end) <= _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+            ):
+                return True
+    return False
+
+
+def _detect_legend_regions(
+    *,
+    texts: Sequence[PdfTextObservation],
+    rows: Sequence[_LegendRow],
+    clusters: Sequence[_VectorCluster],
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[_LegendRegion, ...]:
+    regions_by_page: dict[int, _LegendRegion] = {}
+    rows_by_page: dict[int, list[_LegendRow]] = {}
+    for row in rows:
+        rows_by_page.setdefault(row.cluster.page, []).append(row)
+
+    page_groups_by_page: dict[int, tuple[tuple[_LegendRow, ...], ...]] = {}
+    for page, page_rows in sorted(rows_by_page.items()):
+        page_groups = _aligned_legend_row_groups(
+            page_rows,
+            require_adjacent_rows=False,
+        )
+        page_groups_by_page[page] = page_groups
+        candidates: list[_LegendRegion] = []
+        for group in page_groups:
+            heading = _nearest_section_heading(
+                group,
+                texts,
+                vectors,
+                allow_beside=True,
+            )
+            if heading is None or not _is_legend_heading(heading):
+                continue
+            candidates.append(
+                _LegendRegion(
+                    page=page,
+                    method="title-match",
+                    rows=group,
+                    heading=heading,
+                    confidence=0.98,
+                )
+            )
+        if candidates:
+            regions_by_page[page] = max(
+                candidates,
+                key=lambda region: (
+                    len(region.rows),
+                    sum(row.classification is not None for row in region.rows),
+                    (region.heading.font_size_pt or 0.0) if region.heading else 0.0,
+                    region.heading.element_id if region.heading else "",
+                ),
+            )
+
+    signature_counts: dict[tuple[int, str], int] = {}
+    for cluster in clusters:
+        key = (cluster.page, cluster.shape_signature)
+        signature_counts[key] = signature_counts.get(key, 0) + 1
+
+    fallback_rows = [
+        row
+        for row in rows
+        if row.cluster.page not in regions_by_page
+        and signature_counts.get((row.cluster.page, row.cluster.shape_signature), 0) >= 2
+    ]
+    fallback_groups = _aligned_legend_row_groups(
+        fallback_rows,
+        require_adjacent_rows=True,
+    )
+    groups_by_page: dict[int, list[tuple[_LegendRow, ...]]] = {}
+    for group in fallback_groups:
+        if not _dense_legend_group_is_valid(group, texts):
+            continue
+        nearest_heading = _nearest_section_heading(
+            group,
+            texts,
+            vectors,
+            allow_beside=False,
+        )
+        if (
+            nearest_heading is not None
+            and _heading_has_rejected_legend_context(nearest_heading)
+        ):
+            continue
+        groups_by_page.setdefault(group[0].cluster.page, []).append(group)
+
+    for page, groups in sorted(groups_by_page.items()):
+        group = max(
+            groups,
+            key=lambda candidate: (
+                _legend_group_density(candidate),
+                len(candidate),
+                sum(row.classification is not None for row in candidate),
+                -min(row.cluster.center_pt[0] for row in candidate),
+            ),
+        )
+        regions_by_page[page] = _LegendRegion(
+            page=page,
+            method="dense-table-cluster",
+            rows=group,
+            heading=None,
+            confidence=0.86,
+        )
+
+    # A separate legend sheet may legitimately be titled something broad such
+    # as "GENERAL NOTES AND LEGEND". That title is intentionally rejected by
+    # both local title matching and the dense fallback. It can still become a
+    # legend source only when another sheet explicitly references this page by
+    # its sheet ID or exact legend title, preserving the no-silent-inheritance
+    # rule.
+    for page, page_groups in sorted(page_groups_by_page.items()):
+        if page in regions_by_page:
+            continue
+        candidates: list[_LegendRegion] = []
+        for group in page_groups:
+            if not _dense_legend_group_is_valid(group, texts):
+                continue
+            heading = _nearest_section_heading(
+                group,
+                texts,
+                vectors,
+                allow_beside=True,
+            )
+            if heading is None:
+                continue
+            if not _heading_is_explicitly_referenced_from_other_page(
+                heading,
+                texts,
+            ):
+                continue
+            candidates.append(
+                _LegendRegion(
+                    page=page,
+                    method="explicit-reference-legend-sheet",
+                    rows=group,
+                    heading=heading,
+                    confidence=0.94,
+                )
+            )
+        if candidates:
+            regions_by_page[page] = max(
+                candidates,
+                key=lambda region: (
+                    len(region.rows),
+                    sum(row.classification is not None for row in region.rows),
+                    _legend_group_density(region.rows),
+                    region.heading.element_id if region.heading else "",
+                ),
+            )
+
+    return tuple(regions_by_page[page] for page in sorted(regions_by_page))
+
+def _legend_page_aliases(
+    regions: Sequence[_LegendRegion],
+    texts: Sequence[PdfTextObservation],
+) -> dict[int, tuple[str, ...]]:
+    aliases: dict[int, set[str]] = {region.page: set() for region in regions}
+    regions_by_page = {region.page: region for region in regions}
+    for page, region in regions_by_page.items():
+        if region.heading is not None:
+            heading_alias = _normalize_legend_alias(region.heading.text)
+            if heading_alias not in _LEGEND_TITLE_WORDS:
+                aliases[page].add(heading_alias)
+    for observation in texts:
+        if observation.page not in aliases:
+            continue
+        normalized = _normalize_legend_alias(observation.text)
+        sheet_match = re.fullmatch(
+            r"(?:SHEET\s+)?(E(?:-\d{1,4}|\d{1,3}(?:\.\d{1,3})?))",
+            normalized,
+            re.IGNORECASE,
+        )
+        if sheet_match:
+            aliases[observation.page].add(sheet_match.group(1).upper())
+    return {
+        page: tuple(sorted(value for value in page_aliases if value))
+        for page, page_aliases in sorted(aliases.items())
+    }
+
+
+def _resolve_explicit_legend_references(
+    *,
+    texts: Sequence[PdfTextObservation],
+    aliases_by_page: Mapping[int, Sequence[str]],
+    active_legend_pages: set[int],
+) -> tuple[tuple[_LegendReference, ...], list[dict[str, Any]]]:
+    alias_to_pages: dict[str, set[int]] = {}
+    for page, aliases in aliases_by_page.items():
+        if page not in active_legend_pages:
+            continue
+        for alias in aliases:
+            alias_to_pages.setdefault(alias, set()).add(page)
+
+    references: list[_LegendReference] = []
+    unresolved: list[dict[str, Any]] = []
+    for observation in texts:
+        if not _LEGEND_REFERENCE_CUE_RE.search(observation.text):
+            continue
+        normalized = _normalize_legend_alias(observation.text)
+        matched_aliases = [
+            alias
+            for alias in alias_to_pages
+            if alias
+            and re.search(
+                rf"(?<![A-Z0-9]){re.escape(alias)}(?![A-Z0-9])",
+                normalized,
+            )
+        ]
+        if not matched_aliases:
+            continue
+        target_pages = {
+            page
+            for alias in matched_aliases
+            for page in alias_to_pages[alias]
+            if page != observation.page
+        }
+        if len(target_pages) != 1:
+            if target_pages:
+                unresolved.append(
+                    {
+                        "kind": "legend_reference",
+                        "page": observation.page,
+                        "source_element_id": observation.element_id,
+                        "text": observation.text,
+                        "status": "unresolved_legend_reference",
+                        "reason": "explicit legend reference matches multiple legend pages",
+                        "candidate_legend_pages": sorted(target_pages),
+                    }
+                )
+            continue
+        legend_page = next(iter(target_pages))
+        matching_targets = sorted(
+            alias
+            for alias in matched_aliases
+            if legend_page in alias_to_pages[alias]
+        )
+        references.append(
+            _LegendReference(
+                page=observation.page,
+                source_element_id=observation.element_id,
+                text=observation.text,
+                target_alias=matching_targets[0],
+                legend_page=legend_page,
+            )
+        )
+    return (
+        tuple(
+            sorted(
+                references,
+                key=lambda reference: (
+                    reference.page,
+                    reference.legend_page,
+                    reference.source_element_id,
+                    reference.target_alias,
+                ),
+            )
+        ),
+        unresolved,
+    )
+
+
 def _resolve_page_transforms(
     document: PdfElectricalDocument,
     page_transforms: Mapping[int, PdfPageTransform] | None,
@@ -1475,6 +2227,7 @@ def _recognize_legend_shapes(
     set[str],
     set[str],
     list[dict[str, Any]],
+    dict[str, Any],
 ]:
     clusters = tuple(
         cluster
@@ -1486,185 +2239,102 @@ def _recognize_legend_shapes(
         for cluster in clusters
         for element_id in cluster.source_element_ids
     }
-    headings = tuple(
-        observation
-        for observation in texts
-        if _LEGEND_HEADING_RE.search(observation.text)
+    rows = _legend_row_candidates(
+        clusters,
+        texts,
+        rules,
+        ambiguity_margin=ambiguity_margin,
     )
-    legend_text_ids = {observation.element_id for observation in headings}
+    regions = _detect_legend_regions(
+        texts=texts,
+        rows=rows,
+        clusters=clusters,
+        vectors=vectors,
+    )
+    legend_text_ids = {
+        region.heading.element_id
+        for region in regions
+        if region.heading is not None
+    }
     prototype_geometry_keys: set[tuple[int, str]] = set()
-    entries_by_signature: dict[
-        tuple[int, str],
-        list[
-            tuple[
-                str,
-                str,
-                float,
-                _VectorCluster,
-                PdfTextObservation,
-                PdfTextObservation,
-            ]
-        ],
-    ] = {}
+    entries_by_signature: dict[tuple[int, str], list[_LegendEntry]] = {}
     unresolved: list[dict[str, Any]] = []
-    legend_pages = {heading.page for heading in headings}
+    legend_pages = {region.page for region in regions}
 
-    for label in texts:
-        if label.element_id in legend_text_ids:
-            continue
-        nearby_headings = [
-            heading
-            for heading in headings
-            if heading.page == label.page
-            and _distance_pt(
-                label.x_pt,
-                label.y_pt,
-                heading.x_pt,
-                heading.y_pt,
-            )
-            <= _LEGEND_REGION_RADIUS_PT
-        ]
-        if not nearby_headings:
-            continue
-        classification, ranked = _classify_semantic_text(
-            label.text,
-            rules,
-            ambiguity_margin=ambiguity_margin,
-        )
-        if classification is None:
-            continue
-
-        candidate_clusters = [
-            cluster
-            for cluster in clusters
-            if cluster.page == label.page
-            and _distance_pt(
-                label.x_pt,
-                label.y_pt,
-                cluster.center_pt[0],
-                cluster.center_pt[1],
-            )
-            <= _LEGEND_LABEL_RADIUS_PT
-        ]
-        candidate_clusters.sort(
-            key=lambda cluster: (
-                _distance_pt(
-                    label.x_pt,
-                    label.y_pt,
-                    cluster.center_pt[0],
-                    cluster.center_pt[1],
-                ),
-                cluster.geometry_key,
-            )
-        )
-        if not candidate_clusters:
-            continue
-        nearest_distance = _distance_pt(
-            label.x_pt,
-            label.y_pt,
-            candidate_clusters[0].center_pt[0],
-            candidate_clusters[0].center_pt[1],
-        )
-        tied = [
-            cluster
-            for cluster in candidate_clusters
-            if abs(
-                _distance_pt(
-                    label.x_pt,
-                    label.y_pt,
-                    cluster.center_pt[0],
-                    cluster.center_pt[1],
+    for region in regions:
+        for row in region.rows:
+            prototype = row.cluster
+            label = row.label
+            prototype_key = (prototype.page, prototype.geometry_key)
+            legend_text_ids.add(label.element_id)
+            if prototype_key in prototype_geometry_keys:
+                unresolved.append(
+                    {
+                        "kind": "legend_label",
+                        "page": label.page,
+                        "source_element_id": label.element_id,
+                        "text": label.text,
+                        "classification_candidates": list(
+                            row.classification_candidates
+                        ),
+                        "status": "unresolved_legend_geometry",
+                        "reason": "legend glyph cluster is claimed by more than one label",
+                        "candidate_cluster_geometry_keys": [prototype.geometry_key],
+                    }
                 )
-                - nearest_distance
-            )
-            <= 0.5
-        ]
-        if len(tied) != 1:
-            unresolved.append(
-                {
-                    "kind": "legend_label",
-                    "page": label.page,
-                    "source_element_id": label.element_id,
-                    "text": label.text,
-                    "classification_candidates": ranked,
-                    "status": "unresolved_legend_geometry",
-                    "reason": "legend label is equally close to multiple glyph clusters",
-                    "candidate_cluster_geometry_keys": sorted(
-                        cluster.geometry_key for cluster in tied
-                    ),
-                }
-            )
-            legend_text_ids.add(label.element_id)
-            continue
+                continue
+            prototype_geometry_keys.add(prototype_key)
+            if row.classification is None:
+                unresolved.append(
+                    {
+                        "kind": "legend_label",
+                        "page": label.page,
+                        "source_element_id": label.element_id,
+                        "text": label.text,
+                        "classification_candidates": list(
+                            row.classification_candidates
+                        ),
+                        "status": "unresolved_legend_classification",
+                        "reason": (
+                            "detected legend row has no unique canonical type; "
+                            "prototype is retained as legend evidence only"
+                        ),
+                        "candidate_cluster_geometry_keys": [prototype.geometry_key],
+                    }
+                )
+                continue
 
-        prototype = tied[0]
-        prototype_key = (prototype.page, prototype.geometry_key)
-        if prototype_key in prototype_geometry_keys:
-            unresolved.append(
-                {
-                    "kind": "legend_label",
-                    "page": label.page,
-                    "source_element_id": label.element_id,
-                    "text": label.text,
-                    "classification_candidates": ranked,
-                    "status": "unresolved_legend_geometry",
-                    "reason": "legend glyph cluster is claimed by more than one label",
-                    "candidate_cluster_geometry_keys": [prototype.geometry_key],
-                }
+            entity_kind, canonical_type, confidence = row.classification
+            entries_by_signature.setdefault(
+                (prototype.page, prototype.shape_signature), []
+            ).append(
+                _LegendEntry(
+                    entity_kind=entity_kind,
+                    canonical_type=canonical_type,
+                    confidence=confidence,
+                    prototype=prototype,
+                    label=label,
+                    region=region,
+                )
             )
-            legend_text_ids.add(label.element_id)
-            continue
 
-        header = min(
-            nearby_headings,
-            key=lambda item: (
-                _distance_pt(label.x_pt, label.y_pt, item.x_pt, item.y_pt),
-                item.element_id,
-            ),
-        )
-        entity_kind, canonical_type, confidence = classification
-        entries_by_signature.setdefault(
-            (prototype.page, prototype.shape_signature), []
-        ).append(
-            (
-                entity_kind,
-                canonical_type,
-                confidence,
-                prototype,
-                label,
-                header,
-            )
-        )
-        prototype_geometry_keys.add(prototype_key)
-        legend_text_ids.add(label.element_id)
-
-    legend_by_signature: dict[
-        tuple[int, str],
-        tuple[
-            str,
-            str,
-            float,
-            _VectorCluster,
-            PdfTextObservation,
-            PdfTextObservation,
-        ],
-    ] = {}
+    legend_by_signature: dict[tuple[int, str], _LegendEntry] = {}
     for (page, signature), entries in sorted(entries_by_signature.items()):
         classifications = {
-            (entry[0], entry[1])
+            (entry.entity_kind, entry.canonical_type)
             for entry in entries
         }
         if len(classifications) != 1:
-            for _kind, _canonical_type, _confidence, prototype, label, _header in entries:
+            for entry in entries:
                 unresolved.append(
                     {
                         "kind": "legend_glyph",
-                        "page": prototype.page,
-                        "source_element_id": prototype.source_element_ids[0],
-                        "source_element_ids": list(prototype.source_element_ids),
+                        "page": entry.prototype.page,
+                        "source_element_id": entry.prototype.source_element_ids[0],
+                        "source_element_ids": list(entry.prototype.source_element_ids),
                         "shape_signature": signature,
-                        "legend_label_element_id": label.element_id,
-                        "legend_label": label.text,
+                        "legend_label_element_id": entry.label.element_id,
+                        "legend_label": entry.label.text,
                         "status": "unresolved_legend_classification",
                         "reason": "the same legend glyph shape maps to conflicting types",
                         "classification_candidates": [
@@ -1680,11 +2350,58 @@ def _recognize_legend_shapes(
         legend_by_signature[(page, signature)] = sorted(
             entries,
             key=lambda entry: (
-                -entry[2],
-                entry[4].element_id,
-                entry[3].geometry_key,
+                -entry.confidence,
+                entry.label.element_id,
+                entry.prototype.geometry_key,
             ),
         )[0]
+
+    active_legend_pages = {
+        page for page, _signature in legend_by_signature
+    }
+    aliases_by_page = _legend_page_aliases(regions, texts)
+    references, unresolved_references = _resolve_explicit_legend_references(
+        texts=texts,
+        aliases_by_page=aliases_by_page,
+        active_legend_pages=active_legend_pages,
+    )
+    unresolved.extend(unresolved_references)
+    legend_text_ids.update(reference.source_element_id for reference in references)
+    references_by_page: dict[int, list[_LegendReference]] = {}
+    for reference in references:
+        references_by_page.setdefault(reference.page, []).append(reference)
+
+    legend_recognition = {
+        "regions": [
+            {
+                "page": region.page,
+                "method": region.method,
+                "confidence": region.confidence,
+                "heading_element_id": (
+                    region.heading.element_id if region.heading is not None else None
+                ),
+                "heading_text": (
+                    region.heading.text if region.heading is not None else None
+                ),
+                "row_count": len(region.rows),
+                "classified_row_count": sum(
+                    row.classification is not None for row in region.rows
+                ),
+                "sheet_aliases": list(aliases_by_page.get(region.page, ())),
+            }
+            for region in regions
+        ],
+        "explicit_cross_sheet_references": [
+            {
+                "page": reference.page,
+                "source_element_id": reference.source_element_id,
+                "text": reference.text,
+                "target_alias": reference.target_alias,
+                "legend_page": reference.legend_page,
+            }
+            for reference in references
+        ],
+    }
 
     candidates: dict[str, _EntityCandidate] = {}
     matched_vector_ids: set[str] = {
@@ -1697,10 +2414,109 @@ def _recognize_legend_shapes(
     for cluster in clusters:
         if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
             continue
+
         legend_entry = legend_by_signature.get(
             (cluster.page, cluster.shape_signature)
         )
+        reference: _LegendReference | None = None
         if legend_entry is None:
+            remote_matches: list[tuple[_LegendReference, _LegendEntry]] = []
+            for candidate_reference in references_by_page.get(cluster.page, ()):
+                remote_entry = legend_by_signature.get(
+                    (
+                        candidate_reference.legend_page,
+                        cluster.shape_signature,
+                    )
+                )
+                if remote_entry is not None:
+                    remote_matches.append((candidate_reference, remote_entry))
+            if remote_matches:
+                remote_classifications = {
+                    (entry.entity_kind, entry.canonical_type)
+                    for _reference, entry in remote_matches
+                }
+                if len(remote_classifications) != 1:
+                    unresolved.append(
+                        {
+                            "kind": "vector_cluster",
+                            "page": cluster.page,
+                            "source_element_id": cluster.source_element_ids[0],
+                            "source_element_ids": list(cluster.source_element_ids),
+                            "position_pt": {
+                                "x": cluster.center_pt[0],
+                                "y": cluster.center_pt[1],
+                            },
+                            "bbox_pt": list(cluster.bbox_pt),
+                            "shape_signature": cluster.shape_signature,
+                            "status": "unresolved_classification",
+                            "reason": (
+                                "explicitly referenced legend sheets map the same glyph "
+                                "shape to conflicting types"
+                            ),
+                            "classification_candidates": [
+                                {
+                                    "entity_kind": kind,
+                                    "canonical_type": canonical_type,
+                                }
+                                for kind, canonical_type in sorted(
+                                    remote_classifications
+                                )
+                            ],
+                            "recognition_provenance": {
+                                "method": "explicit-cross-sheet-legend-geometry-match",
+                                "legend_scope": "explicit-cross-sheet-reference",
+                                "page": cluster.page,
+                                "referenced_legend_pages": sorted(
+                                    {
+                                        item.legend_page
+                                        for item, _entry in remote_matches
+                                    }
+                                ),
+                            },
+                        }
+                    )
+                    continue
+                reference, legend_entry = sorted(
+                    remote_matches,
+                    key=lambda item: (
+                        -item[1].confidence,
+                        item[0].legend_page,
+                        item[0].source_element_id,
+                        item[1].label.element_id,
+                    ),
+                )[0]
+
+        if legend_entry is None:
+            page_references = references_by_page.get(cluster.page, ())
+            if page_references:
+                reason = (
+                    "explicitly referenced legend sheet has no unique matching "
+                    "type for glyph"
+                )
+                recognition_provenance: dict[str, Any] = {
+                    "method": "explicit-cross-sheet-legend-geometry-match",
+                    "legend_scope": "explicit-cross-sheet-reference",
+                    "page": cluster.page,
+                    "referenced_legend_pages": sorted(
+                        {item.legend_page for item in page_references}
+                    ),
+                    "reference_element_ids": sorted(
+                        {item.source_element_id for item in page_references}
+                    ),
+                }
+            else:
+                reason = (
+                    "page has no recognized legend; glyph remains unresolved and "
+                    "cross-page legend inheritance is disabled"
+                    if cluster.page not in legend_pages
+                    else "glyph cluster has no unique matching type in the sheet legend"
+                )
+                recognition_provenance = {
+                    "method": "sheet-local-legend-geometry-match",
+                    "legend_scope": "same-page-only",
+                    "page": cluster.page,
+                    "page_has_recognized_legend": cluster.page in legend_pages,
+                }
             unresolved.append(
                 {
                     "kind": "vector_cluster",
@@ -1714,47 +2530,58 @@ def _recognize_legend_shapes(
                     "bbox_pt": list(cluster.bbox_pt),
                     "shape_signature": cluster.shape_signature,
                     "status": "unresolved_classification",
-                    "reason": (
-                        "page has no recognized legend; glyph remains unresolved and "
-                        "cross-page legend inheritance is disabled"
-                        if cluster.page not in legend_pages
-                        else "glyph cluster has no unique matching type in the sheet legend"
-                    ),
-                    "recognition_provenance": {
-                        "method": "sheet-local-legend-geometry-match",
-                        "legend_scope": "same-page-only",
-                        "page": cluster.page,
-                        "page_has_recognized_legend": cluster.page in legend_pages,
-                    },
+                    "reason": reason,
+                    "recognition_provenance": recognition_provenance,
                 }
             )
             continue
 
-        (
-            entity_kind,
-            canonical_type,
-            legend_confidence,
-            prototype,
-            label,
-            header,
-        ) = legend_entry
-        confidence = min(0.93, legend_confidence)
+        legend_scope = (
+            "explicit-cross-sheet-reference"
+            if reference is not None
+            else "same-page-only"
+        )
+        confidence = min(
+            0.88 if reference is not None else 0.93,
+            legend_entry.confidence,
+        )
+        prototype = legend_entry.prototype
+        label = legend_entry.label
+        region = legend_entry.region
         key = f"p{cluster.page}:shape:{cluster.geometry_key}"
-        shape_recognition = {
-            "method": "sheet-legend-geometry-match",
+        shape_recognition: dict[str, Any] = {
+            "method": (
+                "explicit-cross-sheet-legend-geometry-match"
+                if reference is not None
+                else "sheet-legend-geometry-match"
+            ),
+            "legend_scope": legend_scope,
+            "legend_detection_method": region.method,
+            "legend_detection_confidence": region.confidence,
             "shape_signature": cluster.shape_signature,
             "source_geometry_key": cluster.geometry_key,
-            "legend_header_element_id": header.element_id,
             "legend_label_element_id": label.element_id,
             "legend_page": label.page,
             "legend_label": label.text,
             "legend_source_element_ids": list(prototype.source_element_ids),
             "source_element_ids": list(cluster.source_element_ids),
         }
+        if region.heading is not None:
+            shape_recognition["legend_header_element_id"] = region.heading.element_id
+            shape_recognition["legend_header_text"] = region.heading.text
+        if reference is not None:
+            shape_recognition.update(
+                {
+                    "legend_reference_element_id": reference.source_element_id,
+                    "legend_reference_text": reference.text,
+                    "legend_reference_target": reference.target_alias,
+                }
+            )
+
         candidate = _EntityCandidate(
             key=key,
-            entity_kind=entity_kind,
-            canonical_type=canonical_type,
+            entity_kind=legend_entry.entity_kind,
+            canonical_type=legend_entry.canonical_type,
             tag=None,
             identity_key=f"geometry:p{cluster.page}:{cluster.geometry_key}",
             page=cluster.page,
@@ -1782,8 +2609,11 @@ def _recognize_legend_shapes(
                     attributes={
                         "shape_signature": cluster.shape_signature,
                         "source_geometry_key": cluster.geometry_key,
+                        "legend_scope": legend_scope,
+                        "legend_page": label.page,
                         "legend_label_element_id": label.element_id,
                         "legend_label": label.text,
+                        "legend_detection_method": region.method,
                         "legend_source_element_ids": list(
                             prototype.source_element_ids
                         ),
@@ -1791,21 +2621,44 @@ def _recognize_legend_shapes(
                 ),
                 method="pdf-legend-shape-match",
             )
-        candidate.source_element_ids.append(label.element_id)
+        if label.element_id not in candidate.source_element_ids:
+            candidate.source_element_ids.append(label.element_id)
+        label_attributes: dict[str, Any] = {
+            "source_text": label.text,
+            "shape_signature": cluster.shape_signature,
+            "legend_scope": legend_scope,
+            "legend_detection_method": region.method,
+        }
+        if region.heading is not None:
+            label_attributes["legend_header_element_id"] = region.heading.element_id
         candidate.provenance.append(
             _provenance(
                 document,
                 element_id=label.element_id,
                 page=label.page,
                 method="pdf-sheet-legend-type-label",
-                confidence=legend_confidence,
-                attributes={
-                    "source_text": label.text,
-                    "shape_signature": cluster.shape_signature,
-                    "legend_header_element_id": header.element_id,
-                },
+                confidence=legend_entry.confidence,
+                attributes=label_attributes,
             )
         )
+        if reference is not None:
+            if reference.source_element_id not in candidate.source_element_ids:
+                candidate.source_element_ids.append(reference.source_element_id)
+            candidate.provenance.append(
+                _provenance(
+                    document,
+                    element_id=reference.source_element_id,
+                    page=reference.page,
+                    method="pdf-explicit-legend-sheet-reference",
+                    confidence=0.95,
+                    attributes={
+                        "source_text": reference.text,
+                        "reference_target": reference.target_alias,
+                        "legend_page": reference.legend_page,
+                        "shape_signature": cluster.shape_signature,
+                    },
+                )
+            )
         candidates[key] = candidate
         matched_vector_ids.update(cluster.source_element_ids)
 
@@ -1815,8 +2668,8 @@ def _recognize_legend_shapes(
         glyph_vector_ids,
         legend_text_ids,
         unresolved,
+        legend_recognition,
     )
-
 
 def _extract_voltage(texts: Iterable[str]) -> tuple[float | None, str | None]:
     best_values: tuple[float, ...] = ()
@@ -2074,6 +2927,7 @@ class ElectricalPdfImporter:
             glyph_vector_ids,
             legend_text_ids,
             unresolved_shape_rows,
+            legend_recognition,
         ) = _recognize_legend_shapes(
             document,
             texts=texts,
@@ -3453,6 +4307,7 @@ class ElectricalPdfImporter:
                     "page_transforms_supplied": has_explicit_registration,
                     "registration_mode": registration_mode,
                     "registered_frame_id": frame_id,
+                    "legend_recognition": legend_recognition,
                     "best_effort_page_transforms": (
                         {
                             str(page): transforms[page].to_attributes()

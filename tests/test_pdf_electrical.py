@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from oabm.importers.pdf_electrical import (
     ElectricalPdfImporter,
     PdfElectricalDocument,
     PdfPageTransform,
+    PdfTextObservation,
     PdfVectorPathObservation,
     extract_pdf,
 )
@@ -29,6 +31,9 @@ FIXTURE_DIR = ROOT / "fixtures" / "pdf_electrical"
 CAD_GEOMETRY_FIXTURE = ROOT / "fixtures" / "pdf_architecture" / "v1" / "cad-export-geometry-only.pdf"
 LEGEND_SHAPE_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-with-legend.pdf"
 TWO_PAGE_LEGEND_LOCALITY_FIXTURE = FIXTURE_DIR / "two-page-sheet-local-legend.pdf"
+EDGE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-edge-legend.pdf"
+DENSE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-dense-legend.pdf"
+SEPARATE_LEGEND_REFERENCE_FIXTURE = FIXTURE_DIR / "separate-sheet-explicit-legend-reference.pdf"
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
 
@@ -265,6 +270,243 @@ def test_legend_shape_matching_never_inherits_another_pages_legend() -> None:
         for provenance in device.provenance
         if provenance.method == "pdf-sheet-legend-type-label"
     )
+
+    validate_model(model)
+
+
+def test_edge_titled_legend_block_is_detected_inside_sheet_frame() -> None:
+    assert not EDGE_LEGEND_BLOCK_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        EDGE_LEGEND_BLOCK_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-edge-legend",
+    )
+    repeated = extract_pdf(
+        EDGE_LEGEND_BLOCK_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-edge-legend",
+    )
+
+    assert extracted == repeated
+    assert not extracted.symbols
+    assert all(
+        text.x_pt >= 590.0 or text.text == "SYMBOLS"
+        for text in extracted.texts
+    )
+    assert {text.text for text in extracted.texts} >= {
+        "SYMBOLS",
+        "GFCI",
+        "JBOX",
+        "LIGHT",
+        "POWER PLAN",
+        "E2.1",
+    }
+    heading = next(text for text in extracted.texts if text.text == "SYMBOLS")
+    labels = [
+        text for text in extracted.texts if text.text in {"GFCI", "JBOX", "LIGHT"}
+    ]
+    assert min(
+        ((heading.x_pt - label.x_pt) ** 2 + (heading.y_pt - label.y_pt) ** 2) ** 0.5
+        for label in labels
+    ) > 320.0
+    assert any(
+        not vector.closed
+        and vector.points_pt == ((370.0, 515.0), (600.0, 390.0))
+        for vector in extracted.vectors
+    )
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    lane = model.attributes["pdf_electrical"]
+    assert len(model.electrical_devices) == 6
+    assert len(model.electrical_devices) > 2
+    assert [device.device_type for device in model.electrical_devices].count("receptacle") == 2
+    assert [device.device_type for device in model.electrical_devices].count("junction_box") == 2
+    assert [device.device_type for device in model.electrical_devices].count("luminaire") == 2
+    assert lane["legend_recognition"]["regions"] == [
+        {
+            "page": 1,
+            "method": "title-match",
+            "confidence": 0.98,
+            "heading_element_id": "p1:text:0004",
+            "heading_text": "SYMBOLS",
+            "row_count": 3,
+            "classified_row_count": 3,
+            "sheet_aliases": ["E2.1"],
+        }
+    ]
+    assert lane["legend_recognition"]["explicit_cross_sheet_references"] == []
+    assert all(
+        device.attributes["pdf_electrical"]["shape_recognition"][
+            "legend_detection_method"
+        ]
+        == "title-match"
+        for device in model.electrical_devices
+    )
+    validate_model(model)
+
+
+def _legend_shape_matched_devices(model: BuildingModel) -> list:
+    return [
+        device
+        for device in model.electrical_devices
+        if device.attributes.get("pdf_electrical", {})
+        .get("shape_recognition", {})
+        .get("method")
+        == "sheet-legend-geometry-match"
+    ]
+
+
+@pytest.mark.parametrize(
+    "heading_text",
+    ["KEYNOTE SYMBOLS", "PANEL SCHEDULE SYMBOLS"],
+)
+def test_rejected_symbol_heading_context_yields_no_legend_devices(
+    heading_text: str,
+) -> None:
+    extracted = extract_pdf(
+        EDGE_LEGEND_BLOCK_FIXTURE,
+        source_id=f"fixture:rejected-legend-heading:{heading_text}",
+    )
+    edited = PdfElectricalDocument(
+        source_id=extracted.source_id,
+        page_count=extracted.page_count,
+        texts=tuple(
+            replace(observation, text=heading_text)
+            if observation.text == "SYMBOLS"
+            else observation
+            for observation in extracted.texts
+        ),
+        symbols=extracted.symbols,
+        vectors=extracted.vectors,
+    )
+
+    model = ElectricalPdfImporter().import_document(edited)
+
+    assert _legend_shape_matched_devices(model) == []
+    assert model.attributes["pdf_electrical"]["legend_recognition"]["regions"] == []
+
+
+@pytest.mark.parametrize(
+    "heading_text",
+    ["KEYNOTES", "PANEL SCHEDULE"],
+)
+def test_dense_cluster_under_rejected_section_heading_yields_no_legend_devices(
+    heading_text: str,
+) -> None:
+    extracted = extract_pdf(
+        DENSE_LEGEND_BLOCK_FIXTURE,
+        source_id=f"fixture:rejected-dense-context:{heading_text}",
+    )
+    row_labels = [
+        observation
+        for observation in extracted.texts
+        if observation.text in {"GFCI", "JBOX", "LIGHT"}
+    ]
+    section_heading = PdfTextObservation(
+        element_id="p1:text:test-section-heading",
+        page=1,
+        text=heading_text,
+        x_pt=min(observation.x_pt for observation in row_labels) - 48.0,
+        y_pt=max(observation.y_pt for observation in row_labels) + 54.0,
+        font_size_pt=12.0,
+    )
+    edited = PdfElectricalDocument(
+        source_id=extracted.source_id,
+        page_count=extracted.page_count,
+        texts=(*extracted.texts, section_heading),
+        symbols=extracted.symbols,
+        vectors=extracted.vectors,
+    )
+
+    model = ElectricalPdfImporter().import_document(edited)
+
+    assert _legend_shape_matched_devices(model) == []
+    assert model.attributes["pdf_electrical"]["legend_recognition"]["regions"] == []
+
+
+def test_dense_table_legend_block_is_detected_without_a_heading() -> None:
+    assert not DENSE_LEGEND_BLOCK_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        DENSE_LEGEND_BLOCK_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-dense-legend",
+    )
+    assert "LEGEND" not in {text.text.upper() for text in extracted.texts}
+    assert "SYMBOL" not in {text.text.upper() for text in extracted.texts}
+    assert "SYMBOLS" not in {text.text.upper() for text in extracted.texts}
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    lane = model.attributes["pdf_electrical"]
+    assert len(model.electrical_devices) == 6
+    regions = lane["legend_recognition"]["regions"]
+    assert len(regions) == 1
+    assert regions[0]["method"] == "dense-table-cluster"
+    assert regions[0]["heading_element_id"] is None
+    assert regions[0]["row_count"] == 3
+    assert regions[0]["classified_row_count"] == 3
+    assert all(
+        device.attributes["pdf_electrical"]["shape_recognition"][
+            "legend_detection_method"
+        ]
+        == "dense-table-cluster"
+        for device in model.electrical_devices
+    )
+    validate_model(model)
+
+
+def test_explicit_separate_legend_sheet_reference_never_inherits_silently() -> None:
+    assert not SEPARATE_LEGEND_REFERENCE_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        SEPARATE_LEGEND_REFERENCE_FIXTURE,
+        source_id="fixture:separate-sheet-explicit-legend-reference",
+    )
+    assert extracted.page_count == 3
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    lane = model.attributes["pdf_electrical"]
+    references = lane["legend_recognition"]["explicit_cross_sheet_references"]
+    assert {(row["page"], row["target_alias"], row["legend_page"]) for row in references} == {
+        (2, "E-001", 1),
+        (3, "GENERAL NOTES AND LEGEND", 1),
+    }
+
+    devices_by_page = {
+        page: [
+            device
+            for device in model.electrical_devices
+            if device.attributes["pdf_electrical"]["source_page"] == page
+        ]
+        for page in (1, 2, 3)
+    }
+    assert devices_by_page[1] == []
+    assert len(devices_by_page[2]) == 6
+    assert len(devices_by_page[3]) == 6
+    assert all(
+        device.attributes["pdf_electrical"]["shape_recognition"]["legend_scope"]
+        == "explicit-cross-sheet-reference"
+        for device in (*devices_by_page[2], *devices_by_page[3])
+    )
+    assert all(
+        device.attributes["pdf_electrical"]["shape_recognition"]["legend_page"] == 1
+        for device in (*devices_by_page[2], *devices_by_page[3])
+    )
+    for page in (2, 3):
+        for device in devices_by_page[page]:
+            reference_provenance = [
+                item
+                for item in device.provenance
+                if item.method == "pdf-explicit-legend-sheet-reference"
+            ]
+            label_provenance = [
+                item
+                for item in device.provenance
+                if item.method == "pdf-sheet-legend-type-label"
+            ]
+            assert len(reference_provenance) == 1
+            assert reference_provenance[0].page == page
+            assert reference_provenance[0].attributes["legend_page"] == 1
+            assert len(label_provenance) == 1
+            assert label_provenance[0].page == 1
 
     validate_model(model)
 

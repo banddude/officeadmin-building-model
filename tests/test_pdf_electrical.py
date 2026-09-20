@@ -555,7 +555,15 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
 
     model = ElectricalPdfImporter().import_document(extracted)
     lane = model.attributes["pdf_electrical"]
-    assert len(model.electrical_devices) == 6
+    assert len(model.electrical_devices) == 6, {
+        "device_types": [device.device_type for device in model.electrical_devices],
+        "legend_recognition": lane["legend_recognition"],
+        "unresolved_vector_clusters": [
+            item
+            for item in lane["unresolved_observations"]
+            if item.get("kind") == "vector_cluster"
+        ],
+    }
     assert len(model.electrical_devices) > 2
     assert not model.electrical_equipment
 

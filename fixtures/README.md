@@ -33,4 +33,4 @@ only the explicit shared-frame registration plus known hosting answers. See
 
 `roomplan/captured-room-3d.json` is a synthetic CapturedRoom-shaped fixture for the RoomPlan / LiDAR importer. It includes nonzero story elevation, 4x4 transforms, polygon and curved wall surfaces, openings, source confidence, an object, and section metadata. It contains no customer or private scan data.
 
-5. `geometry-only-power-sheet-notes-column-legend.pdf`: Slice 9 source-only acceptance PDF with a right-hand notes column, separate bottom title block, KEY NOTES and GENERAL NOTES sections, a six-row ruled `SYMBOL | FUNCTION` legend, and field glyphs tagged E/N/R with bare height annotations. There is no paired expected-output artifact.
+5. `geometry-only-power-sheet-notes-column-legend.json`: Slice 9 source-only acceptance PDF with a right-hand notes column, separate bottom title block, KEY NOTES and GENERAL NOTES sections, a six-row ruled `SYMBOL | FUNCTION` legend, and field glyphs tagged E/N/R with bare height annotations. There is no paired expected-output artifact.

@@ -1686,15 +1686,7 @@ def _rounded_wall_anchor(
 
 def _line_record(
     line: PdfLineObservation,
-) -> tuple[
-    tuple[float, float],
-    tuple[float, float],
-    float,
-    float,
-    float,
-    float,
-    tuple[float, float, float, float],
-]:
+) -> tuple[float, float, float, float, float]:
     start, end = _canonical_segment(line.start_pt, line.end_pt)
     dx = end[0] - start[0]
     dy = end[1] - start[1]
@@ -1704,25 +1696,24 @@ def _line_record(
     p0 = start[0] * ux + start[1] * uy
     p1 = end[0] * ux + end[1] * uy
     normal = ((start[0] + end[0]) / 2.0) * nx + ((start[1] + end[1]) / 2.0) * ny
-    geometry_key = (
-        round(start[0], 6),
-        round(start[1], 6),
-        round(end[0], 6),
-        round(end[1], 6),
-    )
-    return start, end, ux, uy, p0, p1, geometry_key + (normal,)
+    return ux, uy, p0, p1, normal
 
 
 def _geometric_wall_face_pairs(
     page: PdfPageObservation,
     transform: _Transform2D,
     options: ImportOptions,
+    *,
+    excluded_element_ids: set[str] | None = None,
 ) -> tuple[_WallFacePair, ...]:
     """Pair wall faces by geometry only, never by PDF-native identifiers."""
 
     duplicate_geometry: set[tuple[float, float, float, float]] = set()
     by_geometry: dict[tuple[float, float, float, float], list[PdfLineObservation]] = {}
+    excluded_element_ids = excluded_element_ids or set()
     for line in page.lines:
+        if line.element_id in excluded_element_ids:
+            continue
         start, end = _canonical_segment(line.start_pt, line.end_pt)
         key = (
             round(start[0], 6),
@@ -1752,11 +1743,10 @@ def _geometric_wall_face_pairs(
     ] = []
     max_cross = math.sin(math.radians(2.0))
     for first_index, first in enumerate(lines):
-        _, _, ux, uy, a0, a1, first_key_and_normal = records[first_index]
-        first_normal = first_key_and_normal[-1]
+        ux, uy, a0, a1, first_normal = records[first_index]
         nx, ny = -uy, ux
         for second_index in range(first_index + 1, len(lines)):
-            _, _, sux, suy, _, _, second_key_and_normal = records[second_index]
+            sux, suy, _, _, _ = records[second_index]
             if abs(ux * suy - uy * sux) > max_cross:
                 continue
             second = lines[second_index]
@@ -1840,7 +1830,7 @@ def _polygon_area(points: tuple[tuple[float, float], ...]) -> float:
     return abs(
         sum(
             first[0] * second[1] - second[0] * first[1]
-            for first, second in zip(points, (*points[1:], points[:1]), strict=True)
+            for first, second in zip(points, (*points[1:], points[0]), strict=True)
         )
     ) / 2.0
 
@@ -2064,6 +2054,8 @@ def _geometric_wall_loop_entities(
     level_info: _LevelInfo,
     source_id: str,
     options: ImportOptions,
+    *,
+    excluded_element_ids: set[str] | None = None,
 ) -> tuple[tuple[_WallContext, ...], tuple[Space, ...]]:
     if level.height_m is None or level_info.height is None:
         return (), ()
@@ -2071,7 +2063,12 @@ def _geometric_wall_loop_entities(
     if sheet_anchor is None:
         return (), ()
 
-    pairs = _geometric_wall_face_pairs(page, transform, options)
+    pairs = _geometric_wall_face_pairs(
+        page,
+        transform,
+        options,
+        excluded_element_ids=excluded_element_ids,
+    )
     loops = _wall_pair_closed_loops(pairs, transform, options)
     if not loops:
         return (), ()
@@ -2562,6 +2559,13 @@ def import_observations(
             if ceiling:
                 ceilings.append(ceiling)
 
+        consumed_vector_line_ids = {
+            source_element_id
+            for shell in shells
+            for boundary in (shell.outer, shell.inner)
+            if boundary.source_kind == "ordinary_vector_line_loop"
+            for source_element_id in boundary.source_element_ids
+        }
         geometric_line_walls, geometric_spaces = _geometric_wall_loop_entities(
             page,
             transform,
@@ -2569,6 +2573,7 @@ def import_observations(
             level_info,
             document.source_id,
             options,
+            excluded_element_ids=consumed_vector_line_ids,
         )
         existing_wall_geometry = {
             (

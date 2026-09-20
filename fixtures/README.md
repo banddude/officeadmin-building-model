@@ -16,6 +16,9 @@ recognition lane:
 2. `ambiguous-sheet-e1.json`: ambiguous symbol, conflicting mounting heights, and an incomplete circuit reference
 3. `geometry-only-power-sheet-with-legend.pdf`: Slice 4 source-only acceptance PDF with six geometry-only field glyphs, three drawn legend prototypes and labels, and two unmatched glyphs that must remain unresolved. There is no paired expected-output artifact.
 4. `two-page-sheet-local-legend.pdf`: Slice 4 regression PDF. Page 1 has the drawn legend and field glyphs; page 2 repeats only field glyph geometry and must not inherit page 1 legend types. There is no paired expected-output artifact.
+5. `geometry-only-power-sheet-edge-legend.pdf`: Slice 7 source-only acceptance PDF. A `SYMBOLS` legend block sits at the sheet edge inside a page frame and title block, with a leader from the heading; six field symbols carry geometry only and must be typed from the detected block. There is no paired expected-output artifact.
+6. `geometry-only-power-sheet-dense-legend.pdf`: Slice 7 source-only regression PDF with no legend heading. The importer must find the aligned three-row glyph/label table by density and repeated symbol geometry. There is no paired expected-output artifact.
+7. `separate-sheet-explicit-legend-reference.pdf`: Slice 7 source-only three-page regression PDF. Page 1 carries `GENERAL NOTES AND LEGEND` on sheet `E-001`; pages 2 and 3 contain field glyphs and explicit references by sheet name and legend title. Cross-sheet typing is allowed only through those source references. There is no paired expected-output artifact.
 
 These fixtures are synthetic. They contain no customer plan content.
 

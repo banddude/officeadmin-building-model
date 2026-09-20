@@ -107,22 +107,33 @@ survive unrelated PDF revisions must provide the same stable `source_id`.
 
 ## Symbol recognition
 
-The primary path for drawn power-plan symbols is sheet-local geometry matching.
-The importer clusters small nearby vector paths into candidate glyphs, including
-the filled and Bézier geometry retained by Slice 1. It locates a printed
-electrical/symbol legend, associates each unambiguous legend type label with the
-nearest small drawn glyph, builds a translation/scale/quarter-turn invariant
-shape signature, and matches field glyph clusters against those legend
-prototypes. Legend prototypes and ownership are page-local: a field glyph can
-match only a legend drawn on the same page. Pages without a recognized legend do
-not inherit prototypes from another sheet; their glyphs remain unresolved with
-explicit same-page recognition provenance. Cross-sheet/shared-legend inheritance
-is intentionally unsupported unless a future implementation can reliably detect
-an explicit legend-sheet reference. A unique match emits the legend's canonical
-device/equipment type with `pdf-legend-shape-match` provenance from both field
-geometry and the legend label. Conflicting legend definitions on the same page
-fail closed. Candidate glyphs with no unique page-local legend type remain
-unresolved and are never guessed.
+The primary path for drawn power-plan symbols is geometry matching against a
+detected legend block. The importer clusters small nearby vector paths into
+candidate glyphs, including the filled and Bézier geometry retained by Slice 1.
+A legend block is accepted when either (1) a nearby title ends in `LEGEND`,
+`SYMBOL`, or `SYMBOLS`, case-insensitively, including a title attached to a
+leader, or (2) the page contains the densest table-like run of at least three
+aligned small glyphs, each followed by a short text label within the fixed
+horizontal legend-label distance. The density fallback also requires repeated
+glyph signatures elsewhere on the same page so ordinary title-block and drafting
+geometry do not become legend prototypes merely because text is nearby.
+
+Within the selected block, the importer associates each unambiguous type label
+with its paired glyph, builds a translation/scale/quarter-turn invariant shape
+signature, and matches field glyph clusters against those prototypes. Legend
+prototypes remain page-local by default. A page without a recognized local legend
+does not inherit prototypes from another sheet and retains explicit same-page
+unresolved provenance. Cross-sheet matching is allowed only when source text on
+the field sheet explicitly references one uniquely identified legend sheet, for
+example `SEE E-001 FOR LEGEND` or `SEE GENERAL NOTES AND LEGEND`. The field
+device then carries `pdf-explicit-legend-sheet-reference` provenance on the field
+page plus the legend-label provenance on the referenced page. Ambiguous or
+missing references fail closed, so there is never silent shared-legend
+inheritance. A unique match emits the legend's canonical device/equipment type
+with `pdf-legend-shape-match` provenance from both field geometry and the legend
+label. Conflicting legend definitions fail closed, and unmatched glyphs remain
+unresolved rather than guessed. Detection details are exposed in
+`attributes.pdf_electrical.legend_recognition`.
 
 The built-in text catalog remains available as additional evidence and as a
 fallback for sources with explicit stable semantic labels. It also recognizes

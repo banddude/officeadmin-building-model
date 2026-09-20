@@ -3505,6 +3505,10 @@ def _recognize_legend_shapes(
             ),
         )[0]
 
+    legend_entries_by_page: dict[int, list[_LegendEntry]] = {}
+    for (page, _signature), entry in sorted(legend_by_signature.items()):
+        legend_entries_by_page.setdefault(page, []).append(entry)
+
     active_legend_pages = {
         page for page, _signature in legend_by_signature
     }
@@ -3591,25 +3595,35 @@ def _recognize_legend_shapes(
         if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
             continue
 
-        legend_entry = legend_by_signature.get(
-            (cluster.page, cluster.shape_signature)
+        legend_entry, match_diagnostics = _match_cluster_to_legend_entries(
+            cluster,
+            legend_entries_by_page.get(cluster.page, ()),
         )
         reference: _LegendReference | None = None
         if legend_entry is None:
-            remote_matches: list[tuple[_LegendReference, _LegendEntry]] = []
+            remote_matches: list[
+                tuple[_LegendReference, _LegendEntry, dict[str, Any]]
+            ] = []
+            remote_diagnostics: list[
+                tuple[_LegendReference, dict[str, Any]]
+            ] = []
             for candidate_reference in references_by_page.get(cluster.page, ()):
-                remote_entry = legend_by_signature.get(
-                    (
+                remote_entry, diagnostics = _match_cluster_to_legend_entries(
+                    cluster,
+                    legend_entries_by_page.get(
                         candidate_reference.legend_page,
-                        cluster.shape_signature,
-                    )
+                        (),
+                    ),
                 )
+                remote_diagnostics.append((candidate_reference, diagnostics))
                 if remote_entry is not None:
-                    remote_matches.append((candidate_reference, remote_entry))
+                    remote_matches.append(
+                        (candidate_reference, remote_entry, diagnostics)
+                    )
             if remote_matches:
                 remote_classifications = {
                     (entry.entity_kind, entry.canonical_type)
-                    for _reference, entry in remote_matches
+                    for _reference, entry, _diagnostics in remote_matches
                 }
                 if len(remote_classifications) != 1:
                     unresolved.append(
@@ -3645,24 +3659,49 @@ def _recognize_legend_shapes(
                                 "referenced_legend_pages": sorted(
                                     {
                                         item.legend_page
-                                        for item, _entry in remote_matches
+                                        for item, _entry, _diagnostics in remote_matches
                                     }
                                 ),
+                                "match_diagnostics": [
+                                    {
+                                        "legend_page": item.legend_page,
+                                        **diagnostics,
+                                    }
+                                    for item, _entry, diagnostics in remote_matches
+                                ],
                             },
                         }
                     )
                     continue
-                reference, legend_entry = sorted(
+                reference, legend_entry, match_diagnostics = sorted(
                     remote_matches,
                     key=lambda item: (
+                        -float(item[2].get("score") or 0.0),
                         -item[1].confidence,
                         item[0].legend_page,
                         item[0].source_element_id,
                         item[1].label.element_id,
                     ),
                 )[0]
+            elif remote_diagnostics:
+                best_remote = max(
+                    remote_diagnostics,
+                    key=lambda item: (
+                        float(item[1].get("score") or -1.0),
+                        -item[0].legend_page,
+                        item[0].source_element_id,
+                    ),
+                )
+                if (
+                    match_diagnostics.get("score") is None
+                    or float(best_remote[1].get("score") or -1.0)
+                    > float(match_diagnostics.get("score") or -1.0)
+                ):
+                    match_diagnostics = dict(best_remote[1])
+                    match_diagnostics["legend_page"] = best_remote[0].legend_page
 
         if legend_entry is None:
+            page_references = references_by_page.get(cluster.page, ())        if legend_entry is None:
             page_references = references_by_page.get(cluster.page, ())
             if page_references:
                 reason = (
@@ -3679,6 +3718,7 @@ def _recognize_legend_shapes(
                     "reference_element_ids": sorted(
                         {item.source_element_id for item in page_references}
                     ),
+                    "match_diagnostics": match_diagnostics,
                 }
             else:
                 reason = (
@@ -3692,6 +3732,7 @@ def _recognize_legend_shapes(
                     "legend_scope": "same-page-only",
                     "page": cluster.page,
                     "page_has_recognized_legend": cluster.page in legend_pages,
+                    "match_diagnostics": match_diagnostics,
                 }
             unresolved.append(
                 {
@@ -3739,6 +3780,9 @@ def _recognize_legend_shapes(
             "legend_label_element_id": label.element_id,
             "legend_page": label.page,
             "legend_label": label.text,
+            "legend_row_label": label.text,
+            "canonical_type": legend_entry.canonical_type,
+            "match_diagnostics": match_diagnostics,
             "legend_source_element_ids": list(prototype.source_element_ids),
             "source_element_ids": list(cluster.source_element_ids),
         }
@@ -3807,6 +3851,9 @@ def _recognize_legend_shapes(
                         "legend_page": label.page,
                         "legend_label_element_id": label.element_id,
                         "legend_label": label.text,
+                        "legend_row_label": label.text,
+                        "canonical_type": legend_entry.canonical_type,
+                        "match_diagnostics": match_diagnostics,
                         "legend_detection_method": region.method,
                         "legend_source_element_ids": list(
                             prototype.source_element_ids
@@ -3839,9 +3886,12 @@ def _recognize_legend_shapes(
             )
         label_attributes: dict[str, Any] = {
             "source_text": label.text,
+            "legend_row_label": label.text,
+            "canonical_type": legend_entry.canonical_type,
             "shape_signature": cluster.shape_signature,
             "legend_scope": legend_scope,
             "legend_detection_method": region.method,
+            "match_diagnostics": match_diagnostics,
         }
         if region.heading is not None:
             label_attributes["legend_header_element_id"] = region.heading.element_id
@@ -4695,6 +4745,13 @@ class ElectricalPdfImporter:
                 lane_attributes["symbol_names"] = sorted(set(candidate.symbol_names))
             if candidate.shape_recognition is not None:
                 lane_attributes["shape_recognition"] = dict(candidate.shape_recognition)
+                if "legend_row_label" in candidate.shape_recognition:
+                    lane_attributes["legend_row_label"] = candidate.shape_recognition[
+                        "legend_row_label"
+                    ]
+                    lane_attributes["device_type_label"] = candidate.shape_recognition[
+                        "legend_row_label"
+                    ]
                 if "status" in candidate.shape_recognition:
                     lane_attributes["status"] = candidate.shape_recognition["status"]
                     lane_attributes["status_meaning"] = candidate.shape_recognition[

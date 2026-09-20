@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from oabm.importers.pdf_electrical import (
     ElectricalPdfImporter,
     PdfElectricalDocument,
     PdfPageTransform,
+    PdfTextObservation,
     PdfVectorPathObservation,
     extract_pdf,
 )
@@ -340,6 +342,85 @@ def test_edge_titled_legend_block_is_detected_inside_sheet_frame() -> None:
         for device in model.electrical_devices
     )
     validate_model(model)
+
+
+def _legend_shape_matched_devices(model: BuildingModel) -> list:
+    return [
+        device
+        for device in model.electrical_devices
+        if device.attributes.get("pdf_electrical", {})
+        .get("shape_recognition", {})
+        .get("method")
+        == "sheet-legend-geometry-match"
+    ]
+
+
+@pytest.mark.parametrize(
+    "heading_text",
+    ["KEYNOTE SYMBOLS", "PANEL SCHEDULE SYMBOLS"],
+)
+def test_rejected_symbol_heading_context_yields_no_legend_devices(
+    heading_text: str,
+) -> None:
+    extracted = extract_pdf(
+        EDGE_LEGEND_BLOCK_FIXTURE,
+        source_id=f"fixture:rejected-legend-heading:{heading_text}",
+    )
+    edited = PdfElectricalDocument(
+        source_id=extracted.source_id,
+        page_count=extracted.page_count,
+        texts=tuple(
+            replace(observation, text=heading_text)
+            if observation.text == "SYMBOLS"
+            else observation
+            for observation in extracted.texts
+        ),
+        symbols=extracted.symbols,
+        vectors=extracted.vectors,
+    )
+
+    model = ElectricalPdfImporter().import_document(edited)
+
+    assert _legend_shape_matched_devices(model) == []
+    assert model.attributes["pdf_electrical"]["legend_recognition"]["regions"] == []
+
+
+@pytest.mark.parametrize(
+    "heading_text",
+    ["KEYNOTES", "PANEL SCHEDULE"],
+)
+def test_dense_cluster_under_rejected_section_heading_yields_no_legend_devices(
+    heading_text: str,
+) -> None:
+    extracted = extract_pdf(
+        DENSE_LEGEND_BLOCK_FIXTURE,
+        source_id=f"fixture:rejected-dense-context:{heading_text}",
+    )
+    row_labels = [
+        observation
+        for observation in extracted.texts
+        if observation.text in {"GFCI", "JBOX", "LIGHT"}
+    ]
+    section_heading = PdfTextObservation(
+        element_id="p1:text:test-section-heading",
+        page=1,
+        text=heading_text,
+        x_pt=min(observation.x_pt for observation in row_labels) - 48.0,
+        y_pt=max(observation.y_pt for observation in row_labels) + 54.0,
+        font_size_pt=12.0,
+    )
+    edited = PdfElectricalDocument(
+        source_id=extracted.source_id,
+        page_count=extracted.page_count,
+        texts=(*extracted.texts, section_heading),
+        symbols=extracted.symbols,
+        vectors=extracted.vectors,
+    )
+
+    model = ElectricalPdfImporter().import_document(edited)
+
+    assert _legend_shape_matched_devices(model) == []
+    assert model.attributes["pdf_electrical"]["legend_recognition"]["regions"] == []
 
 
 def test_dense_table_legend_block_is_detected_without_a_heading() -> None:

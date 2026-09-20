@@ -543,9 +543,27 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
     )
     assert extracted == repeated
     assert not extracted.symbols
-    assert len(extracted.texts) == 36
-    assert len(extracted.vectors) == 46
 
+    expected_labels = {
+        "receptacle_duplex": "duplex electrical outlet",
+        "receptacle_quad": "quadruplex electrical outlet",
+        "data_outlet": "telephone and/or data outlet",
+        "combination_outlet": (
+            "combination duplex electrical and tele/data outlet"
+        ),
+        "junction_box_power": (
+            "electrical J-box to feed furniture system, number adjacent "
+            "indicates number of circuits"
+        ),
+        "junction_box_data": (
+            "tele/data J-box to feed furniture system with pull string "
+            "above ceiling"
+        ),
+        "access_control_device": (
+            "card reader electric lock release with electric hinge"
+        ),
+        "catv_outlet": "cable TV outlet",
+    }
     texts = {observation.text for observation in extracted.texts}
     assert {
         "ARCHITECT STAMP",
@@ -557,10 +575,7 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
         "FUNCTION",
         "E",
         "N",
-        "R",
         '+44"',
-        '+66"',
-        "EXISTING TO BE REMOVED",
         "EXISTING TO REMAIN",
         "NEW",
         "SYNTHETIC PROJECT",
@@ -581,7 +596,7 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
 
     model = ElectricalPdfImporter().import_document(extracted)
     lane = model.attributes["pdf_electrical"]
-    assert len(model.electrical_devices) == 6, {
+    assert len(model.electrical_devices) == 16, {
         "device_types": [device.device_type for device in model.electrical_devices],
         "legend_recognition": lane["legend_recognition"],
         "unresolved_vector_clusters": [
@@ -590,43 +605,33 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
             if item.get("kind") == "vector_cluster"
         ],
     }
-    assert len(model.electrical_devices) > 2
     assert not model.electrical_equipment
 
     devices_by_type = {
-        device.device_type: device
+        canonical_type: [
+            device
+            for device in model.electrical_devices
+            if device.device_type == canonical_type
+        ]
+        for canonical_type in expected_labels
+    }
+    assert set(device.device_type for device in model.electrical_devices) == set(
+        expected_labels
+    )
+    assert all(len(devices) == 2 for devices in devices_by_type.values())
+    assert all(
+        {
+            device.attributes["pdf_electrical"]["status"]
+            for device in devices
+        }
+        == {"E", "N"}
+        for devices in devices_by_type.values()
+    )
+    assert all(
+        device.attributes["pdf_electrical"]["status_meaning"]
+        in {"existing_to_remain", "new"}
         for device in model.electrical_devices
-    }
-    assert set(devices_by_type) == {
-        "receptacle",
-        "junction_box",
-        "luminaire",
-        "disconnect",
-        "switch",
-        "evse",
-    }
-    assert {
-        device_type: device.attributes["pdf_electrical"]["status"]
-        for device_type, device in devices_by_type.items()
-    } == {
-        "receptacle": "E",
-        "junction_box": "N",
-        "luminaire": "R",
-        "disconnect": "N",
-        "switch": "E",
-        "evse": "R",
-    }
-    assert {
-        device_type: device.attributes["pdf_electrical"]["status_meaning"]
-        for device_type, device in devices_by_type.items()
-    } == {
-        "receptacle": "existing_to_remain",
-        "junction_box": "new",
-        "luminaire": "existing_to_be_removed",
-        "disconnect": "new",
-        "switch": "existing_to_remain",
-        "evse": "existing_to_be_removed",
-    }
+    )
     assert all(
         any(
             provenance.method == "pdf-field-status-tag"
@@ -634,33 +639,46 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
         )
         for device in model.electrical_devices
     )
+    assert all(
+        device.attributes["pdf_electrical"]["legend_row_label"]
+        == expected_labels[device.device_type]
+        and device.attributes["pdf_electrical"]["device_type_label"]
+        == expected_labels[device.device_type]
+        for device in model.electrical_devices
+    )
 
     regions = lane["legend_recognition"]["regions"]
     assert len(regions) == 1
     assert regions[0]["method"] == "symbol-function-table"
     assert regions[0]["heading_text"] == "LEGEND"
-    assert regions[0]["row_count"] == 6
-    assert regions[0]["classified_row_count"] == 6
+    assert regions[0]["row_count"] == 8
+    assert regions[0]["classified_row_count"] == 8
     assert len(regions[0]["header_element_ids"]) == 2
-    assert all(
-        device.attributes["pdf_electrical"]["shape_recognition"][
-            "legend_detection_method"
-        ]
-        == "symbol-function-table"
-        for device in model.electrical_devices
-    )
 
-    # E/N/R and bare mounting-height tags are modifiers, not glyph geometry.
+    for device in model.electrical_devices:
+        shape = device.attributes["pdf_electrical"]["shape_recognition"]
+        assert shape["legend_detection_method"] == "symbol-function-table"
+        assert shape["canonical_type"] == device.device_type
+        assert shape["legend_row_label"] == expected_labels[device.device_type]
+        diagnostics = shape["match_diagnostics"]
+        assert diagnostics["nearest_prototype"]["canonical_type"] == device.device_type
+        assert diagnostics["score"] >= pdf_electrical_importer._GLYPH_MATCH_SCORE_MIN
+        assert diagnostics["second_best"] is not None
+        assert diagnostics["non_unique_reason"] is None
+
+    # Status, mounting-height and circuit-count text are field modifiers, not
+    # legend labels and do not affect source glyph type matching.
     without_modifiers = PdfElectricalDocument(
         source_id=extracted.source_id + ":without-field-modifiers",
         page_count=extracted.page_count,
         texts=tuple(
             observation
             for observation in extracted.texts
-            if observation.text not in {"E", "N", "R", '+44"', '+66"'}
+            if observation.text not in {"E", "N", '+44"', "1", "2", "3"}
         ),
         symbols=extracted.symbols,
         vectors=extracted.vectors,
+        page_provenance=extracted.page_provenance,
     )
     without_modifier_model = ElectricalPdfImporter().import_document(
         without_modifiers
@@ -694,11 +712,12 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
         ),
         symbols=extracted.symbols,
         vectors=extracted.vectors,
+        page_provenance=extracted.page_provenance,
     )
     header_only_model = ElectricalPdfImporter().import_document(
         without_legend_title
     )
-    assert len(header_only_model.electrical_devices) == 6
+    assert len(header_only_model.electrical_devices) == 16
     assert header_only_model.attributes["pdf_electrical"][
         "legend_recognition"
     ]["regions"][0]["method"] == "symbol-function-table"
@@ -715,16 +734,12 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
                 "LEGEND",
                 "SYMBOL",
                 "FUNCTION",
-                "GFCI RECEPTACLE",
-                "JUNCTION BOX",
-                "LIGHT FIXTURE",
-                "DISCONNECT",
-                "SWITCH",
-                "EVSE CHARGER",
+                *expected_labels.values(),
             }
         ),
         symbols=extracted.symbols,
         vectors=extracted.vectors,
+        page_provenance=extracted.page_provenance,
     )
     notes_only_model = ElectricalPdfImporter().import_document(notes_only)
     assert notes_only_model.attributes["pdf_electrical"][
@@ -732,6 +747,29 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
     ]["regions"] == []
 
     validate_model(model)
+
+
+def test_unresolved_legend_glyph_records_nearest_two_match_diagnostics() -> None:
+    extracted = extract_pdf(
+        LEGEND_SHAPE_FIXTURE,
+        source_id="fixture:legend-shape-match-diagnostics",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+    unresolved = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "vector_cluster"
+        and item.get("reason")
+        == "glyph cluster has no unique matching type in the sheet legend"
+    ]
+    assert unresolved
+    for item in unresolved:
+        diagnostics = item["recognition_provenance"]["match_diagnostics"]
+        assert diagnostics["nearest_prototype"] is not None
+        assert diagnostics["score"] is not None
+        assert diagnostics["second_best"] is not None
+        assert diagnostics["non_unique_reason"]
+
 
 
 @pytest.mark.parametrize(

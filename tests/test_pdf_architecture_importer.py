@@ -20,6 +20,7 @@ from oabm.importers.pdf_architecture.types import (
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_architecture" / "v1"
 CAD_GEOMETRY_FIXTURE = FIXTURE_DIR / "cad-export-geometry-only.pdf"
+CAD_GEOMETRY_TEXT_FIXTURE = FIXTURE_DIR / "cad-export-geometry-plus-text.pdf"
 
 
 def _text(element_id: str, text: str, x: float, y: float, width: float = 80, height: float = 10) -> PdfTextObservation:
@@ -207,6 +208,105 @@ def test_cad_export_fixture_extracts_to_untagged_walls_and_space() -> None:
     assert page_meta["status"] == "geometry_imported"
     assert page_meta["resolved_wall_count"] > 0
     assert page_meta["resolved_room_count"] >= 1
+
+
+def test_geometry_plus_text_fixture_labels_geometric_space_by_position() -> None:
+    assert not CAD_GEOMETRY_TEXT_FIXTURE.with_suffix(".expected.json").exists()
+    observations = extract_pdf(
+        CAD_GEOMETRY_TEXT_FIXTURE,
+        source_id="fixture:cad-export-geometry-plus-text",
+    )
+    assert len(observations.pages) == 1
+    page = observations.pages[0]
+    extracted_text = {item.text for item in page.texts}
+    assert {"214", "KEYNOTE: 7", "DRAWING: A45"}.issubset(extracted_text)
+    assert any(item.startswith("144") for item in extracted_text)
+    room_observation = next(item for item in page.texts if item.text == "214")
+
+    model = import_architectural_pdf(
+        CAD_GEOMETRY_TEXT_FIXTURE,
+        source_id="fixture:cad-export-geometry-plus-text",
+    )
+
+    validate_model(model)
+    assert len(model.walls) == 4
+    assert len(model.spaces) == 1
+    space = model.spaces[0]
+    assert space.name == "214"
+    assert space.usage is None
+    assert space.attributes["pdf_architecture"]["recognition"] == (
+        "geometric_parallel_wall_closed_loop"
+    )
+    assert space.attributes["pdf_architecture"]["label_confidence"] == pytest.approx(
+        0.88
+    )
+    assert space.attributes["pdf_architecture"]["label_source_element_id"] == (
+        room_observation.element_id
+    )
+    assert any(
+        provenance.source_element_id == room_observation.element_id
+        and "text position inside closed wall loop" in provenance.method
+        for provenance in space.provenance
+    )
+    assert "multiple_room_labels_in_enclosure" not in _ambiguity_codes(model)
+
+
+def test_geometric_space_identity_does_not_depend_on_room_label() -> None:
+    source_id = "fixture:cad-room-label-identity"
+    geometry_only = extract_pdf(CAD_GEOMETRY_FIXTURE, source_id=source_id)
+    page = replace(
+        geometry_only.pages[0],
+        texts=(
+            _text("identity:title", "A45 FLOOR PLAN", 8, 160),
+            _text("identity:scale", "SCALE: 1:100", 8, 148),
+            _text("identity:level", "LEVEL: GROUND", 8, 136),
+        ),
+    )
+    unlabeled = import_observations(replace(geometry_only, pages=(page,)))
+    labeled = import_architectural_pdf(
+        CAD_GEOMETRY_TEXT_FIXTURE,
+        source_id=source_id,
+    )
+
+    validate_model(unlabeled)
+    validate_model(labeled)
+    assert len(unlabeled.spaces) == len(labeled.spaces) == 1
+    assert unlabeled.spaces[0].name is None
+    assert labeled.spaces[0].name == "214"
+    assert unlabeled.spaces[0].id == labeled.spaces[0].id
+    assert {wall.id for wall in unlabeled.walls} == {wall.id for wall in labeled.walls}
+
+
+@pytest.mark.parametrize("label", ("214", "ELEC"))
+def test_room_labels_do_not_require_vocabulary_or_prefix(label: str) -> None:
+    page = _ordinary_vector_fixture_page()
+    texts = tuple(
+        replace(item, text=label) if item.element_id == "ov:room" else item
+        for item in page.texts
+    )
+    page = replace(
+        page,
+        texts=(
+            *texts,
+            _text("ov:dimension", "144″", 95, 48),
+            _text("ov:prefixed-dimension", "ROOM: 144″", 95, 108),
+            _text("ov:keynote", "KEYNOTE: 7", 95, 82),
+            _text("ov:title-block", "DRAWING: A2.1", 95, 96),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id=f"fixture:room-label-position:{label.lower()}")
+    )
+
+    validate_model(model)
+    assert len(model.spaces) == 1
+    assert model.spaces[0].name == label
+    assert model.spaces[0].usage is None
+    assert model.spaces[0].attributes["pdf_architecture"][
+        "label_confidence"
+    ] == pytest.approx(0.88)
+    assert "multiple_room_labels_in_enclosure" not in _ambiguity_codes(model)
 
 
 def test_cad_derived_untagged_wall_faces_emit_closed_space_with_low_confidence_height() -> None:

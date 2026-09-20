@@ -51,23 +51,24 @@ _PT_PER_INCH = 72.0
 _VECTOR_AXIS_TOLERANCE_PT = 0.05
 _DEFAULT_GEOMETRIC_WALL_HEIGHT_M = 2.7432
 _WALL_ID_ROUND_DIGITS = 4
-_COMMON_ROOM_NAMES = {
-    "GARAGE": "garage",
-    "BEDROOM": "bedroom",
-    "PRIMARY BEDROOM": "bedroom",
-    "LIVING ROOM": "living-room",
-    "DINING ROOM": "dining-room",
-    "KITCHEN": "kitchen",
-    "OFFICE": "office",
-    "HALL": "hall",
-    "HALLWAY": "hall",
-    "BATH": "bathroom",
-    "BATHROOM": "bathroom",
-    "RESTROOM": "restroom",
-    "CLOSET": "closet",
-    "STORAGE": "storage",
-    "LOBBY": "lobby",
-}
+_EXPLICIT_ROOM_LABEL_RE = re.compile(
+    r"^(?:ROOM|SPACE)\s*[:#-]?\s*(.+)$",
+    re.IGNORECASE,
+)
+_KEYNOTE_RE = re.compile(
+    r"^(?:KEY\s*NOTES?|KEYNOTES?|GENERAL\s+NOTES?|NOTES?)\b",
+    re.IGNORECASE,
+)
+_TITLE_BLOCK_PATTERNS = (
+    re.compile(r"\bFLOOR\s+PLAN\b", re.IGNORECASE),
+    re.compile(r"^SCALE\b", re.IGNORECASE),
+    re.compile(r"^(?:LEVEL|ELEVATION)\s*:", re.IGNORECASE),
+    re.compile(
+        r"^(?:SHEET|DRAWING|PROJECT|TITLE|DATE|DRAWN(?:\s+BY)?|"
+        r"CHECKED(?:\s+BY)?|REVISION|REV|ISSUE)\b",
+        re.IGNORECASE,
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -906,23 +907,44 @@ def _resolve_level(
     )
 
 
+def _is_title_block_string(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _TITLE_BLOCK_PATTERNS)
+
+
+def _room_label_candidate(observation: PdfTextObservation) -> _RoomLabel | None:
+    text = _clean_text(observation.text)
+    if not text:
+        return None
+
+    explicit = _EXPLICIT_ROOM_LABEL_RE.match(text)
+    name = _clean_text(explicit.group(1)) if explicit else text
+    if not name:
+        return None
+
+    # Position establishes room-label semantics. Lexical rules are exclusions
+    # only, so numeric labels and project-specific abbreviations stay eligible.
+    if _find_dimension(name) is not None:
+        return None
+    if _KEYNOTE_RE.match(name):
+        return None
+    if _is_title_block_string(name):
+        return None
+
+    return _RoomLabel(
+        observation=observation,
+        name=name,
+        anchor=_anchor(name),
+        usage=None,
+        confidence=0.98 if explicit else 0.88,
+    )
+
+
 def _room_labels(page: PdfPageObservation) -> tuple[_RoomLabel, ...]:
-    labels: list[_RoomLabel] = []
-    explicit = re.compile(r"^(?:ROOM|SPACE)\s*[:#-]?\s*(.+)$", re.IGNORECASE)
-    for observation in page.texts:
-        text = _clean_text(observation.text)
-        upper = text.upper()
-        if any(token in upper for token in ("FLOOR PLAN", "SCALE", "LEVEL:", "ELEVATION", "CEILING HEIGHT", "SLAB", "DOOR", "WINDOW")):
-            continue
-        match = explicit.match(text)
-        if match:
-            name = _clean_text(match.group(1))
-            if name:
-                labels.append(_RoomLabel(observation, name, _anchor(name), _COMMON_ROOM_NAMES.get(name.upper()), 0.98))
-            continue
-        if upper in _COMMON_ROOM_NAMES:
-            labels.append(_RoomLabel(observation, text.title() if text.isupper() else text, _anchor(text), _COMMON_ROOM_NAMES[upper], 0.85))
-    return tuple(labels)
+    return tuple(
+        label
+        for observation in page.texts
+        if (label := _room_label_candidate(observation)) is not None
+    )
 
 
 def _inside(bbox: tuple[float, float, float, float], point: tuple[float, float]) -> bool:
@@ -1516,6 +1538,14 @@ def _shell_entities(
         }
         space_attributes = {"pdf_architecture": {"identity_anchor": room.anchor}}
 
+    space_attributes["pdf_architecture"].update(
+        {
+            "label_confidence": room.confidence,
+            "label_method": "text_inside_closed_wall_loop",
+            "label_source_element_id": room.observation.element_id,
+        }
+    )
+
     space = Space(
         id=stable_id("space", identity),
         name=room.name,
@@ -2107,6 +2137,36 @@ def _wall_pair_closed_loops(
     )
 
 
+def _point_in_polygon(
+    point: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+) -> bool:
+    if len(polygon) < 3:
+        return False
+
+    x, y = point
+    inside = False
+    for first, second in zip(polygon, (*polygon[1:], polygon[0]), strict=True):
+        x1, y1 = first
+        x2, y2 = second
+
+        dx = x2 - x1
+        dy = y2 - y1
+        cross = (x - x1) * dy - (y - y1) * dx
+        if abs(cross) <= 1e-9:
+            dot = (x - x1) * dx + (y - y1) * dy
+            length_sq = dx * dx + dy * dy
+            if -1e-9 <= dot <= length_sq + 1e-9:
+                return True
+
+        if (y1 > y) == (y2 > y):
+            continue
+        intersection_x = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+        if intersection_x >= x:
+            inside = not inside
+    return inside
+
+
 def _geometric_wall_loop_entities(
     page: PdfPageObservation,
     transform: _Transform2D,
@@ -2114,6 +2174,8 @@ def _geometric_wall_loop_entities(
     level_info: _LevelInfo,
     source_id: str,
     options: ImportOptions,
+    rooms: tuple[_RoomLabel, ...],
+    ambiguities: list[dict[str, object]],
     *,
     excluded_element_ids: set[str] | None = None,
 ) -> tuple[tuple[_WallContext, ...], tuple[Space, ...]]:
@@ -2206,6 +2268,33 @@ def _geometric_wall_loop_entities(
                 None,
             )
 
+        contained_rooms = sorted(
+            (
+                room
+                for room in rooms
+                if _point_in_polygon(
+                    transform.apply(room.observation.center_pt),
+                    polygon_xy,
+                )
+            ),
+            key=lambda room: (room.observation.element_id, room.anchor),
+        )
+        room = contained_rooms[0] if len(contained_rooms) == 1 else None
+        if len(contained_rooms) > 1:
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "multiple_room_labels_in_enclosure",
+                    "detail": (
+                        "more than one eligible text label lies inside the same "
+                        "geometric wall loop; the space remains unlabeled"
+                    ),
+                    "source_text_elements": [
+                        item.observation.element_id for item in contained_rooms
+                    ],
+                }
+            )
+
         space_confidence = min(
             transform.confidence,
             height_confidence,
@@ -2213,12 +2302,53 @@ def _geometric_wall_loop_entities(
                 contexts_by_anchor[anchor].wall.confidence
                 for anchor in loop_wall_anchors
             ),
+            room.confidence if room is not None else 1.0,
             0.72,
         )
+        space_provenance = _provenance(
+            source_id,
+            page.page_number,
+            method=(
+                "space footprint joined from one unambiguous closed loop of "
+                "geometrically paired wall centerlines"
+            ),
+            confidence=space_confidence,
+            source_element_id="+".join(sorted(source_ids)),
+            attributes={
+                "wall_ids": sorted(wall_ids),
+                "wall_geometry_anchors": list(loop_wall_anchors),
+            },
+        )
+        space_attributes: dict[str, object] = {
+            "recognition": "geometric_parallel_wall_closed_loop",
+            "sheet_anchor": sheet_anchor,
+            "wall_ids": sorted(wall_ids),
+        }
+        if room is not None:
+            space_provenance += _provenance(
+                source_id,
+                page.page_number,
+                method="room label assigned by text position inside closed wall loop",
+                confidence=room.confidence,
+                source_element_id=room.observation.element_id,
+                attributes={
+                    "label_anchor": room.anchor,
+                    "source_text": room.observation.text,
+                },
+            )
+            space_attributes.update(
+                {
+                    "label_anchor": room.anchor,
+                    "label_confidence": room.confidence,
+                    "label_method": "text_inside_closed_wall_loop",
+                    "label_source_element_id": room.observation.element_id,
+                }
+            )
+
         spaces.append(
             Space(
                 id=stable_id("space", loop_identity),
-                name=None,
+                name=room.name if room is not None else None,
                 level_id=level.id,
                 footprint=Polygon3D(
                     points=tuple(
@@ -2227,37 +2357,17 @@ def _geometric_wall_loop_entities(
                     )
                 ),
                 height_m=level.height_m,
-                usage=None,
+                usage=room.usage if room is not None else None,
                 confidence=space_confidence,
                 provenance=(
-                    _provenance(
-                        source_id,
-                        page.page_number,
-                        method=(
-                            "space footprint joined from one unambiguous closed loop of "
-                            "geometrically paired wall centerlines; room-label association "
-                            "is intentionally deferred"
-                        ),
-                        confidence=space_confidence,
-                        source_element_id="+".join(sorted(source_ids)),
-                        attributes={
-                            "wall_ids": sorted(wall_ids),
-                            "wall_geometry_anchors": list(loop_wall_anchors),
-                        },
-                    )
+                    space_provenance
                     + _level_measurement_provenance(
                         source_id,
                         level_info.height,
                         field="height_m",
                     )
                 ),
-                attributes={
-                    "pdf_architecture": {
-                        "recognition": "geometric_parallel_wall_closed_loop",
-                        "sheet_anchor": sheet_anchor,
-                        "wall_ids": sorted(wall_ids),
-                    }
-                },
+                attributes={"pdf_architecture": space_attributes},
             )
         )
 
@@ -2629,7 +2739,6 @@ def import_observations(
         blocking_enclosure_codes = {
             "duplicate_room_label",
             "multiple_room_labels_in_enclosure",
-            "ordinary_vector_enclosure_unresolved",
             "ordinary_vector_enclosure_ambiguous",
         }
         page_has_blocking_enclosure_ambiguity = any(
@@ -2647,8 +2756,25 @@ def import_observations(
                 level_info,
                 document.source_id,
                 options,
+                rooms,
+                ambiguities,
                 excluded_element_ids=consumed_vector_line_ids,
             )
+            resolved_geometric_label_anchors = {
+                space.attributes["pdf_architecture"].get("label_anchor")
+                for space in geometric_spaces
+                if space.attributes["pdf_architecture"].get("label_anchor")
+            }
+            if resolved_geometric_label_anchors:
+                ambiguities[:] = [
+                    item
+                    for item in ambiguities
+                    if not (
+                        item.get("page") == page.page_number
+                        and item.get("code") == "ordinary_vector_enclosure_unresolved"
+                        and item.get("room_anchor") in resolved_geometric_label_anchors
+                    )
+                ]
         existing_wall_geometry = {
             (
                 tuple(

@@ -78,3 +78,4 @@ def test_pr66_north_arrow_near_legend_does_not_match_electrical_type() -> None:
     assert diagnostics["non_unique_reason"] == "nearest prototype score is below the match threshold"
 
 # Reviewer-authored acceptance probe only.
+

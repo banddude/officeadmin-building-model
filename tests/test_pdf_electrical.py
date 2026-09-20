@@ -26,6 +26,7 @@ from oabm.model import BuildingModel, stable_id, validate_model
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_electrical"
+CAD_GEOMETRY_FIXTURE = ROOT / "fixtures" / "pdf_architecture" / "v1" / "cad-export-geometry-only.pdf"
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
 
@@ -98,6 +99,47 @@ def _write_synthetic_pdf(
 
     with path.open("wb") as handle:
         writer.write(handle)
+
+
+def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> None:
+    document = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+    repeated = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+
+    assert document == repeated
+    assert not document.texts
+    assert not document.symbols
+    assert len(document.vectors) == 3
+    assert [vector.metadata["paint_operator"] for vector in document.vectors] == [
+        "S",
+        "f",
+        "f*",
+    ]
+    assert document.vectors[0].points_pt == (
+        (18.0, 24.0),
+        (66.0, 38.0),
+        (108.0, 24.0),
+    )
+    assert document.vectors[1].closed is True
+    assert document.vectors[1].points_pt == (
+        (132.0, 24.0),
+        (154.0, 24.0),
+        (154.0, 46.0),
+        (132.0, 46.0),
+    )
+    assert document.vectors[2].closed is True
+    assert document.vectors[2].points_pt == (
+        (24.0, 92.0),
+        (84.0, 92.0),
+        (144.0, 92.0),
+        (144.0, 124.0),
+        (24.0, 124.0),
+    )
 
 
 def test_device_text_rules_do_not_match_longer_nontechnical_words() -> None:

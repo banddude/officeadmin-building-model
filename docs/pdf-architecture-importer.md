@@ -78,7 +78,7 @@ Typical ambiguity codes include:
 - `duplicate_room_label` / `duplicate_room_identity_across_pages`;
 - `opening_host_unresolved`, `opening_identity_unresolved`, and `window_vertical_position_unresolved`.
 
-The ordinary-vector fallback is intentionally narrow: only complete axis-aligned four-line loops are considered. Paired wall-face loops must satisfy the configured wall-thickness/span limits. If paired wall faces are unavailable, exactly one sufficiently large closed loop may support only a 2D Space around a unique room label; three or more inset wall-face sides are treated as evidence of an incomplete pair and still fail closed. Open or competing enclosures remain unresolved instead of being selected by extraction order.
+The ordinary-vector fallback is intentionally narrow: only complete axis-aligned four-line loops are considered. Paired wall-face loops must satisfy the configured wall-thickness/span limits. If paired wall faces are unavailable, exactly one sufficiently large closed loop may support only a 2D Space around a unique room label; any supported inset wall-face side is treated as evidence of an incomplete pair and the single-loop fallback fails closed. Open or competing enclosures remain unresolved instead of being selected by extraction order.
 
 Text extraction also keeps source observations local: words sharing a text baseline are split when a large horizontal gap indicates separate plan annotations. This prevents a room label from being fused with an unrelated distant dimension or keynote while preserving stable text-observation IDs for unchanged local labels.
 

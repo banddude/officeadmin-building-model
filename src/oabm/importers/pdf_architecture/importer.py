@@ -1212,7 +1212,7 @@ def _ordinary_vector_shell_candidates(
                                 partial_sides.add("west")
                             if min_offset_pt <= bx1 - x <= max_offset_pt:
                                 partial_sides.add("east")
-                if len(partial_sides) < 3:
+                if not partial_sides:
                     pair = (boundary.element_id, boundary.element_id)
                     if pair in used_pairs:
                         ambiguities.append(
@@ -1406,7 +1406,11 @@ def _shell_entities(
     )
     footprint = _polygon_from_bbox(shell.inner.bbox_pt, transform, level.elevation_m)
     level_height = level_info.height
-    if room_height_blocked:
+    is_single_loop_space = shell.recognition_method == "ordinary_vector_single_loop_space"
+    if is_single_loop_space:
+        selected_height = None
+        selected_scope = None
+    elif room_height_blocked:
         selected_height = (
             level_height
             if level_height is not None and level_height.priority >= 3
@@ -1498,8 +1502,7 @@ def _shell_entities(
         attributes=space_attributes,
     )
 
-    walls: list[_WallContext] = []
-    if shell.recognition_method == "ordinary_vector_single_loop_space":
+    if is_single_loop_space:
         ambiguities.append(
             {
                 "page": page.page_number,
@@ -1510,7 +1513,10 @@ def _shell_entities(
                 ),
             }
         )
-    elif resolved_height_m is None:
+        return space, (), None, None
+
+    walls: list[_WallContext] = []
+    if resolved_height_m is None:
         ambiguities.append(
             {
                 "page": page.page_number,

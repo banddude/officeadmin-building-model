@@ -206,6 +206,94 @@ def test_single_ordinary_vector_loop_promotes_only_a_2d_space() -> None:
     assert "wall_thickness_unresolved" in _ambiguity_codes(model)
 
 
+@pytest.mark.parametrize(
+    "partial_lines",
+    (
+        (
+            _line("partial:south", (45.0, 39.0), (215.0, 39.0)),
+        ),
+        (
+            _line("partial:south", (45.0, 39.0), (215.0, 39.0)),
+            _line("partial:west", (44.0, 40.0), (44.0, 120.0)),
+        ),
+    ),
+    ids=("one-sided-partial-pair", "two-sided-partial-pair"),
+)
+def test_single_ordinary_vector_loop_with_partial_paired_wall_evidence_fails_closed(
+    partial_lines: tuple[PdfLineObservation, ...],
+) -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=(
+            _text("title", "A1.1 FLOOR PLAN", 10, 180),
+            _text("scale", "SCALE: 1:100", 10, 165),
+            _text("room", "ROOM: GARAGE", 80, 70),
+        ),
+        lines=(
+            *_loop_lines("single", (40.0, 35.0, 220.0, 125.0)),
+            *partial_lines,
+        ),
+    )
+
+    model = import_observations(_document(page))
+
+    validate_model(model)
+    assert not model.spaces
+    assert not model.walls
+    assert not model.slabs
+    assert not model.ceilings
+    assert "ordinary_vector_enclosure_unresolved" in _ambiguity_codes(model)
+    assert "architectural_geometry_unrecognized" in _ambiguity_codes(model)
+
+
+@pytest.mark.parametrize(
+    ("height_text", "default_wall_height_m"),
+    (
+        ("LEVEL CEILING HEIGHT: 9'-0\"", None),
+        (None, 2.4),
+    ),
+    ids=("explicit-level-height", "default-wall-height"),
+)
+def test_single_ordinary_vector_loop_remains_2d_with_height_and_slab_inputs(
+    height_text: str | None,
+    default_wall_height_m: float | None,
+) -> None:
+    texts = [
+        _text("title", "A1.1 FLOOR PLAN", 10, 180),
+        _text("scale", "SCALE: 1:100", 10, 165),
+        _text("room", "ROOM: GARAGE", 80, 70),
+        _text("slab", "FLOOR SLAB THICKNESS: 4\"", 10, 145),
+    ]
+    if height_text is not None:
+        texts.append(_text("height", height_text, 10, 130))
+
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=tuple(texts),
+        lines=_loop_lines("single", (40.0, 35.0, 220.0, 125.0)),
+    )
+
+    model = import_observations(
+        _document(page),
+        options=ImportOptions(default_wall_height_m=default_wall_height_m),
+    )
+
+    validate_model(model)
+    assert len(model.spaces) == 1
+    assert model.spaces[0].height_m is None
+    assert not model.walls
+    assert not model.slabs
+    assert not model.ceilings
+    assert model.spaces[0].attributes["pdf_architecture"]["recognition"] == (
+        "ordinary_vector_single_loop_space"
+    )
+    assert "wall_thickness_unresolved" in _ambiguity_codes(model)
+
+
 def test_competing_single_ordinary_vector_loops_stay_unresolved() -> None:
     page = PdfPageObservation(
         page_number=1,

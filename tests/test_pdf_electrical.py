@@ -35,7 +35,7 @@ EDGE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-edge-legend
 DENSE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-dense-legend.pdf"
 SEPARATE_LEGEND_REFERENCE_FIXTURE = FIXTURE_DIR / "separate-sheet-explicit-legend-reference.pdf"
 NOTES_COLUMN_LEGEND_FIXTURE = (
-    FIXTURE_DIR / "geometry-only-power-sheet-notes-column-legend.json"
+    FIXTURE_DIR / "geometry-only-power-sheet-notes-column-legend.pdf"
 )
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
@@ -518,17 +518,23 @@ def test_explicit_separate_legend_sheet_reference_never_inherits_silently() -> N
 def test_notes_column_symbol_function_legend_records_field_status() -> None:
     assert not NOTES_COLUMN_LEGEND_FIXTURE.with_suffix(".expected.json").exists()
 
-    extracted = PdfElectricalDocument.from_dict(
-        json.loads(NOTES_COLUMN_LEGEND_FIXTURE.read_text(encoding="utf-8"))
+    extracted = extract_pdf(
+        NOTES_COLUMN_LEGEND_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-notes-column-legend",
     )
-    repeated = PdfElectricalDocument.from_dict(
-        json.loads(NOTES_COLUMN_LEGEND_FIXTURE.read_text(encoding="utf-8"))
+    repeated = extract_pdf(
+        NOTES_COLUMN_LEGEND_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-notes-column-legend",
     )
     assert extracted == repeated
     assert not extracted.symbols
+    assert len(extracted.texts) == 36
+    assert len(extracted.vectors) == 46
 
     texts = {observation.text for observation in extracted.texts}
     assert {
+        "ARCHITECT STAMP",
+        "SYNTHETIC PUBLIC-SAFE FIXTURE",
         "KEY NOTES",
         "GENERAL NOTES",
         "LEGEND",
@@ -539,6 +545,11 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
         "R",
         '+44"',
         '+66"',
+        "EXISTING TO BE REMOVED",
+        "EXISTING TO REMAIN",
+        "NEW",
+        "SYNTHETIC PROJECT",
+        "ISSUE: TEST",
         "A2.1",
     } <= texts
 

@@ -1492,9 +1492,9 @@ def _recognize_legend_shapes(
         if _LEGEND_HEADING_RE.search(observation.text)
     )
     legend_text_ids = {observation.element_id for observation in headings}
-    prototype_geometry_keys: set[str] = set()
+    prototype_geometry_keys: set[tuple[int, str]] = set()
     entries_by_signature: dict[
-        str,
+        tuple[int, str],
         list[
             tuple[
                 str,
@@ -1507,6 +1507,7 @@ def _recognize_legend_shapes(
         ],
     ] = {}
     unresolved: list[dict[str, Any]] = []
+    legend_pages = {heading.page for heading in headings}
 
     for label in texts:
         if label.element_id in legend_text_ids:
@@ -1597,7 +1598,8 @@ def _recognize_legend_shapes(
             continue
 
         prototype = tied[0]
-        if prototype.geometry_key in prototype_geometry_keys:
+        prototype_key = (prototype.page, prototype.geometry_key)
+        if prototype_key in prototype_geometry_keys:
             unresolved.append(
                 {
                     "kind": "legend_label",
@@ -1621,7 +1623,9 @@ def _recognize_legend_shapes(
             ),
         )
         entity_kind, canonical_type, confidence = classification
-        entries_by_signature.setdefault(prototype.shape_signature, []).append(
+        entries_by_signature.setdefault(
+            (prototype.page, prototype.shape_signature), []
+        ).append(
             (
                 entity_kind,
                 canonical_type,
@@ -1631,11 +1635,11 @@ def _recognize_legend_shapes(
                 header,
             )
         )
-        prototype_geometry_keys.add(prototype.geometry_key)
+        prototype_geometry_keys.add(prototype_key)
         legend_text_ids.add(label.element_id)
 
     legend_by_signature: dict[
-        str,
+        tuple[int, str],
         tuple[
             str,
             str,
@@ -1645,7 +1649,7 @@ def _recognize_legend_shapes(
             PdfTextObservation,
         ],
     ] = {}
-    for signature, entries in sorted(entries_by_signature.items()):
+    for (page, signature), entries in sorted(entries_by_signature.items()):
         classifications = {
             (entry[0], entry[1])
             for entry in entries
@@ -1673,7 +1677,7 @@ def _recognize_legend_shapes(
                     }
                 )
             continue
-        legend_by_signature[signature] = sorted(
+        legend_by_signature[(page, signature)] = sorted(
             entries,
             key=lambda entry: (
                 -entry[2],
@@ -1686,14 +1690,16 @@ def _recognize_legend_shapes(
     matched_vector_ids: set[str] = {
         element_id
         for cluster in clusters
-        if cluster.geometry_key in prototype_geometry_keys
+        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys
         for element_id in cluster.source_element_ids
     }
 
     for cluster in clusters:
-        if cluster.geometry_key in prototype_geometry_keys:
+        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
             continue
-        legend_entry = legend_by_signature.get(cluster.shape_signature)
+        legend_entry = legend_by_signature.get(
+            (cluster.page, cluster.shape_signature)
+        )
         if legend_entry is None:
             unresolved.append(
                 {
@@ -1708,7 +1714,18 @@ def _recognize_legend_shapes(
                     "bbox_pt": list(cluster.bbox_pt),
                     "shape_signature": cluster.shape_signature,
                     "status": "unresolved_classification",
-                    "reason": "glyph cluster has no unique matching type in the sheet legend",
+                    "reason": (
+                        "page has no recognized legend; glyph remains unresolved and "
+                        "cross-page legend inheritance is disabled"
+                        if cluster.page not in legend_pages
+                        else "glyph cluster has no unique matching type in the sheet legend"
+                    ),
+                    "recognition_provenance": {
+                        "method": "sheet-local-legend-geometry-match",
+                        "legend_scope": "same-page-only",
+                        "page": cluster.page,
+                        "page_has_recognized_legend": cluster.page in legend_pages,
+                    },
                 }
             )
             continue
@@ -1729,6 +1746,7 @@ def _recognize_legend_shapes(
             "source_geometry_key": cluster.geometry_key,
             "legend_header_element_id": header.element_id,
             "legend_label_element_id": label.element_id,
+            "legend_page": label.page,
             "legend_label": label.text,
             "legend_source_element_ids": list(prototype.source_element_ids),
             "source_element_ids": list(cluster.source_element_ids),

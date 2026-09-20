@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_electrical"
 CAD_GEOMETRY_FIXTURE = ROOT / "fixtures" / "pdf_architecture" / "v1" / "cad-export-geometry-only.pdf"
 LEGEND_SHAPE_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-with-legend.pdf"
+TWO_PAGE_LEGEND_LOCALITY_FIXTURE = FIXTURE_DIR / "two-page-sheet-local-legend.pdf"
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
 
@@ -211,6 +212,61 @@ def test_legend_shape_device_ids_ignore_vector_extraction_ids_and_order() -> Non
         for device in reordered.electrical_devices
     }
     assert original_ids == reordered_ids
+
+
+def test_legend_shape_matching_never_inherits_another_pages_legend() -> None:
+    assert not TWO_PAGE_LEGEND_LOCALITY_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        TWO_PAGE_LEGEND_LOCALITY_FIXTURE,
+        source_id="fixture:two-page-sheet-local-legend",
+    )
+
+    assert extracted.page_count == 2
+    assert {item.page for item in extracted.texts} == {1}
+
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    devices_by_page = {
+        page: [
+            device
+            for device in model.electrical_devices
+            if device.attributes["pdf_electrical"]["source_page"] == page
+        ]
+        for page in (1, 2)
+    }
+    assert len(devices_by_page[1]) == 6
+    assert devices_by_page[2] == []
+
+    page_two_unresolved = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "vector_cluster" and item.get("page") == 2
+    ]
+    assert len(page_two_unresolved) == 8
+    assert {
+        item["reason"] for item in page_two_unresolved
+    } == {
+        "page has no recognized legend; glyph remains unresolved and "
+        "cross-page legend inheritance is disabled"
+    }
+    assert all(
+        item["recognition_provenance"] == {
+            "method": "sheet-local-legend-geometry-match",
+            "legend_scope": "same-page-only",
+            "page": 2,
+            "page_has_recognized_legend": False,
+        }
+        for item in page_two_unresolved
+    )
+    assert all(
+        provenance.page == 1
+        for device in model.electrical_devices
+        for provenance in device.provenance
+        if provenance.method == "pdf-sheet-legend-type-label"
+    )
+
+    validate_model(model)
 
 
 def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> None:

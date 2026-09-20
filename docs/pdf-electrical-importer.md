@@ -113,10 +113,16 @@ the filled and Bézier geometry retained by Slice 1. It locates a printed
 electrical/symbol legend, associates each unambiguous legend type label with the
 nearest small drawn glyph, builds a translation/scale/quarter-turn invariant
 shape signature, and matches field glyph clusters against those legend
-prototypes. A unique match emits the legend's canonical device/equipment type
-with `pdf-legend-shape-match` provenance from both field geometry and the legend
-label. Conflicting legend definitions fail closed. Candidate glyphs with no
-unique legend type remain unresolved and are never guessed.
+prototypes. Legend prototypes and ownership are page-local: a field glyph can
+match only a legend drawn on the same page. Pages without a recognized legend do
+not inherit prototypes from another sheet; their glyphs remain unresolved with
+explicit same-page recognition provenance. Cross-sheet/shared-legend inheritance
+is intentionally unsupported unless a future implementation can reliably detect
+an explicit legend-sheet reference. A unique match emits the legend's canonical
+device/equipment type with `pdf-legend-shape-match` provenance from both field
+geometry and the legend label. Conflicting legend definitions on the same page
+fail closed. Candidate glyphs with no unique page-local legend type remain
+unresolved and are never guessed.
 
 The built-in text catalog remains available as additional evidence and as a
 fallback for sources with explicit stable semantic labels. It also recognizes

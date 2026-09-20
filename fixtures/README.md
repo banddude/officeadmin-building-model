@@ -15,6 +15,7 @@ recognition lane:
 1. `synthetic-sheet-e1.json`: panel, EVSE symbol, mounting note, and inferable circuit
 2. `ambiguous-sheet-e1.json`: ambiguous symbol, conflicting mounting heights, and an incomplete circuit reference
 3. `geometry-only-power-sheet-with-legend.pdf`: Slice 4 source-only acceptance PDF with six geometry-only field glyphs, three drawn legend prototypes and labels, and two unmatched glyphs that must remain unresolved. There is no paired expected-output artifact.
+4. `two-page-sheet-local-legend.pdf`: Slice 4 regression PDF. Page 1 has the drawn legend and field glyphs; page 2 repeats only field glyph geometry and must not inherit page 1 legend types. There is no paired expected-output artifact.
 
 These fixtures are synthetic. They contain no customer plan content.
 

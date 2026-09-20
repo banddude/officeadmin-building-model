@@ -41,6 +41,8 @@ class PdfLineObservation:
     start_pt: tuple[float, float]
     end_pt: tuple[float, float]
     native_id: str | None = None
+    primitive_family: str = "line"
+    dashed: bool = False
 
     def __post_init__(self) -> None:
         _point2(self.start_pt, "start_pt")
@@ -166,8 +168,8 @@ class ImportOptions:
     level_overrides: tuple[LevelOverride, ...] = ()
     default_wall_height_m: float | None = None
     assumed_value_confidence: float = 0.45
-    min_wall_thickness_m: float = 0.05
-    max_wall_thickness_m: float = 0.45
+    min_wall_thickness_m: float = 0.0508
+    max_wall_thickness_m: float = 0.4572
     min_space_span_m: float = 1.0
     max_opening_host_distance_m: float = 1.25
     scale_registration_tolerance: float = 0.02

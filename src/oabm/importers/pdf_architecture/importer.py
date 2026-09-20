@@ -205,11 +205,22 @@ class _WallContext:
 
 
 @dataclass(frozen=True, slots=True)
+class _WallFaceRun:
+    start_pt: tuple[float, float]
+    end_pt: tuple[float, float]
+    source_element_ids: tuple[str, ...]
+    primitive_families: tuple[str, ...]
+    dashed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _WallFacePair:
     start_pt: tuple[float, float]
     end_pt: tuple[float, float]
     thickness_m: float
-    source_element_ids: tuple[str, str]
+    source_element_ids: tuple[str, ...]
+    primitive_families: tuple[str, ...]
+    dashed: bool
     geometry_anchor: str
 
 
@@ -2201,7 +2212,7 @@ def _rounded_wall_anchor(
 
 
 def _line_record(
-    line: PdfLineObservation,
+    line: PdfLineObservation | _WallFaceRun,
 ) -> tuple[float, float, float, float, float]:
     start, end = _canonical_segment(line.start_pt, line.end_pt)
     dx = end[0] - start[0]
@@ -2215,21 +2226,49 @@ def _line_record(
     return ux, uy, p0, p1, normal
 
 
-def _geometric_wall_face_pairs(
+def _gap_histogram(gaps_m: list[float]) -> list[dict[str, object]]:
+    edges = (
+        0.0,
+        2.0 * _INCH_M,
+        4.0 * _INCH_M,
+        8.0 * _INCH_M,
+        12.0 * _INCH_M,
+        18.0 * _INCH_M,
+        24.0 * _INCH_M,
+    )
+    result: list[dict[str, object]] = []
+    for lower, upper in zip(edges, edges[1:]):
+        result.append(
+            {
+                "min_m": round(lower, 6),
+                "max_m": round(upper, 6),
+                "count": sum(1 for value in gaps_m if lower <= value < upper),
+            }
+        )
+    result.append(
+        {
+            "min_m": round(edges[-1], 6),
+            "max_m": None,
+            "count": sum(1 for value in gaps_m if value >= edges[-1]),
+        }
+    )
+    return result
+
+
+def _collinear_wall_face_runs(
     page: PdfPageObservation,
     transform: _Transform2D,
-    options: ImportOptions,
     *,
-    excluded_element_ids: set[str] | None = None,
-) -> tuple[_WallFacePair, ...]:
-    """Pair wall faces by geometry only, never by PDF-native identifiers."""
-
-    duplicate_geometry: set[tuple[float, float, float, float]] = set()
+    excluded_element_ids: set[str],
+    diagnostics: dict[str, object],
+) -> tuple[_WallFaceRun, ...]:
     by_geometry: dict[tuple[float, float, float, float], list[PdfLineObservation]] = {}
-    excluded_element_ids = excluded_element_ids or set()
-    for line in page.lines:
-        if line.element_id in excluded_element_ids:
-            continue
+    eligible = [
+        line
+        for line in page.lines
+        if line.element_id not in excluded_element_ids
+    ]
+    for line in eligible:
         start, end = _canonical_segment(line.start_pt, line.end_pt)
         key = (
             round(start[0], 6),
@@ -2238,30 +2277,281 @@ def _geometric_wall_face_pairs(
             round(end[1], 6),
         )
         by_geometry.setdefault(key, []).append(line)
-    duplicate_geometry.update(key for key, values in by_geometry.items() if len(values) != 1)
 
-    minimum_overlap_m = options.min_space_span_m * 0.5
-    minimum_overlap_pt = minimum_overlap_m / transform.meters_per_point
+    duplicate_geometry = {
+        key for key, values in by_geometry.items() if len(values) != 1
+    }
     lines = [
         values[0]
         for key, values in sorted(by_geometry.items())
         if key not in duplicate_geometry
-        and math.dist(values[0].start_pt, values[0].end_pt) >= minimum_overlap_pt
     ]
+
+    family_counts: dict[str, int] = {}
+    for line in eligible:
+        family_counts[line.primitive_family] = family_counts.get(line.primitive_family, 0) + 1
+
+    diagnostics.update(
+        {
+            "input_segment_count": len(eligible),
+            "primitive_family_counts": dict(sorted(family_counts.items())),
+            "dashed_input_segment_count": sum(1 for line in eligible if line.dashed),
+            "duplicate_geometry_segment_count": sum(
+                len(by_geometry[key]) for key in duplicate_geometry
+            ),
+            "style_or_layer_gate_applied": False,
+            "style_or_layer_rejected_count": 0,
+        }
+    )
+    if not lines:
+        diagnostics.update(
+            {
+                "unique_segment_count": 0,
+                "joined_run_count": 0,
+                "collinear_join_component_count": 0,
+            }
+        )
+        return ()
+
+    angle_tolerance = math.radians(2.0)
+    max_cross = math.sin(angle_tolerance)
+    join_gap_pt = (6.0 * _INCH_M) / transform.meters_per_point
+    collinear_offset_pt = (0.25 * _INCH_M) / transform.meters_per_point
+    orientation_bucket_count = max(1, int(round(math.pi / angle_tolerance)))
+    tangent_bin_size = max(join_gap_pt * 4.0, 32.0)
+    normal_bin_size = max(collinear_offset_pt * 2.0, 1.0)
     records = [_line_record(line) for line in lines]
 
-    # The audited CAD page contains tens of thousands of line primitives. Build
-    # deterministic coarse orientation/spatial buckets so only nearby,
-    # sufficiently-overlapping lines reach the exact parallel-pair checks below.
-    angle_tolerance = math.radians(2.0)
-    orientation_bucket_count = max(1, int(round(math.pi / angle_tolerance)))
-    max_offset_pt = options.max_wall_thickness_m / transform.meters_per_point
-    normal_bin_size = max(max_offset_pt, 1.0)
-    tangent_bin_size = max(minimum_overlap_pt, max_offset_pt * 2.0, 16.0)
     candidate_cells: dict[tuple[int, int, int], set[int]] = {}
     for line_index, line in enumerate(lines):
         start, end = _canonical_segment(line.start_pt, line.end_pt)
         ux, uy, _, _, _ = records[line_index]
+        theta = math.atan2(uy, ux) % math.pi
+        base_bucket = int(round(theta / angle_tolerance)) % orientation_bucket_count
+        for orientation_bucket in {
+            (base_bucket - 1) % orientation_bucket_count,
+            base_bucket,
+            (base_bucket + 1) % orientation_bucket_count,
+        }:
+            reference_angle = orientation_bucket * angle_tolerance
+            tx, ty = math.cos(reference_angle), math.sin(reference_angle)
+            nx, ny = -ty, tx
+            tangent_values = sorted(
+                (
+                    start[0] * tx + start[1] * ty,
+                    end[0] * tx + end[1] * ty,
+                )
+            )
+            normal_value = (
+                ((start[0] + end[0]) / 2.0) * nx
+                + ((start[1] + end[1]) / 2.0) * ny
+            )
+            tangent_start = math.floor(
+                (tangent_values[0] - join_gap_pt) / tangent_bin_size
+            )
+            tangent_end = math.floor(
+                (tangent_values[1] + join_gap_pt) / tangent_bin_size
+            )
+            normal_start = math.floor(
+                (normal_value - collinear_offset_pt) / normal_bin_size
+            )
+            normal_end = math.floor(
+                (normal_value + collinear_offset_pt) / normal_bin_size
+            )
+            for normal_bucket in range(normal_start, normal_end + 1):
+                for tangent_bucket in range(tangent_start, tangent_end + 1):
+                    candidate_cells.setdefault(
+                        (orientation_bucket, normal_bucket, tangent_bucket),
+                        set(),
+                    ).add(line_index)
+
+    candidate_pairs: set[tuple[int, int]] = set()
+    for cell_lines in candidate_cells.values():
+        ordered = sorted(cell_lines)
+        for position, first_index in enumerate(ordered):
+            for second_index in ordered[position + 1 :]:
+                candidate_pairs.add((first_index, second_index))
+
+    parents = list(range(len(lines)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root = find(first)
+        second_root = find(second)
+        if first_root == second_root:
+            return
+        if first_root < second_root:
+            parents[second_root] = first_root
+        else:
+            parents[first_root] = second_root
+
+    for first_index, second_index in sorted(candidate_pairs):
+        ux, uy, a0, a1, first_normal = records[first_index]
+        sux, suy, _, _, _ = records[second_index]
+        if abs(ux * suy - uy * sux) > max_cross:
+            continue
+        nx, ny = -uy, ux
+        second = lines[second_index]
+        b_values = sorted(
+            (
+                second.start_pt[0] * ux + second.start_pt[1] * uy,
+                second.end_pt[0] * ux + second.end_pt[1] * uy,
+            )
+        )
+        second_normal = (
+            ((second.start_pt[0] + second.end_pt[0]) / 2.0) * nx
+            + ((second.start_pt[1] + second.end_pt[1]) / 2.0) * ny
+        )
+        if abs(second_normal - first_normal) > collinear_offset_pt:
+            continue
+        if b_values[0] > a1:
+            gap_pt = b_values[0] - a1
+        elif a0 > b_values[1]:
+            gap_pt = a0 - b_values[1]
+        else:
+            gap_pt = 0.0
+        if gap_pt <= join_gap_pt:
+            union(first_index, second_index)
+
+    components: dict[int, list[int]] = {}
+    for index in range(len(lines)):
+        components.setdefault(find(index), []).append(index)
+
+    runs: list[_WallFaceRun] = []
+    joined_components = 0
+    for members in components.values():
+        ordered_members = sorted(members)
+        if len(ordered_members) > 1:
+            joined_components += 1
+        reference_index = max(
+            ordered_members,
+            key=lambda index: (
+                math.dist(lines[index].start_pt, lines[index].end_pt),
+                -index,
+            ),
+        )
+        ux, uy, _, _, _ = records[reference_index]
+        nx, ny = -uy, ux
+        tangent_values: list[float] = []
+        normal_values: list[float] = []
+        source_ids: set[str] = set()
+        primitive_families: set[str] = set()
+        dashed = False
+        for index in ordered_members:
+            line = lines[index]
+            source_ids.add(line.element_id)
+            primitive_families.add(line.primitive_family)
+            dashed = dashed or line.dashed
+            for point in (line.start_pt, line.end_pt):
+                tangent_values.append(point[0] * ux + point[1] * uy)
+                normal_values.append(point[0] * nx + point[1] * ny)
+        mean_normal = sum(normal_values) / len(normal_values)
+        tangent_start = min(tangent_values)
+        tangent_end = max(tangent_values)
+        start_pt = (
+            tangent_start * ux + mean_normal * nx,
+            tangent_start * uy + mean_normal * ny,
+        )
+        end_pt = (
+            tangent_end * ux + mean_normal * nx,
+            tangent_end * uy + mean_normal * ny,
+        )
+        start_pt, end_pt = _canonical_segment(start_pt, end_pt)
+        runs.append(
+            _WallFaceRun(
+                start_pt=start_pt,
+                end_pt=end_pt,
+                source_element_ids=tuple(sorted(source_ids)),
+                primitive_families=tuple(sorted(primitive_families)),
+                dashed=dashed,
+            )
+        )
+
+    diagnostics.update(
+        {
+            "unique_segment_count": len(lines),
+            "joined_run_count": len(runs),
+            "collinear_join_component_count": joined_components,
+            "collinear_join_gap_m": round(6.0 * _INCH_M, 6),
+            "collinear_offset_tolerance_m": round(0.25 * _INCH_M, 6),
+        }
+    )
+    return tuple(
+        sorted(
+            runs,
+            key=lambda run: (
+                _canonical_segment(run.start_pt, run.end_pt),
+                run.source_element_ids,
+            ),
+        )
+    )
+
+
+def _geometric_wall_face_pairs(
+    page: PdfPageObservation,
+    transform: _Transform2D,
+    options: ImportOptions,
+    *,
+    excluded_element_ids: set[str] | None = None,
+    diagnostics: dict[str, object] | None = None,
+) -> tuple[_WallFacePair, ...]:
+    """Pair wall faces from joined CAD runs, independent of PDF-native IDs."""
+
+    diagnostics = diagnostics if diagnostics is not None else {}
+    excluded_element_ids = excluded_element_ids or set()
+    runs = _collinear_wall_face_runs(
+        page,
+        transform,
+        excluded_element_ids=excluded_element_ids,
+        diagnostics=diagnostics,
+    )
+    minimum_overlap_m = min(options.min_space_span_m * 0.5, 12.0 * _INCH_M)
+    minimum_overlap_pt = minimum_overlap_m / transform.meters_per_point
+    eligible_runs = [
+        run
+        for run in runs
+        if math.dist(run.start_pt, run.end_pt) >= minimum_overlap_pt
+    ]
+    minimum_overlap_ratio = 0.25
+    diagnostics["minimum_pair_overlap_m"] = round(minimum_overlap_m, 6)
+    diagnostics["minimum_overlap_ratio"] = minimum_overlap_ratio
+    diagnostics["minimum_length_rejected_count"] = len(runs) - len(eligible_runs)
+    diagnostics["wall_gap_range_m"] = [
+        round(options.min_wall_thickness_m, 6),
+        round(options.max_wall_thickness_m, 6),
+    ]
+    if not eligible_runs:
+        diagnostics.update(
+            {
+                "candidate_pair_count": 0,
+                "parallel_gap_histogram_m": _gap_histogram([]),
+                "accepted_pair_count": 0,
+                "rejected": {
+                    "parallel": 0,
+                    "overlap_ratio": 0,
+                    "gap_range": 0,
+                    "ambiguous_or_non_mutual": 0,
+                },
+            }
+        )
+        return ()
+
+    records = [_line_record(run) for run in eligible_runs]
+    angle_tolerance = math.radians(2.0)
+    orientation_bucket_count = max(1, int(round(math.pi / angle_tolerance)))
+    diagnostic_max_offset_m = max(options.max_wall_thickness_m, 24.0 * _INCH_M)
+    diagnostic_max_offset_pt = diagnostic_max_offset_m / transform.meters_per_point
+    normal_bin_size = max(diagnostic_max_offset_pt, 1.0)
+    tangent_bin_size = max(minimum_overlap_pt, diagnostic_max_offset_pt * 2.0, 16.0)
+    candidate_cells: dict[tuple[int, int, int], set[int]] = {}
+    for run_index, run in enumerate(eligible_runs):
+        start, end = _canonical_segment(run.start_pt, run.end_pt)
+        ux, uy, _, _, _ = records[run_index]
         theta = math.atan2(uy, ux) % math.pi
         base_bucket = int(round(theta / angle_tolerance)) % orientation_bucket_count
         for orientation_bucket in {
@@ -2287,21 +2577,21 @@ def _geometric_wall_face_pairs(
             tangent_start = math.floor(tangent_values[0] / tangent_bin_size)
             tangent_end = math.floor(tangent_values[1] / tangent_bin_size)
             normal_start = math.floor(
-                (normal_values[0] - max_offset_pt) / normal_bin_size
+                (normal_values[0] - diagnostic_max_offset_pt) / normal_bin_size
             )
             normal_end = math.floor(
-                (normal_values[1] + max_offset_pt) / normal_bin_size
+                (normal_values[1] + diagnostic_max_offset_pt) / normal_bin_size
             )
             for normal_bucket in range(normal_start, normal_end + 1):
                 for tangent_bucket in range(tangent_start, tangent_end + 1):
                     candidate_cells.setdefault(
                         (orientation_bucket, normal_bucket, tangent_bucket),
                         set(),
-                    ).add(line_index)
+                    ).add(run_index)
 
     candidate_pairs: set[tuple[int, int]] = set()
-    for cell_lines in candidate_cells.values():
-        ordered = sorted(cell_lines)
+    for cell_runs in candidate_cells.values():
+        ordered = sorted(cell_runs)
         for position, first_index in enumerate(ordered):
             for second_index in ordered[position + 1 :]:
                 candidate_pairs.add((first_index, second_index))
@@ -2317,15 +2607,19 @@ def _geometric_wall_face_pairs(
             tuple[float, float],
         ]
     ] = []
+    rejected_parallel = 0
+    rejected_overlap = 0
+    rejected_gap = 0
+    gap_samples_m: list[float] = []
     max_cross = math.sin(angle_tolerance)
     for first_index, second_index in sorted(candidate_pairs):
-        first = lines[first_index]
         ux, uy, a0, a1, first_normal = records[first_index]
         sux, suy, _, _, _ = records[second_index]
         if abs(ux * suy - uy * sux) > max_cross:
+            rejected_parallel += 1
             continue
         nx, ny = -uy, ux
-        second = lines[second_index]
+        second = eligible_runs[second_index]
         cx, cy = second.start_pt
         ex, ey = second.end_pt
         b0, b1 = sorted((cx * ux + cy * uy, ex * ux + ey * uy))
@@ -2333,11 +2627,23 @@ def _geometric_wall_face_pairs(
         overlap1 = min(a1, b1)
         overlap_pt = overlap1 - overlap0
         overlap_m = overlap_pt * transform.meters_per_point
-        if overlap_m < minimum_overlap_m:
+        shorter_span_pt = min(a1 - a0, b1 - b0)
+        overlap_ratio = max(0.0, overlap_pt) / shorter_span_pt
+        if (
+            overlap_m < minimum_overlap_m
+            or overlap_ratio < minimum_overlap_ratio
+        ):
+            rejected_overlap += 1
             continue
         second_normal = ((cx + ex) / 2.0) * nx + ((cy + ey) / 2.0) * ny
         offset_m = abs(second_normal - first_normal) * transform.meters_per_point
-        if not (options.min_wall_thickness_m <= offset_m <= options.max_wall_thickness_m):
+        gap_samples_m.append(offset_m)
+        gap_tolerance_m = 1e-9
+        if (
+            offset_m < options.min_wall_thickness_m - gap_tolerance_m
+            or offset_m > options.max_wall_thickness_m + gap_tolerance_m
+        ):
+            rejected_gap += 1
             continue
         mean_normal = (first_normal + second_normal) / 2.0
         start_source = (
@@ -2364,20 +2670,23 @@ def _geometric_wall_face_pairs(
             )
         )
 
-    by_line: dict[int, list[int]] = {}
+    by_run: dict[int, list[int]] = {}
     for candidate_index, candidate in enumerate(candidates):
-        by_line.setdefault(candidate[0], []).append(candidate_index)
-        by_line.setdefault(candidate[1], []).append(candidate_index)
+        by_run.setdefault(candidate[0], []).append(candidate_index)
+        by_run.setdefault(candidate[1], []).append(candidate_index)
 
     unique_best: dict[int, int] = {}
-    for line_index, indexes in by_line.items():
+    ambiguous_best_run_count = 0
+    for run_index, indexes in by_run.items():
         ordered = sorted(indexes, key=lambda index: candidates[index][6])
         if len(ordered) > 1 and candidates[ordered[0]][6] == candidates[ordered[1]][6]:
+            ambiguous_best_run_count += 1
             continue
-        unique_best[line_index] = ordered[0]
+        unique_best[run_index] = ordered[0]
 
     accepted: list[_WallFacePair] = []
     seen_anchors: set[str] = set()
+    accepted_candidate_indexes: set[int] = set()
     for candidate_index, candidate in enumerate(candidates):
         first_index, second_index, _, thickness_m, start_source, end_source, _ = candidate
         if unique_best.get(first_index) != candidate_index:
@@ -2388,17 +2697,39 @@ def _geometric_wall_face_pairs(
         if geometry_anchor in seen_anchors:
             continue
         seen_anchors.add(geometry_anchor)
+        accepted_candidate_indexes.add(candidate_index)
+        first = eligible_runs[first_index]
+        second = eligible_runs[second_index]
         accepted.append(
             _WallFacePair(
                 start_pt=start_source,
                 end_pt=end_source,
                 thickness_m=thickness_m,
                 source_element_ids=tuple(
-                    sorted((lines[first_index].element_id, lines[second_index].element_id))
+                    sorted(set(first.source_element_ids) | set(second.source_element_ids))
                 ),
+                primitive_families=tuple(
+                    sorted(set(first.primitive_families) | set(second.primitive_families))
+                ),
+                dashed=first.dashed or second.dashed,
                 geometry_anchor=geometry_anchor,
             )
         )
+
+    diagnostics.update(
+        {
+            "candidate_pair_count": len(candidate_pairs),
+            "parallel_gap_histogram_m": _gap_histogram(gap_samples_m),
+            "accepted_pair_count": len(accepted),
+            "ambiguous_best_run_count": ambiguous_best_run_count,
+            "rejected": {
+                "parallel": rejected_parallel,
+                "overlap_ratio": rejected_overlap,
+                "gap_range": rejected_gap,
+                "ambiguous_or_non_mutual": len(candidates) - len(accepted_candidate_indexes),
+            },
+        }
+    )
     return tuple(sorted(accepted, key=lambda item: item.geometry_anchor))
 
 
@@ -2664,27 +2995,144 @@ def _geometric_wall_loop_entities(
     ambiguities: list[dict[str, object]],
     *,
     excluded_element_ids: set[str] | None = None,
-) -> tuple[tuple[_WallContext, ...], tuple[Space, ...]]:
+    allow_partial_faces: bool = True,
+) -> tuple[
+    tuple[_WallContext, ...],
+    tuple[Space, ...],
+    dict[str, object],
+]:
     if level.height_m is None or level_info.height is None:
-        return (), ()
+        return (), (), {}
     sheet_anchor = _sheet_anchor(page)
     if sheet_anchor is None:
-        return (), ()
+        return (), (), {}
 
+    diagnostics: dict[str, object] = {}
     pairs = _geometric_wall_face_pairs(
         page,
         transform,
         options,
         excluded_element_ids=excluded_element_ids,
+        diagnostics=diagnostics,
     )
+    if not pairs:
+        diagnostics["closed_loop_pair_count"] = 0
+        diagnostics["partial_pair_count"] = 0
+        return (), (), diagnostics
+
     loops = _wall_pair_closed_loops(pairs, transform, options)
-    if not loops:
-        return (), ()
+    loop_endpoint_vertices: dict[
+        int,
+        tuple[tuple[float, float], tuple[float, float]],
+    ] = {}
+    loop_pair_indexes: set[int] = set()
+    for loop_indexes, _, endpoint_vertices in loops:
+        for index in loop_indexes:
+            loop_pair_indexes.add(index)
+            loop_endpoint_vertices[index] = (
+                endpoint_vertices[(index, 0)],
+                endpoint_vertices[(index, 1)],
+            )
+
+    diagnostics["closed_loop_pair_count"] = len(loop_pair_indexes)
+    partial_pair_indexes = {
+        index for index in range(len(pairs)) if index not in loop_pair_indexes
+    }
+    allow_partial_pairs = (
+        allow_partial_faces
+        and int(diagnostics.get("ambiguous_best_run_count", 0)) == 0
+    )
+    diagnostics["partial_pair_count"] = (
+        len(partial_pair_indexes) if allow_partial_pairs else 0
+    )
+    diagnostics["suppressed_partial_pair_count"] = (
+        0 if allow_partial_pairs else len(partial_pair_indexes)
+    )
 
     contexts_by_anchor: dict[str, _WallContext] = {}
     spaces: list[Space] = []
     height_confidence = level_info.height_confidence or options.assumed_value_confidence
-    for loop_indexes, polygon_xy, endpoint_vertices in loops:
+
+    for index, pair in enumerate(pairs):
+        if index not in loop_pair_indexes and not allow_partial_pairs:
+            continue
+        wall_identity = (
+            f"{source_id}|sheet:{sheet_anchor}|level:{level_info.anchor}|"
+            f"wall-geometry:{pair.geometry_anchor}"
+        )
+        wall_id = stable_id("wall", wall_identity)
+        if index in loop_endpoint_vertices:
+            first_xy, second_xy = loop_endpoint_vertices[index]
+            wall_confidence = min(transform.confidence, height_confidence, 0.78)
+            recognition = "geometric_parallel_wall_faces"
+            method = (
+                "wall centerline inferred from a unique geometric pairing of "
+                "parallel PDF wall faces after joining collinear source segments; "
+                "the pair participates in an unambiguous closed loop"
+            )
+        else:
+            first_xy = transform.apply(pair.start_pt)
+            second_xy = transform.apply(pair.end_pt)
+            wall_confidence = min(transform.confidence, height_confidence, 0.42)
+            recognition = "geometric_parallel_wall_face_partial"
+            method = (
+                "partial wall centerline inferred from a unique geometric pairing "
+                "of parallel PDF wall faces after joining collinear source segments; "
+                "no closed enclosure was proven"
+            )
+
+        wall = Wall(
+            id=wall_id,
+            level_id=level.id,
+            centerline=Polyline3D(
+                points=(
+                    Point3(x=first_xy[0], y=first_xy[1], z=level.elevation_m),
+                    Point3(x=second_xy[0], y=second_xy[1], z=level.elevation_m),
+                )
+            ),
+            thickness_m=pair.thickness_m,
+            height_m=level.height_m,
+            confidence=wall_confidence,
+            provenance=(
+                _provenance(
+                    source_id,
+                    page.page_number,
+                    method=method,
+                    confidence=wall_confidence,
+                    source_element_id="+".join(pair.source_element_ids),
+                    attributes={
+                        "source_boundaries": list(pair.source_element_ids),
+                        "geometry_anchor": pair.geometry_anchor,
+                        "primitive_families": list(pair.primitive_families),
+                        "dashed_source": pair.dashed,
+                        "closed_loop": index in loop_pair_indexes,
+                    },
+                )
+                + _level_measurement_provenance(
+                    source_id,
+                    level_info.height,
+                    field="height_m",
+                )
+            ),
+            attributes={
+                "pdf_architecture": {
+                    "recognition": recognition,
+                    "geometry_anchor": pair.geometry_anchor,
+                    "source_boundaries": list(pair.source_element_ids),
+                    "primitive_families": list(pair.primitive_families),
+                    "dashed_source": pair.dashed,
+                    "closed_loop": index in loop_pair_indexes,
+                }
+            },
+        )
+        contexts_by_anchor[pair.geometry_anchor] = _WallContext(
+            wall,
+            page.page_number,
+            None,
+            None,
+        )
+
+    for loop_indexes, polygon_xy, _ in loops:
         wall_ids: list[str] = []
         source_ids: set[str] = set()
         loop_wall_anchors = tuple(pairs[index].geometry_anchor for index in loop_indexes)
@@ -2694,65 +3142,8 @@ def _geometric_wall_loop_entities(
         )
         for index in loop_indexes:
             pair = pairs[index]
-            wall_identity = (
-                f"{source_id}|sheet:{sheet_anchor}|level:{level_info.anchor}|"
-                f"wall-geometry:{pair.geometry_anchor}"
-            )
-            wall_id = stable_id("wall", wall_identity)
-            wall_ids.append(wall_id)
+            wall_ids.append(contexts_by_anchor[pair.geometry_anchor].wall.id)
             source_ids.update(pair.source_element_ids)
-            if pair.geometry_anchor in contexts_by_anchor:
-                continue
-            first_xy = endpoint_vertices[(index, 0)]
-            second_xy = endpoint_vertices[(index, 1)]
-            wall_confidence = min(transform.confidence, height_confidence, 0.78)
-            wall = Wall(
-                id=wall_id,
-                level_id=level.id,
-                centerline=Polyline3D(
-                    points=(
-                        Point3(x=first_xy[0], y=first_xy[1], z=level.elevation_m),
-                        Point3(x=second_xy[0], y=second_xy[1], z=level.elevation_m),
-                    )
-                ),
-                thickness_m=pair.thickness_m,
-                height_m=level.height_m,
-                confidence=wall_confidence,
-                provenance=(
-                    _provenance(
-                        source_id,
-                        page.page_number,
-                        method=(
-                            "wall centerline inferred from a unique geometric pairing of "
-                            "parallel PDF wall faces and joined only as part of a closed loop"
-                        ),
-                        confidence=wall_confidence,
-                        source_element_id="+".join(pair.source_element_ids),
-                        attributes={
-                            "source_boundaries": list(pair.source_element_ids),
-                            "geometry_anchor": pair.geometry_anchor,
-                        },
-                    )
-                    + _level_measurement_provenance(
-                        source_id,
-                        level_info.height,
-                        field="height_m",
-                    )
-                ),
-                attributes={
-                    "pdf_architecture": {
-                        "recognition": "geometric_parallel_wall_faces",
-                        "geometry_anchor": pair.geometry_anchor,
-                        "source_boundaries": list(pair.source_element_ids),
-                    }
-                },
-            )
-            contexts_by_anchor[pair.geometry_anchor] = _WallContext(
-                wall,
-                page.page_number,
-                None,
-                None,
-            )
 
         contained_rooms = sorted(
             (
@@ -2871,6 +3262,7 @@ def _geometric_wall_loop_entities(
             )
         ),
         tuple(sorted(spaces, key=lambda space: space.id)),
+        diagnostics,
     )
 
 def _distance_to_segment(
@@ -3251,10 +3643,22 @@ def import_observations(
             and item.get("code") in blocking_enclosure_codes
             for item in ambiguities
         )
+        legacy_single_loop_partial_guard = (
+            len(_ordinary_vector_rect_loops(page)) == 1
+            and any(
+                item.get("page") == page.page_number
+                and item.get("code") == "ordinary_vector_enclosure_unresolved"
+                for item in ambiguities
+            )
+        )
         if page_has_blocking_enclosure_ambiguity:
-            geometric_line_walls, geometric_spaces = (), ()
+            geometric_line_walls, geometric_spaces, geometric_diagnostics = (), (), {}
         else:
-            geometric_line_walls, geometric_spaces = _geometric_wall_loop_entities(
+            (
+                geometric_line_walls,
+                geometric_spaces,
+                geometric_diagnostics,
+            ) = _geometric_wall_loop_entities(
                 page,
                 transform,
                 level,
@@ -3264,6 +3668,7 @@ def import_observations(
                 rooms,
                 ambiguities,
                 excluded_element_ids=consumed_vector_line_ids,
+                allow_partial_faces=not legacy_single_loop_partial_guard,
             )
             resolved_geometric_label_anchors = {
                 space.attributes["pdf_architecture"].get("label_anchor")
@@ -3383,6 +3788,11 @@ def import_observations(
             page_record["ordinary_vector_enclosure_count"] = len(ordinary_vector_shells)
         if geometric_spaces:
             page_record["geometric_wall_loop_count"] = len(geometric_spaces)
+        if geometric_diagnostics:
+            page_record["geometric_wall_pair_diagnostics"] = geometric_diagnostics
+            page_record["geometric_partial_wall_count"] = int(
+                geometric_diagnostics.get("partial_pair_count", 0)
+            )
         page_record["stable_native_line_count"] = sum(1 for item in page.lines if item.native_id)
         page_record["untagged_vector_line_count"] = sum(1 for item in page.lines if not item.native_id)
         page_metadata.append(page_record)

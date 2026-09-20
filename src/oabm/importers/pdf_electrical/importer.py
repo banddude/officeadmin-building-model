@@ -1474,10 +1474,10 @@ def _legend_heading_words(
 def _heading_has_rejected_legend_context(
     observation: PdfTextObservation,
 ) -> bool:
-    return bool(
-        _LEGEND_REJECTED_HEADING_WORDS.intersection(
-            _legend_heading_words(observation)
-        )
+    normalized = _normalize_legend_alias(observation.text)
+    return any(
+        rejected in normalized
+        for rejected in _LEGEND_REJECTED_HEADING_WORDS
     )
 
 
@@ -1554,7 +1554,7 @@ def _heading_distance_to_group(
         <= max_y + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
         and (heading.x_pt <= min_x or heading.x_pt >= max_x)
     )
-    if not connected and not above and not beside:
+    if not above and not beside:
         return None
 
     dx = max(min_x - heading.x_pt, heading.x_pt - max_x, 0.0)

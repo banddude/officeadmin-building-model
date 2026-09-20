@@ -297,8 +297,56 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
     SymbolRule(r"\b(?:SWBD|SWGR|SWITCHBOARD|SWITCHGEAR)\b", "equipment", "switchboard", 0.97),
     SymbolRule(r"\b(?:XFMR|TRANSFORMER)\b", "equipment", "transformer", 0.97),
     SymbolRule(r"\b(?:EVSE|CHARGER)[A-Z0-9]*\b", "device", "evse", 0.98),
-    SymbolRule(r"\b(?:GFCI|GFI|RECEPTACLE|RECEPT|DUPLEX|REC)[A-Z0-9]*\b", "device", "receptacle", 0.94),
-    SymbolRule(r"\b(?:(?:JBOX|J-?BOX|JB)[A-Z0-9]*|JUNCTION\s+BOX)\b", "device", "junction_box", 0.94),
+    SymbolRule(
+        r"^(?!.*\bCOMBINATION\b).*\bDUPLEX\b.*\b(?:ELECTRICAL\s+)?OUTLET\b",
+        "device",
+        "receptacle_duplex",
+        1.0,
+    ),
+    SymbolRule(
+        r"^(?!.*\bCOMBINATION\b).*\b(?:QUADRUPLEX|QUADRUPLE|QUAD)\b.*\b(?:ELECTRICAL\s+)?OUTLET\b",
+        "device",
+        "receptacle_quad",
+        1.0,
+    ),
+    SymbolRule(
+        r"^(?!.*\bCOMBINATION\b).*\b(?:TELEPHONE|TELE\s*/\s*DATA|TELE/DATA|DATA)\b.*\bOUTLET\b",
+        "device",
+        "data_outlet",
+        1.0,
+    ),
+    SymbolRule(
+        r"\bCOMBINATION\b.*\b(?:OUTLET|RECEPTACLE)\b",
+        "device",
+        "combination_outlet",
+        1.0,
+    ),
+    SymbolRule(
+        r"\b(?:ELECTRICAL|POWER)\s+(?:J-?BOX|JUNCTION\s+BOX)\b",
+        "device",
+        "junction_box_power",
+        1.0,
+    ),
+    SymbolRule(
+        r"\b(?:TELE(?:PHONE)?(?:\s*/\s*|\s+AND/OR\s+|\s+AND\s+)?DATA|DATA)\s+(?:J-?BOX|JUNCTION\s+BOX)\b",
+        "device",
+        "junction_box_data",
+        1.0,
+    ),
+    SymbolRule(
+        r"\b(?:CARD\s+READER|ELECTRIC\s+LOCK\s+RELEASE|ACCESS\s+CONTROL)\b",
+        "device",
+        "access_control_device",
+        1.0,
+    ),
+    SymbolRule(
+        r"\b(?:CABLE\s+TV|CATV)\b.*\bOUTLET\b",
+        "device",
+        "catv_outlet",
+        1.0,
+    ),
+    SymbolRule(r"^(?!.*\bCOMBINATION\b)(?!.*\bDUPLEX\b.*\b(?:ELECTRICAL\s+)?OUTLET\b).*\b(?:GFCI|GFI|RECEPTACLE|RECEPT|DUPLEX|REC)[A-Z0-9]*\b", "device", "receptacle", 0.94),
+    SymbolRule(r"^(?!.*\b(?:ELECTRICAL|POWER|DATA|TELE|TELEPHONE)\b.*\b(?:JBOX|J-?BOX|JUNCTION\s+BOX)\b).*\b(?:(?:JBOX|J-?BOX|JB)[A-Z0-9]*|JUNCTION\s+BOX)\b", "device", "junction_box", 0.94),
     SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE)\b", "device", "luminaire", 0.91),
     SymbolRule(r"\b(?:DISCONNECT|DISC)\b", "device", "disconnect", 0.92),
     SymbolRule(r"\b(?:SWITCH|SW)\b", "device", "switch", 0.75),
@@ -1238,6 +1286,8 @@ _NOTES_COLUMN_START_FRACTION = 0.68
 _NOTES_TITLE_BAND_MAX_FRACTION = 0.12
 _FIELD_STATUS_RADIUS_PT = 28.0
 _FIELD_STATUS_AMBIGUITY_PT = 2.0
+_GLYPH_MATCH_SCORE_MIN = 0.82
+_GLYPH_MATCH_NEAR_TIE_MARGIN = 0.06
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
 _LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
 _LEGEND_REJECTED_HEADING_WORDS = frozenset(
@@ -1268,6 +1318,7 @@ _FIELD_HEIGHT_TAG_RE = re.compile(
     r'^\s*\+\s*\d+(?:\.\d+)?\s*(?:"|IN(?:CH(?:ES)?)?)?\s*$',
     re.IGNORECASE,
 )
+_FIELD_CIRCUIT_COUNT_RE = re.compile(r"^\s*#?\s*\d+\s*$")
 _FIELD_STATUS_MEANINGS: Mapping[str, str] = {
     "E": "existing_to_remain",
     "N": "new",
@@ -1340,33 +1391,37 @@ def _cluster_shape_signature(
     scale = max(bbox[2] - bbox[0], bbox[3] - bbox[1], 1e-9)
     variants: list[tuple[Any, ...]] = []
 
-    for rotation in range(4):
-        records: list[tuple[Any, ...]] = []
-        for vector in vectors:
-            normalized: list[tuple[float, float]] = []
-            for x_pt, y_pt in vector.points_pt:
-                x = (x_pt - center_x) / scale
-                y = (y_pt - center_y) / scale
-                if rotation == 1:
-                    x, y = -y, x
-                elif rotation == 2:
-                    x, y = -x, -y
-                elif rotation == 3:
-                    x, y = y, -x
-                normalized.append((round(x, 4), round(y, 4)))
-            points = _canonical_point_sequence(
-                tuple(normalized),
-                closed=vector.closed,
-            )
-            records.append(
-                (
-                    _paint_family(vector),
-                    vector.closed,
-                    _vector_contains_bezier(vector),
-                    points,
+    # One reflection plus quarter turns spans mirroring across either axis.
+    for mirrored in (False, True):
+        for rotation in range(4):
+            records: list[tuple[Any, ...]] = []
+            for vector in vectors:
+                normalized: list[tuple[float, float]] = []
+                for x_pt, y_pt in vector.points_pt:
+                    x = (x_pt - center_x) / scale
+                    y = (y_pt - center_y) / scale
+                    if mirrored:
+                        x = -x
+                    if rotation == 1:
+                        x, y = -y, x
+                    elif rotation == 2:
+                        x, y = -x, -y
+                    elif rotation == 3:
+                        x, y = y, -x
+                    normalized.append((round(x, 4), round(y, 4)))
+                points = _canonical_point_sequence(
+                    tuple(normalized),
+                    closed=vector.closed,
                 )
-            )
-        variants.append(tuple(sorted(records)))
+                records.append(
+                    (
+                        _paint_family(vector),
+                        vector.closed,
+                        _vector_contains_bezier(vector),
+                        points,
+                    )
+                )
+            variants.append(tuple(sorted(records)))
 
     canonical = min(variants)
     return hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:24]
@@ -1391,6 +1446,341 @@ def _cluster_geometry_key(
         )
     canonical = tuple(sorted(records))
     return hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:24]
+
+
+def _comparison_vectors(
+    cluster: _VectorCluster,
+) -> tuple[PdfVectorPathObservation, ...]:
+    """Strip small peripheral vectorized text/modifier strokes for matching only."""
+
+    if len(cluster.vectors) <= 1:
+        return cluster.vectors
+
+    ranked: list[
+        tuple[
+            float,
+            float,
+            tuple[float, float, float, float],
+            PdfVectorPathObservation,
+        ]
+    ] = []
+    for vector in cluster.vectors:
+        bbox = _vector_bbox(vector)
+        extent = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
+        length = sum(
+            _distance_pt(first[0], first[1], second[0], second[1])
+            for first, second in _vector_segments(vector)
+        )
+        ranked.append((extent, length, bbox, vector))
+    ranked.sort(
+        key=lambda item: (
+            -item[0],
+            -item[1],
+            item[2],
+            item[3].element_id,
+        )
+    )
+    _extent, _length, dominant_bbox, dominant = ranked[0]
+    dominant_width = max(dominant_bbox[2] - dominant_bbox[0], 1e-9)
+    dominant_height = max(dominant_bbox[3] - dominant_bbox[1], 1e-9)
+    expanded = (
+        dominant_bbox[0] - 0.25 * dominant_width,
+        dominant_bbox[1] - 0.25 * dominant_height,
+        dominant_bbox[2] + 0.25 * dominant_width,
+        dominant_bbox[3] + 0.25 * dominant_height,
+    )
+
+    kept: list[PdfVectorPathObservation] = []
+    for _item_extent, _item_length, bbox, vector in ranked:
+        center = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
+        if (
+            vector is dominant
+            or _bbox_gap_pt(bbox, dominant_bbox) <= 1.25
+            or (
+                expanded[0] <= center[0] <= expanded[2]
+                and expanded[1] <= center[1] <= expanded[3]
+            )
+        ):
+            kept.append(vector)
+
+    if len(kept) < 2 and len(cluster.vectors) > 1:
+        return cluster.vectors
+    return tuple(
+        sorted(
+            kept,
+            key=lambda vector: (
+                _vector_bbox(vector),
+                _cluster_geometry_key((vector,)),
+                vector.element_id,
+            ),
+        )
+    )
+
+
+def _comparison_bbox(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[float, float, float, float]:
+    bbox = _vector_bbox(vectors[0])
+    for vector in vectors[1:]:
+        bbox = _bbox_union(bbox, _vector_bbox(vector))
+    return bbox
+
+
+def _comparison_signature(cluster: _VectorCluster) -> str:
+    vectors = _comparison_vectors(cluster)
+    return _cluster_shape_signature(vectors, _comparison_bbox(vectors))
+
+
+def _comparison_records(
+    cluster: _VectorCluster,
+) -> tuple[tuple[Any, ...], ...]:
+    vectors = _comparison_vectors(cluster)
+    bbox = _comparison_bbox(vectors)
+    center_x = (bbox[0] + bbox[2]) / 2.0
+    center_y = (bbox[1] + bbox[3]) / 2.0
+    scale = max(bbox[2] - bbox[0], bbox[3] - bbox[1], 1e-9)
+    variants: list[tuple[tuple[Any, ...], ...]] = []
+
+    for mirrored in (False, True):
+        for rotation in range(4):
+            records: list[tuple[Any, ...]] = []
+            for vector in vectors:
+                points: list[tuple[float, float]] = []
+                for x_pt, y_pt in vector.points_pt:
+                    x = (x_pt - center_x) / scale
+                    y = (y_pt - center_y) / scale
+                    if mirrored:
+                        x = -x
+                    if rotation == 1:
+                        x, y = -y, x
+                    elif rotation == 2:
+                        x, y = -x, -y
+                    elif rotation == 3:
+                        x, y = y, -x
+                    points.append((x, y))
+                xs = [point[0] for point in points]
+                ys = [point[1] for point in points]
+                length = sum(
+                    _distance_pt(first[0], first[1], second[0], second[1])
+                    for first, second in zip(points, points[1:])
+                )
+                if vector.closed and len(points) > 1:
+                    length += _distance_pt(
+                        points[-1][0],
+                        points[-1][1],
+                        points[0][0],
+                        points[0][1],
+                    )
+                records.append(
+                    (
+                        _paint_family(vector),
+                        vector.closed,
+                        _vector_contains_bezier(vector),
+                        round(sum(xs) / len(xs), 3),
+                        round(sum(ys) / len(ys), 3),
+                        round(max(xs) - min(xs), 3),
+                        round(max(ys) - min(ys), 3),
+                        round(length, 3),
+                        len(points),
+                    )
+                )
+            variants.append(tuple(sorted(records)))
+    return min(variants)
+
+
+def _comparison_stroke_counts(cluster: _VectorCluster) -> tuple[int, int]:
+    vectors = _comparison_vectors(cluster)
+    segment_count = sum(
+        max(1, len(vector.points_pt) - 1 + int(vector.closed))
+        for vector in vectors
+    )
+    return len(vectors), segment_count
+
+
+def _comparison_record_distance(
+    first: tuple[Any, ...],
+    second: tuple[Any, ...],
+) -> float:
+    categorical = (
+        (0.12 if first[0] != second[0] else 0.0)
+        + (0.10 if first[1] != second[1] else 0.0)
+        + (0.06 if first[2] != second[2] else 0.0)
+    )
+    numeric = (
+        0.60 * abs(float(first[3]) - float(second[3]))
+        + 0.60 * abs(float(first[4]) - float(second[4]))
+        + 0.45 * abs(float(first[5]) - float(second[5]))
+        + 0.45 * abs(float(first[6]) - float(second[6]))
+        + 0.20 * abs(float(first[7]) - float(second[7]))
+        + 0.10
+        * abs(int(first[8]) - int(second[8]))
+        / max(int(first[8]), int(second[8]), 1)
+    )
+    return min(1.5, categorical + numeric)
+
+
+def _cluster_match_score(
+    cluster: _VectorCluster,
+    prototype: _VectorCluster,
+) -> float:
+    if _comparison_signature(cluster) == _comparison_signature(prototype):
+        return 1.0
+
+    candidate_records = list(_comparison_records(cluster))
+    prototype_records = list(_comparison_records(prototype))
+    remaining = set(range(len(candidate_records)))
+    costs: list[float] = []
+    for record in sorted(
+        prototype_records,
+        key=lambda item: (-float(item[7]), item),
+    ):
+        if not remaining:
+            costs.append(1.0)
+            continue
+        best_index = min(
+            remaining,
+            key=lambda index: (
+                _comparison_record_distance(record, candidate_records[index]),
+                index,
+            ),
+        )
+        costs.append(
+            _comparison_record_distance(record, candidate_records[best_index])
+        )
+        remaining.remove(best_index)
+
+    costs.extend(0.35 for _index in sorted(remaining))
+    denominator = max(len(candidate_records), len(prototype_records), 1)
+    distance = sum(costs) / denominator
+    return round(max(0.0, min(1.0, 1.0 - distance)), 6)
+
+
+def _prototype_diagnostic(entry: _LegendEntry) -> dict[str, Any]:
+    vector_count, segment_count = _comparison_stroke_counts(entry.prototype)
+    return {
+        "entity_kind": entry.entity_kind,
+        "canonical_type": entry.canonical_type,
+        "legend_page": entry.label.page,
+        "legend_label": entry.label.text,
+        "prototype_geometry_key": entry.prototype.geometry_key,
+        "stroke_count": vector_count,
+        "segment_count": segment_count,
+    }
+
+
+def _match_cluster_to_legend_entries(
+    cluster: _VectorCluster,
+    entries: Sequence[_LegendEntry],
+) -> tuple[_LegendEntry | None, dict[str, Any]]:
+    if not entries:
+        return None, {
+            "nearest_prototype": None,
+            "score": None,
+            "second_best": None,
+            "non_unique_reason": "no classified legend prototypes are available",
+        }
+
+    candidate_strokes = _comparison_stroke_counts(cluster)
+    ranked: list[
+        tuple[
+            float,
+            tuple[int, int],
+            str,
+            str,
+            _LegendEntry,
+        ]
+    ] = []
+    for entry in entries:
+        prototype_strokes = _comparison_stroke_counts(entry.prototype)
+        stroke_delta = (
+            abs(candidate_strokes[0] - prototype_strokes[0]),
+            abs(candidate_strokes[1] - prototype_strokes[1]),
+        )
+        ranked.append(
+            (
+                _cluster_match_score(cluster, entry.prototype),
+                stroke_delta,
+                entry.canonical_type,
+                entry.label.element_id,
+                entry,
+            )
+        )
+    ranked.sort(
+        key=lambda item: (
+            -item[0],
+            item[1],
+            item[2],
+            item[3],
+            item[4].prototype.geometry_key,
+        )
+    )
+
+    best = ranked[0]
+    second = ranked[1] if len(ranked) > 1 else None
+    diagnostics: dict[str, Any] = {
+        "nearest_prototype": _prototype_diagnostic(best[4]),
+        "score": best[0],
+        "second_best": (
+            {
+                "prototype": _prototype_diagnostic(second[4]),
+                "score": second[0],
+            }
+            if second is not None
+            else None
+        ),
+        "non_unique_reason": None,
+    }
+    if best[0] < _GLYPH_MATCH_SCORE_MIN:
+        diagnostics["non_unique_reason"] = (
+            "nearest prototype score is below the match threshold"
+        )
+        return None, diagnostics
+
+    near = [
+        item
+        for item in ranked
+        if best[0] - item[0] <= _GLYPH_MATCH_NEAR_TIE_MARGIN
+    ]
+    competing_types = {
+        (item[4].entity_kind, item[4].canonical_type)
+        for item in near
+    }
+    if len(competing_types) <= 1:
+        return best[4], diagnostics
+
+    best_stroke_delta = min(item[1] for item in near)
+    stroke_winners = [
+        item for item in near if item[1] == best_stroke_delta
+    ]
+    winner_types = {
+        (item[4].entity_kind, item[4].canonical_type)
+        for item in stroke_winners
+    }
+    if len(stroke_winners) == 1 or len(winner_types) == 1:
+        winner = sorted(
+            stroke_winners,
+            key=lambda item: (
+                -item[0],
+                item[2],
+                item[3],
+                item[4].prototype.geometry_key,
+            ),
+        )[0]
+        diagnostics["nearest_prototype"] = _prototype_diagnostic(winner[4])
+        diagnostics["score"] = winner[0]
+        diagnostics["tie_breaker"] = "differentiating-stroke-count"
+        if winner[4] is not best[4]:
+            diagnostics["second_best"] = {
+                "prototype": _prototype_diagnostic(best[4]),
+                "score": best[0],
+            }
+        return winner[4], diagnostics
+
+    diagnostics["non_unique_reason"] = (
+        "near-tied legend prototypes remain non-unique after differentiating "
+        "stroke-count comparison"
+    )
+    return None, diagnostics
 
 
 def _cluster_small_vector_glyphs(
@@ -1554,6 +1944,8 @@ def _field_modifier_text(value: str) -> tuple[str, str] | None:
         return "status", status
     if _FIELD_HEIGHT_TAG_RE.fullmatch(cleaned):
         return "height", cleaned
+    if _FIELD_CIRCUIT_COUNT_RE.fullmatch(cleaned):
+        return "circuit_count", cleaned
     return None
 
 
@@ -3113,6 +3505,10 @@ def _recognize_legend_shapes(
             ),
         )[0]
 
+    legend_entries_by_page: dict[int, list[_LegendEntry]] = {}
+    for (page, _signature), entry in sorted(legend_by_signature.items()):
+        legend_entries_by_page.setdefault(page, []).append(entry)
+
     active_legend_pages = {
         page for page, _signature in legend_by_signature
     }
@@ -3199,25 +3595,35 @@ def _recognize_legend_shapes(
         if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
             continue
 
-        legend_entry = legend_by_signature.get(
-            (cluster.page, cluster.shape_signature)
+        legend_entry, match_diagnostics = _match_cluster_to_legend_entries(
+            cluster,
+            legend_entries_by_page.get(cluster.page, ()),
         )
         reference: _LegendReference | None = None
         if legend_entry is None:
-            remote_matches: list[tuple[_LegendReference, _LegendEntry]] = []
+            remote_matches: list[
+                tuple[_LegendReference, _LegendEntry, dict[str, Any]]
+            ] = []
+            remote_diagnostics: list[
+                tuple[_LegendReference, dict[str, Any]]
+            ] = []
             for candidate_reference in references_by_page.get(cluster.page, ()):
-                remote_entry = legend_by_signature.get(
-                    (
+                remote_entry, diagnostics = _match_cluster_to_legend_entries(
+                    cluster,
+                    legend_entries_by_page.get(
                         candidate_reference.legend_page,
-                        cluster.shape_signature,
-                    )
+                        (),
+                    ),
                 )
+                remote_diagnostics.append((candidate_reference, diagnostics))
                 if remote_entry is not None:
-                    remote_matches.append((candidate_reference, remote_entry))
+                    remote_matches.append(
+                        (candidate_reference, remote_entry, diagnostics)
+                    )
             if remote_matches:
                 remote_classifications = {
                     (entry.entity_kind, entry.canonical_type)
-                    for _reference, entry in remote_matches
+                    for _reference, entry, _diagnostics in remote_matches
                 }
                 if len(remote_classifications) != 1:
                     unresolved.append(
@@ -3253,22 +3659,46 @@ def _recognize_legend_shapes(
                                 "referenced_legend_pages": sorted(
                                     {
                                         item.legend_page
-                                        for item, _entry in remote_matches
+                                        for item, _entry, _diagnostics in remote_matches
                                     }
                                 ),
+                                "match_diagnostics": [
+                                    {
+                                        "legend_page": item.legend_page,
+                                        **diagnostics,
+                                    }
+                                    for item, _entry, diagnostics in remote_matches
+                                ],
                             },
                         }
                     )
                     continue
-                reference, legend_entry = sorted(
+                reference, legend_entry, match_diagnostics = sorted(
                     remote_matches,
                     key=lambda item: (
+                        -float(item[2].get("score") or 0.0),
                         -item[1].confidence,
                         item[0].legend_page,
                         item[0].source_element_id,
                         item[1].label.element_id,
                     ),
                 )[0]
+            elif remote_diagnostics:
+                best_remote = max(
+                    remote_diagnostics,
+                    key=lambda item: (
+                        float(item[1].get("score") or -1.0),
+                        -item[0].legend_page,
+                        item[0].source_element_id,
+                    ),
+                )
+                if (
+                    match_diagnostics.get("score") is None
+                    or float(best_remote[1].get("score") or -1.0)
+                    > float(match_diagnostics.get("score") or -1.0)
+                ):
+                    match_diagnostics = dict(best_remote[1])
+                    match_diagnostics["legend_page"] = best_remote[0].legend_page
 
         if legend_entry is None:
             page_references = references_by_page.get(cluster.page, ())
@@ -3287,6 +3717,7 @@ def _recognize_legend_shapes(
                     "reference_element_ids": sorted(
                         {item.source_element_id for item in page_references}
                     ),
+                    "match_diagnostics": match_diagnostics,
                 }
             else:
                 reason = (
@@ -3301,6 +3732,8 @@ def _recognize_legend_shapes(
                     "page": cluster.page,
                     "page_has_recognized_legend": cluster.page in legend_pages,
                 }
+                if cluster.page in legend_pages:
+                    recognition_provenance["match_diagnostics"] = match_diagnostics
             unresolved.append(
                 {
                     "kind": "vector_cluster",
@@ -3347,6 +3780,9 @@ def _recognize_legend_shapes(
             "legend_label_element_id": label.element_id,
             "legend_page": label.page,
             "legend_label": label.text,
+            "legend_row_label": label.text,
+            "canonical_type": legend_entry.canonical_type,
+            "match_diagnostics": match_diagnostics,
             "legend_source_element_ids": list(prototype.source_element_ids),
             "source_element_ids": list(cluster.source_element_ids),
         }
@@ -3415,6 +3851,9 @@ def _recognize_legend_shapes(
                         "legend_page": label.page,
                         "legend_label_element_id": label.element_id,
                         "legend_label": label.text,
+                        "legend_row_label": label.text,
+                        "canonical_type": legend_entry.canonical_type,
+                        "match_diagnostics": match_diagnostics,
                         "legend_detection_method": region.method,
                         "legend_source_element_ids": list(
                             prototype.source_element_ids
@@ -3447,9 +3886,12 @@ def _recognize_legend_shapes(
             )
         label_attributes: dict[str, Any] = {
             "source_text": label.text,
+            "legend_row_label": label.text,
+            "canonical_type": legend_entry.canonical_type,
             "shape_signature": cluster.shape_signature,
             "legend_scope": legend_scope,
             "legend_detection_method": region.method,
+            "match_diagnostics": match_diagnostics,
         }
         if region.heading is not None:
             label_attributes["legend_header_element_id"] = region.heading.element_id
@@ -4303,6 +4745,13 @@ class ElectricalPdfImporter:
                 lane_attributes["symbol_names"] = sorted(set(candidate.symbol_names))
             if candidate.shape_recognition is not None:
                 lane_attributes["shape_recognition"] = dict(candidate.shape_recognition)
+                if "legend_row_label" in candidate.shape_recognition:
+                    lane_attributes["legend_row_label"] = candidate.shape_recognition[
+                        "legend_row_label"
+                    ]
+                    lane_attributes["device_type_label"] = candidate.shape_recognition[
+                        "legend_row_label"
+                    ]
                 if "status" in candidate.shape_recognition:
                     lane_attributes["status"] = candidate.shape_recognition["status"]
                     lane_attributes["status_meaning"] = candidate.shape_recognition[

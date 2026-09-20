@@ -1,451 +1,353 @@
-%PDF-1.3
-%‚„œ”
+%PDF-1.4
+%synthetic-oabm-fixture
 1 0 obj
-<<
-/Producer (pypdf)
->>
+<< /Type /Catalog /Pages 2 0 R >>
 endobj
 2 0 obj
-<<
-/Type /Pages
-/Count 1
-/Kids [ 4 0 R ]
->>
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
 endobj
 3 0 obj
-<<
-/Type /Catalog
-/Pages 2 0 R
->>
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 270 /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>
 endobj
 4 0 obj
-<<
-/Type /Page
-/Resources <<
-/Font <<
-/F1 5 0 R
->>
->>
-/MediaBox [ 0.0 0.0 612 792 ]
-/Contents 6 0 R
-/CropBox [ 0.0 0.0 612 792 ]
-/Rotate 270
-/Parent 2 0 R
->>
+<< /Length 7682 >>
+stream
+q 0 -1 1 0 0 792 cm
+.8 w
+n 18 18 756 576 re S
+n 36 96 528 468 re S
+n 582 18 m 582 594 l S
+BT /F2 7 Tf 1 0 0 1 596 568 Tm (ARCHITECT STAMP) Tj ET
+BT /F1 6 Tf 1 0 0 1 596 557 Tm (SYNTHETIC PUBLIC-SAFE FIXTURE) Tj ET
+BT /F2 7 Tf 1 0 0 1 596 540 Tm (KEY NOTES) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 596 529 Tm (1. Synthetic note only.) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 596 520 Tm (2. No customer data.) Tj ET
+BT /F2 7 Tf 1 0 0 1 596 505 Tm (GENERAL NOTES) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 596 494 Tm (All geometry is synthetic.) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 596 486 Tm (Fixture for legend matching.) Tj ET
+BT /F2 8 Tf 1 0 0 1 596 470 Tm (LEGEND) Tj ET
+.7 w
+n 594 144 176 312 re S
+n 636 144 m 636 456 l S
+n 594 432 m 770 432 l S
+n 594 396 m 770 396 l S
+n 594 360 m 770 360 l S
+n 594 324 m 770 324 l S
+n 594 288 m 770 288 l S
+n 594 252 m 770 252 l S
+n 594 216 m 770 216 l S
+n 594 180 m 770 180 l S
+n 594 144 m 770 144 l S
+BT /F2 6.5 Tf 1 0 0 1 599 441 Tm (SYMBOL) Tj ET
+BT /F2 6.5 Tf 1 0 0 1 641 441 Tm (FUNCTION) Tj ET
+.9 w
+n 620 414 m
+620 416.7614 617.7614 419 615 419 c
+612.2386 419 610 416.7614 610 414 c
+610 411.2386 612.2386 409 615 409 c
+617.7614 409 620 411.2386 620 414 c
+S
+n 612.5 412.6 m 617.5 412.6 l S
+n 612.5 415.4 m 617.5 415.4 l S
+BT /F1 5.2 Tf 1 0 0 1 640 414 Tm (duplex electrical outlet) Tj ET
+.9 w
+n 620 378 m
+620 380.7614 617.7614 383 615 383 c
+612.2386 383 610 380.7614 610 378 c
+610 375.2386 612.2386 373 615 373 c
+617.7614 373 620 375.2386 620 378 c
+S
+n 612.5 376 m 617.5 376 l S
+n 612.5 378 m 617.5 378 l S
+n 612.5 380 m 617.5 380 l S
+BT /F1 5.2 Tf 1 0 0 1 640 378 Tm (quadruplex electrical outlet) Tj ET
+.9 w
+n 610 337 m
+620 337 l
+620 347 l
+610 347 l
+h
+S
+n 612 339 m 618 345 l S
+n 612 345 m 614 343 l S
+BT /F1 5.2 Tf 1 0 0 1 640 342 Tm (telephone and/or data outlet) Tj ET
+.9 w
+n 620 306 m
+620 308.7614 617.7614 311 615 311 c
+612.2386 311 610 308.7614 610 306 c
+610 303.2386 612.2386 301 615 301 c
+617.7614 301 620 303.2386 620 306 c
+S
+n 612.5 304.6 m 617.5 304.6 l S
+n 612.5 307.4 m 617.5 307.4 l S
+n 616.5 301.5 m
+620.5 306 l
+616.5 310.5 l
+h
+S
+BT /F1 5.2 Tf 1 0 0 1 640 310.2 Tm (combination duplex electrical and) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 301.8 Tm (tele/data outlet) Tj ET
+.9 w
+n 610 265 m
+620 265 l
+620 275 l
+610 275 l
+h
+S
+n 611 266 m 619 274 l S
+n 611 274 m 619 266 l S
+BT /F1 5.2 Tf 1 0 0 1 640 278.4 Tm (electrical J-box to feed furniture) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 270 Tm (system, number adjacent indicates) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 261.6 Tm (number of circuits) Tj ET
+.9 w
+n 610 229 m
+620 229 l
+620 239 l
+610 239 l
+h
+S
+n 611 230 m 619 238 l S
+n 611 238 m 619 230 l S
+n 613 234 m 617 234 l S
+BT /F1 5.2 Tf 1 0 0 1 640 242.4 Tm (tele/data J-box to feed furniture) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 234 Tm (system with pull string above) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 225.6 Tm (ceiling) Tj ET
+.9 w
+n 615 203 m
+620 198 l
+615 193 l
+610 198 l
+h
+S
+n 615 195 m 615 201 l S
+n 613 198 m 617 198 l S
+BT /F1 5.2 Tf 1 0 0 1 640 202.2 Tm (card reader electric lock release) Tj ET
+BT /F1 5.2 Tf 1 0 0 1 640 193.8 Tm (with electric hinge) Tj ET
+.9 w
+n 620 162 m
+620 164.7614 617.7614 167 615 167 c
+612.2386 167 610 164.7614 610 162 c
+610 159.2386 612.2386 157 615 157 c
+617.7614 157 620 159.2386 620 162 c
+S
+n 612 162 m 618 162 l S
+n 615 162 m 618 165 l S
+BT /F1 5.2 Tf 1 0 0 1 640 162 Tm (cable TV outlet) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 596 133 Tm (E) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 608 133 Tm (EXISTING TO REMAIN) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 596 124 Tm (N) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 608 124 Tm (NEW) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 596 115 Tm (R) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 608 115 Tm (EXISTING TO BE REMOVED) Tj ET
+n 582 18 192 60 re S
+n 582 48 m 774 48 l S
+BT /F2 7 Tf 1 0 0 1 596 58 Tm (SYNTHETIC PROJECT) Tj ET
+BT /F1 6 Tf 1 0 0 1 596 35 Tm (ISSUE: TEST) Tj ET
+BT /F1 6 Tf 1 0 0 1 724 35 Tm (A2.1) Tj ET
+.9 w
+n 87 500 m
+87 502.7614 84.7614 505 82 505 c
+79.2386 505 77 502.7614 77 500 c
+77 497.2386 79.2386 495 82 495 c
+84.7614 495 87 497.2386 87 500 c
+S
+n 79.5 498.6 m 84.5 498.6 l S
+n 79.5 501.4 m 84.5 501.4 l S
+BT /F2 6 Tf 1 0 0 1 92 504 Tm (E) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 98 494 Tm (+44") Tj ET
+BT /F1 5.5 Tf 1 0 0 1 69 493 Tm (1) Tj ET
+.9 w
+n 194 500 m
+194 502.2091 192.2091 504 190 504 c
+187.7909 504 186 502.2091 186 500 c
+186 497.7909 187.7909 496 190 496 c
+192.2091 496 194 497.7909 194 500 c
+S
+n 192 498.88 m 188 498.88 l S
+n 192 501.12 m 188 501.12 l S
+BT /F2 6 Tf 1 0 0 1 200 504 Tm (N) Tj ET
+.9 w
+n 303 500 m
+303 502.7614 300.7614 505 298 505 c
+295.2386 505 293 502.7614 293 500 c
+293 497.2386 295.2386 495 298 495 c
+300.7614 495 303 497.2386 303 500 c
+S
+n 295.5 498 m 300.5 498 l S
+n 295.5 500 m 300.5 500 l S
+n 295.5 502 m 300.5 502 l S
+BT /F2 6 Tf 1 0 0 1 308 504 Tm (E) Tj ET
+.9 w
+n 410 500 m
+410 502.2091 408.2091 504 406 504 c
+403.7909 504 402 502.2091 402 500 c
+402 497.7909 403.7909 496 406 496 c
+408.2091 496 410 497.7909 410 500 c
+S
+n 404 501.6 m 408 501.6 l S
+n 404 500 m 408 500 l S
+n 404 498.4 m 408 498.4 l S
+BT /F2 6 Tf 1 0 0 1 416 504 Tm (N) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 422 494 Tm (+44") Tj ET
+.9 w
+n 77 385 m
+87 385 l
+87 395 l
+77 395 l
+h
+S
+n 79 387 m 85 393 l S
+n 79 393 m 81 391 l S
+BT /F2 6 Tf 1 0 0 1 92 394 Tm (E) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 69 383 Tm (2) Tj ET
+.9 w
+n 194 386 m
+186 386 l
+186 394 l
+194 394 l
+h
+S
+n 192.4 387.6 m 187.6 392.4 l S
+n 192.4 392.4 m 190.8 390.8 l S
+BT /F2 6 Tf 1 0 0 1 200 394 Tm (N) Tj ET
+.9 w
+n 303 390 m
+303 392.7614 300.7614 395 298 395 c
+295.2386 395 293 392.7614 293 390 c
+293 387.2386 295.2386 385 298 385 c
+300.7614 385 303 387.2386 303 390 c
+S
+n 295.5 388.6 m 300.5 388.6 l S
+n 295.5 391.4 m 300.5 391.4 l S
+n 299.5 385.5 m
+303.5 390 l
+299.5 394.5 l
+h
+S
+BT /F2 6 Tf 1 0 0 1 308 394 Tm (E) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 314 384 Tm (+44") Tj ET
+.9 w
+n 410 390 m
+410 392.2091 408.2091 394 406 394 c
+403.7909 394 402 392.2091 402 390 c
+402 387.7909 403.7909 386 406 386 c
+408.2091 386 410 387.7909 410 390 c
+S
+n 404 391.12 m 408 391.12 l S
+n 404 388.88 m 408 388.88 l S
+n 407.2 393.6 m
+410.4 390 l
+407.2 386.4 l
+h
+S
+BT /F2 6 Tf 1 0 0 1 416 394 Tm (N) Tj ET
+.9 w
+n 77 275 m
+87 275 l
+87 285 l
+77 285 l
+h
+S
+n 78 276 m 86 284 l S
+n 78 284 m 86 276 l S
+BT /F2 6 Tf 1 0 0 1 92 284 Tm (E) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 69 273 Tm (3) Tj ET
+.9 w
+n 194 276 m
+186 276 l
+186 284 l
+194 284 l
+h
+S
+n 193.2 276.8 m 186.8 283.2 l S
+n 193.2 283.2 m 186.8 276.8 l S
+BT /F2 6 Tf 1 0 0 1 200 284 Tm (N) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 206 274 Tm (+44") Tj ET
+.9 w
+n 293 275 m
+303 275 l
+303 285 l
+293 285 l
+h
+S
+n 294 276 m 302 284 l S
+n 294 284 m 302 276 l S
+n 296 280 m 300 280 l S
+BT /F2 6 Tf 1 0 0 1 308 284 Tm (E) Tj ET
+.9 w
+n 402 284 m
+410 284 l
+410 276 l
+402 276 l
+h
+S
+n 402.8 283.2 m 409.2 276.8 l S
+n 402.8 276.8 m 409.2 283.2 l S
+n 404.4 280 m 407.6 280 l S
+BT /F2 6 Tf 1 0 0 1 416 284 Tm (N) Tj ET
+.9 w
+n 82 175 m
+87 170 l
+82 165 l
+77 170 l
+h
+S
+n 82 167 m 82 173 l S
+n 80 170 m 84 170 l S
+BT /F2 6 Tf 1 0 0 1 92 174 Tm (E) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 98 164 Tm (+44") Tj ET
+BT /F1 5.5 Tf 1 0 0 1 69 163 Tm (1) Tj ET
+.9 w
+n 190 174 m
+186 170 l
+190 166 l
+194 170 l
+h
+S
+n 190 167.6 m 190 172.4 l S
+n 191.6 170 m 188.4 170 l S
+BT /F2 6 Tf 1 0 0 1 200 174 Tm (N) Tj ET
+.9 w
+n 303 170 m
+303 172.7614 300.7614 175 298 175 c
+295.2386 175 293 172.7614 293 170 c
+293 167.2386 295.2386 165 298 165 c
+300.7614 165 303 167.2386 303 170 c
+S
+n 295 170 m 301 170 l S
+n 298 170 m 301 173 l S
+BT /F2 6 Tf 1 0 0 1 308 174 Tm (E) Tj ET
+.9 w
+n 410 170 m
+410 172.2091 408.2091 174 406 174 c
+403.7909 174 402 172.2091 402 170 c
+402 167.7909 403.7909 166 406 166 c
+408.2091 166 410 167.7909 410 170 c
+S
+n 403.6 170 m 408.4 170 l S
+n 406 170 m 408.4 167.6 l S
+BT /F2 6 Tf 1 0 0 1 416 174 Tm (N) Tj ET
+BT /F1 5.5 Tf 1 0 0 1 422 164 Tm (+44") Tj ET
+Q
+endstream
 endobj
 5 0 obj
-<<
-/Type /Font
-/Subtype /Type1
-/BaseFont /Helvetica
->>
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
 endobj
 6 0 obj
-<<
-/Length 3614
->>
-stream
-q
-0.0 -1 1 0.0 0.0 792 cm
-BT
-/F1 11 Tf
-1 0 0 1 32 572 Tm
-(FLOOR PLAN \055 POWER\057DATA \046 FURNITURE) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 127 474 Tm
-(E) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 137 462 Tm
-(\05344\042) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 262 459 Tm
-(N) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 422 469 Tm
-(R) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 157 304 Tm
-(N) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 167 292 Tm
-(\05366\042) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 327 319 Tm
-(E) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 497 289 Tm
-(R) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 507 277 Tm
-(\05344\042) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 604 556 Tm
-(ARCHITECT STAMP) Tj
-ET
-BT
-/F1 6.5 Tf
-1 0 0 1 604 540 Tm
-(SYNTHETIC PUBLIC\055SAFE FIXTURE) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 604 477 Tm
-(KEY NOTES) Tj
-ET
-BT
-/F1 6.5 Tf
-1 0 0 1 604 461 Tm
-(1\056 COORDINATE DEVICE LOCATIONS\056) Tj
-ET
-BT
-/F1 6.5 Tf
-1 0 0 1 604 449 Tm
-(2\056 VERIFY CLEARANCES IN FIELD\056) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 604 407 Tm
-(GENERAL NOTES) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 604 391 Tm
-(ALL WORK SHALL FOLLOW PROJECT REQUIREMENTS\056) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 604 379 Tm
-(DO NOT SCALE THIS SYNTHETIC DRAWING\056) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 665.3 338 Tm
-(LEGEND) Tj
-ET
-BT
-/F1 6.5 Tf
-1 0 0 1 602 318 Tm
-(SYMBOL) Tj
-ET
-BT
-/F1 6.5 Tf
-1 0 0 1 632 318 Tm
-(FUNCTION) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 632 297 Tm
-(GFCI RECEPTACLE) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 632 271 Tm
-(JUNCTION BOX) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 632 245 Tm
-(LIGHT FIXTURE) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 632 219 Tm
-(DISCONNECT) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 632 193 Tm
-(SWITCH) Tj
-ET
-BT
-/F1 6.2 Tf
-1 0 0 1 632 167 Tm
-(EVSE CHARGER) Tj
-ET
-BT
-/F1 6 Tf
-1 0 0 1 604 145 Tm
-(R) Tj
-ET
-BT
-/F1 5.8 Tf
-1 0 0 1 618 145 Tm
-(EXISTING TO BE REMOVED) Tj
-ET
-BT
-/F1 6 Tf
-1 0 0 1 604 134 Tm
-(E) Tj
-ET
-BT
-/F1 5.8 Tf
-1 0 0 1 618 134 Tm
-(EXISTING TO REMAIN) Tj
-ET
-BT
-/F1 6 Tf
-1 0 0 1 604 123 Tm
-(N) Tj
-ET
-BT
-/F1 5.8 Tf
-1 0 0 1 618 123 Tm
-(NEW) Tj
-ET
-BT
-/F1 8 Tf
-1 0 0 1 604 88 Tm
-(SYNTHETIC PROJECT) Tj
-ET
-BT
-/F1 6.5 Tf
-1 0 0 1 604 75 Tm
-(ISSUE\072 TEST) Tj
-ET
-BT
-/F1 13 Tf
-1 0 0 1 701 44 Tm
-(A2\0561) Tj
-ET
-18 18 m
-774 18 l
-774 594 l
-18 594 l
-h
-S
-590 18 m
-590 594 l
-S
-598 500 m
-766 500 l
-766 570 l
-598 570 l
-h
-S
-598 430 m
-766 430 l
-766 492 l
-598 492 l
-h
-S
-598 362 m
-766 362 l
-766 422 l
-598 422 l
-h
-S
-598 332 m
-766 332 l
-766 352 l
-598 352 l
-h
-S
-598 156 m
-766 156 l
-766 332 l
-598 332 l
-h
-S
-626 156 m
-626 332 l
-S
-598 312 m
-766 312 l
-S
-598 286 m
-766 286 l
-S
-598 260 m
-766 260 l
-S
-598 234 m
-766 234 l
-S
-598 208 m
-766 208 l
-S
-598 182 m
-766 182 l
-S
-598 112 m
-766 112 l
-766 156 l
-598 156 l
-h
-S
-598 28 m
-766 28 l
-766 104 l
-598 104 l
-h
-S
-598 68 m
-766 68 l
-S
-690 28 m
-690 104 l
-S
-115 476 m
-121 470 l
-115 464 l
-109 470 l
-h
-S
-111.1 470 m
-118.9 470 l
-S
-244 449 m
-256 449 l
-256 461 l
-244 461 l
-h
-S
-245.08 450.08 m
-254.92 459.92 l
-S
-245.08 459.92 m
-254.92 450.08 l
-S
-410 471 m
-415.22 468 l
-415.22 462 l
-410 459 l
-404.78 462 l
-404.78 468 l
-h
-S
-145 306 m
-151 294 l
-139 294 l
-h
-S
-142.3 299.4 m
-147.7 299.4 l
-S
-309 311.7 m
-315 321 l
-S
-315 321 m
-321 311.7 l
-S
-308.52 310.68 m
-310.44 310.68 l
-310.44 312.6 l
-308.52 312.6 l
-h
-S
-479 279 m
-491 279 l
-491 291 l
-479 291 l
-h
-S
-481.7 287.1 m
-488.3 287.1 l
-S
-485 287.1 m
-485 282 l
-S
-612 304 m
-617 299 l
-612 294 l
-607 299 l
-h
-S
-608.75 299 m
-615.25 299 l
-S
-607 268 m
-617 268 l
-617 278 l
-607 278 l
-h
-S
-607.9 268.9 m
-616.1 277.1 l
-S
-607.9 277.1 m
-616.1 268.9 l
-S
-612 252 m
-616.35 249.5 l
-616.35 244.5 l
-612 242 l
-607.65 244.5 l
-607.65 249.5 l
-h
-S
-612 226 m
-617 216 l
-607 216 l
-h
-S
-609.75 220.5 m
-614.25 220.5 l
-S
-607 192.25 m
-612 200 l
-S
-612 200 m
-617 192.25 l
-S
-606.6 191.4 m
-608.2 191.4 l
-608.2 193 l
-606.6 193 l
-h
-S
-607 164 m
-617 164 l
-617 174 l
-607 174 l
-h
-S
-609.25 170.75 m
-614.75 170.75 l
-S
-612 170.75 m
-612 166.5 l
-S
-Q
-
-endstream
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
 endobj
 xref
 0 7
 0000000000 65535 f 
-0000000015 00000 n 
-0000000054 00000 n 
-0000000113 00000 n 
-0000000162 00000 n 
-0000000335 00000 n 
-0000000405 00000 n 
+0000000033 00000 n 
+0000000082 00000 n 
+0000000139 00000 n 
+0000000287 00000 n 
+0000008020 00000 n 
+0000008117 00000 n 
 trailer
-<<
-/Size 7
-/Root 3 0 R
-/Info 1 0 R
->>
+<< /Size 7 /Root 1 0 R >>
 startxref
-4071
+8219
 %%EOF

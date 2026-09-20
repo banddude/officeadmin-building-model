@@ -135,9 +135,17 @@ geometry do not become legend prototypes merely because text is nearby.
 For ruled notes-column legends, page-frame detection is deliberately sheet-level: it uses the largest axis-aligned closed rectangle or a rectangle formed by four long rules only when that rectangle covers at least 85% of the displayed media box, and otherwise falls back to the displayed media box. Interior plan/view borders therefore cannot become the sheet frame. The notes-column title-block exclusion is limited to a ruled bottom band and is capped at 12% of the sheet-frame height. If a candidate legend header nevertheless falls outside a detected frame, the importer re-derives the frame from the displayed media box and records that recovery in legend/model provenance.
 
 Within the selected block, the importer associates each unambiguous type label
-with its paired glyph, builds a translation/scale/quarter-turn invariant shape
-signature, and matches field glyph clusters against those prototypes. Legend
-prototypes remain page-local by default. A page without a recognized local legend
+with its paired glyph and records that source label with the canonical device
+type. The built-in legend vocabulary includes duplex and quad receptacles, data
+and combination outlets, power and data junction boxes, access-control devices,
+and CATV outlets. Field matching is translation-, uniform-scale-, quarter-turn-,
+and axis-mirror-invariant. E/N/R status text, bare mounting-height tags, and
+circuit-count numbers are treated as field modifiers rather than legend labels.
+When normalized geometry leaves similar prototypes near-tied, differentiating
+stroke count is used only when it produces one unique type; otherwise matching
+fails closed. Every match (and every unresolved field glyph) records the nearest
+prototype score, second-best candidate, and any non-unique reason in recognition
+provenance. Legend prototypes remain page-local by default. A page without a recognized local legend
 does not inherit prototypes from another sheet and retains explicit same-page
 unresolved provenance. Cross-sheet matching is allowed only when source text on
 the field sheet explicitly references one uniquely identified legend sheet, for

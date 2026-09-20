@@ -19,6 +19,7 @@ from oabm.importers.pdf_architecture.types import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_architecture" / "v1"
+CAD_GEOMETRY_FIXTURE = FIXTURE_DIR / "cad-export-geometry-only.pdf"
 
 
 def _text(element_id: str, text: str, x: float, y: float, width: float = 80, height: float = 10) -> PdfTextObservation:
@@ -110,6 +111,28 @@ def _ambiguity_codes(model: BuildingModel) -> set[str]:
     return {item["code"] for item in model.attributes["pdf_architecture"]["ambiguities"]}
 
 
+
+
+def test_cad_export_curves_survive_architectural_extraction_as_lines() -> None:
+    document = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+    repeated = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+
+    assert document == repeated
+    assert len(document.pages) == 1
+    page = document.pages[0]
+    assert not page.texts
+    assert not page.rects
+    assert len(page.lines) == 9
+    segments = {(line.start_pt, line.end_pt) for line in page.lines}
+    assert ((18.0, 24.0), (66.0, 38.0)) in segments
+    assert ((66.0, 38.0), (108.0, 24.0)) in segments
+    assert ((132.0, 24.0), (154.0, 24.0)) in segments
 
 
 def test_pdf_text_extraction_splits_widely_separated_same_row_annotations() -> None:

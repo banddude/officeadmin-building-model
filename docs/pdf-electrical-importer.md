@@ -30,13 +30,18 @@ frame, and entity attributes mark that geometry as
 claimed mounting elevation. Mounting height, when stated by the plan, is
 preserved separately in `attributes.pdf_electrical.mounting_height_m`.
 
-A multi-page PDF requires an explicit `PdfPageTransform` for every page before
-canonical objects are emitted. Every transform must target the same canonical
-`frame_id`. If those transforms are missing, incomplete, or target different
-frames, import fails rather than creating falsely coincident geometry.
-Architectural convergence can supply those transforms once sheet registration
-is known. `level_id`, `space_id`, and `host_id` remain null until real
-canonical hosts are identified.
+A multi-page PDF no longer fails solely because registration transforms are
+absent. Without caller-supplied transforms, each page is placed in the same
+document-local working frame with a deterministic 100 m X offset between page
+tiles. This is explicitly marked `multi-page-local-best-effort-unregistered`;
+model provenance records the synthetic transform for every page, and no
+cross-page or building registration is asserted. This prevents unrelated
+page-local coordinates from collapsing onto one another while still allowing
+per-page recognition to proceed. When explicit `PdfPageTransform` values are
+supplied they must still cover every page and target one canonical `frame_id`.
+Architectural convergence can replace best-effort placement once sheet
+registration is known. `level_id`, `space_id`, and `host_id` remain null until
+real canonical hosts are identified.
 
 ## Ambiguity rules
 
@@ -50,14 +55,15 @@ one canonical circuit. Their load ports and provenance are unioned
 deterministically, and conflicting scalar electrical evidence is preserved as
 explicit ambiguity instead of being selected by extraction order.
 
-A symbol is materialized only when the symbol catalog yields one clear
-classification and the importer also has stable semantic or native identity.
-Unknown or tied classifications are retained under `unresolved_observations`,
-including the candidate types and confidences. Recognized symbols without stable
-identity are also retained there rather than receiving counter-derived
-canonical IDs. Bare device-class labels such as an unnumbered generic receptacle
-or light abbreviation are class evidence, not instance identity, and therefore
-remain unresolved by default.
+A source glyph or named symbol is materialized only when recognition yields one
+clear classification and a stable identity anchor. For drawn vector glyphs, that
+classification can come from a unique match against the sheet's own legend and
+the source-geometry fingerprint supplies the fallback identity. Unknown, tied,
+or unmatched classifications are retained under `unresolved_observations` and
+are never guessed. Bare device-class labels such as an unnumbered generic
+receptacle or light abbreviation are class evidence, not instance identity, and
+therefore remain unresolved unless they reinforce an independently recognized
+glyph.
 
 For real plan families that repeat a legitimate symbol but expose no stable PDF
 native identifier, callers may supply `ElectricalInstanceHint` entries. Each hint
@@ -80,14 +86,19 @@ Host words such as `WALL MTD` are hints only. They never become a canonical
 
 `import_pdf(..., source_id=...)` should receive a stable document identity when
 one is available. Canonical electrical entity IDs are derived from stable
-semantic tags or stable source-native identifiers, never extraction order,
-text counters, graphics-operator counters, or mutable coordinates. Counter-based
-source element IDs remain useful provenance only.
+semantic tags, stable source-native identifiers, or, for a geometry-only
+legend-matched instance, a deterministic fingerprint of that instance's
+absolute source geometry and page. They never depend on extraction order, text
+counters, or graphics-operator counters. Counter-based source element IDs remain
+provenance only. A semantic tag, when present, remains the stronger identity
+anchor. Moving or redrawing a geometry-only source glyph intentionally changes
+its source-geometry fingerprint, while unrelated extraction-ID changes do not.
 
-A recognized graphical symbol that has neither a stable semantic tag nor a
-stable native identifier remains unresolved instead of receiving an unstable
-canonical ID. When a stable native annotation identifier is present, it can be
-used as the identity key.
+A recognized form/annotation symbol that has neither a stable semantic tag nor
+a stable native identifier remains unresolved instead of receiving an unstable
+canonical ID. A drawn vector glyph may establish identity only through the
+sheet-legend shape path described below. When a stable native annotation
+identifier is present, it can be used as the identity key.
 
 If no source ID is supplied, the extractor uses a SHA-256 identity for the exact
 PDF bytes. That guarantees repeatability for an unchanged file but intentionally
@@ -96,15 +107,30 @@ survive unrelated PDF revisions must provide the same stable `source_id`.
 
 ## Symbol recognition
 
-The built-in catalog recognizes common semantic names in form XObject names and
-stamp metadata. It intentionally treats a bare `SW` as ambiguous. Projects with
-different CAD export names can pass their own `SymbolRule` sequence without
-changing the canonical model contract.
+The primary path for drawn power-plan symbols is sheet-local geometry matching.
+The importer clusters small nearby vector paths into candidate glyphs, including
+the filled and Bézier geometry retained by Slice 1. It locates a printed
+electrical/symbol legend, associates each unambiguous legend type label with the
+nearest small drawn glyph, builds a translation/scale/quarter-turn invariant
+shape signature, and matches field glyph clusters against those legend
+prototypes. A unique match emits the legend's canonical device/equipment type
+with `pdf-legend-shape-match` provenance from both field geometry and the legend
+label. Conflicting legend definitions fail closed. Candidate glyphs with no
+unique legend type remain unresolved and are never guessed.
 
-The extractor also records a deliberately small family of ordinary stroked
-straight-line vector paths. A simple closed rectangular outline can reinforce a
-single already-recognized tagged electrical entity and adds source provenance,
-but vector geometry by itself never creates or classifies an electrical object.
+The built-in text catalog remains available as additional evidence and as a
+fallback for sources with explicit stable semantic labels. It also recognizes
+common semantic names in form XObject names and stamp metadata. It intentionally
+treats a bare `SW` as ambiguous. Projects with different CAD export names can
+pass their own `SymbolRule` sequence without changing the canonical model
+contract. Nearby text may reinforce a legend-matched glyph and provide a stable
+tag, but it is not required to classify or locate that glyph.
+
+The extractor also records ordinary stroked straight-line vector paths. A simple
+closed rectangular outline can still reinforce one already-recognized tagged
+electrical entity and add source provenance. Small glyph clusters are excluded
+from circuit-topology interpretation so symbol strokes cannot silently become
+wiring.
 
 ## Vector topology
 
@@ -139,9 +165,10 @@ are deterministically flattened with a fixed subdivision count while their sourc
 operator, transformed control points, and endpoint remain in observation metadata.
 Observations containing Bézier commands are excluded from the existing rectangular
 symbol-outline and straight-line topology families, so curve retention cannot
-silently reinterpret a curve as straight circuit topology. Vector geometry by
-itself never creates or classifies an electrical object, and unassociated drafting
-geometry remains outside the recognition family.
+silently reinterpret a curve as straight circuit topology. Curved or filled paths
+may participate only as members of a small glyph cluster that uniquely matches a
+sheet-legend prototype. Otherwise they remain unresolved or unassociated drafting
+geometry rather than being guessed as electrical objects.
 
 ## API
 
@@ -150,9 +177,11 @@ form XObjects, and supported PDF annotations.
 
 `ElectricalPdfImporter.import_document(document, page_transforms=...)`
 recognizes an extracted document and returns a canonical `BuildingModel`.
-Multi-page documents require transforms for every page. Construct the importer
-with `instance_hints=(...)` when explicit stable identity must be supplied for
-source instances that otherwise have only repeated generic class labels.
+Multi-page documents may run without transforms using explicit best-effort
+per-page placement and provenance; supplied transforms must cover every page.
+Construct the importer with `instance_hints=(...)` when explicit stable identity
+must be supplied for source instances that otherwise have only repeated generic
+class labels.
 
 `ElectricalPdfImporter.import_pdf(path, page_transforms=...)` performs both
 steps.
@@ -160,3 +189,7 @@ steps.
 The checked-in fixtures under `fixtures/pdf_electrical/` are synthetic and
 contain no customer plan data. `vector-topology-sheet-e1.json` exercises the
 public-safe rectangular-marker and straight-line topology family.
+`geometry-only-power-sheet-with-legend.pdf` is a source-only Slice 4 acceptance
+fixture. Its plan field contains drawn glyph geometry only; semantic type text
+appears only inside the sheet's drawn legend. It has no paired expected-output
+artifact.

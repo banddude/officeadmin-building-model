@@ -22,6 +22,7 @@ FIXTURE_DIR = ROOT / "fixtures" / "pdf_architecture" / "v1"
 CAD_GEOMETRY_FIXTURE = FIXTURE_DIR / "cad-export-geometry-only.pdf"
 CAD_GEOMETRY_TEXT_FIXTURE = FIXTURE_DIR / "cad-export-geometry-plus-text.pdf"
 REGISTRATION_FALLBACK_FIXTURE = FIXTURE_DIR / "cad-export-scale-no-registration.pdf"
+DENSE_LABEL_FIXTURE = FIXTURE_DIR / "dense-room-labels.pdf"
 
 
 def _text(element_id: str, text: str, x: float, y: float, width: float = 80, height: float = 10) -> PdfTextObservation:
@@ -299,6 +300,91 @@ def test_geometry_plus_text_fixture_labels_geometric_space_by_position() -> None
         for provenance in space.provenance
     )
     assert "multiple_room_labels_in_enclosure" not in _ambiguity_codes(model)
+
+
+
+def test_dense_room_label_fixture_selects_one_label_per_enclosure() -> None:
+    assert not DENSE_LABEL_FIXTURE.with_suffix(".expected.json").exists()
+    observations = extract_pdf(
+        DENSE_LABEL_FIXTURE,
+        source_id="fixture:dense-room-labels",
+    )
+    assert len(observations.pages) == 1
+    page = observations.pages[0]
+    extracted = {item.text: item for item in page.texts}
+    assert extracted["OFFICE"].font_size_pt == pytest.approx(12.0)
+    assert extracted["101"].font_size_pt == pytest.approx(11.0)
+    assert {"10'-0\"", "KEYNOTE: 1", "8", "TYP"}.issubset(extracted)
+
+    model = import_architectural_pdf(
+        DENSE_LABEL_FIXTURE,
+        source_id="fixture:dense-room-labels",
+    )
+
+    validate_model(model)
+    assert len(model.spaces) == 3
+    assert len(model.walls) == 12
+    assert {space.name for space in model.spaces} == {
+        "OFFICE 101",
+        "STORAGE A102",
+        "CONFERENCE 103",
+    }
+    assert all(space.name for space in model.spaces)
+    assert "multiple_room_labels_in_enclosure" not in _ambiguity_codes(model)
+
+    for space in model.spaces:
+        label_provenance = next(
+            provenance
+            for provenance in space.provenance
+            if "label_selection" in provenance.attributes
+        )
+        selection = label_provenance.attributes["label_selection"]
+        assert selection["selection_method"] == "enclosure_room_label_ranking"
+        assert selection["room_number_pattern"] is True
+        assert len(selection["source_text_elements"]) == 2
+        assert [item["text"] for item in selection["runner_ups"]] == ["TYP"]
+        assert all(
+            item["text"] not in {"10'-0\"", "KEYNOTE: 1", "8", "9", "10"}
+            for item in selection["runner_ups"]
+        )
+
+
+def test_room_label_ranking_marks_only_close_top_two_as_ambiguous() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=220,
+        texts=(
+            _text("title", "A52 FLOOR PLAN", 10, 190),
+            _text("scale", "SCALE: 1:100", 10, 176),
+            _text("level", "LEVEL: GROUND", 10, 162),
+            _text("height", "LEVEL CEILING HEIGHT: 9'-0\"", 10, 148),
+            _text("office", "OFFICE", 70, 70, width=40, height=10),
+            _text("lobby", "LOBBY", 130, 70, width=40, height=10),
+        ),
+        rects=(
+            PdfRectObservation(element_id="outer", bbox_pt=(20, 20, 220, 120)),
+            PdfRectObservation(element_id="inner", bbox_pt=(24, 24, 216, 116)),
+        ),
+    )
+
+    model = import_observations(_document(page, source_id="fixture:close-labels"))
+
+    validate_model(model)
+    assert len(model.spaces) == 1
+    ambiguity = next(
+        item
+        for item in model.attributes["pdf_architecture"]["ambiguities"]
+        if item["code"] == "multiple_room_labels_in_enclosure"
+    )
+    assert ambiguity["ranking_margin"] <= ambiguity["ambiguity_margin"]
+    assert model.spaces[0].confidence <= 0.65
+    selection = model.spaces[0].provenance[0].attributes["label_selection"]
+    assert len(selection["runner_ups"]) == 1
+    assert {model.spaces[0].name, selection["runner_ups"][0]["text"]} == {
+        "OFFICE",
+        "LOBBY",
+    }
 
 
 def test_geometric_space_identity_does_not_depend_on_room_label() -> None:

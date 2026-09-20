@@ -21,6 +21,13 @@ class PdfTextObservation:
     text: str
     bbox_pt: tuple[float, float, float, float]
     native_id: str | None = None
+    font_size_pt: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.font_size_pt is not None and (
+            not math.isfinite(self.font_size_pt) or self.font_size_pt <= 0
+        ):
+            raise ValueError("font_size_pt must be > 0 when supplied")
 
     @property
     def center_pt(self) -> tuple[float, float]:

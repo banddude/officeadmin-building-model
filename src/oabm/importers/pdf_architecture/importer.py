@@ -211,6 +211,7 @@ class _WallFaceRun:
     source_element_ids: tuple[str, ...]
     primitive_families: tuple[str, ...]
     dashed: bool
+    filled: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +222,7 @@ class _WallFacePair:
     source_element_ids: tuple[str, ...]
     primitive_families: tuple[str, ...]
     dashed: bool
+    junction_supported: bool
     geometry_anchor: str
 
 
@@ -2255,6 +2257,297 @@ def _gap_histogram(gaps_m: list[float]) -> list[dict[str, object]]:
     return result
 
 
+def _source_point_to_segment_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> tuple[float, float]:
+    vx = end[0] - start[0]
+    vy = end[1] - start[1]
+    length_sq = vx * vx + vy * vy
+    if length_sq <= 1e-12:
+        return (math.inf, 0.0)
+    raw_t = (
+        (point[0] - start[0]) * vx + (point[1] - start[1]) * vy
+    ) / length_sq
+    t = max(0.0, min(1.0, raw_t))
+    nearest = (start[0] + t * vx, start[1] + t * vy)
+    return (math.dist(point, nearest), raw_t)
+
+
+def _is_dimension_pattern_text(text: str) -> bool:
+    cleaned = _clean_text(text)
+    if _find_dimension(cleaned) is not None:
+        return True
+    return bool(
+        re.fullmatch(
+            r"[+-]?\d{4,5}(?:\.\d+)?(?:\s*MM)?",
+            cleaned,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _dimension_marker_evidence_ids(
+    lines: list[PdfLineObservation],
+    transform: _Transform2D,
+) -> set[str]:
+    if not lines:
+        return set()
+
+    endpoint_tolerance_pt = (3.0 * _INCH_M) / transform.meters_per_point
+    marker_max_length_m = 36.0 * _INCH_M
+    marker_max_length_pt = marker_max_length_m / transform.meters_per_point
+    cell_size = max(marker_max_length_pt, 1.0)
+    marker_cells: dict[tuple[int, int], set[int]] = {}
+    lengths_m = [
+        math.dist(line.start_pt, line.end_pt) * transform.meters_per_point
+        for line in lines
+    ]
+    for index, line in enumerate(lines):
+        if lengths_m[index] > marker_max_length_m:
+            continue
+        x0 = min(line.start_pt[0], line.end_pt[0]) - endpoint_tolerance_pt
+        x1 = max(line.start_pt[0], line.end_pt[0]) + endpoint_tolerance_pt
+        y0 = min(line.start_pt[1], line.end_pt[1]) - endpoint_tolerance_pt
+        y1 = max(line.start_pt[1], line.end_pt[1]) + endpoint_tolerance_pt
+        for cell_x in range(math.floor(x0 / cell_size), math.floor(x1 / cell_size) + 1):
+            for cell_y in range(math.floor(y0 / cell_size), math.floor(y1 / cell_size) + 1):
+                marker_cells.setdefault((cell_x, cell_y), set()).add(index)
+
+    result: set[str] = set()
+    minimum_cross = math.sin(math.radians(20.0))
+    for index, line in enumerate(lines):
+        line_length_m = lengths_m[index]
+        max_marker_m = min(marker_max_length_m, line_length_m * 0.45)
+        if max_marker_m < 2.0 * _INCH_M:
+            continue
+        ux, uy, _, _, _ = _line_record(line)
+        matched_marker_ids: set[str] = set()
+        endpoint_hits = 0
+        for endpoint in (line.start_pt, line.end_pt):
+            cell_x = math.floor(endpoint[0] / cell_size)
+            cell_y = math.floor(endpoint[1] / cell_size)
+            hit = False
+            for nearby_x in range(cell_x - 1, cell_x + 2):
+                for nearby_y in range(cell_y - 1, cell_y + 2):
+                    for other_index in marker_cells.get((nearby_x, nearby_y), ()):
+                        if other_index == index or lengths_m[other_index] > max_marker_m:
+                            continue
+                        other = lines[other_index]
+                        oux, ouy, _, _, _ = _line_record(other)
+                        if abs(ux * ouy - uy * oux) < minimum_cross:
+                            continue
+                        distance, _ = _source_point_to_segment_distance(
+                            endpoint,
+                            other.start_pt,
+                            other.end_pt,
+                        )
+                        if distance <= endpoint_tolerance_pt:
+                            hit = True
+                            matched_marker_ids.add(other.element_id)
+            if hit:
+                endpoint_hits += 1
+        if endpoint_hits == 2:
+            result.add(line.element_id)
+            result.update(matched_marker_ids)
+    return result
+
+
+def _dimension_evidence_ids(
+    page: PdfPageObservation,
+    lines: list[PdfLineObservation],
+    transform: _Transform2D,
+) -> set[str]:
+    result = _dimension_marker_evidence_ids(lines, transform)
+    dimension_texts = [
+        observation
+        for observation in page.texts
+        if _is_dimension_pattern_text(observation.text)
+    ]
+    if not dimension_texts:
+        return result
+
+    perpendicular_tolerance_pt = (12.0 * _INCH_M) / transform.meters_per_point
+    along_margin_pt = (6.0 * _INCH_M) / transform.meters_per_point
+    for line in lines:
+        line_length_pt = math.dist(line.start_pt, line.end_pt)
+        along_margin_fraction = along_margin_pt / max(line_length_pt, 1e-9)
+        for observation in dimension_texts:
+            distance, raw_t = _source_point_to_segment_distance(
+                observation.center_pt,
+                line.start_pt,
+                line.end_pt,
+            )
+            if (
+                distance <= perpendicular_tolerance_pt
+                and -along_margin_fraction <= raw_t <= 1.0 + along_margin_fraction
+            ):
+                result.add(line.element_id)
+                break
+    return result
+
+
+def _hatch_evidence_ids(
+    page: PdfPageObservation,
+    lines: list[PdfLineObservation],
+    transform: _Transform2D,
+) -> set[str]:
+    if not lines:
+        return set()
+
+    max_hatch_length_m = 72.0 * _INCH_M
+    min_hatch_length_m = 1.0 * _INCH_M
+    max_hatch_length_pt = max_hatch_length_m / transform.meters_per_point
+    min_pitch_pt = (0.5 * _INCH_M) / transform.meters_per_point
+    max_pitch_pt = (18.0 * _INCH_M) / transform.meters_per_point
+    candidates = [
+        (index, line)
+        for index, line in enumerate(lines)
+        if min_hatch_length_m
+        <= math.dist(line.start_pt, line.end_pt) * transform.meters_per_point
+        <= max_hatch_length_m
+    ]
+    result = {line.element_id for _, line in candidates if line.filled}
+
+    page_area = max(page.width_pt * page.height_pt, 1.0)
+    filled_rects = [
+        rect
+        for rect in page.rects
+        if rect.filled
+        and (rect.width_pt * rect.height_pt) <= page_area * 0.35
+    ]
+    for _, line in candidates:
+        midpoint = (
+            (line.start_pt[0] + line.end_pt[0]) / 2.0,
+            (line.start_pt[1] + line.end_pt[1]) / 2.0,
+        )
+        for rect in filled_rects:
+            if all(
+                _inside(rect.bbox_pt, point)
+                for point in (line.start_pt, midpoint, line.end_pt)
+            ):
+                result.add(line.element_id)
+                break
+
+    if len(candidates) < 5:
+        return result
+
+    angle_tolerance = math.radians(2.0)
+    orientation_bucket_count = max(1, int(round(math.pi / angle_tolerance)))
+    tangent_bin_size = max(max_hatch_length_pt, 1.0)
+    groups: dict[
+        tuple[int, int],
+        list[tuple[float, float, float, int]],
+    ] = {}
+    for index, line in candidates:
+        start, end = _canonical_segment(line.start_pt, line.end_pt)
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        theta = math.atan2(dy, dx) % math.pi
+        base_bucket = int(round(theta / angle_tolerance)) % orientation_bucket_count
+        for orientation_bucket in {
+            (base_bucket - 1) % orientation_bucket_count,
+            base_bucket,
+            (base_bucket + 1) % orientation_bucket_count,
+        }:
+            reference_angle = orientation_bucket * angle_tolerance
+            tx, ty = math.cos(reference_angle), math.sin(reference_angle)
+            nx, ny = -ty, tx
+            tangent_values = sorted(
+                (
+                    start[0] * tx + start[1] * ty,
+                    end[0] * tx + end[1] * ty,
+                )
+            )
+            normal_value = (
+                ((start[0] + end[0]) / 2.0) * nx
+                + ((start[1] + end[1]) / 2.0) * ny
+            )
+            first_bin = math.floor(tangent_values[0] / tangent_bin_size)
+            last_bin = math.floor(tangent_values[1] / tangent_bin_size)
+            for tangent_bin in range(first_bin, last_bin + 1):
+                groups.setdefault(
+                    (orientation_bucket, tangent_bin),
+                    [],
+                ).append(
+                    (
+                        normal_value,
+                        tangent_values[0],
+                        tangent_values[1],
+                        index,
+                    )
+                )
+
+    for values in groups.values():
+        unique_values = {
+            item[3]: item
+            for item in values
+        }
+        ordered = sorted(unique_values.values(), key=lambda item: (item[0], item[3]))
+        if len(ordered) < 5:
+            continue
+        for start_index in range(len(ordered) - 4):
+            window = ordered[start_index : start_index + 5]
+            normals = [item[0] for item in window]
+            gaps = [
+                second - first
+                for first, second in zip(normals, normals[1:])
+            ]
+            if any(gap <= 0 for gap in gaps):
+                continue
+            pitch = float(median(gaps))
+            if not (min_pitch_pt <= pitch <= max_pitch_pt):
+                continue
+            if any(abs(gap - pitch) > pitch * 0.25 for gap in gaps):
+                continue
+            common_overlap = min(item[2] for item in window) - max(
+                item[1] for item in window
+            )
+            shortest_span = min(item[2] - item[1] for item in window)
+            if common_overlap < shortest_span * 0.5:
+                continue
+            result.update(lines[item[3]].element_id for item in window)
+    return result
+
+
+def _wall_pair_has_endpoint_junction(
+    start_pt: tuple[float, float],
+    end_pt: tuple[float, float],
+    first_index: int,
+    second_index: int,
+    runs: list[_WallFaceRun],
+    records: list[tuple[float, float, float, float, float]],
+    endpoint_cells: dict[tuple[int, int], set[tuple[int, tuple[float, float]]]],
+    junction_tolerance_pt: float,
+) -> bool:
+    dx = end_pt[0] - start_pt[0]
+    dy = end_pt[1] - start_pt[1]
+    length = math.hypot(dx, dy)
+    if length <= 1e-12:
+        return False
+    ux, uy = dx / length, dy / length
+    minimum_cross = math.sin(math.radians(15.0))
+    cell_size = max(junction_tolerance_pt, 1.0)
+    for endpoint in (start_pt, end_pt):
+        cell_x = math.floor(endpoint[0] / cell_size)
+        cell_y = math.floor(endpoint[1] / cell_size)
+        for nearby_x in range(cell_x - 1, cell_x + 2):
+            for nearby_y in range(cell_y - 1, cell_y + 2):
+                for run_index, other_endpoint in endpoint_cells.get(
+                    (nearby_x, nearby_y),
+                    (),
+                ):
+                    if run_index in {first_index, second_index}:
+                        continue
+                    oux, ouy, _, _, _ = records[run_index]
+                    if abs(ux * ouy - uy * oux) < minimum_cross:
+                        continue
+                    if math.dist(endpoint, other_endpoint) <= junction_tolerance_pt:
+                        return True
+    return False
+
+
 def _collinear_wall_face_runs(
     page: PdfPageObservation,
     transform: _Transform2D,
@@ -2263,10 +2556,26 @@ def _collinear_wall_face_runs(
     diagnostics: dict[str, object],
 ) -> tuple[_WallFaceRun, ...]:
     by_geometry: dict[tuple[float, float, float, float], list[PdfLineObservation]] = {}
-    eligible = [
+    input_lines = [
         line
         for line in page.lines
         if line.element_id not in excluded_element_ids
+    ]
+    dimension_evidence_ids = _dimension_evidence_ids(page, input_lines, transform)
+    hatch_evidence_ids = _hatch_evidence_ids(
+        page,
+        [
+            line
+            for line in input_lines
+            if line.element_id not in dimension_evidence_ids
+        ],
+        transform,
+    )
+    eligible = [
+        line
+        for line in input_lines
+        if line.element_id not in dimension_evidence_ids
+        and line.element_id not in hatch_evidence_ids
     ]
     for line in eligible:
         start, end = _canonical_segment(line.start_pt, line.end_pt)
@@ -2288,14 +2597,18 @@ def _collinear_wall_face_runs(
     ]
 
     family_counts: dict[str, int] = {}
-    for line in eligible:
+    for line in input_lines:
         family_counts[line.primitive_family] = family_counts.get(line.primitive_family, 0) + 1
 
     diagnostics.update(
         {
-            "input_segment_count": len(eligible),
+            "input_segment_count": len(input_lines),
+            "wall_evidence_segment_count": len(eligible),
             "primitive_family_counts": dict(sorted(family_counts.items())),
-            "dashed_input_segment_count": sum(1 for line in eligible if line.dashed),
+            "dashed_input_segment_count": sum(1 for line in input_lines if line.dashed),
+            "filled_input_segment_count": sum(1 for line in input_lines if line.filled),
+            "dimension_evidence_rejected_count": len(dimension_evidence_ids),
+            "hatch_evidence_rejected_count": len(hatch_evidence_ids),
             "duplicate_geometry_segment_count": sum(
                 len(by_geometry[key]) for key in duplicate_geometry
             ),
@@ -2442,11 +2755,13 @@ def _collinear_wall_face_runs(
         source_ids: set[str] = set()
         primitive_families: set[str] = set()
         dashed = False
+        filled = False
         for index in ordered_members:
             line = lines[index]
             source_ids.add(line.element_id)
             primitive_families.add(line.primitive_family)
             dashed = dashed or line.dashed
+            filled = filled or line.filled
             for point in (line.start_pt, line.end_pt):
                 tangent_values.append(point[0] * ux + point[1] * uy)
                 normal_values.append(point[0] * nx + point[1] * ny)
@@ -2469,6 +2784,7 @@ def _collinear_wall_face_runs(
                 source_element_ids=tuple(sorted(source_ids)),
                 primitive_families=tuple(sorted(primitive_families)),
                 dashed=dashed,
+                filled=filled,
             )
         )
 
@@ -2684,6 +3000,22 @@ def _geometric_wall_face_pairs(
             continue
         unique_best[run_index] = ordered[0]
 
+    junction_tolerance_pt = (12.0 * _INCH_M) / transform.meters_per_point
+    junction_cell_size = max(junction_tolerance_pt, 1.0)
+    endpoint_cells: dict[
+        tuple[int, int],
+        set[tuple[int, tuple[float, float]]],
+    ] = {}
+    for run_index, run in enumerate(eligible_runs):
+        for endpoint in (run.start_pt, run.end_pt):
+            endpoint_cells.setdefault(
+                (
+                    math.floor(endpoint[0] / junction_cell_size),
+                    math.floor(endpoint[1] / junction_cell_size),
+                ),
+                set(),
+            ).add((run_index, endpoint))
+
     accepted: list[_WallFacePair] = []
     seen_anchors: set[str] = set()
     accepted_candidate_indexes: set[int] = set()
@@ -2712,6 +3044,16 @@ def _geometric_wall_face_pairs(
                     sorted(set(first.primitive_families) | set(second.primitive_families))
                 ),
                 dashed=first.dashed or second.dashed,
+                junction_supported=_wall_pair_has_endpoint_junction(
+                    start_source,
+                    end_source,
+                    first_index,
+                    second_index,
+                    eligible_runs,
+                    records,
+                    endpoint_cells,
+                    junction_tolerance_pt,
+                ),
                 geometry_anchor=geometry_anchor,
             )
         )
@@ -2721,6 +3063,9 @@ def _geometric_wall_face_pairs(
             "candidate_pair_count": len(candidate_pairs),
             "parallel_gap_histogram_m": _gap_histogram(gap_samples_m),
             "accepted_pair_count": len(accepted),
+            "accepted_pair_junction_supported_count": sum(
+                1 for pair in accepted if pair.junction_supported
+            ),
             "ambiguous_best_run_count": ambiguous_best_run_count,
             "rejected": {
                 "parallel": rejected_parallel,
@@ -3038,15 +3383,43 @@ def _geometric_wall_loop_entities(
     partial_pair_indexes = {
         index for index in range(len(pairs)) if index not in loop_pair_indexes
     }
+    partial_min_length_m = 24.0 * _INCH_M
+    short_partial_pair_indexes = {
+        index
+        for index in partial_pair_indexes
+        if math.dist(pairs[index].start_pt, pairs[index].end_pt)
+        * transform.meters_per_point
+        < partial_min_length_m
+    }
+    no_junction_partial_pair_indexes = {
+        index
+        for index in partial_pair_indexes
+        if index not in short_partial_pair_indexes
+        and not pairs[index].junction_supported
+    }
+    evidence_supported_partial_pair_indexes = (
+        partial_pair_indexes
+        - short_partial_pair_indexes
+        - no_junction_partial_pair_indexes
+    )
     allow_partial_pairs = (
         allow_partial_faces
         and int(diagnostics.get("ambiguous_best_run_count", 0)) == 0
     )
-    diagnostics["partial_pair_count"] = (
-        len(partial_pair_indexes) if allow_partial_pairs else 0
+    promoted_partial_pair_indexes = (
+        evidence_supported_partial_pair_indexes
+        if allow_partial_pairs
+        else set()
     )
+    diagnostics["partial_wall_min_length_m"] = round(partial_min_length_m, 6)
+    diagnostics["partial_candidate_pair_count"] = len(partial_pair_indexes)
+    diagnostics["partial_short_rejected_count"] = len(short_partial_pair_indexes)
+    diagnostics["partial_no_junction_rejected_count"] = len(
+        no_junction_partial_pair_indexes
+    )
+    diagnostics["partial_pair_count"] = len(promoted_partial_pair_indexes)
     diagnostics["suppressed_partial_pair_count"] = (
-        0 if allow_partial_pairs else len(partial_pair_indexes)
+        len(partial_pair_indexes) - len(promoted_partial_pair_indexes)
     )
 
     contexts_by_anchor: dict[str, _WallContext] = {}
@@ -3054,7 +3427,10 @@ def _geometric_wall_loop_entities(
     height_confidence = level_info.height_confidence or options.assumed_value_confidence
 
     for index, pair in enumerate(pairs):
-        if index not in loop_pair_indexes and not allow_partial_pairs:
+        if (
+            index not in loop_pair_indexes
+            and index not in promoted_partial_pair_indexes
+        ):
             continue
         wall_identity = (
             f"{source_id}|sheet:{sheet_anchor}|level:{level_info.anchor}|"
@@ -3105,6 +3481,7 @@ def _geometric_wall_loop_entities(
                         "geometry_anchor": pair.geometry_anchor,
                         "primitive_families": list(pair.primitive_families),
                         "dashed_source": pair.dashed,
+                        "junction_supported": pair.junction_supported,
                         "closed_loop": index in loop_pair_indexes,
                     },
                 )
@@ -3121,6 +3498,7 @@ def _geometric_wall_loop_entities(
                     "source_boundaries": list(pair.source_element_ids),
                     "primitive_families": list(pair.primitive_families),
                     "dashed_source": pair.dashed,
+                    "junction_supported": pair.junction_supported,
                     "closed_loop": index in loop_pair_indexes,
                 }
             },

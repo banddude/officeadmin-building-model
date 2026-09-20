@@ -1239,12 +1239,16 @@ def _pair_adjacent_room_number_and_name(
 
 
 def _room_labels(page: PdfPageObservation) -> tuple[_RoomLabel, ...]:
-    labels = tuple(
-        label
-        for observation in page.texts
-        if (label := _room_label_candidate(page, observation)) is not None
+    return tuple(
+        sorted(
+            (
+                label
+                for observation in page.texts
+                if (label := _room_label_candidate(page, observation)) is not None
+            ),
+            key=lambda item: (item.anchor, item.observation.element_id),
+        )
     )
-    return _pair_adjacent_room_number_and_name(page, labels)
 
 
 def _polygon_center_and_radius(
@@ -1284,7 +1288,7 @@ def _select_room_label(
     transform: _Transform2D | None = None,
     enclosure_attributes: dict[str, object] | None = None,
 ) -> _RoomLabel | None:
-    candidates = tuple(rooms)
+    candidates = _pair_adjacent_room_number_and_name(page, tuple(rooms))
     if not candidates:
         return None
     if len(candidates) == 1:

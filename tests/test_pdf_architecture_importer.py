@@ -23,6 +23,7 @@ CAD_GEOMETRY_FIXTURE = FIXTURE_DIR / "cad-export-geometry-only.pdf"
 CAD_GEOMETRY_TEXT_FIXTURE = FIXTURE_DIR / "cad-export-geometry-plus-text.pdf"
 REGISTRATION_FALLBACK_FIXTURE = FIXTURE_DIR / "cad-export-scale-no-registration.pdf"
 DENSE_LABEL_FIXTURE = FIXTURE_DIR / "dense-room-labels.pdf"
+ADJACENT_LABEL_PAIR_FIXTURE = FIXTURE_DIR / "adjacent-room-label-pairs.pdf"
 
 
 def _text(element_id: str, text: str, x: float, y: float, width: float = 80, height: float = 10) -> PdfTextObservation:
@@ -347,6 +348,53 @@ def test_dense_room_label_fixture_selects_one_label_per_enclosure() -> None:
             item["text"] not in {"10'-0\"", "KEYNOTE: 1", "8", "9", "10"}
             for item in selection["runner_ups"]
         )
+
+
+def test_adjacent_room_label_pairing_never_crosses_enclosures() -> None:
+    assert not ADJACENT_LABEL_PAIR_FIXTURE.with_suffix(".expected.json").exists()
+    observations = extract_pdf(
+        ADJACENT_LABEL_PAIR_FIXTURE,
+        source_id="fixture:adjacent-room-label-pairs",
+    )
+    assert len(observations.pages) == 1
+    page = observations.pages[0]
+    extracted = {item.text: item for item in page.texts}
+    assert {"OFFICE", "101", "STORAGE", "102"}.issubset(extracted)
+
+    office = extracted["OFFICE"].center_pt
+    room_101 = extracted["101"].center_pt
+    storage = extracted["STORAGE"].center_pt
+    room_102 = extracted["102"].center_pt
+    assert abs(storage[1] - room_101[1]) < abs(office[1] - room_101[1])
+    assert room_101[0] < 130 < room_102[0]
+
+    model = import_architectural_pdf(
+        ADJACENT_LABEL_PAIR_FIXTURE,
+        source_id="fixture:adjacent-room-label-pairs",
+    )
+
+    validate_model(model)
+    assert len(model.spaces) == 2
+    assert {space.name for space in model.spaces} == {"OFFICE 101", "STORAGE 102"}
+    assert "multiple_room_labels_in_enclosure" not in _ambiguity_codes(model)
+
+    source_text_by_name = {}
+    for space in model.spaces:
+        source_text_by_name[space.name] = {
+            next(
+                item.text
+                for item in page.texts
+                if item.element_id == element_id
+            )
+            for element_id in space.attributes["pdf_architecture"][
+                "label_source_element_ids"
+            ]
+        }
+
+    assert source_text_by_name == {
+        "OFFICE 101": {"OFFICE", "101"},
+        "STORAGE 102": {"STORAGE", "102"},
+    }
 
 
 def test_room_label_ranking_marks_only_close_top_two_as_ambiguous() -> None:

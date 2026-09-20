@@ -409,6 +409,9 @@ class _VectorCluster:
     center_pt: tuple[float, float]
     shape_signature: str
     geometry_key: str
+    stripped_text_tags: tuple[str, ...] = ()
+    cleanup_actions: tuple[str, ...] = ()
+    excluded_source_element_ids: tuple[str, ...] = ()
 
     @property
     def source_element_ids(self) -> tuple[str, ...]:
@@ -1287,8 +1290,13 @@ _NOTES_COLUMN_START_FRACTION = 0.68
 _NOTES_TITLE_BAND_MAX_FRACTION = 0.12
 _FIELD_STATUS_RADIUS_PT = 28.0
 _FIELD_STATUS_AMBIGUITY_PT = 2.0
-_GLYPH_MATCH_SCORE_MIN = 0.82
-_GLYPH_MATCH_NEAR_TIE_MARGIN = 0.06
+_GLYPH_MATCH_ABSOLUTE_FLOOR = 0.45
+_GLYPH_MATCH_SCORE_MIN = 0.55
+_GLYPH_MATCH_MARGIN_MIN = 0.12
+_GLYPH_MATCH_STRONG_SCORE = 0.75
+_GLYPH_MATCH_NEAR_TIE_MARGIN = _GLYPH_MATCH_MARGIN_MIN
+_GLYPH_RESAMPLE_STEP = 0.04
+_GLYPH_CHAMFER_DISTANCE_SCALE = 0.30
 _ANNOTATION_CODE_MAX_CHARS = 16
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
 _LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
@@ -1450,211 +1458,138 @@ def _cluster_geometry_key(
     return hashlib.sha256(repr(canonical).encode("utf-8")).hexdigest()[:24]
 
 
-def _comparison_vectors(
+def _transform_normalized_point(
+    point: tuple[float, float],
+    *,
+    center_x: float,
+    center_y: float,
+    scale: float,
+    mirrored: bool,
+    rotation: int,
+) -> tuple[float, float]:
+    x = (point[0] - center_x) / scale
+    y = (point[1] - center_y) / scale
+    if mirrored:
+        x = -x
+    if rotation == 1:
+        x, y = -y, x
+    elif rotation == 2:
+        x, y = -x, -y
+    elif rotation == 3:
+        x, y = y, -x
+    return x, y
+
+
+def _resampled_point_cloud(
     cluster: _VectorCluster,
-) -> tuple[PdfVectorPathObservation, ...]:
-    """Strip small peripheral vectorized text/modifier strokes for matching only."""
+    *,
+    mirrored: bool = False,
+    rotation: int = 0,
+) -> tuple[tuple[float, float], ...]:
+    """Normalize a glyph and sample strokes at a fixed geometric density."""
 
-    if len(cluster.vectors) <= 1:
-        return cluster.vectors
-
-    ranked: list[
-        tuple[
-            float,
-            float,
-            tuple[float, float, float, float],
-            PdfVectorPathObservation,
-        ]
-    ] = []
-    for vector in cluster.vectors:
-        bbox = _vector_bbox(vector)
-        extent = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
-        length = sum(
-            _distance_pt(first[0], first[1], second[0], second[1])
-            for first, second in _vector_segments(vector)
-        )
-        ranked.append((extent, length, bbox, vector))
-    ranked.sort(
-        key=lambda item: (
-            -item[0],
-            -item[1],
-            item[2],
-            item[3].element_id,
-        )
-    )
-    _extent, _length, dominant_bbox, dominant = ranked[0]
-    dominant_width = max(dominant_bbox[2] - dominant_bbox[0], 1e-9)
-    dominant_height = max(dominant_bbox[3] - dominant_bbox[1], 1e-9)
-    expanded = (
-        dominant_bbox[0] - 0.25 * dominant_width,
-        dominant_bbox[1] - 0.25 * dominant_height,
-        dominant_bbox[2] + 0.25 * dominant_width,
-        dominant_bbox[3] + 0.25 * dominant_height,
-    )
-
-    kept: list[PdfVectorPathObservation] = []
-    for _item_extent, _item_length, bbox, vector in ranked:
-        center = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
-        if (
-            vector is dominant
-            or _bbox_gap_pt(bbox, dominant_bbox) <= 1.25
-            or (
-                expanded[0] <= center[0] <= expanded[2]
-                and expanded[1] <= center[1] <= expanded[3]
-            )
-        ):
-            kept.append(vector)
-
-    if len(kept) < 2 and len(cluster.vectors) > 1:
-        return cluster.vectors
-    return tuple(
-        sorted(
-            kept,
-            key=lambda vector: (
-                _vector_bbox(vector),
-                _cluster_geometry_key((vector,)),
-                vector.element_id,
-            ),
-        )
-    )
-
-
-def _comparison_bbox(
-    vectors: Sequence[PdfVectorPathObservation],
-) -> tuple[float, float, float, float]:
-    bbox = _vector_bbox(vectors[0])
-    for vector in vectors[1:]:
-        bbox = _bbox_union(bbox, _vector_bbox(vector))
-    return bbox
-
-
-def _comparison_signature(cluster: _VectorCluster) -> str:
-    vectors = _comparison_vectors(cluster)
-    return _cluster_shape_signature(vectors, _comparison_bbox(vectors))
-
-
-def _comparison_records(
-    cluster: _VectorCluster,
-) -> tuple[tuple[Any, ...], ...]:
-    vectors = _comparison_vectors(cluster)
-    bbox = _comparison_bbox(vectors)
+    vectors = cluster.vectors
+    bbox = cluster.bbox_pt
     center_x = (bbox[0] + bbox[2]) / 2.0
     center_y = (bbox[1] + bbox[3]) / 2.0
     scale = max(bbox[2] - bbox[0], bbox[3] - bbox[1], 1e-9)
-    variants: list[tuple[tuple[Any, ...], ...]] = []
+    cloud: list[tuple[float, float]] = []
 
-    for mirrored in (False, True):
-        for rotation in range(4):
-            records: list[tuple[Any, ...]] = []
-            for vector in vectors:
-                points: list[tuple[float, float]] = []
-                for x_pt, y_pt in vector.points_pt:
-                    x = (x_pt - center_x) / scale
-                    y = (y_pt - center_y) / scale
-                    if mirrored:
-                        x = -x
-                    if rotation == 1:
-                        x, y = -y, x
-                    elif rotation == 2:
-                        x, y = -x, -y
-                    elif rotation == 3:
-                        x, y = y, -x
-                    points.append((x, y))
-                xs = [point[0] for point in points]
-                ys = [point[1] for point in points]
-                length = sum(
-                    _distance_pt(first[0], first[1], second[0], second[1])
-                    for first, second in zip(points, points[1:])
-                )
-                if vector.closed and len(points) > 1:
-                    length += _distance_pt(
-                        points[-1][0],
-                        points[-1][1],
-                        points[0][0],
-                        points[0][1],
-                    )
-                records.append(
+    for vector in vectors:
+        transformed = [
+            _transform_normalized_point(
+                point,
+                center_x=center_x,
+                center_y=center_y,
+                scale=scale,
+                mirrored=mirrored,
+                rotation=rotation,
+            )
+            for point in vector.points_pt
+        ]
+        segments = list(zip(transformed, transformed[1:]))
+        if vector.closed and len(transformed) > 2:
+            segments.append((transformed[-1], transformed[0]))
+        for first, second in segments:
+            length = _distance_pt(first[0], first[1], second[0], second[1])
+            sample_count = max(1, math.ceil(length / _GLYPH_RESAMPLE_STEP))
+            for index in range(sample_count):
+                fraction = index / sample_count
+                cloud.append(
                     (
-                        _paint_family(vector),
-                        vector.closed,
-                        _vector_contains_bezier(vector),
-                        round(sum(xs) / len(xs), 3),
-                        round(sum(ys) / len(ys), 3),
-                        round(max(xs) - min(xs), 3),
-                        round(max(ys) - min(ys), 3),
-                        round(length, 3),
-                        len(points),
+                        first[0] + (second[0] - first[0]) * fraction,
+                        first[1] + (second[1] - first[1]) * fraction,
                     )
                 )
-            variants.append(tuple(sorted(records)))
-    return min(variants)
+        if transformed:
+            cloud.append(transformed[-1])
+
+    # Coordinate rounding collapses duplicate points caused by stroke splitting
+    # without making the score sensitive to PDF operator boundaries.
+    return tuple(sorted({(round(x, 5), round(y, 5)) for x, y in cloud}))
 
 
-def _comparison_stroke_counts(cluster: _VectorCluster) -> tuple[int, int]:
-    vectors = _comparison_vectors(cluster)
-    segment_count = sum(
-        max(1, len(vector.points_pt) - 1 + int(vector.closed))
-        for vector in vectors
-    )
-    return len(vectors), segment_count
-
-
-def _comparison_record_distance(
-    first: tuple[Any, ...],
-    second: tuple[Any, ...],
+def _point_cloud_distance(
+    first: Sequence[tuple[float, float]],
+    second: Sequence[tuple[float, float]],
 ) -> float:
-    categorical = (
-        (0.12 if first[0] != second[0] else 0.0)
-        + (0.10 if first[1] != second[1] else 0.0)
-        + (0.06 if first[2] != second[2] else 0.0)
-    )
-    numeric = (
-        0.60 * abs(float(first[3]) - float(second[3]))
-        + 0.60 * abs(float(first[4]) - float(second[4]))
-        + 0.45 * abs(float(first[5]) - float(second[5]))
-        + 0.45 * abs(float(first[6]) - float(second[6]))
-        + 0.20 * abs(float(first[7]) - float(second[7]))
-        + 0.10
-        * abs(int(first[8]) - int(second[8]))
-        / max(int(first[8]), int(second[8]), 1)
-    )
-    return min(1.5, categorical + numeric)
+    if not first or not second:
+        return 1.0
+
+    def directed(
+        source: Sequence[tuple[float, float]],
+        target: Sequence[tuple[float, float]],
+    ) -> tuple[float, float]:
+        nearest = [
+            min(
+                math.hypot(point[0] - other[0], point[1] - other[1])
+                for other in target
+            )
+            for point in source
+        ]
+        nearest.sort()
+        return sum(nearest) / len(nearest), nearest[-1]
+
+    first_mean, first_hausdorff = directed(first, second)
+    second_mean, second_hausdorff = directed(second, first)
+    chamfer = (first_mean + second_mean) / 2.0
+    hausdorff = max(first_hausdorff, second_hausdorff)
+    return 0.55 * chamfer + 0.45 * hausdorff
 
 
 def _cluster_match_score(
     cluster: _VectorCluster,
     prototype: _VectorCluster,
 ) -> float:
-    if _comparison_signature(cluster) == _comparison_signature(prototype):
+    if cluster.shape_signature == prototype.shape_signature:
         return 1.0
 
-    candidate_records = list(_comparison_records(cluster))
-    prototype_records = list(_comparison_records(prototype))
-    remaining = set(range(len(candidate_records)))
-    costs: list[float] = []
-    for record in sorted(
-        prototype_records,
-        key=lambda item: (-float(item[7]), item),
-    ):
-        if not remaining:
-            costs.append(1.0)
-            continue
-        best_index = min(
-            remaining,
-            key=lambda index: (
-                _comparison_record_distance(record, candidate_records[index]),
-                index,
+    prototype_cloud = _resampled_point_cloud(prototype)
+    distance = min(
+        _point_cloud_distance(
+            _resampled_point_cloud(
+                cluster,
+                mirrored=mirrored,
+                rotation=rotation,
             ),
+            prototype_cloud,
         )
-        costs.append(
-            _comparison_record_distance(record, candidate_records[best_index])
-        )
-        remaining.remove(best_index)
+        for mirrored in (False, True)
+        for rotation in range(4)
+    )
+    return round(
+        max(0.0, min(1.0, 1.0 - distance / _GLYPH_CHAMFER_DISTANCE_SCALE)),
+        6,
+    )
 
-    costs.extend(0.35 for _index in sorted(remaining))
-    denominator = max(len(candidate_records), len(prototype_records), 1)
-    distance = sum(costs) / denominator
-    return round(max(0.0, min(1.0, 1.0 - distance)), 6)
+
+def _comparison_stroke_counts(cluster: _VectorCluster) -> tuple[int, int]:
+    vectors = cluster.vectors
+    segment_count = sum(
+        max(1, len(vector.points_pt) - 1 + int(vector.closed))
+        for vector in vectors
+    )
+    return len(vectors), segment_count
 
 
 def _prototype_diagnostic(entry: _LegendEntry) -> dict[str, Any]:
@@ -1684,7 +1619,10 @@ def _cluster_contains_nonmodifier_text(
     for observation in texts:
         if observation.page != cluster.page:
             continue
-        if _field_modifier_text(observation.text) is not None:
+        if (
+            _field_modifier_text(observation.text) is not None
+            or _STRIPPABLE_FIELD_TEXT_RE.fullmatch(" ".join(observation.text.split()))
+        ):
             continue
         if (
             cluster.bbox_pt[0] <= observation.x_pt <= cluster.bbox_pt[2]
@@ -1698,8 +1636,8 @@ def _cluster_scale_ratio(
     cluster: _VectorCluster,
     prototype: _VectorCluster,
 ) -> float:
-    candidate_bbox = _comparison_bbox(_comparison_vectors(cluster))
-    prototype_bbox = _comparison_bbox(_comparison_vectors(prototype))
+    candidate_bbox = cluster.bbox_pt
+    prototype_bbox = prototype.bbox_pt
     candidate_extent = max(
         candidate_bbox[2] - candidate_bbox[0],
         candidate_bbox[3] - candidate_bbox[1],
@@ -1742,10 +1680,17 @@ def _match_cluster_to_legend_entries(
         "second_type": None,
         "second_score": None,
         "threshold": _GLYPH_MATCH_SCORE_MIN,
+        "absolute_floor": _GLYPH_MATCH_ABSOLUTE_FLOOR,
+        "margin_threshold": _GLYPH_MATCH_MARGIN_MIN,
+        "strong_score_threshold": _GLYPH_MATCH_STRONG_SCORE,
+        "margin": None,
+        "confidence": {"score": None, "margin": None},
         "reason": None,
         "bbox_size_pt": _cluster_bbox_size_pt(cluster),
         "stroke_count": candidate_strokes[0],
         "segment_count": candidate_strokes[1],
+        "stripped_text_tags": list(cluster.stripped_text_tags),
+        "cleanup_actions": list(cluster.cleanup_actions),
     }
     if not entries:
         return None, {
@@ -1793,12 +1738,18 @@ def _match_cluster_to_legend_entries(
 
     best = ranked[0]
     second = ranked[1] if len(ranked) > 1 else None
+    margin = round(
+        best[0] - (second[0] if second is not None else 0.0),
+        6,
+    )
     diagnostics: dict[str, Any] = {
         **base_diagnostics,
         "nearest_type": best[4].canonical_type,
         "nearest_score": best[0],
         "second_type": second[4].canonical_type if second is not None else None,
         "second_score": second[0] if second is not None else None,
+        "margin": margin,
+        "confidence": {"score": best[0], "margin": margin},
         "nearest_prototype": _prototype_diagnostic(best[4]),
         "score": best[0],
         "second_best": (
@@ -1811,6 +1762,24 @@ def _match_cluster_to_legend_entries(
         ),
         "non_unique_reason": None,
     }
+
+    if best[0] < _GLYPH_MATCH_ABSOLUTE_FLOOR:
+        diagnostics["reason"] = _unresolved_match_reason(
+            cluster,
+            best[4],
+            texts,
+        )
+        diagnostics["non_unique_reason"] = (
+            "nearest prototype score is below the absolute match floor"
+        )
+        return None, diagnostics
+
+    if best[0] >= _GLYPH_MATCH_STRONG_SCORE:
+        return best[4], diagnostics
+
+    if best[0] >= _GLYPH_MATCH_SCORE_MIN and margin >= _GLYPH_MATCH_MARGIN_MIN:
+        return best[4], diagnostics
+
     if best[0] < _GLYPH_MATCH_SCORE_MIN:
         diagnostics["reason"] = _unresolved_match_reason(
             cluster,
@@ -1818,14 +1787,15 @@ def _match_cluster_to_legend_entries(
             texts,
         )
         diagnostics["non_unique_reason"] = (
-            "nearest prototype score is below the match threshold"
+            "nearest prototype score is below the margin-rule match minimum"
         )
         return None, diagnostics
 
     near = [
         item
         for item in ranked
-        if best[0] - item[0] <= _GLYPH_MATCH_NEAR_TIE_MARGIN
+        if best[0] - item[0] < _GLYPH_MATCH_MARGIN_MIN
+        and item[0] >= _GLYPH_MATCH_ABSOLUTE_FLOOR
     ]
     competing_types = {
         (item[4].entity_kind, item[4].canonical_type)
@@ -1852,19 +1822,11 @@ def _match_cluster_to_legend_entries(
                 item[4].prototype.geometry_key,
             ),
         )[0]
-        diagnostics["nearest_prototype"] = _prototype_diagnostic(winner[4])
-        diagnostics["nearest_type"] = winner[4].canonical_type
-        diagnostics["nearest_score"] = winner[0]
-        diagnostics["score"] = winner[0]
-        diagnostics["tie_breaker"] = "differentiating-stroke-count"
-        if winner[4] is not best[4]:
-            diagnostics["second_best"] = {
-                "prototype": _prototype_diagnostic(best[4]),
-                "score": best[0],
-            }
-            diagnostics["second_type"] = best[4].canonical_type
-            diagnostics["second_score"] = best[0]
-        return winner[4], diagnostics
+        if winner[0] >= _GLYPH_MATCH_SCORE_MIN:
+            diagnostics["tie_breaker"] = "differentiating-stroke-count"
+            diagnostics["selected_type"] = winner[4].canonical_type
+            diagnostics["selected_score"] = winner[0]
+            return winner[4], diagnostics
 
     diagnostics["reason"] = "tie within margin"
     diagnostics["non_unique_reason"] = (
@@ -1872,6 +1834,442 @@ def _match_cluster_to_legend_entries(
         "stroke-count comparison"
     )
     return None, diagnostics
+
+
+_STRIPPABLE_FIELD_TEXT_RE = re.compile(r"""^[\sENR0-9+#"'.,:/-]+$""", re.IGNORECASE)
+
+
+def _cluster_extent_pt(cluster: _VectorCluster) -> float:
+    return max(
+        cluster.bbox_pt[2] - cluster.bbox_pt[0],
+        cluster.bbox_pt[3] - cluster.bbox_pt[1],
+    )
+
+
+def _make_vector_cluster(
+    vectors: Sequence[PdfVectorPathObservation],
+    *,
+    stripped_text_tags: Sequence[str] = (),
+    cleanup_actions: Sequence[str] = (),
+    excluded_source_element_ids: Sequence[str] = (),
+) -> _VectorCluster:
+    ordered = tuple(
+        sorted(
+            vectors,
+            key=lambda vector: (
+                _vector_bbox(vector),
+                _cluster_geometry_key((vector,)),
+                vector.element_id,
+            ),
+        )
+    )
+    bbox = _vector_bbox(ordered[0])
+    for vector in ordered[1:]:
+        bbox = _bbox_union(bbox, _vector_bbox(vector))
+    return _VectorCluster(
+        page=ordered[0].page,
+        vectors=ordered,
+        bbox_pt=bbox,
+        center_pt=((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0),
+        shape_signature=_cluster_shape_signature(ordered, bbox),
+        geometry_key=_cluster_geometry_key(ordered),
+        stripped_text_tags=tuple(sorted(set(stripped_text_tags))),
+        cleanup_actions=tuple(dict.fromkeys(cleanup_actions)),
+        excluded_source_element_ids=tuple(sorted(set(excluded_source_element_ids))),
+    )
+
+
+def _strippable_text_tags(
+    cluster: _VectorCluster,
+    texts: Sequence[PdfTextObservation],
+) -> tuple[PdfTextObservation, ...]:
+    matched: list[PdfTextObservation] = []
+    for observation in texts:
+        if observation.page != cluster.page:
+            continue
+        cleaned = " ".join(observation.text.split())
+        if not cleaned or not _STRIPPABLE_FIELD_TEXT_RE.fullmatch(cleaned):
+            continue
+        if len(cleaned) > 12:
+            continue
+        pad = max(1.0, float(observation.font_size_pt or 0.0) * 0.25)
+        if (
+            cluster.bbox_pt[0] - pad <= observation.x_pt <= cluster.bbox_pt[2] + pad
+            and cluster.bbox_pt[1] - pad <= observation.y_pt <= cluster.bbox_pt[3] + pad
+        ):
+            matched.append(observation)
+    return tuple(
+        sorted(
+            matched,
+            key=lambda item: (item.element_id, item.text),
+        )
+    )
+
+
+def _is_leader_vector(
+    vector: PdfVectorPathObservation,
+    *,
+    glyph_extent_pt: float,
+) -> bool:
+    if (
+        vector.closed
+        or _vector_contains_bezier(vector)
+        or _paint_family(vector) != "stroke"
+    ):
+        return False
+    bbox = _vector_bbox(vector)
+    width = bbox[2] - bbox[0]
+    height = bbox[3] - bbox[1]
+    extent = max(width, height)
+    thickness = min(width, height)
+    length = sum(
+        _distance_pt(first[0], first[1], second[0], second[1])
+        for first, second in _vector_segments(vector)
+    )
+    return (
+        extent >= 1.60 * glyph_extent_pt
+        and thickness <= max(1.0, 0.15 * glyph_extent_pt)
+        and length >= 1.60 * glyph_extent_pt
+    )
+
+
+def _strip_cluster_for_matching(
+    cluster: _VectorCluster,
+    *,
+    texts: Sequence[PdfTextObservation],
+    glyph_extent_pt: float,
+) -> _VectorCluster:
+    tags = _strippable_text_tags(cluster, texts)
+    excluded: set[str] = set(cluster.excluded_source_element_ids)
+    actions = list(cluster.cleanup_actions)
+
+    if _cluster_extent_pt(cluster) > 1.50 * glyph_extent_pt:
+        leaders = {
+            vector.element_id
+            for vector in cluster.vectors
+            if _is_leader_vector(vector, glyph_extent_pt=glyph_extent_pt)
+        }
+        if leaders and len(leaders) < len(cluster.vectors):
+            excluded.update(leaders)
+            actions.append("removed-leader-lines")
+
+    if tags:
+        text_vector_ids: set[str] = set()
+        for observation in tags:
+            radius = max(3.5, float(observation.font_size_pt or 5.0))
+            max_extent = max(3.0, 0.55 * glyph_extent_pt)
+            for vector in cluster.vectors:
+                if vector.element_id in excluded:
+                    continue
+                bbox = _vector_bbox(vector)
+                extent = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
+                center = ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
+                if (
+                    extent <= max_extent
+                    and _distance_pt(
+                        center[0],
+                        center[1],
+                        observation.x_pt,
+                        observation.y_pt,
+                    )
+                    <= radius
+                ):
+                    text_vector_ids.add(vector.element_id)
+        if text_vector_ids and len(excluded | text_vector_ids) < len(cluster.vectors):
+            excluded.update(text_vector_ids)
+            actions.append("stripped-text-glyphs")
+        actions.append("recorded-stripped-text-tags")
+
+    kept = [
+        vector for vector in cluster.vectors
+        if vector.element_id not in excluded
+    ]
+    if not kept:
+        kept = list(cluster.vectors)
+        excluded.clear()
+    return _make_vector_cluster(
+        kept,
+        stripped_text_tags=(
+            *cluster.stripped_text_tags,
+            *(item.text for item in tags),
+        ),
+        cleanup_actions=actions,
+        excluded_source_element_ids=excluded,
+    )
+
+
+def _split_connected_components(
+    cluster: _VectorCluster,
+    *,
+    glyph_extent_pt: float,
+    gap_pt: float = 0.75,
+) -> tuple[_VectorCluster, ...]:
+    if len(cluster.vectors) <= 1:
+        return (cluster,)
+    parent = list(range(len(cluster.vectors)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root = find(first)
+        second_root = find(second)
+        if first_root == second_root:
+            return
+        if first_root < second_root:
+            parent[second_root] = first_root
+        else:
+            parent[first_root] = second_root
+
+    bboxes = [_vector_bbox(vector) for vector in cluster.vectors]
+    for first in range(len(cluster.vectors)):
+        for second in range(first + 1, len(cluster.vectors)):
+            if _bbox_gap_pt(bboxes[first], bboxes[second]) <= gap_pt:
+                union(first, second)
+
+    raw_groups: dict[int, list[PdfVectorPathObservation]] = {}
+    for index, vector in enumerate(cluster.vectors):
+        raw_groups.setdefault(find(index), []).append(vector)
+    if len(raw_groups) <= 1:
+        return (cluster,)
+
+    components = [
+        _make_vector_cluster(group)
+        for _root, group in sorted(raw_groups.items())
+    ]
+    anchors = [
+        component
+        for component in components
+        if _cluster_extent_pt(component) >= 0.60 * glyph_extent_pt
+    ]
+    if not anchors:
+        return (cluster,)
+
+    grouped: dict[str, list[PdfVectorPathObservation]] = {
+        anchor.geometry_key: list(anchor.vectors)
+        for anchor in anchors
+    }
+    unassigned: list[_VectorCluster] = []
+    for component in components:
+        if component in anchors:
+            continue
+        candidates: list[tuple[float, _VectorCluster]] = []
+        for anchor in anchors:
+            pad = 0.15 * glyph_extent_pt
+            center_x, center_y = component.center_pt
+            if (
+                anchor.bbox_pt[0] - pad <= center_x <= anchor.bbox_pt[2] + pad
+                and anchor.bbox_pt[1] - pad <= center_y <= anchor.bbox_pt[3] + pad
+            ):
+                candidates.append(
+                    (
+                        _distance_pt(
+                            center_x,
+                            center_y,
+                            anchor.center_pt[0],
+                            anchor.center_pt[1],
+                        ),
+                        anchor,
+                    )
+                )
+        if candidates:
+            _distance, anchor = min(
+                candidates,
+                key=lambda item: (item[0], item[1].geometry_key),
+            )
+            grouped[anchor.geometry_key].extend(component.vectors)
+        else:
+            unassigned.append(component)
+
+    output = [
+        _make_vector_cluster(
+            vectors,
+            stripped_text_tags=cluster.stripped_text_tags,
+            cleanup_actions=(
+                *cluster.cleanup_actions,
+                "split-oversized-connected-components",
+            ),
+            excluded_source_element_ids=cluster.excluded_source_element_ids,
+        )
+        for _key, vectors in sorted(grouped.items())
+    ]
+    output.extend(
+        _make_vector_cluster(
+            component.vectors,
+            stripped_text_tags=cluster.stripped_text_tags,
+            cleanup_actions=(
+                *cluster.cleanup_actions,
+                "split-oversized-connected-components",
+            ),
+            excluded_source_element_ids=cluster.excluded_source_element_ids,
+        )
+        for component in unassigned
+    )
+    if len(output) <= 1:
+        return (cluster,)
+    return tuple(
+        sorted(
+            output,
+            key=lambda item: (item.bbox_pt, item.geometry_key),
+        )
+    )
+
+
+def _merge_undersized_clusters(
+    clusters: Sequence[_VectorCluster],
+    *,
+    prototype_extents: Sequence[float],
+) -> tuple[_VectorCluster, ...]:
+    if not clusters or not prototype_extents:
+        return tuple(clusters)
+    smallest_prototype = min(prototype_extents)
+    glyph_width = max(prototype_extents)
+    undersized_limit = 0.40 * smallest_prototype
+    remaining = list(clusters)
+    result: list[_VectorCluster] = []
+
+    while remaining:
+        cluster = remaining.pop(0)
+        if _cluster_extent_pt(cluster) >= undersized_limit or not remaining:
+            result.append(cluster)
+            continue
+        candidates = [
+            (index, other)
+            for index, other in enumerate(remaining)
+            if other.page == cluster.page
+            and _bbox_gap_pt(cluster.bbox_pt, other.bbox_pt) <= glyph_width
+        ]
+        if not candidates:
+            result.append(cluster)
+            continue
+        index, neighbor = min(
+            candidates,
+            key=lambda item: (
+                _cluster_extent_pt(item[1]) >= undersized_limit,
+                _bbox_gap_pt(cluster.bbox_pt, item[1].bbox_pt),
+                _distance_pt(
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                    item[1].center_pt[0],
+                    item[1].center_pt[1],
+                ),
+                item[1].geometry_key,
+            ),
+        )
+        remaining.pop(index)
+        result.append(
+            _make_vector_cluster(
+                (*cluster.vectors, *neighbor.vectors),
+                stripped_text_tags=(
+                    *cluster.stripped_text_tags,
+                    *neighbor.stripped_text_tags,
+                ),
+                cleanup_actions=(
+                    *cluster.cleanup_actions,
+                    *neighbor.cleanup_actions,
+                    "merged-undersized-neighbor",
+                ),
+                excluded_source_element_ids=(
+                    *cluster.excluded_source_element_ids,
+                    *neighbor.excluded_source_element_ids,
+                ),
+            )
+        )
+
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (item.page, item.bbox_pt, item.geometry_key),
+        )
+    )
+
+
+def _prepare_field_clusters(
+    clusters: Sequence[_VectorCluster],
+    *,
+    prototype_geometry_keys: set[tuple[int, str]],
+    legend_entries_by_page: Mapping[int, Sequence[_LegendEntry]],
+    references_by_page: Mapping[int, Sequence[_LegendReference]],
+    texts: Sequence[PdfTextObservation],
+) -> tuple[_VectorCluster, ...]:
+    entries_for_page: dict[int, tuple[_LegendEntry, ...]] = {}
+    for cluster in clusters:
+        page_entries = list(legend_entries_by_page.get(cluster.page, ()))
+        for reference in references_by_page.get(cluster.page, ()):
+            page_entries.extend(
+                legend_entries_by_page.get(reference.legend_page, ())
+            )
+        entries_for_page[cluster.page] = tuple(
+            sorted(
+                {
+                    (
+                        entry.canonical_type,
+                        entry.label.element_id,
+                        entry.prototype.geometry_key,
+                    ): entry
+                    for entry in page_entries
+                }.values(),
+                key=lambda entry: (
+                    entry.canonical_type,
+                    entry.label.element_id,
+                    entry.prototype.geometry_key,
+                ),
+            )
+        )
+
+    prepared: list[_VectorCluster] = []
+    extents_by_page: dict[int, tuple[float, ...]] = {}
+    for page, entries in entries_for_page.items():
+        extents_by_page[page] = tuple(
+            _cluster_extent_pt(entry.prototype)
+            for entry in entries
+        )
+
+    for cluster in clusters:
+        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
+            continue
+        extents = extents_by_page.get(cluster.page, ())
+        if not extents:
+            prepared.append(cluster)
+            continue
+        glyph_extent = max(extents)
+        cleaned = _strip_cluster_for_matching(
+            cluster,
+            texts=texts,
+            glyph_extent_pt=glyph_extent,
+        )
+        if _cluster_extent_pt(cleaned) > 2.5 * glyph_extent:
+            prepared.extend(
+                _split_connected_components(
+                    cleaned,
+                    glyph_extent_pt=glyph_extent,
+                )
+            )
+        else:
+            prepared.append(cleaned)
+
+    merged: list[_VectorCluster] = []
+    for page in sorted({cluster.page for cluster in prepared}):
+        page_clusters = [
+            cluster for cluster in prepared
+            if cluster.page == page
+        ]
+        merged.extend(
+            _merge_undersized_clusters(
+                page_clusters,
+                prototype_extents=extents_by_page.get(page, ()),
+            )
+        )
+    return tuple(
+        sorted(
+            merged,
+            key=lambda item: (item.page, item.bbox_pt, item.geometry_key),
+        )
+    )
+
 
 def _cluster_small_vector_glyphs(
     vectors: Sequence[PdfVectorPathObservation],
@@ -1986,16 +2384,7 @@ def _cluster_small_vector_glyphs(
             or bbox[3] - bbox[1] > _GLYPH_PATH_MAX_EXTENT_PT
         ):
             continue
-        clusters.append(
-            _VectorCluster(
-                page=vectors_in_group[0].page,
-                vectors=vectors_in_group,
-                bbox_pt=bbox,
-                center_pt=((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0),
-                shape_signature=_cluster_shape_signature(vectors_in_group, bbox),
-                geometry_key=_cluster_geometry_key(vectors_in_group),
-            )
-        )
+        clusters.append(_make_vector_cluster(vectors_in_group))
 
     return tuple(
         sorted(
@@ -3770,6 +4159,14 @@ def _recognize_legend_shapes(
     for reference in references:
         references_by_page.setdefault(reference.page, []).append(reference)
 
+    field_clusters = _prepare_field_clusters(
+        clusters,
+        prototype_geometry_keys=prototype_geometry_keys,
+        legend_entries_by_page=legend_entries_by_page,
+        references_by_page=references_by_page,
+        texts=texts,
+    )
+
     legend_recognition = {
         "regions": [
             {
@@ -3837,10 +4234,7 @@ def _recognize_legend_shapes(
         for element_id in cluster.source_element_ids
     }
 
-    for cluster in clusters:
-        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
-            continue
-
+    for cluster in field_clusters:
         legend_entry, match_diagnostics = _match_cluster_to_legend_entries(
             cluster,
             legend_entries_by_page.get(cluster.page, ()),
@@ -4019,9 +4413,11 @@ def _recognize_legend_shapes(
             if reference is not None
             else "same-page-only"
         )
+        match_score = float(match_diagnostics.get("score") or 0.0)
         confidence = min(
-            0.88 if reference is not None else 0.93,
+            match_score,
             legend_entry.confidence,
+            0.88 if reference is not None else 1.0,
         )
         prototype = legend_entry.prototype
         label = legend_entry.label
@@ -4046,7 +4442,22 @@ def _recognize_legend_shapes(
             "match_diagnostics": match_diagnostics,
             "legend_source_element_ids": list(prototype.source_element_ids),
             "source_element_ids": list(cluster.source_element_ids),
+            "confidence": {
+                "score": match_diagnostics.get("score"),
+                "margin": match_diagnostics.get("margin"),
+            },
         }
+        if cluster.cleanup_actions:
+            shape_recognition["cluster_cleanup"] = list(cluster.cleanup_actions)
+        if cluster.excluded_source_element_ids:
+            shape_recognition["excluded_source_element_ids"] = list(
+                cluster.excluded_source_element_ids
+            )
+        if cluster.stripped_text_tags:
+            shape_recognition["stripped_text_tags"] = list(
+                cluster.stripped_text_tags
+            )
+            shape_recognition["tags"] = list(cluster.stripped_text_tags)
         if region.heading is not None:
             shape_recognition["legend_header_element_id"] = region.heading.element_id
             shape_recognition["legend_header_text"] = region.heading.text
@@ -5209,6 +5620,8 @@ class ElectricalPdfImporter:
                 lane_attributes["symbol_names"] = sorted(set(candidate.symbol_names))
             if candidate.shape_recognition is not None:
                 lane_attributes["shape_recognition"] = dict(candidate.shape_recognition)
+                if candidate.shape_recognition.get("tags"):
+                    lane_attributes["tags"] = list(candidate.shape_recognition["tags"])
                 if "legend_row_label" in candidate.shape_recognition:
                     lane_attributes["legend_row_label"] = candidate.shape_recognition[
                         "legend_row_label"

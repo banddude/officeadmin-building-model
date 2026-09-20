@@ -1,4 +1,5 @@
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -38,6 +39,9 @@ DENSE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-dense-lege
 SEPARATE_LEGEND_REFERENCE_FIXTURE = FIXTURE_DIR / "separate-sheet-explicit-legend-reference.pdf"
 NOTES_COLUMN_LEGEND_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-notes-column-legend.pdf"
+)
+REAL_CAD_GLYPH_FIXTURE = (
+    FIXTURE_DIR / "geometry-only-power-sheet-real-cad-glyphs.pdf"
 )
 INNER_VIEW_BORDER_LEGEND_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-inner-view-border-legend.pdf"
@@ -781,6 +785,205 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
     validate_model(model)
 
 
+
+def test_real_cad_glyph_variants_clear_ninety_percent_with_confidence() -> None:
+    assert not REAL_CAD_GLYPH_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        REAL_CAD_GLYPH_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-real-cad-glyphs",
+    )
+    repeated = extract_pdf(
+        REAL_CAD_GLYPH_FIXTURE,
+        source_id="fixture:geometry-only-power-sheet-real-cad-glyphs",
+    )
+    assert extracted == repeated
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    shape_devices = _legend_shape_matched_devices(model)
+    expected = [
+        ("receptacle_duplex", 100.0, 520.0),
+        ("receptacle_duplex", 300.0, 520.0),
+        ("receptacle_quad", 100.0, 468.0),
+        ("receptacle_quad", 300.0, 468.0),
+        ("data_outlet", 100.0, 416.0),
+        ("data_outlet", 300.0, 416.0),
+        ("combination_outlet", 100.0, 364.0),
+        ("combination_outlet", 300.0, 364.0),
+        ("junction_box_power", 100.0, 312.0),
+        ("junction_box_power", 300.0, 312.0),
+        ("junction_box_data", 100.0, 260.0),
+        ("junction_box_data", 300.0, 260.0),
+        ("access_control_device", 100.0, 208.0),
+        ("access_control_device", 300.0, 208.0),
+        ("catv_outlet", 100.0, 156.0),
+        ("catv_outlet", 300.0, 156.0),
+        ("receptacle_duplex", 70.0, 92.0),
+        ("receptacle_quad", 84.5, 92.0),
+        ("data_outlet", 195.0, 92.0),
+        ("combination_outlet", 209.825, 92.0),
+        ("junction_box_power", 320.0, 92.0),
+        ("junction_box_data", 334.5, 92.0),
+        ("access_control_device", 445.0, 92.0),
+        ("catv_outlet", 459.5, 92.0),
+    ]
+
+    unmatched_expected = list(expected)
+    correct = 0
+    for device in shape_devices:
+        position = device.attributes["pdf_electrical"]["source_position_pt"]
+        index = min(
+            range(len(unmatched_expected)),
+            key=lambda item_index: (
+                (position["x"] - unmatched_expected[item_index][1]) ** 2
+                + (position["y"] - unmatched_expected[item_index][2]) ** 2
+            ),
+        )
+        expected_type, expected_x, expected_y = unmatched_expected.pop(index)
+        assert math.hypot(
+            position["x"] - expected_x,
+            position["y"] - expected_y,
+        ) <= 8.0
+        correct += device.device_type == expected_type
+
+        shape = device.attributes["pdf_electrical"]["shape_recognition"]
+        diagnostics = shape["match_diagnostics"]
+        assert diagnostics["score"] is not None
+        assert diagnostics["margin"] is not None
+        assert diagnostics["confidence"] == {
+            "score": diagnostics["score"],
+            "margin": diagnostics["margin"],
+        }
+        assert shape["confidence"] == diagnostics["confidence"]
+        assert diagnostics["score"] >= pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+        assert (
+            diagnostics["score"] >= pdf_electrical_importer._GLYPH_MATCH_STRONG_SCORE
+            or diagnostics["margin"] >= pdf_electrical_importer._GLYPH_MATCH_MARGIN_MIN
+            or diagnostics.get("tie_breaker") == "differentiating-stroke-count"
+        )
+
+    assert correct / len(expected) >= 0.90
+    assert len(shape_devices) >= math.ceil(0.90 * len(expected))
+
+    cleanup_actions = {
+        action
+        for device in shape_devices
+        for action in device.attributes["pdf_electrical"]["shape_recognition"].get(
+            "cluster_cleanup",
+            (),
+        )
+    }
+    assert {
+        "removed-leader-lines",
+        "split-oversized-connected-components",
+        "merged-undersized-neighbor",
+        "stripped-text-glyphs",
+        "recorded-stripped-text-tags",
+    } <= cleanup_actions
+    assert any(
+        "E1"
+        in device.attributes["pdf_electrical"]["shape_recognition"].get("tags", ())
+        for device in shape_devices
+    )
+    validate_model(model)
+
+
+def _issue70_negative_probe_document(
+    probe_name: str,
+) -> PdfElectricalDocument:
+    extracted = extract_pdf(
+        NOTES_COLUMN_LEGEND_FIXTURE,
+        source_id=f"fixture:issue70-negative:{probe_name}",
+    )
+    kept_vectors = []
+    for vector in extracted.vectors:
+        bbox = pdf_electrical_importer._vector_bbox(vector)
+        extent = max(bbox[2] - bbox[0], bbox[3] - bbox[1])
+        if bbox[0] >= 580.0 or extent > pdf_electrical_importer._GLYPH_PATH_MAX_EXTENT_PT:
+            kept_vectors.append(vector)
+
+    if probe_name == "north-arrow":
+        probe_vectors = (
+            PdfVectorPathObservation(
+                element_id="p1:issue70:north:triangle",
+                page=1,
+                points_pt=((100.0, 506.0), (106.0, 494.0), (94.0, 494.0)),
+                closed=True,
+            ),
+            PdfVectorPathObservation(
+                element_id="p1:issue70:north:stem",
+                page=1,
+                points_pt=((100.0, 494.0), (100.0, 486.0)),
+            ),
+        )
+    elif probe_name == "section-bubble":
+        probe_vectors = (
+            PdfVectorPathObservation(
+                element_id="p1:issue70:section:ring",
+                page=1,
+                points_pt=tuple(
+                    (
+                        100.0 + 7.0 * math.cos(2.0 * math.pi * index / 12.0),
+                        500.0 + 7.0 * math.sin(2.0 * math.pi * index / 12.0),
+                    )
+                    for index in range(12)
+                ),
+                closed=True,
+            ),
+            PdfVectorPathObservation(
+                element_id="p1:issue70:section:divider",
+                page=1,
+                points_pt=((94.0, 500.0), (106.0, 500.0)),
+            ),
+        )
+    elif probe_name == "keynote-hexagon":
+        probe_vectors = (
+            PdfVectorPathObservation(
+                element_id="p1:issue70:keynote:hexagon",
+                page=1,
+                points_pt=tuple(
+                    (
+                        100.0 + 7.0 * math.cos(2.0 * math.pi * index / 6.0),
+                        500.0 + 7.0 * math.sin(2.0 * math.pi * index / 6.0),
+                    )
+                    for index in range(6)
+                ),
+                closed=True,
+            ),
+        )
+    else:  # pragma: no cover - test helper contract
+        raise AssertionError(f"unknown probe {probe_name}")
+
+    return PdfElectricalDocument(
+        source_id=extracted.source_id,
+        page_count=1,
+        texts=tuple(
+            observation
+            for observation in extracted.texts
+            if observation.x_pt >= 580.0
+        ),
+        symbols=(),
+        vectors=tuple((*kept_vectors, *probe_vectors)),
+        page_provenance=extracted.page_provenance,
+    )
+
+
+@pytest.mark.parametrize(
+    "probe_name",
+    ("north-arrow", "section-bubble", "keynote-hexagon"),
+)
+def test_issue70_non_device_symbol_probes_still_yield_zero_devices(
+    probe_name: str,
+) -> None:
+    model = ElectricalPdfImporter().import_document(
+        _issue70_negative_probe_document(probe_name)
+    )
+    assert model.electrical_devices == ()
+    assert model.electrical_equipment == ()
+    assert _legend_shape_matched_devices(model) == []
+
+
+
 def test_unresolved_legend_glyph_records_nearest_two_match_diagnostics() -> None:
     extracted = extract_pdf(
         LEGEND_SHAPE_FIXTURE,
@@ -832,6 +1035,11 @@ def test_every_unresolved_vector_cluster_has_issue68_match_diagnostics(
         "second_type",
         "second_score",
         "threshold",
+        "absolute_floor",
+        "margin_threshold",
+        "strong_score_threshold",
+        "margin",
+        "confidence",
         "reason",
         "bbox_size_pt",
         "stroke_count",
@@ -847,6 +1055,22 @@ def test_every_unresolved_vector_cluster_has_issue68_match_diagnostics(
         diagnostics = item["match_diagnostics"]
         assert required <= diagnostics.keys()
         assert diagnostics["threshold"] == pdf_electrical_importer._GLYPH_MATCH_SCORE_MIN
+        assert (
+            diagnostics["absolute_floor"]
+            == pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+        )
+        assert (
+            diagnostics["margin_threshold"]
+            == pdf_electrical_importer._GLYPH_MATCH_MARGIN_MIN
+        )
+        assert (
+            diagnostics["strong_score_threshold"]
+            == pdf_electrical_importer._GLYPH_MATCH_STRONG_SCORE
+        )
+        assert diagnostics["confidence"] == {
+            "score": diagnostics["score"],
+            "margin": diagnostics["margin"],
+        }
         assert diagnostics["reason"] in allowed_reasons
         assert set(diagnostics["bbox_size_pt"]) == {"width", "height"}
         assert diagnostics["bbox_size_pt"]["width"] >= 0.0

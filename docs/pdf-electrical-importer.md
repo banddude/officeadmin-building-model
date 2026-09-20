@@ -139,13 +139,28 @@ with its paired glyph and records that source label with the canonical device
 type. The built-in legend vocabulary includes duplex and quad receptacles, data
 and combination outlets, power and data junction boxes, access-control devices,
 and CATV outlets. Field matching is translation-, uniform-scale-, quarter-turn-,
-and axis-mirror-invariant. E/N/R status text, bare mounting-height tags, and
-circuit-count numbers are treated as field modifiers rather than legend labels.
-When normalized geometry leaves similar prototypes near-tied, differentiating
-stroke count is used only when it produces one unique type; otherwise matching
-fails closed. Every match (and every unresolved field glyph) records the nearest
-prototype score, second-best candidate, and any non-unique reason in recognition
-provenance. Legend prototypes remain page-local by default. A page without a recognized local legend
+and axis-mirror-invariant. Prototype and candidate strokes are normalized to
+their glyph bounds, resampled at fixed geometric density, and compared with a
+symmetric chamfer plus Hausdorff distance so CAD block segmentation does not
+need to match the legend's graphics operators. A match is accepted when its
+nearest score is at least 0.55 with at least 0.12 margin over the runner-up, or
+when the nearest score is at least 0.75 regardless of margin. Scores below 0.45
+are an absolute rejection floor. Inside the 0.12 margin only, differentiating
+stroke count can resolve one unique canonical type; otherwise matching fails
+closed. The nearest score and margin are recorded together as match confidence.
+
+Before scoring, field clusters can be cleaned without changing legend
+ownership. Leader strokes are removed from oversized clusters, clusters larger
+than 2.5 times the largest applicable legend glyph are split by connected
+components while interior strokes remain attached to their enclosing glyph,
+and undersized fragments can merge with the nearest neighbor within one legend
+glyph width. Short field text made only from E/N/R, digits, plus signs, quotes,
+and punctuation is stripped from geometric comparison; its source text is
+retained as device tags and in recognition diagnostics. E/N/R status text, bare
+mounting-height tags, and circuit-count numbers remain field modifiers rather
+than legend labels. Every match and every unresolved field glyph records the
+nearest prototype score, second-best candidate, margin, thresholds, cleanup
+actions, and any non-unique reason in recognition provenance. Legend prototypes remain page-local by default. A page without a recognized local legend
 does not inherit prototypes from another sheet and retains explicit same-page
 unresolved provenance. Cross-sheet matching is allowed only when source text on
 the field sheet explicitly references one uniquely identified legend sheet, for

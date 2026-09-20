@@ -143,6 +143,50 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
 
 
+def _curve_polyline_segments(
+    curves: Iterable[dict[str, object]],
+    page_height: float,
+) -> tuple[dict[str, object], ...]:
+    """Flatten pdfplumber curve points into bottom-origin line primitives.
+
+    pdfplumber exposes curve points in its top-origin page frame while the
+    existing line/rectangle observations use PDF bottom-origin coordinates.
+    Keeping the result as ordinary line observations preserves the downstream
+    architectural recognition boundary while retaining curve path geometry.
+    """
+
+    segments: list[dict[str, object]] = []
+    for curve in curves:
+        raw_points = curve.get("pts")
+        if not isinstance(raw_points, (list, tuple)):
+            continue
+
+        points: list[tuple[float, float]] = []
+        for raw_point in raw_points:
+            try:
+                x = float(raw_point[0])  # type: ignore[index]
+                top = float(raw_point[1])  # type: ignore[index]
+            except (IndexError, TypeError, ValueError):
+                points = []
+                break
+            points.append((x, page_height - top))
+
+        for start, end in zip(points, points[1:]):
+            if start == end:
+                continue
+            segment: dict[str, object] = {
+                "x0": start[0],
+                "y0": start[1],
+                "x1": end[0],
+                "y1": end[1],
+                "tag": curve.get("tag") or "curve",
+            }
+            if isinstance(curve.get("mcid"), int):
+                segment["mcid"] = curve["mcid"]
+            segments.append(segment)
+    return tuple(segments)
+
+
 def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumentObservation:
     pdf_path = Path(path)
     payload = pdf_path.read_bytes()
@@ -158,7 +202,10 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                     width_pt=float(page.width),
                     height_pt=float(page.height),
                     texts=_group_words(page, index),
-                    lines=_unique_lines(page.lines, index),
+                    lines=_unique_lines(
+                        (*page.lines, *_curve_polyline_segments(page.curves, float(page.height))),
+                        index,
+                    ),
                     rects=_unique_rects(page.rects, index),
                 )
             )

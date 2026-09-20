@@ -26,6 +26,7 @@ from oabm.model import BuildingModel, stable_id, validate_model
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_DIR = ROOT / "fixtures" / "pdf_electrical"
+CAD_GEOMETRY_FIXTURE = ROOT / "fixtures" / "pdf_architecture" / "v1" / "cad-export-geometry-only.pdf"
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
 
@@ -98,6 +99,167 @@ def _write_synthetic_pdf(
 
     with path.open("wb") as handle:
         writer.write(handle)
+
+
+def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> None:
+    document = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+    repeated = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+
+    assert document == repeated
+    assert not document.texts
+    assert not document.symbols
+    assert len(document.vectors) == 3
+    assert [vector.metadata["paint_operator"] for vector in document.vectors] == [
+        "S",
+        "f",
+        "f*",
+    ]
+
+    curve = document.vectors[0]
+    assert curve.metadata["geometry_kind"] == "bezier-flattened"
+    assert curve.metadata["curve_flatten_steps"] == 8
+    assert curve.metadata["curve_commands"] == [
+        {
+            "operator": "c",
+            "control_points_pt": [[34.0, 24.0], [48.0, 38.0]],
+            "end_pt": [66.0, 38.0],
+        },
+        {
+            "operator": "c",
+            "control_points_pt": [[78.0, 38.0], [90.0, 24.0]],
+            "end_pt": [108.0, 24.0],
+        },
+    ]
+    assert len(curve.points_pt) == 17
+    assert curve.points_pt[0] == (18.0, 24.0)
+    assert curve.points_pt[4] == pytest.approx((41.25, 31.0))
+    assert curve.points_pt[8] == (66.0, 38.0)
+    assert curve.points_pt[12] == pytest.approx((84.75, 31.0))
+    assert curve.points_pt[-1] == (108.0, 24.0)
+    assert curve.points_pt[4] != pytest.approx((42.0, 31.0))
+
+    assert document.vectors[1].closed is True
+    assert document.vectors[1].points_pt == (
+        (132.0, 24.0),
+        (154.0, 24.0),
+        (154.0, 46.0),
+        (132.0, 46.0),
+    )
+    filled_curve = document.vectors[2]
+    assert filled_curve.closed is True
+    assert filled_curve.metadata["geometry_kind"] == "bezier-flattened"
+    assert filled_curve.metadata["curve_commands"] == [
+        {
+            "operator": "c",
+            "control_points_pt": [[42.0, 118.0], [66.0, 118.0]],
+            "end_pt": [84.0, 92.0],
+        },
+        {
+            "operator": "c",
+            "control_points_pt": [[102.0, 66.0], [126.0, 66.0]],
+            "end_pt": [144.0, 92.0],
+        },
+    ]
+    assert len(filled_curve.points_pt) == 19
+    assert filled_curve.points_pt[0] == (24.0, 92.0)
+    assert filled_curve.points_pt[4] == pytest.approx((54.0, 111.5))
+    assert filled_curve.points_pt[8] == (84.0, 92.0)
+    assert filled_curve.points_pt[12] == pytest.approx((114.0, 72.5))
+    assert filled_curve.points_pt[16:] == (
+        (144.0, 92.0),
+        (144.0, 124.0),
+        (24.0, 124.0),
+    )
+
+
+def test_bezier_vector_is_not_reinterpreted_as_straight_topology() -> None:
+    extracted = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+    curve = extracted.vectors[0]
+    document = PdfElectricalDocument.from_dict(
+        {
+            "source_id": "fixture:bezier-topology-fail-closed",
+            "page_count": 1,
+            "texts": [
+                {
+                    "element_id": "p1:text:panel",
+                    "page": 1,
+                    "text": "PANEL LP",
+                    "x_pt": 18.0,
+                    "y_pt": 24.0,
+                },
+                {
+                    "element_id": "p1:text:load",
+                    "page": 1,
+                    "text": "EVSE-1",
+                    "x_pt": 108.0,
+                    "y_pt": 24.0,
+                },
+            ],
+            "vectors": [
+                {
+                    "element_id": curve.element_id,
+                    "page": curve.page,
+                    "points_pt": [list(point) for point in curve.points_pt],
+                    "closed": curve.closed,
+                    "source_kind": curve.source_kind,
+                    "metadata": dict(curve.metadata),
+                }
+            ],
+        }
+    )
+
+    model = ElectricalPdfImporter().import_document(document)
+
+    assert len(model.electrical_equipment) == 1
+    assert len(model.electrical_devices) == 1
+    assert not model.ports
+    assert not model.circuits
+    assert not model.routes
+    assert model.attributes["pdf_electrical"]["unresolved_topology"] == []
+
+
+def test_v_and_y_bezier_controls_survive_extraction(tmp_path: Path) -> None:
+    path = tmp_path / "bezier-shorthands.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=160, height=100)
+    content = DecodedStreamObject()
+    content.set_data(
+        b"10 10 m 20 30 40 40 v S\n"
+        b"60 10 m 70 30 90 40 y S\n"
+    )
+    page[NameObject("/Contents")] = writer._add_object(content)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    document = extract_pdf(path, source_id="fixture:bezier-shorthands")
+
+    assert len(document.vectors) == 2
+    first, second = document.vectors
+    assert first.metadata["curve_commands"] == [
+        {
+            "operator": "v",
+            "control_points_pt": [[10.0, 10.0], [20.0, 30.0]],
+            "end_pt": [40.0, 40.0],
+        }
+    ]
+    assert second.metadata["curve_commands"] == [
+        {
+            "operator": "y",
+            "control_points_pt": [[70.0, 30.0], [90.0, 40.0]],
+            "end_pt": [90.0, 40.0],
+        }
+    ]
+    assert len(first.points_pt) == 9
+    assert len(second.points_pt) == 9
 
 
 def test_device_text_rules_do_not_match_longer_nontechnical_words() -> None:

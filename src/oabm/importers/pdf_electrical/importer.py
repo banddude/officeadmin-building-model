@@ -368,6 +368,41 @@ def _transform_graphics_point(
     )
 
 
+_BEZIER_FLATTEN_STEPS = 8
+
+
+def _flatten_cubic_bezier(
+    start: tuple[float, float],
+    control_1: tuple[float, float],
+    control_2: tuple[float, float],
+    end: tuple[float, float],
+) -> tuple[tuple[float, float], ...]:
+    """Return deterministic polyline samples for one cubic Bézier segment.
+
+    The source curve controls are retained separately in observation metadata.
+    The fixed subdivision count avoids extraction-order or tolerance-dependent
+    geometry while preserving the non-linear shape for downstream inspection.
+    """
+
+    samples: list[tuple[float, float]] = []
+    for index in range(1, _BEZIER_FLATTEN_STEPS + 1):
+        t = index / _BEZIER_FLATTEN_STEPS
+        inverse = 1.0 - t
+        samples.append(
+            (
+                inverse**3 * start[0]
+                + 3.0 * inverse**2 * t * control_1[0]
+                + 3.0 * inverse * t**2 * control_2[0]
+                + t**3 * end[0],
+                inverse**3 * start[1]
+                + 3.0 * inverse**2 * t * control_1[1]
+                + 3.0 * inverse * t**2 * control_2[1]
+                + t**3 * end[1],
+            )
+        )
+    return tuple(samples)
+
+
 def _make_page_visitors(
     *,
     page_number: int,
@@ -380,9 +415,17 @@ def _make_page_visitors(
     operator_counter = 0
     vector_counter = 0
     current_points: list[tuple[float, float]] = []
+    current_curve_commands: list[dict[str, Any]] = []
     current_closed = False
     current_supported = True
-    pending_subpaths: list[tuple[tuple[tuple[float, float], ...], bool, bool]] = []
+    pending_subpaths: list[
+        tuple[
+            tuple[tuple[float, float], ...],
+            bool,
+            bool,
+            tuple[dict[str, Any], ...],
+        ]
+    ] = []
 
     def visitor_text(
         text: str,
@@ -409,12 +452,18 @@ def _make_page_visitors(
         )
 
     def finish_current() -> None:
-        nonlocal current_points, current_closed, current_supported
+        nonlocal current_points, current_curve_commands, current_closed, current_supported
         if len(current_points) >= 2:
             pending_subpaths.append(
-                (tuple(current_points), current_closed, current_supported)
+                (
+                    tuple(current_points),
+                    current_closed,
+                    current_supported,
+                    tuple(current_curve_commands),
+                )
             )
         current_points = []
+        current_curve_commands = []
         current_closed = False
         current_supported = True
 
@@ -423,11 +472,11 @@ def _make_page_visitors(
         finish_current()
         pending_subpaths = []
 
-    def emit_stroked_paths(operator: bytes) -> None:
+    def emit_paths(operator: bytes, *, close_subpaths: bool = False) -> None:
         nonlocal pending_subpaths, vector_counter
         finish_current()
         paint_operator = operator.decode("ascii", errors="replace")
-        for points, closed, supported in pending_subpaths:
+        for points, closed, supported, curve_commands in pending_subpaths:
             if not supported:
                 continue
             normalized_points: list[tuple[float, float]] = []
@@ -445,14 +494,23 @@ def _make_page_visitors(
             if len(normalized_points) < 2 or (closed and len(normalized_points) < 3):
                 continue
             vector_counter += 1
+            metadata: dict[str, Any] = {"paint_operator": paint_operator}
+            if curve_commands:
+                metadata.update(
+                    {
+                        "geometry_kind": "bezier-flattened",
+                        "curve_flatten_steps": _BEZIER_FLATTEN_STEPS,
+                        "curve_commands": [dict(command) for command in curve_commands],
+                    }
+                )
             vectors.append(
                 PdfVectorPathObservation(
                     element_id=f"p{page_number}:vector:{vector_counter:05d}",
                     page=page_number,
                     points_pt=tuple(normalized_points),
-                    closed=closed,
+                    closed=closed or close_subpaths,
                     source_kind="pdf-vector-path",
-                    metadata={"paint_operator": paint_operator},
+                    metadata=metadata,
                 )
             )
         pending_subpaths = []
@@ -463,7 +521,7 @@ def _make_page_visitors(
         cm: Sequence[float],
         tm: Sequence[float],
     ) -> None:
-        nonlocal operator_counter, current_points, current_closed, current_supported
+        nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
         operator_counter += 1
 
         if operator == b"Do" and operands:
@@ -512,6 +570,7 @@ def _make_page_visitors(
                     ),
                     True,
                     True,
+                    (),
                 )
             )
             return
@@ -521,19 +580,80 @@ def _make_page_visitors(
             return
 
         if operator in {b"c", b"v", b"y"}:
-            current_supported = False
+            if not current_points:
+                current_supported = False
+                return
+
+            if operator == b"c":
+                if len(operands) < 6:
+                    current_supported = False
+                    return
+                control_1 = _transform_graphics_point(
+                    cm, float(operands[0]), float(operands[1])
+                )
+                control_2 = _transform_graphics_point(
+                    cm, float(operands[2]), float(operands[3])
+                )
+                end = _transform_graphics_point(
+                    cm, float(operands[4]), float(operands[5])
+                )
+            elif operator == b"v":
+                if len(operands) < 4:
+                    current_supported = False
+                    return
+                control_1 = current_points[-1]
+                control_2 = _transform_graphics_point(
+                    cm, float(operands[0]), float(operands[1])
+                )
+                end = _transform_graphics_point(
+                    cm, float(operands[2]), float(operands[3])
+                )
+            else:
+                if len(operands) < 4:
+                    current_supported = False
+                    return
+                control_1 = _transform_graphics_point(
+                    cm, float(operands[0]), float(operands[1])
+                )
+                end = _transform_graphics_point(
+                    cm, float(operands[2]), float(operands[3])
+                )
+                control_2 = end
+
+            current_curve_commands.append(
+                {
+                    "operator": operator.decode("ascii"),
+                    "control_points_pt": [
+                        [control_1[0], control_1[1]],
+                        [control_2[0], control_2[1]],
+                    ],
+                    "end_pt": [end[0], end[1]],
+                }
+            )
+            current_points.extend(
+                _flatten_cubic_bezier(
+                    current_points[-1],
+                    control_1,
+                    control_2,
+                    end,
+                )
+            )
             return
 
         if operator in {b"s", b"b", b"b*"}:
             current_closed = True
-            emit_stroked_paths(operator)
+            emit_paths(operator)
             return
 
         if operator in {b"S", b"B", b"B*"}:
-            emit_stroked_paths(operator)
+            emit_paths(operator)
             return
 
-        if operator in {b"f", b"F", b"f*", b"n"}:
+        if operator in {b"f", b"F", b"f*"}:
+            emit_paths(operator, close_subpaths=True)
+            return
+
+        if operator == b"n":
             clear_paths()
 
     return visitor_text, visitor_operand_before
@@ -604,7 +724,18 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             vectors=vectors,
         )
 
+        temporary_font_resource = False
         try:
+            # pypdf 6.19 short-circuits extract_text before visitor callbacks
+            # when /Resources is an empty dictionary. Geometry-only CAD pages can
+            # validly have no resources, so temporarily add an empty /Font entry
+            # solely to force content-stream traversal for the operator visitor.
+            if isinstance(resources, dict) and not resources:
+                from pypdf.generic import DictionaryObject, NameObject
+
+                resources[NameObject("/Font")] = DictionaryObject()
+                temporary_font_resource = True
+
             page.extract_text(
                 visitor_text=visitor_text,
                 visitor_operand_before=visitor_operand_before,
@@ -613,6 +744,9 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             raise ElectricalPdfError(
                 f"failed to extract page {page_number}: {exc}"
             ) from exc
+        finally:
+            if temporary_font_resource:
+                resources.pop(NameObject("/Font"), None)
 
         annotations = page.get("/Annots") or ()
         for annotation_index, annotation_ref in enumerate(annotations, start=1):
@@ -833,6 +967,10 @@ def _distance_pt(a_x: float, a_y: float, b_x: float, b_y: float) -> float:
     return math.hypot(a_x - b_x, a_y - b_y)
 
 
+def _vector_contains_bezier(observation: PdfVectorPathObservation) -> bool:
+    return bool(observation.metadata.get("curve_commands"))
+
+
 def _vector_segments(
     observation: PdfVectorPathObservation,
 ) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
@@ -896,6 +1034,8 @@ def _paths_touch(
 def _simple_rectangle_marker(
     observation: PdfVectorPathObservation,
 ) -> tuple[float, float, float] | None:
+    if _vector_contains_bezier(observation):
+        return None
     if not observation.closed or len(observation.points_pt) != 4:
         return None
     points = observation.points_pt
@@ -1979,6 +2119,7 @@ class ElectricalPdfImporter:
             vector
             for vector in vectors
             if not vector.closed
+            and not _vector_contains_bezier(vector)
             and vector.element_id not in vector_symbol_ids
             and sum(
                 _distance_pt(first[0], first[1], second[0], second[1])

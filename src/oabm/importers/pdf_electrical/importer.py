@@ -372,6 +372,7 @@ class _EntityCandidate:
     symbol_names: list[str] = field(default_factory=list)
     provenance: list[Provenance] = field(default_factory=list)
     shape_recognition: dict[str, Any] | None = None
+    annotation_recognition: dict[str, Any] | None = None
 
     def merge_source(
         self,
@@ -1288,6 +1289,7 @@ _FIELD_STATUS_RADIUS_PT = 28.0
 _FIELD_STATUS_AMBIGUITY_PT = 2.0
 _GLYPH_MATCH_SCORE_MIN = 0.82
 _GLYPH_MATCH_NEAR_TIE_MARGIN = 0.06
+_ANNOTATION_CODE_MAX_CHARS = 16
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
 _LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
 _LEGEND_REJECTED_HEADING_WORDS = frozenset(
@@ -1668,19 +1670,93 @@ def _prototype_diagnostic(entry: _LegendEntry) -> dict[str, Any]:
     }
 
 
+def _cluster_bbox_size_pt(cluster: _VectorCluster) -> dict[str, float]:
+    return {
+        "width": round(cluster.bbox_pt[2] - cluster.bbox_pt[0], 6),
+        "height": round(cluster.bbox_pt[3] - cluster.bbox_pt[1], 6),
+    }
+
+
+def _cluster_contains_nonmodifier_text(
+    cluster: _VectorCluster,
+    texts: Sequence[PdfTextObservation],
+) -> bool:
+    for observation in texts:
+        if observation.page != cluster.page:
+            continue
+        if _field_modifier_text(observation.text) is not None:
+            continue
+        if (
+            cluster.bbox_pt[0] <= observation.x_pt <= cluster.bbox_pt[2]
+            and cluster.bbox_pt[1] <= observation.y_pt <= cluster.bbox_pt[3]
+        ):
+            return True
+    return False
+
+
+def _cluster_scale_ratio(
+    cluster: _VectorCluster,
+    prototype: _VectorCluster,
+) -> float:
+    candidate_bbox = _comparison_bbox(_comparison_vectors(cluster))
+    prototype_bbox = _comparison_bbox(_comparison_vectors(prototype))
+    candidate_extent = max(
+        candidate_bbox[2] - candidate_bbox[0],
+        candidate_bbox[3] - candidate_bbox[1],
+        1e-9,
+    )
+    prototype_extent = max(
+        prototype_bbox[2] - prototype_bbox[0],
+        prototype_bbox[3] - prototype_bbox[1],
+        1e-9,
+    )
+    return candidate_extent / prototype_extent
+
+
+def _unresolved_match_reason(
+    cluster: _VectorCluster,
+    prototype: _LegendEntry | None,
+    texts: Sequence[PdfTextObservation],
+) -> str:
+    if _cluster_contains_nonmodifier_text(cluster, texts):
+        return "contains text"
+    if prototype is not None:
+        scale_ratio = _cluster_scale_ratio(cluster, prototype.prototype)
+        if scale_ratio > 2.5:
+            return "cluster too large"
+        if scale_ratio < 0.4:
+            return "cluster too small"
+    return "below threshold"
+
+
 def _match_cluster_to_legend_entries(
     cluster: _VectorCluster,
     entries: Sequence[_LegendEntry],
+    *,
+    texts: Sequence[PdfTextObservation] = (),
 ) -> tuple[_LegendEntry | None, dict[str, Any]]:
+    candidate_strokes = _comparison_stroke_counts(cluster)
+    base_diagnostics: dict[str, Any] = {
+        "nearest_type": None,
+        "nearest_score": None,
+        "second_type": None,
+        "second_score": None,
+        "threshold": _GLYPH_MATCH_SCORE_MIN,
+        "reason": None,
+        "bbox_size_pt": _cluster_bbox_size_pt(cluster),
+        "stroke_count": candidate_strokes[0],
+        "segment_count": candidate_strokes[1],
+    }
     if not entries:
         return None, {
+            **base_diagnostics,
+            "reason": _unresolved_match_reason(cluster, None, texts),
             "nearest_prototype": None,
             "score": None,
             "second_best": None,
             "non_unique_reason": "no classified legend prototypes are available",
         }
 
-    candidate_strokes = _comparison_stroke_counts(cluster)
     ranked: list[
         tuple[
             float,
@@ -1718,6 +1794,11 @@ def _match_cluster_to_legend_entries(
     best = ranked[0]
     second = ranked[1] if len(ranked) > 1 else None
     diagnostics: dict[str, Any] = {
+        **base_diagnostics,
+        "nearest_type": best[4].canonical_type,
+        "nearest_score": best[0],
+        "second_type": second[4].canonical_type if second is not None else None,
+        "second_score": second[0] if second is not None else None,
         "nearest_prototype": _prototype_diagnostic(best[4]),
         "score": best[0],
         "second_best": (
@@ -1731,6 +1812,11 @@ def _match_cluster_to_legend_entries(
         "non_unique_reason": None,
     }
     if best[0] < _GLYPH_MATCH_SCORE_MIN:
+        diagnostics["reason"] = _unresolved_match_reason(
+            cluster,
+            best[4],
+            texts,
+        )
         diagnostics["non_unique_reason"] = (
             "nearest prototype score is below the match threshold"
         )
@@ -1767,6 +1853,8 @@ def _match_cluster_to_legend_entries(
             ),
         )[0]
         diagnostics["nearest_prototype"] = _prototype_diagnostic(winner[4])
+        diagnostics["nearest_type"] = winner[4].canonical_type
+        diagnostics["nearest_score"] = winner[0]
         diagnostics["score"] = winner[0]
         diagnostics["tie_breaker"] = "differentiating-stroke-count"
         if winner[4] is not best[4]:
@@ -1774,14 +1862,16 @@ def _match_cluster_to_legend_entries(
                 "prototype": _prototype_diagnostic(best[4]),
                 "score": best[0],
             }
+            diagnostics["second_type"] = best[4].canonical_type
+            diagnostics["second_score"] = best[0]
         return winner[4], diagnostics
 
+    diagnostics["reason"] = "tie within margin"
     diagnostics["non_unique_reason"] = (
         "near-tied legend prototypes remain non-unique after differentiating "
         "stroke-count comparison"
     )
     return None, diagnostics
-
 
 def _cluster_small_vector_glyphs(
     vectors: Sequence[PdfVectorPathObservation],
@@ -1949,20 +2039,23 @@ def _field_modifier_text(value: str) -> tuple[str, str] | None:
     return None
 
 
-def _field_status_for_cluster(
-    cluster: _VectorCluster,
+def _field_status_for_point(
+    *,
+    page: int,
+    x_pt: float,
+    y_pt: float,
     texts: Sequence[PdfTextObservation],
 ) -> tuple[PdfTextObservation, str, str] | None:
     candidates: list[tuple[float, str, PdfTextObservation]] = []
     for observation in texts:
-        if observation.page != cluster.page:
+        if observation.page != page:
             continue
         modifier = _field_modifier_text(observation.text)
         if modifier is None or modifier[0] != "status":
             continue
         distance = _distance_pt(
-            cluster.center_pt[0],
-            cluster.center_pt[1],
+            x_pt,
+            y_pt,
             observation.x_pt,
             observation.y_pt,
         )
@@ -1983,6 +2076,157 @@ def _field_status_for_cluster(
         return None
     _distance, status, observation = nearest[0]
     return observation, status, _FIELD_STATUS_MEANINGS[status]
+
+
+def _field_status_for_cluster(
+    cluster: _VectorCluster,
+    texts: Sequence[PdfTextObservation],
+) -> tuple[PdfTextObservation, str, str] | None:
+    return _field_status_for_point(
+        page=cluster.page,
+        x_pt=cluster.center_pt[0],
+        y_pt=cluster.center_pt[1],
+        texts=texts,
+    )
+
+
+def _annotation_code(
+    symbol: PdfSymbolObservation,
+) -> tuple[str, str] | None:
+    if symbol.source_kind != "annotation:square":
+        return None
+    raw = " ".join(str(symbol.metadata.get("contents") or "").split())
+    normalized = re.sub(r"[^A-Z0-9]+", " ", raw.upper()).strip()
+    if (
+        not raw
+        or not normalized
+        or len(normalized) > _ANNOTATION_CODE_MAX_CHARS
+        or len(normalized.split()) > 3
+    ):
+        return None
+    return raw, normalized
+
+
+def _annotation_code_legend_match(
+    symbol: PdfSymbolObservation,
+    entries: Sequence[_LegendEntry],
+) -> tuple[_LegendEntry | None, dict[str, Any]] | None:
+    code = _annotation_code(symbol)
+    if code is None:
+        return None
+    raw_code, normalized_code = code
+
+    by_type: dict[str, list[_LegendEntry]] = {}
+    for entry in entries:
+        by_type.setdefault(entry.canonical_type, []).append(entry)
+
+    alias_targets: Mapping[str, tuple[str, ...]] = {
+        "CR": ("access_control_device",),
+        "TV": ("catv_outlet",),
+        "CATV": ("catv_outlet",),
+        "J": ("junction_box_power", "junction_box_data"),
+        "JB": ("junction_box_power", "junction_box_data"),
+        "D": ("data_outlet",),
+        "DATA": ("data_outlet",),
+    }
+    for canonical_type in alias_targets.get(normalized_code, ()):
+        matching = by_type.get(canonical_type, ())
+        if matching:
+            entry = sorted(
+                matching,
+                key=lambda item: (
+                    -item.confidence,
+                    item.label.element_id,
+                    item.prototype.geometry_key,
+                ),
+            )[0]
+            return entry, {
+                "annotation_code": raw_code,
+                "normalized_code": normalized_code,
+                "match_kind": "legend-abbreviation",
+                "canonical_type": entry.canonical_type,
+                "legend_page": entry.label.page,
+                "legend_row_label": entry.label.text,
+                "classification_candidates": [
+                    {
+                        "canonical_type": canonical_type,
+                        "legend_row_label": candidate.label.text,
+                    }
+                    for canonical_type in alias_targets[normalized_code]
+                    for candidate in by_type.get(canonical_type, ())
+                ],
+            }
+
+    verbatim: list[_LegendEntry] = []
+    code_pattern = re.compile(
+        rf"(?<![A-Z0-9]){re.escape(normalized_code)}(?![A-Z0-9])"
+    )
+    for entry in entries:
+        normalized_label = re.sub(
+            r"[^A-Z0-9]+",
+            " ",
+            entry.label.text.upper(),
+        ).strip()
+        if code_pattern.search(normalized_label):
+            verbatim.append(entry)
+
+    classifications = {
+        (entry.entity_kind, entry.canonical_type)
+        for entry in verbatim
+    }
+    if len(classifications) == 1:
+        entry = sorted(
+            verbatim,
+            key=lambda item: (
+                -item.confidence,
+                item.label.element_id,
+                item.prototype.geometry_key,
+            ),
+        )[0]
+        return entry, {
+            "annotation_code": raw_code,
+            "normalized_code": normalized_code,
+            "match_kind": "legend-verbatim-code",
+            "canonical_type": entry.canonical_type,
+            "legend_page": entry.label.page,
+            "legend_row_label": entry.label.text,
+            "classification_candidates": [
+                {
+                    "canonical_type": candidate.canonical_type,
+                    "legend_row_label": candidate.label.text,
+                }
+                for candidate in sorted(
+                    verbatim,
+                    key=lambda item: (
+                        item.canonical_type,
+                        item.label.element_id,
+                    ),
+                )
+            ],
+        }
+
+    return None, {
+        "annotation_code": raw_code,
+        "normalized_code": normalized_code,
+        "match_kind": None,
+        "canonical_type": None,
+        "classification_candidates": [
+            {
+                "canonical_type": candidate.canonical_type,
+                "legend_row_label": candidate.label.text,
+            }
+            for candidate in sorted(
+                verbatim,
+                key=lambda item: (
+                    item.canonical_type,
+                    item.label.element_id,
+                ),
+            )
+        ],
+        "reason": (
+            "annotation code does not uniquely match a classified legend row"
+        ),
+    }
 
 
 def _legend_heading_words(
@@ -3359,6 +3603,7 @@ def _recognize_legend_shapes(
     set[str],
     list[dict[str, Any]],
     dict[str, Any],
+    dict[int, tuple[_LegendEntry, ...]],
 ]:
     clusters = tuple(
         cluster
@@ -3404,6 +3649,7 @@ def _recognize_legend_shapes(
             )
     prototype_geometry_keys: set[tuple[int, str]] = set()
     entries_by_signature: dict[tuple[int, str], list[_LegendEntry]] = {}
+    classified_entries_by_page: dict[int, list[_LegendEntry]] = {}
     unresolved: list[dict[str, Any]] = []
     legend_pages = {region.page for region in regions}
 
@@ -3451,21 +3697,21 @@ def _recognize_legend_shapes(
                 continue
 
             entity_kind, canonical_type, confidence = row.classification
+            entry = _LegendEntry(
+                entity_kind=entity_kind,
+                canonical_type=canonical_type,
+                confidence=confidence,
+                prototype=prototype,
+                label=label,
+                region=region,
+                label_source_element_ids=(
+                    row.label_source_element_ids or (label.element_id,)
+                ),
+            )
             entries_by_signature.setdefault(
                 (prototype.page, prototype.shape_signature), []
-            ).append(
-                _LegendEntry(
-                    entity_kind=entity_kind,
-                    canonical_type=canonical_type,
-                    confidence=confidence,
-                    prototype=prototype,
-                    label=label,
-                    region=region,
-                    label_source_element_ids=(
-                        row.label_source_element_ids or (label.element_id,)
-                    ),
-                )
-            )
+            ).append(entry)
+            classified_entries_by_page.setdefault(prototype.page, []).append(entry)
 
     legend_by_signature: dict[tuple[int, str], _LegendEntry] = {}
     for (page, signature), entries in sorted(entries_by_signature.items()):
@@ -3598,6 +3844,7 @@ def _recognize_legend_shapes(
         legend_entry, match_diagnostics = _match_cluster_to_legend_entries(
             cluster,
             legend_entries_by_page.get(cluster.page, ()),
+            texts=texts,
         )
         reference: _LegendReference | None = None
         if legend_entry is None:
@@ -3614,6 +3861,7 @@ def _recognize_legend_shapes(
                         candidate_reference.legend_page,
                         (),
                     ),
+                    texts=texts,
                 )
                 remote_diagnostics.append((candidate_reference, diagnostics))
                 if remote_entry is not None:
@@ -3626,6 +3874,17 @@ def _recognize_legend_shapes(
                     for _reference, entry, _diagnostics in remote_matches
                 }
                 if len(remote_classifications) != 1:
+                    conflict_match_diagnostics = dict(
+                        sorted(
+                            remote_matches,
+                            key=lambda item: (
+                                -float(item[2].get("nearest_score") or -1.0),
+                                item[0].legend_page,
+                                item[0].source_element_id,
+                            ),
+                        )[0][2]
+                    )
+                    conflict_match_diagnostics["reason"] = "tie within margin"
                     unresolved.append(
                         {
                             "kind": "vector_cluster",
@@ -3638,6 +3897,7 @@ def _recognize_legend_shapes(
                             },
                             "bbox_pt": list(cluster.bbox_pt),
                             "shape_signature": cluster.shape_signature,
+                            "match_diagnostics": conflict_match_diagnostics,
                             "status": "unresolved_classification",
                             "reason": (
                                 "explicitly referenced legend sheets map the same glyph "
@@ -3746,6 +4006,7 @@ def _recognize_legend_shapes(
                     },
                     "bbox_pt": list(cluster.bbox_pt),
                     "shape_signature": cluster.shape_signature,
+                    "match_diagnostics": match_diagnostics,
                     "status": "unresolved_classification",
                     "reason": reason,
                     "recognition_provenance": recognition_provenance,
@@ -3933,6 +4194,19 @@ def _recognize_legend_shapes(
         legend_text_ids,
         unresolved,
         legend_recognition,
+        {
+            page: tuple(
+                sorted(
+                    entries,
+                    key=lambda entry: (
+                        entry.canonical_type,
+                        entry.label.element_id,
+                        entry.prototype.geometry_key,
+                    ),
+                )
+            )
+            for page, entries in sorted(classified_entries_by_page.items())
+        },
     )
 
 def _extract_voltage(texts: Iterable[str]) -> tuple[float | None, str | None]:
@@ -4185,6 +4459,16 @@ class ElectricalPdfImporter:
         texts = tuple(sorted(document.texts, key=lambda item: (item.page, item.element_id)))
         symbols = tuple(sorted(document.symbols, key=lambda item: (item.page, item.element_id)))
         vectors = tuple(sorted(document.vectors, key=lambda item: (item.page, item.element_id)))
+        annotation_code_text_ids = {
+            f"{symbol.element_id}:text"
+            for symbol in symbols
+            if _annotation_code(symbol) is not None
+        }
+        legend_texts = tuple(
+            observation
+            for observation in texts
+            if observation.element_id not in annotation_code_text_ids
+        )
         (
             shape_candidates,
             shape_matched_vector_ids,
@@ -4192,9 +4476,10 @@ class ElectricalPdfImporter:
             legend_text_ids,
             unresolved_shape_rows,
             legend_recognition,
+            annotation_legend_entries,
         ) = _recognize_legend_shapes(
             document,
-            texts=texts,
+            texts=legend_texts,
             vectors=vectors,
             rules=self.symbol_rules,
             ambiguity_margin=self.ambiguity_margin,
@@ -4344,7 +4629,10 @@ class ElectricalPdfImporter:
         # Text remains independent or reinforcing evidence, never a prerequisite
         # for a legend-matched drawn device.
         for observation in texts:
-            if observation.element_id in legend_text_ids:
+            if (
+                observation.element_id in legend_text_ids
+                or observation.element_id in annotation_code_text_ids
+            ):
                 continue
             if (observation.page, observation.element_id) in claimed_source_ids:
                 continue
@@ -4479,6 +4767,182 @@ class ElectricalPdfImporter:
         for symbol in symbols:
             if (symbol.page, symbol.element_id) in claimed_source_ids:
                 continue
+
+            annotation_match = _annotation_code_legend_match(
+                symbol,
+                annotation_legend_entries.get(symbol.page, ()),
+            )
+            if annotation_match is not None:
+                legend_entry, annotation_recognition = annotation_match
+                if legend_entry is None:
+                    unresolved_observations.append(
+                        {
+                            "kind": "symbol",
+                            "page": symbol.page,
+                            "source_element_id": symbol.element_id,
+                            "name": symbol.name,
+                            "source_kind": symbol.source_kind,
+                            "position_pt": {"x": symbol.x_pt, "y": symbol.y_pt},
+                            "annotation_code": annotation_recognition[
+                                "annotation_code"
+                            ],
+                            "annotation_code_recognition": annotation_recognition,
+                            "metadata": dict(symbol.metadata),
+                            "status": "unresolved_classification",
+                            "reason": annotation_recognition["reason"],
+                        }
+                    )
+                    continue
+
+                kind = legend_entry.entity_kind
+                canonical_type = legend_entry.canonical_type
+                confidence = min(0.96, legend_entry.confidence)
+                compatible = [
+                    candidate
+                    for candidate in candidates.values()
+                    if candidate.page == symbol.page
+                    and candidate.entity_kind == kind
+                    and candidate.canonical_type == canonical_type
+                ]
+                compatible.sort(
+                    key=lambda item: (
+                        _distance_pt(
+                            item.x_pt,
+                            item.y_pt,
+                            symbol.x_pt,
+                            symbol.y_pt,
+                        ),
+                        item.key,
+                    )
+                )
+                candidate = (
+                    compatible[0]
+                    if compatible
+                    and _distance_pt(
+                        compatible[0].x_pt,
+                        compatible[0].y_pt,
+                        symbol.x_pt,
+                        symbol.y_pt,
+                    )
+                    <= self.symbol_label_radius_pt
+                    else None
+                )
+                if candidate is None:
+                    candidate = _EntityCandidate(
+                        key=(
+                            f"p{symbol.page}:annotation-code:"
+                            f"{symbol.element_id}"
+                        ),
+                        entity_kind=kind,
+                        canonical_type=canonical_type,
+                        tag=None,
+                        identity_key=(
+                            f"annotation:{symbol.source_kind}:{symbol.element_id}"
+                        ),
+                        page=symbol.page,
+                        x_pt=symbol.x_pt,
+                        y_pt=symbol.y_pt,
+                        confidence=confidence,
+                        primary_method="annotation-code",
+                    )
+                    candidates[candidate.key] = candidate
+
+                status_evidence = _field_status_for_point(
+                    page=symbol.page,
+                    x_pt=symbol.x_pt,
+                    y_pt=symbol.y_pt,
+                    texts=texts,
+                )
+                annotation_recognition = dict(annotation_recognition)
+                annotation_recognition["method"] = "annotation-code"
+                if status_evidence is not None:
+                    status_observation, status_code, status_meaning = status_evidence
+                    annotation_recognition.update(
+                        {
+                            "status": status_code,
+                            "status_meaning": status_meaning,
+                            "status_source_element_id": (
+                                status_observation.element_id
+                            ),
+                        }
+                    )
+                candidate.annotation_recognition = annotation_recognition
+                candidate.merge_source(
+                    element_id=symbol.element_id,
+                    text=annotation_recognition["annotation_code"],
+                    symbol_name=symbol.name,
+                    x_pt=symbol.x_pt,
+                    y_pt=symbol.y_pt,
+                    confidence=confidence,
+                    provenance=_provenance(
+                        document,
+                        element_id=symbol.element_id,
+                        page=symbol.page,
+                        method="annotation-code",
+                        confidence=confidence,
+                        source_kind=symbol.source_kind,
+                        attributes={
+                            **annotation_recognition,
+                            **(
+                                {"metadata": dict(symbol.metadata)}
+                                if symbol.metadata
+                                else {}
+                            ),
+                        },
+                    ),
+                    method="annotation-code",
+                )
+                for label_element_id in (
+                    legend_entry.label_source_element_ids
+                    or (legend_entry.label.element_id,)
+                ):
+                    if label_element_id not in candidate.source_element_ids:
+                        candidate.source_element_ids.append(label_element_id)
+                candidate.provenance.append(
+                    _provenance(
+                        document,
+                        element_id=legend_entry.label.element_id,
+                        page=legend_entry.label.page,
+                        method="pdf-sheet-legend-type-label",
+                        confidence=legend_entry.confidence,
+                        attributes={
+                            "source_text": legend_entry.label.text,
+                            "legend_row_label": legend_entry.label.text,
+                            "canonical_type": canonical_type,
+                            "annotation_code": annotation_recognition[
+                                "annotation_code"
+                            ],
+                        },
+                    )
+                )
+                if status_evidence is not None:
+                    status_observation, status_code, status_meaning = status_evidence
+                    if (
+                        status_observation.element_id
+                        not in candidate.source_element_ids
+                    ):
+                        candidate.source_element_ids.append(
+                            status_observation.element_id
+                        )
+                    candidate.provenance.append(
+                        _provenance(
+                            document,
+                            element_id=status_observation.element_id,
+                            page=status_observation.page,
+                            method="pdf-field-status-tag",
+                            confidence=0.92,
+                            attributes={
+                                "source_text": status_observation.text,
+                                "status": status_code,
+                                "status_meaning": status_meaning,
+                                "annotation_code": annotation_recognition[
+                                    "annotation_code"
+                                ],
+                            },
+                        )
+                    )
+                continue
+
             classification, ranked = _classify_symbol(
                 symbol,
                 self.symbol_rules,
@@ -4757,6 +5221,30 @@ class ElectricalPdfImporter:
                     lane_attributes["status_meaning"] = candidate.shape_recognition[
                         "status_meaning"
                     ]
+            if candidate.annotation_recognition is not None:
+                lane_attributes["annotation_recognition"] = dict(
+                    candidate.annotation_recognition
+                )
+                lane_attributes["annotation_code"] = candidate.annotation_recognition[
+                    "annotation_code"
+                ]
+                lane_attributes.setdefault(
+                    "legend_row_label",
+                    candidate.annotation_recognition.get("legend_row_label"),
+                )
+                lane_attributes.setdefault(
+                    "device_type_label",
+                    candidate.annotation_recognition.get("legend_row_label"),
+                )
+                if "status" in candidate.annotation_recognition:
+                    lane_attributes.setdefault(
+                        "status",
+                        candidate.annotation_recognition["status"],
+                    )
+                    lane_attributes.setdefault(
+                        "status_meaning",
+                        candidate.annotation_recognition["status_meaning"],
+                    )
             if mounting:
                 if len(mounting) == 1:
                     lane_attributes["mounting_height_m"] = mounting[0]

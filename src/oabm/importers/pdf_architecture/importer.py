@@ -12,6 +12,7 @@ import math
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
+from statistics import median
 from typing import Iterable
 
 from oabm.model import (
@@ -74,6 +75,15 @@ _TITLE_BLOCK_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+_ROOM_NUMBER_RE = re.compile(
+    r"^(?:\d+[A-Z]?|[A-Z]{1,4}[-.]?\d+[A-Z0-9.-]*)$",
+    re.IGNORECASE,
+)
+_LEADER_TAG_RE = re.compile(
+    r"^(?:\d{1,4}[A-Z]?|[A-Z]{1,4}[-.]?\d{0,4})$",
+    re.IGNORECASE,
+)
+_ROOM_LABEL_AMBIGUITY_MARGIN = 0.06
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +161,9 @@ class _RoomLabel:
     anchor: str
     usage: str | None
     confidence: float
+    source_observations: tuple[PdfTextObservation, ...] = ()
+    room_number_pattern: bool = False
+    selection_provenance: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1040,7 +1053,69 @@ def _is_title_block_string(text: str) -> bool:
     return any(pattern.search(text) for pattern in _TITLE_BLOCK_PATTERNS)
 
 
-def _room_label_candidate(observation: PdfTextObservation) -> _RoomLabel | None:
+def _observation_font_size(observation: PdfTextObservation) -> float:
+    if observation.font_size_pt is not None:
+        return observation.font_size_pt
+    return max(0.1, observation.bbox_pt[3] - observation.bbox_pt[1])
+
+
+def _page_median_font_size(page: PdfPageObservation) -> float:
+    values = [
+        _observation_font_size(observation)
+        for observation in page.texts
+        if _clean_text(observation.text)
+    ]
+    return float(median(values)) if values else 1.0
+
+
+def _room_label_sources(room: _RoomLabel) -> tuple[PdfTextObservation, ...]:
+    return room.source_observations or (room.observation,)
+
+
+def _room_label_center_pt(room: _RoomLabel) -> tuple[float, float]:
+    observations = _room_label_sources(room)
+    return (
+        sum(item.center_pt[0] for item in observations) / len(observations),
+        sum(item.center_pt[1] for item in observations) / len(observations),
+    )
+
+
+def _room_label_font_size(room: _RoomLabel) -> float:
+    return max(_observation_font_size(item) for item in _room_label_sources(room))
+
+
+def _point_near_bbox(
+    point: tuple[float, float],
+    bbox: tuple[float, float, float, float],
+    tolerance: float,
+) -> bool:
+    return (
+        bbox[0] - tolerance <= point[0] <= bbox[2] + tolerance
+        and bbox[1] - tolerance <= point[1] <= bbox[3] + tolerance
+    )
+
+
+def _is_leader_tag(page: PdfPageObservation, observation: PdfTextObservation) -> bool:
+    text = _clean_text(observation.text)
+    if not _LEADER_TAG_RE.fullmatch(text):
+        return False
+    text_height = max(1.0, observation.bbox_pt[3] - observation.bbox_pt[1])
+    tolerance = max(1.5, text_height * 0.35)
+    for line in page.lines:
+        near_start = _point_near_bbox(line.start_pt, observation.bbox_pt, tolerance)
+        near_end = _point_near_bbox(line.end_pt, observation.bbox_pt, tolerance)
+        if near_start == near_end:
+            continue
+        if math.dist(line.start_pt, line.end_pt) < text_height * 1.5:
+            continue
+        return True
+    return False
+
+
+def _room_label_candidate(
+    page: PdfPageObservation,
+    observation: PdfTextObservation,
+) -> _RoomLabel | None:
     text = _clean_text(observation.text)
     if not text:
         return None
@@ -1050,13 +1125,15 @@ def _room_label_candidate(observation: PdfTextObservation) -> _RoomLabel | None:
     if not name:
         return None
 
-    # Position establishes room-label semantics. Lexical rules are exclusions
-    # only, so numeric labels and project-specific abbreviations stay eligible.
+    # Position establishes room-label semantics. Lexical and leader rules are
+    # exclusions only, so arbitrary project-specific labels stay eligible.
     if _find_dimension(name) is not None:
         return None
     if _KEYNOTE_RE.match(name):
         return None
     if _is_title_block_string(name):
+        return None
+    if _is_leader_tag(page, observation):
         return None
 
     return _RoomLabel(
@@ -1065,16 +1142,241 @@ def _room_label_candidate(observation: PdfTextObservation) -> _RoomLabel | None:
         anchor=_anchor(name),
         usage=None,
         confidence=0.98 if explicit else 0.88,
+        source_observations=(observation,),
+        room_number_pattern=bool(_ROOM_NUMBER_RE.fullmatch(name)),
+    )
+
+
+def _pair_adjacent_room_number_and_name(
+    page: PdfPageObservation,
+    labels: tuple[_RoomLabel, ...],
+) -> tuple[_RoomLabel, ...]:
+    if len(labels) < 2:
+        return labels
+
+    page_median = _page_median_font_size(page)
+    used_ids: set[str] = set()
+    combined: list[_RoomLabel] = []
+    ordered_numbers = sorted(
+        (label for label in labels if label.room_number_pattern),
+        key=lambda item: (item.observation.element_id, item.anchor),
+    )
+    for number in ordered_numbers:
+        number_obs = number.observation
+        number_size = _room_label_font_size(number)
+        candidates: list[tuple[float, float, str, _RoomLabel]] = []
+        for name in labels:
+            if name is number or name.room_number_pattern:
+                continue
+            if name.observation.element_id in used_ids:
+                continue
+            name_obs = name.observation
+            name_size = _room_label_font_size(name)
+            vertical_gap = abs(name_obs.center_pt[1] - number_obs.center_pt[1])
+            if vertical_gap <= max(1.0, 0.35 * max(name_size, number_size)):
+                continue
+            if vertical_gap > max(18.0, 2.4 * page_median):
+                continue
+            horizontal_gap = abs(name_obs.center_pt[0] - number_obs.center_pt[0])
+            half_span = max(
+                name_obs.bbox_pt[2] - name_obs.bbox_pt[0],
+                number_obs.bbox_pt[2] - number_obs.bbox_pt[0],
+                12.0,
+            ) / 2.0
+            if horizontal_gap > half_span + page_median:
+                continue
+            if name_size < page_median * 0.70:
+                continue
+            candidates.append(
+                (vertical_gap, horizontal_gap, name_obs.element_id, name)
+            )
+        if not candidates:
+            continue
+        _, _, _, name = min(candidates)
+        observations = tuple(
+            sorted(
+                (name.observation, number.observation),
+                key=lambda item: (-item.center_pt[1], item.element_id),
+            )
+        )
+        display_parts = []
+        for item in observations:
+            candidate = _clean_text(item.text)
+            explicit = _EXPLICIT_ROOM_LABEL_RE.match(candidate)
+            if explicit:
+                candidate = _clean_text(explicit.group(1))
+            display_parts.append(candidate)
+        combined.append(
+            _RoomLabel(
+                observation=number.observation,
+                name=" ".join(display_parts),
+                anchor=number.anchor,
+                usage=None,
+                confidence=min(0.94, max(number.confidence, name.confidence) + 0.04),
+                source_observations=observations,
+                room_number_pattern=True,
+            )
+        )
+        used_ids.update(
+            (number.observation.element_id, name.observation.element_id)
+        )
+
+    result = [
+        label
+        for label in labels
+        if label.observation.element_id not in used_ids
+    ]
+    result.extend(combined)
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (
+                item.anchor,
+                tuple(obs.element_id for obs in _room_label_sources(item)),
+            ),
+        )
     )
 
 
 def _room_labels(page: PdfPageObservation) -> tuple[_RoomLabel, ...]:
     return tuple(
-        label
-        for observation in page.texts
-        if (label := _room_label_candidate(observation)) is not None
+        sorted(
+            (
+                label
+                for observation in page.texts
+                if (label := _room_label_candidate(page, observation)) is not None
+            ),
+            key=lambda item: (item.anchor, item.observation.element_id),
+        )
     )
 
+
+def _polygon_center_and_radius(
+    polygon: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], float]:
+    center = (
+        sum(point[0] for point in polygon) / len(polygon),
+        sum(point[1] for point in polygon) / len(polygon),
+    )
+    radius = max(math.dist(center, point) for point in polygon)
+    return center, max(radius, 1e-9)
+
+
+def _label_candidate_summary(
+    room: _RoomLabel,
+    ranking: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "text": room.name,
+        "source_text_elements": [
+            item.element_id for item in _room_label_sources(room)
+        ],
+        "score": ranking["score"],
+        "centrality": ranking["centrality"],
+        "font_size_pt": ranking["font_size_pt"],
+        "font_size_ratio": ranking["font_size_ratio"],
+        "room_number_pattern": room.room_number_pattern,
+    }
+
+
+def _select_room_label(
+    page: PdfPageObservation,
+    rooms: Iterable[_RoomLabel],
+    polygon: tuple[tuple[float, float], ...],
+    ambiguities: list[dict[str, object]],
+    *,
+    transform: _Transform2D | None = None,
+    enclosure_attributes: dict[str, object] | None = None,
+) -> _RoomLabel | None:
+    candidates = _pair_adjacent_room_number_and_name(page, tuple(rooms))
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    center, radius = _polygon_center_and_radius(polygon)
+    page_median = _page_median_font_size(page)
+    ranked: list[tuple[_RoomLabel, dict[str, object]]] = []
+    for room in candidates:
+        point = _room_label_center_pt(room)
+        if transform is not None:
+            point = transform.apply(point)
+        centrality = max(0.0, 1.0 - math.dist(point, center) / radius)
+        font_size = _room_label_font_size(room)
+        font_ratio = font_size / page_median if page_median > 0 else 1.0
+        font_score = min(1.0, max(0.0, font_ratio / 1.5))
+        score = (
+            0.60 * centrality
+            + 0.25 * font_score
+            + 0.15 * (1.0 if room.room_number_pattern else 0.0)
+        )
+        ranked.append(
+            (
+                room,
+                {
+                    "score": round(score, 6),
+                    "centrality": round(centrality, 6),
+                    "font_size_pt": round(font_size, 6),
+                    "page_median_font_size_pt": round(page_median, 6),
+                    "font_size_ratio": round(font_ratio, 6),
+                },
+            )
+        )
+
+    ranked.sort(
+        key=lambda item: (
+            -float(item[1]["score"]),
+            -float(item[1]["centrality"]),
+            -float(item[1]["font_size_ratio"]),
+            -int(item[0].room_number_pattern),
+            item[0].anchor,
+            tuple(obs.element_id for obs in _room_label_sources(item[0])),
+        )
+    )
+    winner, winner_ranking = ranked[0]
+    runner_ups = [
+        _label_candidate_summary(room, ranking)
+        for room, ranking in ranked[1:]
+    ]
+    selection_provenance: dict[str, object] = {
+        "selection_method": "enclosure_room_label_ranking",
+        "score": winner_ranking["score"],
+        "centrality": winner_ranking["centrality"],
+        "font_size_pt": winner_ranking["font_size_pt"],
+        "page_median_font_size_pt": winner_ranking["page_median_font_size_pt"],
+        "font_size_ratio": winner_ranking["font_size_ratio"],
+        "room_number_pattern": winner.room_number_pattern,
+        "source_text_elements": [
+            item.element_id for item in _room_label_sources(winner)
+        ],
+        "runner_ups": runner_ups,
+    }
+    selected_confidence = winner.confidence
+    if ranked[1][1]["score"] is not None:
+        margin = float(winner_ranking["score"]) - float(ranked[1][1]["score"])
+        if margin <= _ROOM_LABEL_AMBIGUITY_MARGIN + 1e-12:
+            selected_confidence = min(selected_confidence, 0.65)
+            ambiguity = {
+                "page": page.page_number,
+                "code": "multiple_room_labels_in_enclosure",
+                "detail": (
+                    "top two room-label candidates are within the ranking margin; "
+                    "the deterministic top candidate was retained with reduced confidence"
+                ),
+                "ranking_margin": round(margin, 6),
+                "ambiguity_margin": _ROOM_LABEL_AMBIGUITY_MARGIN,
+                "selected": _label_candidate_summary(winner, winner_ranking),
+                "runner_up": _label_candidate_summary(*ranked[1]),
+            }
+            if enclosure_attributes:
+                ambiguity.update(enclosure_attributes)
+            ambiguities.append(ambiguity)
+
+    return replace(
+        winner,
+        confidence=selected_confidence,
+        selection_provenance=selection_provenance,
+    )
 
 def _inside(bbox: tuple[float, float, float, float], point: tuple[float, float]) -> bool:
     return bbox[0] <= point[0] <= bbox[2] and bbox[1] <= point[1] <= bbox[3]
@@ -1118,39 +1420,46 @@ def _shell_candidates(
             asymmetry = abs(thickness_x - thickness_y)
             candidates.append((area_m2, asymmetry, outer, inner))
 
-    selected: list[_Shell] = []
-    used_pairs: set[tuple[str, str]] = set()
-    duplicate_anchors = {room.anchor for room in rooms if sum(item.anchor == room.anchor for item in rooms) > 1}
-    for anchor in sorted(duplicate_anchors):
-        ambiguities.append(
-            {
-                "page": page.page_number,
-                "code": "duplicate_room_label",
-                "detail": f"room label {anchor!r} is not unique on the level; those enclosures are not promoted",
-            }
-        )
-
+    rooms_by_pair: dict[
+        tuple[str, str],
+        tuple[PdfRectObservation, PdfRectObservation, list[_RoomLabel]],
+    ] = {}
     for room in sorted(rooms, key=lambda item: (item.anchor, item.observation.element_id)):
-        if room.anchor in duplicate_anchors:
-            continue
-        containing = [item for item in candidates if _inside(item[3].bbox_pt, room.observation.center_pt)]
+        containing = [
+            item
+            for item in candidates
+            if _inside(item[3].bbox_pt, _room_label_center_pt(room))
+        ]
         if not containing:
             continue
-        area, _, outer, inner = min(containing, key=lambda item: (item[0], item[1], item[2].element_id, item[3].element_id))
+        _, _, outer, inner = min(
+            containing,
+            key=lambda item: (
+                item[0],
+                item[1],
+                item[2].element_id,
+                item[3].element_id,
+            ),
+        )
         pair = (outer.element_id, inner.element_id)
-        if pair in used_pairs:
-            ambiguities.append(
-                {
-                    "page": page.page_number,
-                    "code": "multiple_room_labels_in_enclosure",
-                    "detail": "more than one room label resolves to the same wall enclosure",
-                    "source_rectangles": list(pair),
-                }
-            )
-            selected = [shell for shell in selected if (shell.outer.element_id, shell.inner.element_id) != pair]
-            continue
-        used_pairs.add(pair)
+        if pair not in rooms_by_pair:
+            rooms_by_pair[pair] = (outer, inner, [])
+        rooms_by_pair[pair][2].append(room)
+
+    selected: list[_Shell] = []
+    for pair in sorted(rooms_by_pair):
+        outer, inner, contained_rooms = rooms_by_pair[pair]
         ix0, iy0, ix1, iy1 = inner.bbox_pt
+        polygon = ((ix0, iy0), (ix1, iy0), (ix1, iy1), (ix0, iy1))
+        room = _select_room_label(
+            page,
+            contained_rooms,
+            polygon,
+            ambiguities,
+            enclosure_attributes={"source_rectangles": list(pair)},
+        )
+        if room is None:
+            continue
         ox0, oy0, ox1, oy1 = outer.bbox_pt
         selected.append(
             _Shell(
@@ -1170,8 +1479,28 @@ def _shell_candidates(
             )
         )
 
-    labelled_rects = {(shell.outer.element_id, shell.inner.element_id) for shell in selected}
-    if candidates and not labelled_rects and not rooms:
+    duplicate_selected_anchors = {
+        shell.room.anchor
+        for shell in selected
+        if sum(item.room.anchor == shell.room.anchor for item in selected) > 1
+    }
+    for anchor in sorted(duplicate_selected_anchors):
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "duplicate_room_label",
+                "detail": (
+                    f"selected room label {anchor!r} is not unique on the level; "
+                    "those enclosures are not promoted"
+                ),
+            }
+        )
+    if duplicate_selected_anchors:
+        selected = [
+            shell for shell in selected if shell.room.anchor not in duplicate_selected_anchors
+        ]
+
+    if candidates and not selected and not rooms:
         ambiguities.append(
             {
                 "page": page.page_number,
@@ -1333,187 +1662,204 @@ def _ordinary_vector_shell_candidates(
             asymmetry = abs(thickness_x - thickness_y)
             candidates.append((area_m2, asymmetry, outer, inner))
 
-    duplicate_anchors = {
-        room.anchor
-        for room in rooms
-        if sum(item.anchor == room.anchor for item in rooms) > 1
-    }
-    selected: list[_Shell] = []
-    used_pairs: set[tuple[str, str]] = set()
+    assignments: dict[
+        tuple[str, str],
+        tuple[_ShellBoundary, _ShellBoundary, float, str, list[_RoomLabel]],
+    ] = {}
+
     for room in sorted(rooms, key=lambda item: (item.anchor, item.observation.element_id)):
-        if room.anchor in duplicate_anchors or room.anchor in excluded_room_anchors:
+        if room.anchor in excluded_room_anchors:
             continue
+        room_center = _room_label_center_pt(room)
         containing = [
             item
             for item in candidates
-            if _inside(item[3].bbox_pt, room.observation.center_pt)
+            if _inside(item[3].bbox_pt, room_center)
         ]
-        if not containing:
-            single_loops = [
-                loop
-                for loop in loops
-                if _inside(loop.bbox_pt, room.observation.center_pt)
-                and loop.width_pt * scale.meters_per_point >= options.min_space_span_m
-                and loop.height_pt * scale.meters_per_point >= options.min_space_span_m
-            ]
-            if len(single_loops) == 1:
-                boundary = single_loops[0]
-                bx0, by0, bx1, by1 = boundary.bbox_pt
-                boundary_width = bx1 - bx0
-                boundary_height = by1 - by0
-                min_offset_pt = options.min_wall_thickness_m / scale.meters_per_point
-                max_offset_pt = options.max_wall_thickness_m / scale.meters_per_point
-                partial_sides: set[str] = set()
-                for line in page.lines:
-                    if line.native_id:
-                        continue
-                    ax, ay = line.start_pt
-                    bx, by = line.end_pt
-                    dx = bx - ax
-                    dy = by - ay
-                    if (
-                        abs(dy) <= _VECTOR_AXIS_TOLERANCE_PT
-                        and abs(dx) >= boundary_width * 0.7
-                    ):
-                        x0, x1 = sorted((ax, bx))
-                        y = (ay + by) / 2.0
-                        if (
-                            x0 >= bx0 - _VECTOR_AXIS_TOLERANCE_PT
-                            and x1 <= bx1 + _VECTOR_AXIS_TOLERANCE_PT
-                        ):
-                            if min_offset_pt <= y - by0 <= max_offset_pt:
-                                partial_sides.add("south")
-                            if min_offset_pt <= by1 - y <= max_offset_pt:
-                                partial_sides.add("north")
-                    elif (
-                        abs(dx) <= _VECTOR_AXIS_TOLERANCE_PT
-                        and abs(dy) >= boundary_height * 0.7
-                    ):
-                        y0, y1 = sorted((ay, by))
-                        x = (ax + bx) / 2.0
-                        if (
-                            y0 >= by0 - _VECTOR_AXIS_TOLERANCE_PT
-                            and y1 <= by1 + _VECTOR_AXIS_TOLERANCE_PT
-                        ):
-                            if min_offset_pt <= x - bx0 <= max_offset_pt:
-                                partial_sides.add("west")
-                            if min_offset_pt <= bx1 - x <= max_offset_pt:
-                                partial_sides.add("east")
-                if not partial_sides:
-                    pair = (boundary.element_id, boundary.element_id)
-                    if pair in used_pairs:
-                        ambiguities.append(
-                            {
-                                "page": page.page_number,
-                                "code": "multiple_room_labels_in_enclosure",
-                                "detail": (
-                                    "more than one room label resolves to the same ordinary "
-                                    "vector single-loop enclosure"
-                                ),
-                                "source_boundaries": {
-                                    "boundary": list(boundary.source_element_ids),
-                                },
-                            }
-                        )
-                        selected = [
-                            shell
-                            for shell in selected
-                            if (shell.outer.element_id, shell.inner.element_id) != pair
-                        ]
-                        continue
-                    used_pairs.add(pair)
-                    selected.append(
-                        _Shell(
-                            outer=boundary,
-                            inner=boundary,
-                            room=room,
-                            thickness_x_m=0.0,
-                            thickness_y_m=0.0,
-                            geometry_confidence=0.68,
-                            recognition_method="ordinary_vector_single_loop_space",
-                        )
-                    )
-                    continue
-                single_loops = []
-            if single_loops or any(
-                _inside(loop.bbox_pt, room.observation.center_pt) for loop in loops
-            ):
+        if containing:
+            containing.sort(
+                key=lambda item: (
+                    item[0],
+                    item[1],
+                    item[2].element_id,
+                    item[3].element_id,
+                )
+            )
+            if len(containing) != 1:
                 ambiguities.append(
                     {
                         "page": page.page_number,
-                        "code": "ordinary_vector_enclosure_unresolved",
+                        "code": "ordinary_vector_enclosure_ambiguous",
                         "detail": (
-                            f"ordinary vector boundaries surround room {room.anchor!r} "
-                            "but do not prove one unique supported room enclosure"
+                            f"room {room.anchor!r} is contained by multiple supported ordinary "
+                            "vector wall enclosures; none was selected by extraction order"
                         ),
                         "room_anchor": room.anchor,
+                        "source_boundaries": [
+                            {
+                                "outer": list(item[2].source_element_ids),
+                                "inner": list(item[3].source_element_ids),
+                            }
+                            for item in containing
+                        ],
                     }
                 )
+                continue
+            _, _, outer, inner = containing[0]
+            pair = (outer.element_id, inner.element_id)
+            if pair not in assignments:
+                assignments[pair] = (
+                    outer,
+                    inner,
+                    0.86,
+                    "ordinary_vector_line_loops",
+                    [],
+                )
+            assignments[pair][4].append(room)
             continue
-        containing.sort(
-            key=lambda item: (
-                item[0],
-                item[1],
-                item[2].element_id,
-                item[3].element_id,
-            )
-        )
-        if len(containing) != 1:
+
+        single_loops = [
+            loop
+            for loop in loops
+            if _inside(loop.bbox_pt, room_center)
+            and loop.width_pt * scale.meters_per_point >= options.min_space_span_m
+            and loop.height_pt * scale.meters_per_point >= options.min_space_span_m
+        ]
+        if len(single_loops) == 1:
+            boundary = single_loops[0]
+            bx0, by0, bx1, by1 = boundary.bbox_pt
+            boundary_width = bx1 - bx0
+            boundary_height = by1 - by0
+            min_offset_pt = options.min_wall_thickness_m / scale.meters_per_point
+            max_offset_pt = options.max_wall_thickness_m / scale.meters_per_point
+            partial_sides: set[str] = set()
+            for line in page.lines:
+                if line.native_id:
+                    continue
+                ax, ay = line.start_pt
+                bx, by = line.end_pt
+                dx = bx - ax
+                dy = by - ay
+                if (
+                    abs(dy) <= _VECTOR_AXIS_TOLERANCE_PT
+                    and abs(dx) >= boundary_width * 0.7
+                ):
+                    x0, x1 = sorted((ax, bx))
+                    y = (ay + by) / 2.0
+                    if (
+                        x0 >= bx0 - _VECTOR_AXIS_TOLERANCE_PT
+                        and x1 <= bx1 + _VECTOR_AXIS_TOLERANCE_PT
+                    ):
+                        if min_offset_pt <= y - by0 <= max_offset_pt:
+                            partial_sides.add("south")
+                        if min_offset_pt <= by1 - y <= max_offset_pt:
+                            partial_sides.add("north")
+                elif (
+                    abs(dx) <= _VECTOR_AXIS_TOLERANCE_PT
+                    and abs(dy) >= boundary_height * 0.7
+                ):
+                    y0, y1 = sorted((ay, by))
+                    x = (ax + bx) / 2.0
+                    if (
+                        y0 >= by0 - _VECTOR_AXIS_TOLERANCE_PT
+                        and y1 <= by1 + _VECTOR_AXIS_TOLERANCE_PT
+                    ):
+                        if min_offset_pt <= x - bx0 <= max_offset_pt:
+                            partial_sides.add("west")
+                        if min_offset_pt <= bx1 - x <= max_offset_pt:
+                            partial_sides.add("east")
+            if not partial_sides:
+                pair = (boundary.element_id, boundary.element_id)
+                if pair not in assignments:
+                    assignments[pair] = (
+                        boundary,
+                        boundary,
+                        0.68,
+                        "ordinary_vector_single_loop_space",
+                        [],
+                    )
+                assignments[pair][4].append(room)
+                continue
+            single_loops = []
+
+        if single_loops or any(_inside(loop.bbox_pt, room_center) for loop in loops):
             ambiguities.append(
                 {
                     "page": page.page_number,
-                    "code": "ordinary_vector_enclosure_ambiguous",
+                    "code": "ordinary_vector_enclosure_unresolved",
                     "detail": (
-                        f"room {room.anchor!r} is contained by multiple supported ordinary "
-                        "vector wall enclosures; none was selected by extraction order"
+                        f"ordinary vector boundaries surround room {room.anchor!r} "
+                        "but do not prove one unique supported room enclosure"
                     ),
                     "room_anchor": room.anchor,
-                    "source_boundaries": [
-                        {
-                            "outer": list(item[2].source_element_ids),
-                            "inner": list(item[3].source_element_ids),
-                        }
-                        for item in containing
-                    ],
                 }
             )
-            continue
 
-        _, _, outer, inner = containing[0]
-        pair = (outer.element_id, inner.element_id)
-        if pair in used_pairs:
-            ambiguities.append(
-                {
-                    "page": page.page_number,
-                    "code": "multiple_room_labels_in_enclosure",
-                    "detail": "more than one room label resolves to the same ordinary vector wall enclosure",
-                    "source_boundaries": {
-                        "outer": list(outer.source_element_ids),
-                        "inner": list(inner.source_element_ids),
-                    },
-                }
-            )
-            selected = [
-                shell
-                for shell in selected
-                if (shell.outer.element_id, shell.inner.element_id) != pair
-            ]
-            continue
-        used_pairs.add(pair)
-
+    selected: list[_Shell] = []
+    for pair in sorted(assignments):
+        outer, inner, geometry_confidence, recognition_method, contained_rooms = assignments[pair]
         ix0, iy0, ix1, iy1 = inner.bbox_pt
-        ox0, oy0, ox1, oy1 = outer.bbox_pt
+        polygon = ((ix0, iy0), (ix1, iy0), (ix1, iy1), (ix0, iy1))
+        enclosure_attributes: dict[str, object]
+        if outer is inner:
+            enclosure_attributes = {
+                "source_boundaries": {"boundary": list(inner.source_element_ids)}
+            }
+        else:
+            enclosure_attributes = {
+                "source_boundaries": {
+                    "outer": list(outer.source_element_ids),
+                    "inner": list(inner.source_element_ids),
+                }
+            }
+        room = _select_room_label(
+            page,
+            contained_rooms,
+            polygon,
+            ambiguities,
+            enclosure_attributes=enclosure_attributes,
+        )
+        if room is None:
+            continue
+        if recognition_method == "ordinary_vector_single_loop_space":
+            thickness_x_m = 0.0
+            thickness_y_m = 0.0
+        else:
+            ox0, oy0, ox1, oy1 = outer.bbox_pt
+            thickness_x_m = ((ix0 - ox0) + (ox1 - ix1)) * scale.meters_per_point / 2.0
+            thickness_y_m = ((iy0 - oy0) + (oy1 - iy1)) * scale.meters_per_point / 2.0
         selected.append(
             _Shell(
                 outer=outer,
                 inner=inner,
                 room=room,
-                thickness_x_m=((ix0 - ox0) + (ox1 - ix1)) * scale.meters_per_point / 2.0,
-                thickness_y_m=((iy0 - oy0) + (oy1 - iy1)) * scale.meters_per_point / 2.0,
-                geometry_confidence=0.86,
-                recognition_method="ordinary_vector_line_loops",
+                thickness_x_m=thickness_x_m,
+                thickness_y_m=thickness_y_m,
+                geometry_confidence=geometry_confidence,
+                recognition_method=recognition_method,
             )
         )
+
+    duplicate_selected_anchors = {
+        shell.room.anchor
+        for shell in selected
+        if sum(item.room.anchor == shell.room.anchor for item in selected) > 1
+    }
+    for anchor in sorted(duplicate_selected_anchors):
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "duplicate_room_label",
+                "detail": (
+                    f"selected room label {anchor!r} is not unique on the level; "
+                    "those enclosures are not promoted"
+                ),
+            }
+        )
+    if duplicate_selected_anchors:
+        selected = [
+            shell for shell in selected if shell.room.anchor not in duplicate_selected_anchors
+        ]
 
     if candidates and not rooms:
         ambiguities.append(
@@ -1674,6 +2020,17 @@ def _shell_entities(
             "label_source_element_id": room.observation.element_id,
         }
     )
+    if len(_room_label_sources(room)) > 1:
+        source_text_elements = [
+            item.element_id for item in _room_label_sources(room)
+        ]
+        space_attributes["pdf_architecture"]["label_source_element_ids"] = (
+            source_text_elements
+        )
+        space_source_attributes["source_text_elements"] = source_text_elements
+        space_source_attributes["source_text"] = room.name
+    if room.selection_provenance is not None:
+        space_source_attributes["label_selection"] = room.selection_provenance
 
     space = Space(
         id=stable_id("space", identity),
@@ -2402,27 +2759,22 @@ def _geometric_wall_loop_entities(
                 room
                 for room in rooms
                 if _point_in_polygon(
-                    transform.apply(room.observation.center_pt),
+                    transform.apply(_room_label_center_pt(room)),
                     polygon_xy,
                 )
             ),
             key=lambda room: (room.observation.element_id, room.anchor),
         )
-        room = contained_rooms[0] if len(contained_rooms) == 1 else None
-        if len(contained_rooms) > 1:
-            ambiguities.append(
-                {
-                    "page": page.page_number,
-                    "code": "multiple_room_labels_in_enclosure",
-                    "detail": (
-                        "more than one eligible text label lies inside the same "
-                        "geometric wall loop; the space remains unlabeled"
-                    ),
-                    "source_text_elements": [
-                        item.observation.element_id for item in contained_rooms
-                    ],
-                }
-            )
+        room = _select_room_label(
+            page,
+            contained_rooms,
+            polygon_xy,
+            ambiguities,
+            transform=transform,
+            enclosure_attributes={
+                "wall_geometry_anchors": list(loop_wall_anchors),
+            },
+        )
 
         space_confidence = min(
             transform.confidence,
@@ -2454,16 +2806,23 @@ def _geometric_wall_loop_entities(
             "wall_ids": sorted(wall_ids),
         }
         if room is not None:
+            label_provenance_attributes: dict[str, object] = {
+                "label_anchor": room.anchor,
+                "source_text": room.name,
+            }
+            if len(_room_label_sources(room)) > 1:
+                label_provenance_attributes["source_text_elements"] = [
+                    item.element_id for item in _room_label_sources(room)
+                ]
+            if room.selection_provenance is not None:
+                label_provenance_attributes["label_selection"] = room.selection_provenance
             space_provenance += _provenance(
                 source_id,
                 page.page_number,
                 method="room label assigned by text position inside closed wall loop",
                 confidence=room.confidence,
                 source_element_id=room.observation.element_id,
-                attributes={
-                    "label_anchor": room.anchor,
-                    "source_text": room.observation.text,
-                },
+                attributes=label_provenance_attributes,
             )
             space_attributes.update(
                 {
@@ -2473,6 +2832,10 @@ def _geometric_wall_loop_entities(
                     "label_source_element_id": room.observation.element_id,
                 }
             )
+            if len(_room_label_sources(room)) > 1:
+                space_attributes["label_source_element_ids"] = [
+                    item.element_id for item in _room_label_sources(room)
+                ]
 
         spaces.append(
             Space(
@@ -2881,7 +3244,6 @@ def import_observations(
         }
         blocking_enclosure_codes = {
             "duplicate_room_label",
-            "multiple_room_labels_in_enclosure",
             "ordinary_vector_enclosure_ambiguous",
         }
         page_has_blocking_enclosure_ambiguity = any(

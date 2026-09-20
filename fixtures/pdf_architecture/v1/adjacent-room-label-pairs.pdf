@@ -1,0 +1,95 @@
+%PDF-1.4
+%“Œ‹ž ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/Contents 8 0 R /MediaBox [ 0 0 280 220 ] /Parent 7 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>> 
+  /Type /Page
+>>
+endobj
+5 0 obj
+<<
+/PageMode /UseNone /Pages 7 0 R /Type /Catalog
+>>
+endobj
+6 0 obj
+<<
+/Author (anonymous) /CreationDate (D:20000101000000+00'00') /Creator (anonymous) /Keywords () /ModDate (D:20000101000000+00'00') /Producer (ReportLab PDF Library - \(opensource\)) 
+  /Subject (synthetic adjacent room-label pairing regression) /Title (untitled) /Trapped /False
+>>
+endobj
+7 0 obj
+<<
+/Count 1 /Kids [ 4 0 R ] /Type /Pages
+>>
+endobj
+8 0 obj
+<<
+/Length 603
+>>
+stream
+1 0 0 1 0 0 cm  BT /F1 12 Tf 14.4 TL ET
+0 0 0 RG
+0 0 0 rg
+.6 w
+BT /F2 9 Tf 10.8 TL ET
+BT 1 0 0 1 20 202 Tm (A52 FLOOR PLAN) Tj T* ET
+BT /F1 7 Tf 8.4 TL ET
+BT 1 0 0 1 20 190 Tm (SCALE: 1:100) Tj T* ET
+BT 1 0 0 1 20 180 Tm (LEVEL: GROUND) Tj T* ET
+BT 1 0 0 1 20 170 Tm (LEVEL CEILING HEIGHT: 9'-0") Tj T* ET
+n 30 40 100 100 re S
+n 34 44 92 92 re S
+n 130 40 100 100 re S
+n 134 44 92 92 re S
+BT /F1 12 Tf 14.4 TL ET
+BT 1 0 0 1 92.998 82 Tm (OFFICE) Tj T* ET
+BT 1 0 0 1 115.66 78 Tm (STORAGE) Tj T* ET
+BT /F1 11 Tf 13.2 TL ET
+BT 1 0 0 1 115.826 64 Tm (101) Tj T* ET
+BT 1 0 0 1 125.826 60 Tm (102) Tj T* ET
+ 
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000061 00000 n 
+0000000102 00000 n 
+0000000209 00000 n 
+0000000321 00000 n 
+0000000514 00000 n 
+0000000582 00000 n 
+0000000880 00000 n 
+0000000939 00000 n 
+trailer
+<<
+/ID 
+[<b42db434994983f090c97cce74a7d332><b42db434994983f090c97cce74a7d332>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 6 0 R
+/Root 5 0 R
+/Size 9
+>>
+startxref
+1592
+%%EOF

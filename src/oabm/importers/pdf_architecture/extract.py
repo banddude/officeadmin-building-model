@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from statistics import median
 from typing import Iterable
 
 import pdfplumber
@@ -40,7 +41,11 @@ def _native_id(obj: dict[str, object], kind: str) -> str | None:
 
 
 def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ...]:
-    words = page.extract_words(use_text_flow=False, keep_blank_chars=False)  # type: ignore[attr-defined]
+    words = page.extract_words(  # type: ignore[attr-defined]
+        use_text_flow=False,
+        keep_blank_chars=False,
+        extra_attrs=["size"],
+    )
     rows: list[list[dict[str, object]]] = []
     for word in sorted(words, key=lambda item: (round(float(item["top"]), 1), float(item["x0"]))):
         top = float(word["top"])
@@ -84,11 +89,21 @@ def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ..
             y0 = page_height - bottom
             y1 = page_height - top
             signature = f"{text}|{x0:.3f}|{y0:.3f}|{x1:.3f}|{y1:.3f}"
+            font_sizes: list[float] = []
+            for item in group:
+                value = item.get("size")
+                try:
+                    size = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if size > 0:
+                    font_sizes.append(size)
             result.append(
                 PdfTextObservation(
                     element_id=_element_id("text", page_number, signature),
                     text=text,
                     bbox_pt=(x0, y0, x1, y1),
+                    font_size_pt=median(font_sizes) if font_sizes else None,
                 )
             )
     return tuple(result)

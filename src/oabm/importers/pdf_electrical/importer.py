@@ -1091,6 +1091,7 @@ class ElectricalPdfImporter:
         instance_hints: Sequence[ElectricalInstanceHint] = (),
         symbol_label_radius_pt: float = 96.0,
         annotation_radius_pt: float = 144.0,
+        instance_hint_source_radius_pt: float = 18.0,
         ambiguity_margin: float = 0.08,
         vector_symbol_radius_pt: float = 18.0,
         topology_snap_radius_pt: float = 4.0,
@@ -1108,11 +1109,121 @@ class ElectricalPdfImporter:
             seen_hint_ids.add(hint.identity_key)
         self.symbol_label_radius_pt = float(symbol_label_radius_pt)
         self.annotation_radius_pt = float(annotation_radius_pt)
+        self.instance_hint_source_radius_pt = float(instance_hint_source_radius_pt)
+        if (
+            not math.isfinite(self.instance_hint_source_radius_pt)
+            or self.instance_hint_source_radius_pt < 0.0
+        ):
+            raise ElectricalPdfError(
+                "instance_hint_source_radius_pt must be finite and non-negative"
+            )
         self.ambiguity_margin = float(ambiguity_margin)
         self.vector_symbol_radius_pt = float(vector_symbol_radius_pt)
         self.topology_snap_radius_pt = float(topology_snap_radius_pt)
         self.topology_endpoint_radius_pt = float(topology_endpoint_radius_pt)
         self.topology_annotation_radius_pt = float(topology_annotation_radius_pt)
+
+    def _instance_hint_source_rejection(
+        self,
+        hint: ElectricalInstanceHint,
+        observation: PdfTextObservation | PdfSymbolObservation,
+        *,
+        texts: Sequence[PdfTextObservation],
+    ) -> str | None:
+        if (
+            _distance_pt(
+                hint.x_pt,
+                hint.y_pt,
+                observation.x_pt,
+                observation.y_pt,
+            )
+            > self.instance_hint_source_radius_pt
+        ):
+            return "claimed source position does not agree with instance hint"
+
+        if isinstance(observation, PdfTextObservation):
+            hits = _text_entity_hits(observation.text)
+            classifications = {
+                (entity_kind, canonical_type)
+                for entity_kind, canonical_type, _tag, _confidence in hits
+            }
+            if len(classifications) != 1:
+                return (
+                    "claimed text source does not identify exactly one supported "
+                    "electrical classification"
+                )
+            source_kind, source_type = next(iter(classifications))
+            if (source_kind, source_type) != (
+                hint.entity_kind,
+                hint.canonical_type,
+            ):
+                return "claimed source semantics do not match instance hint"
+
+            matching_tags = {
+                tag
+                for entity_kind, canonical_type, tag, _confidence in hits
+                if (entity_kind, canonical_type) == (source_kind, source_type)
+            }
+            if (
+                source_kind != "device"
+                or not matching_tags
+                or any(tag not in _GENERIC_DEVICE_TAGS for tag in matching_tags)
+            ):
+                return (
+                    "claimed source already has stable semantic identity and does "
+                    "not need an instance hint"
+                )
+            return None
+
+        classification, _ranked = _classify_symbol(
+            observation,
+            self.symbol_rules,
+            ambiguity_margin=self.ambiguity_margin,
+        )
+        if classification is None:
+            return (
+                "claimed symbol source is ambiguous or unsupported for instance "
+                "hint disambiguation"
+            )
+        source_kind, source_type, _confidence = classification
+        if (source_kind, source_type) != (
+            hint.entity_kind,
+            hint.canonical_type,
+        ):
+            return "claimed source semantics do not match instance hint"
+
+        native_id = str(observation.metadata.get("native_id") or "").strip()
+        if native_id:
+            return (
+                "claimed source already has stable native identity and does not "
+                "need an instance hint"
+            )
+
+        for text_observation in texts:
+            if text_observation.page != observation.page:
+                continue
+            if (
+                _distance_pt(
+                    text_observation.x_pt,
+                    text_observation.y_pt,
+                    observation.x_pt,
+                    observation.y_pt,
+                )
+                > self.symbol_label_radius_pt
+            ):
+                continue
+            for entity_kind, canonical_type, tag, _confidence in _text_entity_hits(
+                text_observation.text
+            ):
+                if (entity_kind, canonical_type) != (source_kind, source_type):
+                    continue
+                if entity_kind == "device" and tag in _GENERIC_DEVICE_TAGS:
+                    continue
+                return (
+                    "claimed symbol source already has nearby stable semantic "
+                    "identity and does not need an instance hint"
+                )
+        return None
 
     def import_pdf(
         self,
@@ -1147,26 +1258,98 @@ class ElectricalPdfImporter:
         vectors = tuple(sorted(document.vectors, key=lambda item: (item.page, item.element_id)))
         candidates: dict[str, _EntityCandidate] = {}
         unresolved_observations: list[dict[str, Any]] = []
-        text_by_key = {(item.page, item.element_id): item for item in texts}
-        symbol_by_key = {(item.page, item.element_id): item for item in symbols}
-        claimed_source_ids: set[tuple[int, str]] = set()
+        source_by_key: dict[
+            tuple[int, str],
+            list[PdfTextObservation | PdfSymbolObservation],
+        ] = {}
+        for observation in (*texts, *symbols):
+            source_by_key.setdefault(
+                (observation.page, observation.element_id),
+                [],
+            ).append(observation)
 
-        for hint in sorted(self.instance_hints, key=lambda item: item.identity_key):
+        claims_by_source: dict[tuple[int, str], list[ElectricalInstanceHint]] = {}
+        for hint in self.instance_hints:
             if hint.page > document.page_count:
                 raise ElectricalPdfError(
                     f"instance hint {hint.identity_key!r} references page {hint.page}, "
                     f"but page_count is {document.page_count}"
                 )
+            if hint.source_element_id is not None:
+                claims_by_source.setdefault(
+                    (hint.page, hint.source_element_id),
+                    [],
+                ).append(hint)
+
+        claimed_source_ids: set[tuple[int, str]] = set()
+
+        def reject_instance_hint(
+            hint: ElectricalInstanceHint,
+            reason: str,
+            *,
+            extra: Mapping[str, Any] | None = None,
+        ) -> None:
+            row: dict[str, Any] = {
+                "kind": "instance_hint",
+                "page": hint.page,
+                "source_element_id": (
+                    hint.source_element_id
+                    or f"instance-hint:{hint.identity_key}"
+                ),
+                "hint_identity_key": hint.identity_key,
+                "hint_classification": {
+                    "entity_kind": hint.entity_kind,
+                    "canonical_type": hint.canonical_type,
+                },
+                "position_pt": {"x": hint.x_pt, "y": hint.y_pt},
+                "status": "rejected_instance_hint",
+                "reason": reason,
+            }
+            if extra:
+                row.update(extra)
+            unresolved_observations.append(row)
+
+        for hint in sorted(self.instance_hints, key=lambda item: item.identity_key):
             source_observation: PdfTextObservation | PdfSymbolObservation | None = None
             if hint.source_element_id is not None:
                 lookup = (hint.page, hint.source_element_id)
-                source_observation = text_by_key.get(lookup) or symbol_by_key.get(lookup)
-                if source_observation is None:
+                source_observations = source_by_key.get(lookup, ())
+                if not source_observations:
                     raise ElectricalPdfError(
                         f"instance hint {hint.identity_key!r} references unknown source element "
                         f"{hint.source_element_id!r} on page {hint.page}"
                     )
+                if len(source_observations) != 1:
+                    reject_instance_hint(
+                        hint,
+                        "claimed source element id does not identify one unique observation",
+                    )
+                    continue
+
+                claimants = claims_by_source[lookup]
+                if len(claimants) != 1:
+                    reject_instance_hint(
+                        hint,
+                        "claimed source element is claimed by multiple instance hints",
+                        extra={
+                            "claiming_hint_identity_keys": sorted(
+                                claimant.identity_key for claimant in claimants
+                            )
+                        },
+                    )
+                    continue
+
+                source_observation = source_observations[0]
+                rejection = self._instance_hint_source_rejection(
+                    hint,
+                    source_observation,
+                    texts=texts,
+                )
+                if rejection is not None:
+                    reject_instance_hint(hint, rejection)
+                    continue
                 claimed_source_ids.add(lookup)
+
             key = f"hint:{hint.identity_key}"
             candidate = _EntityCandidate(
                 key=key,
@@ -1274,6 +1457,8 @@ class ElectricalPdfImporter:
                 )
 
         for symbol in symbols:
+            if (symbol.page, symbol.element_id) in claimed_source_ids:
+                continue
             classification, ranked = _classify_symbol(
                 symbol,
                 self.symbol_rules,

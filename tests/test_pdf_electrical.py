@@ -13,6 +13,7 @@ from pypdf.generic import (
     NumberObject,
 )
 
+from oabm.importers.pdf_electrical import importer as pdf_electrical_importer
 from oabm.importers.pdf_electrical import (
     POINT_TO_M,
     ElectricalInstanceHint,
@@ -36,6 +37,12 @@ DENSE_LEGEND_BLOCK_FIXTURE = FIXTURE_DIR / "geometry-only-power-sheet-dense-lege
 SEPARATE_LEGEND_REFERENCE_FIXTURE = FIXTURE_DIR / "separate-sheet-explicit-legend-reference.pdf"
 NOTES_COLUMN_LEGEND_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-notes-column-legend.pdf"
+)
+INNER_VIEW_BORDER_LEGEND_FIXTURE = (
+    FIXTURE_DIR / "geometry-only-power-sheet-inner-view-border-legend.pdf"
+)
+INNER_VIEW_BORDER_ROTATED_LEGEND_FIXTURE = (
+    FIXTURE_DIR / "geometry-only-power-sheet-inner-view-border-legend-rotate-270.pdf"
 )
 ROTATED_LEGEND_FIXTURES = (
     (
@@ -725,6 +732,118 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
     ]["regions"] == []
 
     validate_model(model)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "rotation"),
+    (
+        (INNER_VIEW_BORDER_LEGEND_FIXTURE, 0),
+        (INNER_VIEW_BORDER_ROTATED_LEGEND_FIXTURE, 270),
+    ),
+)
+def test_notes_column_legend_uses_outer_sheet_border_not_inner_view_border(
+    fixture: Path,
+    rotation: int,
+) -> None:
+    assert fixture.exists()
+    assert not fixture.with_suffix(".expected.json").exists()
+
+    source_id = "fixture:geometry-only-power-sheet-inner-view-border-legend"
+    extracted = extract_pdf(fixture, source_id=source_id)
+    repeated = extract_pdf(fixture, source_id=source_id)
+    assert extracted == repeated
+    assert extracted.page_provenance == {
+        1: {
+            "page_rotation": rotation,
+            "displayed_page_width_pt": 792.0,
+            "displayed_page_height_pt": 612.0,
+            "coordinate_space": "displayed",
+        }
+    }
+
+    media_box = (0.0, 0.0, 792.0, 612.0)
+    frame = pdf_electrical_importer._page_frame_bbox(
+        extracted.vectors,
+        page=1,
+        media_box_pt=media_box,
+    )
+    assert frame == pytest.approx((18.0, 18.0, 774.0, 594.0))
+
+    def vector_bbox(
+        vector: PdfVectorPathObservation,
+    ) -> tuple[float, float, float, float]:
+        xs = [point[0] for point in vector.points_pt]
+        ys = [point[1] for point in vector.points_pt]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    # The plan viewport is intentionally the only large closed rectangle.
+    # The actual sheet edge is four independent long rules.
+    assert any(
+        vector.closed
+        and vector_bbox(vector) == pytest.approx((40.0, 260.0, 560.0, 580.0))
+        for vector in extracted.vectors
+    )
+    sheet_edges = {
+        ((18.0, 18.0), (774.0, 18.0)),
+        ((774.0, 18.0), (774.0, 594.0)),
+        ((774.0, 594.0), (18.0, 594.0)),
+        ((18.0, 594.0), (18.0, 18.0)),
+    }
+    extracted_open_edges = {
+        vector.points_pt
+        for vector in extracted.vectors
+        if not vector.closed and vector.points_pt in sheet_edges
+    }
+    assert extracted_open_edges == sheet_edges
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    lane = model.attributes["pdf_electrical"]
+    assert len(model.electrical_devices) == 6
+    assert len(model.electrical_devices) > 2
+    assert {
+        device.device_type
+        for device in model.electrical_devices
+    } == {
+        "receptacle",
+        "junction_box",
+        "luminaire",
+        "disconnect",
+        "switch",
+        "evse",
+    }
+    regions = lane["legend_recognition"]["regions"]
+    assert len(regions) == 1
+    assert regions[0]["method"] == "symbol-function-table"
+    assert regions[0]["heading_text"] == "LEGEND"
+    assert regions[0]["row_count"] == 6
+    assert regions[0]["classified_row_count"] == 6
+    assert lane["legend_recognition"]["frame_rederivations"] == []
+    validate_model(model)
+
+
+def test_page_frame_falls_back_to_media_box_when_only_inner_view_border_exists() -> None:
+    extracted = extract_pdf(
+        INNER_VIEW_BORDER_LEGEND_FIXTURE,
+        source_id="fixture:inner-view-border-media-fallback",
+    )
+    outer_edges = {
+        ((18.0, 18.0), (774.0, 18.0)),
+        ((774.0, 18.0), (774.0, 594.0)),
+        ((774.0, 594.0), (18.0, 594.0)),
+        ((18.0, 594.0), (18.0, 18.0)),
+    }
+    without_sheet_border = tuple(
+        vector
+        for vector in extracted.vectors
+        if vector.points_pt not in outer_edges
+    )
+
+    frame = pdf_electrical_importer._page_frame_bbox(
+        without_sheet_border,
+        page=1,
+        media_box_pt=(0.0, 0.0, 792.0, 612.0),
+    )
+    assert frame == (0.0, 0.0, 792.0, 612.0)
 
 
 def _with_zero_page_rotation(value):

@@ -152,11 +152,61 @@ def test_cad_export_curves_survive_architectural_extraction_as_lines() -> None:
     page = document.pages[0]
     assert not page.texts
     assert not page.rects
-    assert len(page.lines) == 9
+    assert len(page.lines) == 17
+    assert all(line.native_id is None for line in page.lines)
     segments = {(line.start_pt, line.end_pt) for line in page.lines}
     assert ((18.0, 24.0), (66.0, 38.0)) in segments
     assert ((66.0, 38.0), (108.0, 24.0)) in segments
     assert ((132.0, 24.0), (154.0, 24.0)) in segments
+    assert {
+        ((40.0, 40.0), (240.0, 40.0)),
+        ((40.0, 44.0), (240.0, 44.0)),
+        ((236.0, 40.0), (236.0, 140.0)),
+        ((240.0, 40.0), (240.0, 140.0)),
+        ((40.0, 136.0), (240.0, 136.0)),
+        ((40.0, 140.0), (240.0, 140.0)),
+        ((40.0, 40.0), (40.0, 140.0)),
+        ((44.0, 40.0), (44.0, 140.0)),
+    }.issubset(segments)
+
+
+def test_cad_export_fixture_extracts_to_untagged_walls_and_space() -> None:
+    document = extract_pdf(
+        CAD_GEOMETRY_FIXTURE,
+        source_id="fixture:cad-export-geometry-only",
+    )
+    assert len(document.pages) == 1
+    extracted_page = document.pages[0]
+    assert extracted_page.lines
+    assert all(line.native_id is None for line in extracted_page.lines)
+
+    contextual_page = replace(
+        extracted_page,
+        texts=(
+            _text("acceptance:title", "A44 FLOOR PLAN", 10, 160),
+            _text("acceptance:scale", "SCALE: 1:100", 10, 146),
+            _text("acceptance:level", "LEVEL: GROUND", 10, 132),
+        ),
+    )
+    model = import_observations(replace(document, pages=(contextual_page,)))
+
+    validate_model(model)
+    assert len(model.walls) > 0
+    assert len(model.spaces) >= 1
+    assert all(
+        wall.attributes["pdf_architecture"]["recognition"]
+        == "geometric_parallel_wall_faces"
+        for wall in model.walls
+    )
+    assert any(
+        space.attributes["pdf_architecture"]["recognition"]
+        == "geometric_parallel_wall_closed_loop"
+        for space in model.spaces
+    )
+    page_meta = model.attributes["pdf_architecture"]["pages"][0]
+    assert page_meta["status"] == "geometry_imported"
+    assert page_meta["resolved_wall_count"] > 0
+    assert page_meta["resolved_room_count"] >= 1
 
 
 def test_cad_derived_untagged_wall_faces_emit_closed_space_with_low_confidence_height() -> None:

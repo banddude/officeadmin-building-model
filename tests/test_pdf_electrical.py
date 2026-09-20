@@ -37,6 +37,14 @@ SEPARATE_LEGEND_REFERENCE_FIXTURE = FIXTURE_DIR / "separate-sheet-explicit-legen
 NOTES_COLUMN_LEGEND_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-notes-column-legend.pdf"
 )
+ROTATED_LEGEND_FIXTURES = (
+    (
+        "geometry-only-power-sheet-notes-column-legend",
+        NOTES_COLUMN_LEGEND_FIXTURE,
+    ),
+    ("geometry-only-power-sheet-edge-legend", EDGE_LEGEND_BLOCK_FIXTURE),
+    ("geometry-only-power-sheet-dense-legend", DENSE_LEGEND_BLOCK_FIXTURE),
+)
 SCHEMA_PATH = ROOT / "contracts" / "oabm-model-v1.schema.json"
 
 
@@ -717,6 +725,143 @@ def test_notes_column_symbol_function_legend_records_field_status() -> None:
     ]["regions"] == []
 
     validate_model(model)
+
+
+def _with_zero_page_rotation(value):
+    if isinstance(value, dict):
+        return {
+            key: (
+                0
+                if key == "page_rotation"
+                else _with_zero_page_rotation(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_with_zero_page_rotation(item) for item in value]
+    return value
+
+
+def _device_rotation_signature(
+    model: BuildingModel,
+) -> list[tuple[str, str | None, str | None]]:
+    return sorted(
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"].get("status"),
+            device.attributes["pdf_electrical"].get("status_meaning"),
+        )
+        for device in model.electrical_devices
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture_stem", "original_fixture"),
+    ROTATED_LEGEND_FIXTURES,
+)
+@pytest.mark.parametrize("rotation", (90, 270))
+def test_rotated_power_sheet_matches_unrotated_displayed_space(
+    fixture_stem: str,
+    original_fixture: Path,
+    rotation: int,
+) -> None:
+    rotated_fixture = FIXTURE_DIR / f"{fixture_stem}-rotate-{rotation}.pdf"
+    assert rotated_fixture.exists()
+    assert not rotated_fixture.with_suffix(".expected.json").exists()
+
+    source_id = f"fixture:{fixture_stem}:rotation-regression"
+    original = extract_pdf(original_fixture, source_id=source_id)
+    rotated = extract_pdf(rotated_fixture, source_id=source_id)
+
+    assert original.page_provenance == {
+        1: {
+            "page_rotation": 0,
+            "displayed_page_width_pt": 792.0,
+            "displayed_page_height_pt": 612.0,
+            "coordinate_space": "displayed",
+        }
+    }
+    assert rotated.page_provenance == {
+        1: {
+            "page_rotation": rotation,
+            "displayed_page_width_pt": 792.0,
+            "displayed_page_height_pt": 612.0,
+            "coordinate_space": "displayed",
+        }
+    }
+
+    # The copies store their source content sideways and use /Rotate to display
+    # exactly like the original. Extraction must erase that storage difference
+    # before legend detection, clustering, and geometry identity see it.
+    assert replace(rotated, page_provenance=original.page_provenance) == original
+
+    original_model = ElectricalPdfImporter().import_document(original)
+    rotated_model = ElectricalPdfImporter().import_document(rotated)
+
+    assert (
+        rotated_model.attributes["pdf_electrical"]["legend_recognition"]
+        == original_model.attributes["pdf_electrical"]["legend_recognition"]
+    )
+    assert len(rotated_model.electrical_devices) == len(
+        original_model.electrical_devices
+    )
+    assert _device_rotation_signature(rotated_model) == _device_rotation_signature(
+        original_model
+    )
+
+    rotated_page_provenance = [
+        provenance
+        for provenance in rotated_model.provenance
+        if provenance.method == "pypdf-page-display-normalization"
+    ]
+    assert len(rotated_page_provenance) == 1
+    assert rotated_page_provenance[0].page == 1
+    assert rotated_page_provenance[0].attributes["page_rotation"] == rotation
+
+    # This compares canonical IDs, entity provenance, legend provenance,
+    # status provenance, source geometry fingerprints, and all other model data.
+    # Only the source page's recorded rotation may differ.
+    assert _with_zero_page_rotation(rotated_model.to_dict()) == (
+        _with_zero_page_rotation(original_model.to_dict())
+    )
+    validate_model(rotated_model)
+
+
+def test_explicit_page_transform_is_applied_after_display_rotation_normalization() -> None:
+    source_id = "fixture:notes-column-explicit-displayed-transform"
+    original = extract_pdf(NOTES_COLUMN_LEGEND_FIXTURE, source_id=source_id)
+    rotated = extract_pdf(
+        FIXTURE_DIR / "geometry-only-power-sheet-notes-column-legend-rotate-270.pdf",
+        source_id=source_id,
+    )
+    frame_id = stable_id("frame", source_id)
+    transform = PdfPageTransform(
+        frame_id=frame_id,
+        m11_m_per_pt=0.0,
+        m12_m_per_pt=-POINT_TO_M,
+        m21_m_per_pt=POINT_TO_M,
+        m22_m_per_pt=0.0,
+        tx_m=17.0,
+        ty_m=23.0,
+    )
+
+    original_model = ElectricalPdfImporter().import_document(
+        original,
+        page_transforms={1: transform},
+    )
+    rotated_model = ElectricalPdfImporter().import_document(
+        rotated,
+        page_transforms={1: transform},
+    )
+
+    assert _with_zero_page_rotation(rotated_model.to_dict()) == (
+        _with_zero_page_rotation(original_model.to_dict())
+    )
+    assert rotated_model.coordinate_system.frame_id == frame_id
+    assert rotated_model.attributes["pdf_electrical"]["page_transforms_supplied"] is True
+    assert rotated_model.attributes["pdf_electrical"]["registration_mode"] == (
+        "explicit-page-transforms"
+    )
 
 
 def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> None:

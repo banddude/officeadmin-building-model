@@ -22,6 +22,8 @@ from oabm.model import (
     stable_id,
 )
 
+from .extract import PdfPageDisplayTransform, page_display_transform
+
 POINT_TO_M = 0.0254 / 72.0
 
 
@@ -100,6 +102,7 @@ class PdfElectricalDocument:
     texts: tuple[PdfTextObservation, ...] = ()
     symbols: tuple[PdfSymbolObservation, ...] = ()
     vectors: tuple[PdfVectorPathObservation, ...] = ()
+    page_provenance: Mapping[int, Mapping[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.source_id:
@@ -110,6 +113,16 @@ class PdfElectricalDocument:
             if item.page > self.page_count:
                 raise ElectricalPdfError(
                     f"{item.element_id} references page {item.page}, but page_count is {self.page_count}"
+                )
+        for page, provenance in self.page_provenance.items():
+            if not isinstance(page, int) or not 1 <= page <= self.page_count:
+                raise ElectricalPdfError(
+                    f"page provenance references invalid page {page!r}"
+                )
+            rotation = provenance.get("page_rotation")
+            if rotation not in {0, 90, 180, 270}:
+                raise ElectricalPdfError(
+                    f"page provenance for page {page} has invalid page_rotation {rotation!r}"
                 )
 
     @classmethod
@@ -155,18 +168,26 @@ class PdfElectricalDocument:
             )
             for item in data.get("vectors", ())
         )
+        raw_page_provenance = data.get("page_provenance", {})
+        if not isinstance(raw_page_provenance, Mapping):
+            raise ElectricalPdfError("page_provenance must be an object")
+        page_provenance = {
+            int(page): dict(provenance)
+            for page, provenance in raw_page_provenance.items()
+        }
         return cls(
             source_id=str(data["source_id"]),
             page_count=int(data["page_count"]),
             texts=texts,
             symbols=symbols,
             vectors=vectors,
+            page_provenance=page_provenance,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class PdfPageTransform:
-    """Affine registration from one PDF page's point coordinates into one canonical frame."""
+    """Affine registration from displayed PDF page coordinates into one canonical frame."""
 
     frame_id: str
     m11_m_per_pt: float = POINT_TO_M
@@ -465,6 +486,7 @@ def _make_page_visitors(
     *,
     page_number: int,
     form_names: frozenset[str],
+    display_transform: PdfPageDisplayTransform,
     texts: list[PdfTextObservation],
     symbols: list[PdfSymbolObservation],
     vectors: list[PdfVectorPathObservation],
@@ -485,6 +507,14 @@ def _make_page_visitors(
         ]
     ] = []
 
+    def displayed_graphics_point(
+        cm: Sequence[float],
+        x: float,
+        y: float,
+    ) -> tuple[float, float]:
+        raw_x, raw_y = _transform_graphics_point(cm, x, y)
+        return display_transform.apply(raw_x, raw_y)
+
     def visitor_text(
         text: str,
         cm: Sequence[float],
@@ -497,7 +527,8 @@ def _make_page_visitors(
         if not cleaned:
             return
         text_counter += 1
-        x_pt, y_pt = _transform_text_point(cm, tm)
+        raw_x_pt, raw_y_pt = _transform_text_point(cm, tm)
+        x_pt, y_pt = display_transform.apply(raw_x_pt, raw_y_pt)
         texts.append(
             PdfTextObservation(
                 element_id=f"p{page_number}:text:{text_counter:04d}",
@@ -590,8 +621,12 @@ def _make_page_visitors(
                         element_id=f"p{page_number}:xobject:{operator_counter:05d}",
                         page=page_number,
                         name=name,
-                        x_pt=float(cm[4]),
-                        y_pt=float(cm[5]),
+                        x_pt=display_transform.apply(
+                            float(cm[4]), float(cm[5])
+                        )[0],
+                        y_pt=display_transform.apply(
+                            float(cm[4]), float(cm[5])
+                        )[1],
                         source_kind="form-xobject",
                     )
                 )
@@ -600,14 +635,14 @@ def _make_page_visitors(
         if operator == b"m" and len(operands) >= 2:
             finish_current()
             current_points = [
-                _transform_graphics_point(cm, float(operands[0]), float(operands[1]))
+                displayed_graphics_point(cm, float(operands[0]), float(operands[1]))
             ]
             return
 
         if operator == b"l" and len(operands) >= 2:
             if current_points:
                 current_points.append(
-                    _transform_graphics_point(
+                    displayed_graphics_point(
                         cm,
                         float(operands[0]),
                         float(operands[1]),
@@ -621,10 +656,10 @@ def _make_page_visitors(
             pending_subpaths.append(
                 (
                     (
-                        _transform_graphics_point(cm, x, y),
-                        _transform_graphics_point(cm, x + width, y),
-                        _transform_graphics_point(cm, x + width, y + height),
-                        _transform_graphics_point(cm, x, y + height),
+                        displayed_graphics_point(cm, x, y),
+                        displayed_graphics_point(cm, x + width, y),
+                        displayed_graphics_point(cm, x + width, y + height),
+                        displayed_graphics_point(cm, x, y + height),
                     ),
                     True,
                     True,
@@ -646,13 +681,13 @@ def _make_page_visitors(
                 if len(operands) < 6:
                     current_supported = False
                     return
-                control_1 = _transform_graphics_point(
+                control_1 = displayed_graphics_point(
                     cm, float(operands[0]), float(operands[1])
                 )
-                control_2 = _transform_graphics_point(
+                control_2 = displayed_graphics_point(
                     cm, float(operands[2]), float(operands[3])
                 )
-                end = _transform_graphics_point(
+                end = displayed_graphics_point(
                     cm, float(operands[4]), float(operands[5])
                 )
             elif operator == b"v":
@@ -660,20 +695,20 @@ def _make_page_visitors(
                     current_supported = False
                     return
                 control_1 = current_points[-1]
-                control_2 = _transform_graphics_point(
+                control_2 = displayed_graphics_point(
                     cm, float(operands[0]), float(operands[1])
                 )
-                end = _transform_graphics_point(
+                end = displayed_graphics_point(
                     cm, float(operands[2]), float(operands[3])
                 )
             else:
                 if len(operands) < 4:
                     current_supported = False
                     return
-                control_1 = _transform_graphics_point(
+                control_1 = displayed_graphics_point(
                     cm, float(operands[0]), float(operands[1])
                 )
-                end = _transform_graphics_point(
+                end = displayed_graphics_point(
                     cm, float(operands[2]), float(operands[3])
                 )
                 control_2 = end
@@ -718,10 +753,12 @@ def _make_page_visitors(
 
 
 def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectricalDocument:
-    """Extract deterministic text and form-XObject observations from a PDF.
+    """Extract deterministic observations in each page's displayed orientation.
 
-    This is recognition input only. Coordinates remain in the source page frame
-    until the later architecture/electrical convergence step.
+    pypdf visitor callbacks expose raw PDF user-space coordinates and do not
+    apply the page /Rotate entry. Extraction normalizes text, symbols, vector
+    geometry, and annotation positions into displayed, bottom-origin page space
+    before downstream electrical recognition sees them.
     """
 
     try:
@@ -749,8 +786,17 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
     texts: list[PdfTextObservation] = []
     symbols: list[PdfSymbolObservation] = []
     vectors: list[PdfVectorPathObservation] = []
+    page_provenance: dict[int, dict[str, float | int | str]] = {}
 
     for page_number, page in enumerate(reader.pages, start=1):
+        try:
+            display_transform = page_display_transform(page)
+        except ValueError as exc:
+            raise ElectricalPdfError(
+                f"failed to normalize page {page_number} display orientation: {exc}"
+            ) from exc
+        page_provenance[page_number] = display_transform.provenance_attributes()
+
         resources = page.get("/Resources")
         if resources is not None:
             try:
@@ -777,6 +823,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
         visitor_text, visitor_operand_before = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),
+            display_transform=display_transform,
             texts=texts,
             symbols=symbols,
             vectors=vectors,
@@ -815,8 +862,9 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             rect = annotation.get("/Rect")
             if not rect or len(rect) < 4:
                 continue
-            x_pt = (float(rect[0]) + float(rect[2])) / 2.0
-            y_pt = (float(rect[1]) + float(rect[3])) / 2.0
+            raw_x_pt = (float(rect[0]) + float(rect[2])) / 2.0
+            raw_y_pt = (float(rect[1]) + float(rect[3])) / 2.0
+            x_pt, y_pt = display_transform.apply(raw_x_pt, raw_y_pt)
             subtype = _clean_pdf_string(annotation.get("/Subtype")) or "/Unknown"
             subject = _clean_pdf_string(annotation.get("/Subj"))
             contents = _clean_pdf_string(annotation.get("/Contents"))
@@ -861,6 +909,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
         texts=tuple(sorted(texts, key=lambda item: (item.page, item.element_id))),
         symbols=tuple(sorted(symbols, key=lambda item: (item.page, item.element_id))),
         vectors=tuple(sorted(vectors, key=lambda item: (item.page, item.element_id))),
+        page_provenance=page_provenance,
     )
 
 
@@ -4720,6 +4769,17 @@ class ElectricalPdfImporter:
                 attributes={"page_count": document.page_count},
             )
         ]
+        for page in sorted(document.page_provenance):
+            model_provenance.append(
+                Provenance(
+                    source_kind="pdf-electrical",
+                    source_id=document.source_id,
+                    page=page,
+                    method="pypdf-page-display-normalization",
+                    confidence=1.0,
+                    attributes=dict(document.page_provenance[page]),
+                )
+            )
         if not has_explicit_registration and document.page_count > 1:
             for page in range(1, document.page_count + 1):
                 model_provenance.append(
@@ -4767,6 +4827,16 @@ class ElectricalPdfImporter:
                     "page_transforms_supplied": has_explicit_registration,
                     "registration_mode": registration_mode,
                     "registered_frame_id": frame_id,
+                    **(
+                        {
+                            "page_provenance": {
+                                str(page): dict(document.page_provenance[page])
+                                for page in sorted(document.page_provenance)
+                            }
+                        }
+                        if document.page_provenance
+                        else {}
+                    ),
                     "legend_recognition": legend_recognition,
                     "best_effort_page_transforms": (
                         {

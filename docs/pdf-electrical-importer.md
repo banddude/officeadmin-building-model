@@ -134,9 +134,14 @@ because of the suppressed connectivity are omitted, while the unresolved row
 retains the source vector and circuit-callout IDs.
 
 Curved and fill-only source paths are retained as vector geometry observations
-instead of being discarded during extraction. Downstream recognition remains
-conservative: vector geometry by itself never creates or classifies an electrical
-object, and unassociated drafting geometry remains outside the recognition family.
+instead of being discarded during extraction. Cubic `c`, `v`, and `y` segments
+are deterministically flattened with a fixed subdivision count while their source
+operator, transformed control points, and endpoint remain in observation metadata.
+Observations containing Bézier commands are excluded from the existing rectangular
+symbol-outline and straight-line topology families, so curve retention cannot
+silently reinterpret a curve as straight circuit topology. Vector geometry by
+itself never creates or classifies an electrical object, and unassociated drafting
+geometry remains outside the recognition family.
 
 ## API
 

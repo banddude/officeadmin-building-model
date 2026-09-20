@@ -1,0 +1,109 @@
+%PDF-1.3
+%‚„œ”
+1 0 obj
+<<
+/Producer (pypdf)
+/Title (OABM public\055safe Slice 3 geometry\055plus\055text fixture)
+/Subject (Synthetic CAD geometry and room\055label regression source input)
+>>
+endobj
+2 0 obj
+<<
+/Type /Pages
+/Count 1
+/Kids [ 4 0 R ]
+>>
+endobj
+3 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+4 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 5 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 240 180 ]
+/Parent 2 0 R
+/Contents 6 0 R
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+6 0 obj
+<<
+/Length 595
+>>
+stream
+q
+18 24 m
+34 24 48 38 66 38 c
+78 38 90 24 108 24 c
+S
+40 40 m
+240 40 l
+40 44 m
+240 44 l
+236 40 m
+236 140 l
+240 40 m
+240 140 l
+40 136 m
+240 136 l
+40 140 m
+240 140 l
+40 40 m
+40 140 l
+44 40 m
+44 140 l
+S
+132 24 m
+154 24 l
+154 46 l
+132 46 l
+f
+24 92 m
+42 118 66 118 84 92 c
+102 66 126 66 144 92 c
+144 124 l
+24 124 l
+f*
+Q
+BT /F1 8 Tf 8 160 Td (A45 FLOOR PLAN) Tj ET
+BT /F1 8 Tf 8 148 Td (SCALE: 1:100) Tj ET
+BT /F1 8 Tf 8 136 Td (LEVEL: GROUND) Tj ET
+BT /F1 8 Tf 118 92 Td (214) Tj ET
+BT /F1 8 Tf 90 68 Td (144") Tj ET
+BT /F1 8 Tf 90 116 Td (KEYNOTE: 7) Tj ET
+BT /F1 8 Tf 90 104 Td (DRAWING: A45) Tj ET
+
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000200 00000 n 
+0000000259 00000 n 
+0000000308 00000 n 
+0000000440 00000 n 
+0000000510 00000 n 
+trailer
+<<
+/Size 7
+/Root 3 0 R
+/Info 1 0 R
+>>
+startxref
+1156
+%%EOF

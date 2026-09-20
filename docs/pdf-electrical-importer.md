@@ -110,12 +110,17 @@ survive unrelated PDF revisions must provide the same stable `source_id`.
 The primary path for drawn power-plan symbols is geometry matching against a
 detected legend block. The importer clusters small nearby vector paths into
 candidate glyphs, including the filled and Bézier geometry retained by Slice 1.
-A legend block is accepted when either (1) a nearby title ends in `LEGEND`,
-`SYMBOL`, or `SYMBOLS`, case-insensitively, including a title attached to a
-leader, or (2) the page contains the densest table-like run of at least three
-aligned small glyphs, each followed by a short text label within the fixed
-horizontal legend-label distance. The density fallback also requires repeated
-glyph signatures elsewhere on the same page so ordinary title-block and drafting
+A legend block is accepted when either (1) the nearest section heading above
+or beside the candidate block ends in `LEGEND`, `SYMBOL`, or `SYMBOLS`,
+case-insensitively, including a heading attached by a leader, or (2) the page
+contains the densest table-like run of at least three aligned small glyphs, each
+paired with a short non-numeric text label within the fixed horizontal
+legend-label distance. Title matching fails closed when the heading contains
+`KEYNOTE`, `KEYNOTES`, `SCHEDULE`, `PANEL`, `NOTES`,
+`ABBREVIATIONS`, or `DETAIL`. The density fallback applies the same
+exclusion to the nearest section heading above the cluster and rejects candidate
+tables that are mostly numeric or text-only. It also requires repeated glyph
+signatures elsewhere on the same page so ordinary title-block and drafting
 geometry do not become legend prototypes merely because text is nearby.
 
 Within the selected block, the importer associates each unambiguous type label

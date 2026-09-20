@@ -151,10 +151,27 @@ def test_cad_export_bezier_and_filled_paths_survive_electrical_extraction() -> N
         (154.0, 46.0),
         (132.0, 46.0),
     )
-    assert document.vectors[2].closed is True
-    assert document.vectors[2].points_pt == (
-        (24.0, 92.0),
-        (84.0, 92.0),
+    filled_curve = document.vectors[2]
+    assert filled_curve.closed is True
+    assert filled_curve.metadata["geometry_kind"] == "bezier-flattened"
+    assert filled_curve.metadata["curve_commands"] == [
+        {
+            "operator": "c",
+            "control_points_pt": [[42.0, 118.0], [66.0, 118.0]],
+            "end_pt": [84.0, 92.0],
+        },
+        {
+            "operator": "c",
+            "control_points_pt": [[102.0, 66.0], [126.0, 66.0]],
+            "end_pt": [144.0, 92.0],
+        },
+    ]
+    assert len(filled_curve.points_pt) == 19
+    assert filled_curve.points_pt[0] == (24.0, 92.0)
+    assert filled_curve.points_pt[4] == pytest.approx((54.0, 111.5))
+    assert filled_curve.points_pt[8] == (84.0, 92.0)
+    assert filled_curve.points_pt[12] == pytest.approx((114.0, 72.5))
+    assert filled_curve.points_pt[16:] == (
         (144.0, 92.0),
         (144.0, 124.0),
         (24.0, 124.0),

@@ -6040,6 +6040,195 @@ class ElectricalPdfImporter:
             ).append(vector)
 
         consumed_explicit_tag_ids: set[str] = set()
+        for component in sorted(
+            circuit_components.values(),
+            key=lambda items: (
+                items[0].page,
+                tuple(sorted(item.element_id for item in items)),
+            ),
+        ):
+            if not _component_has_homerun_arrowhead(component):
+                continue
+            page = component[0].page
+            nearby_annotations = [
+                observation
+                for observation in texts
+                if observation.page == page
+                and observation.element_id not in schedule_text_ids
+                and min(
+                    _point_path_distance_pt(
+                        (observation.x_pt, observation.y_pt),
+                        vector,
+                    )
+                    for vector in component
+                ) <= self.topology_annotation_radius_pt
+            ]
+            parsed = [
+                (
+                    observation,
+                    *_parse_explicit_circuit_tag(
+                        observation.text,
+                        recognized_panels=set(recognized_panels),
+                        schedule_circuits=schedule_circuits,
+                    ),
+                )
+                for observation in nearby_annotations
+                if _HOMERUN_TAG_RE.search(observation.text)
+            ]
+            if not parsed:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "source_element_ids": sorted(
+                            item.element_id for item in component
+                        ),
+                        "status": "unresolved",
+                        "reason_code": "no_panel_token",
+                        "reason": (
+                            "arrowed leader has no explicit panel/circuit annotation"
+                        ),
+                    }
+                )
+                continue
+            if len(parsed) != 1:
+                for observation, panel_tag, numbers, reason_code in parsed:
+                    unresolved_circuits.append(
+                        {
+                            "kind": "homerun",
+                            "page": page,
+                            "source_element_id": observation.element_id,
+                            "source_text": observation.text,
+                            "panel_tag": panel_tag,
+                            "circuit_numbers": list(numbers),
+                            "status": "unresolved",
+                            "reason_code": (
+                                reason_code or "conflicting_homerun_annotations"
+                            ),
+                            "reason": (
+                                "homerun does not have one unambiguous circuit annotation"
+                            ),
+                        }
+                    )
+                continue
+            observation, panel_tag, numbers, reason_code = parsed[0]
+            consumed_explicit_tag_ids.add(observation.element_id)
+            if reason_code is not None or panel_tag is None:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": reason_code,
+                        "reason": "homerun annotation failed closed",
+                    }
+                )
+                continue
+            load_entities = [
+                entity
+                for entity in devices
+                if entity_source_positions[entity.id][0] == page
+                and min(
+                    _point_path_distance_pt(
+                        (
+                            entity_source_positions[entity.id][1],
+                            entity_source_positions[entity.id][2],
+                        ),
+                        vector,
+                    )
+                    for vector in component
+                ) <= self.topology_endpoint_radius_pt
+            ]
+            if not load_entities:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": "arrow_not_associated_to_device",
+                        "reason": (
+                            "homerun arrow is not associated with a recognized device"
+                        ),
+                    }
+                )
+                continue
+            record_explicit_circuit(
+                observation=observation,
+                panel_tag=panel_tag,
+                numbers=numbers,
+                load_entities=load_entities,
+                method="pdf-homerun-annotation",
+                confidence=0.96,
+                branch_vector_ids=sorted(
+                    item.element_id for item in component
+                ),
+            )
+
+        for observation in texts:
+            if (
+                observation.element_id in consumed_explicit_tag_ids
+                or observation.element_id in schedule_text_ids
+                or _HOMERUN_TAG_RE.search(observation.text) is None
+            ):
+                continue
+            panel_tag, numbers, reason_code = _parse_explicit_circuit_tag(
+                observation.text,
+                recognized_panels=set(recognized_panels),
+                schedule_circuits=schedule_circuits,
+            )
+            nearby_devices = [
+                entity
+                for entity in devices
+                if entity_source_positions[entity.id][0] == observation.page
+                and _distance_pt(
+                    observation.x_pt,
+                    observation.y_pt,
+                    entity_source_positions[entity.id][1],
+                    entity_source_positions[entity.id][2],
+                ) <= 42.0
+            ]
+            if reason_code is not None or panel_tag is None or len(nearby_devices) != 1:
+                unresolved_circuits.append(
+                    {
+                        "kind": "device_circuit_tag",
+                        "page": observation.page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": (
+                            reason_code
+                            or (
+                                "arrow_not_associated_to_device"
+                                if not nearby_devices
+                                else "ambiguous_device_association"
+                            )
+                        ),
+                        "reason": "direct circuit tag failed closed",
+                    }
+                )
+                continue
+            record_explicit_circuit(
+                observation=observation,
+                panel_tag=panel_tag,
+                numbers=numbers,
+                load_entities=nearby_devices,
+                method="pdf-device-circuit-tag",
+                confidence=0.94,
+            )
+
         for observation in texts:
             circuit_match = _CIRCUIT_RE.search(observation.text)
             if not circuit_match:

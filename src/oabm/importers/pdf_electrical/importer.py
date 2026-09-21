@@ -5996,6 +5996,12 @@ class ElectricalPdfImporter:
                 }
             )
 
+        explicit_circuit_tag_texts = [
+            observation
+            for observation in texts
+            if observation.element_id not in schedule_text_ids
+            and _HOMERUN_TAG_RE.search(observation.text)
+        ]
         circuit_vectors = [
             vector
             for vector in vectors
@@ -6003,6 +6009,14 @@ class ElectricalPdfImporter:
             and not _vector_contains_bezier(vector)
             and vector.element_id not in vector_symbol_ids
             and vector.element_id not in glyph_vector_ids
+            and any(
+                observation.page == vector.page
+                and _point_path_distance_pt(
+                    (observation.x_pt, observation.y_pt),
+                    vector,
+                ) <= 180.0
+                for observation in explicit_circuit_tag_texts
+            )
             and sum(
                 _distance_pt(first[0], first[1], second[0], second[1])
                 for first, second in _vector_segments(vector)

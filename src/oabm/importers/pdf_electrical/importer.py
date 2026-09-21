@@ -1040,6 +1040,9 @@ _GENERIC_DEVICE_TAGS: frozenset[str] = frozenset(
 )
 
 _CIRCUIT_RE = re.compile(r"\b(?:CKT|CIRCUIT)\s*#?\s*(?P<number>[A-Z0-9.-]+)\b", re.IGNORECASE)
+_HOMERUN_TAG_RE = re.compile(r"(?<![A-Z0-9_.-])(?P<panel>[A-Z][A-Z0-9_.]*?)-(?P<circuits>\\d+(?:\\s*,\\s*\\d+)*)\\b", re.IGNORECASE)
+_PANEL_SCHEDULE_HEADING_RE = re.compile(r"\\bPANEL\\s+(?P<panel>[A-Z][A-Z0-9_.-]*)\\s+SCHEDULE\\b", re.IGNORECASE)
+_PANEL_SCHEDULE_ROW_RE = re.compile(r"^\\s*(?P<circuit>\\d+)\\s+\\S", re.IGNORECASE)
 _POLES_RE = re.compile(r"\b(?P<poles>[1234])\s*P\b", re.IGNORECASE)
 _PHASE_RE = re.compile(r"\b(?P<phase>[123])\s*PH\b", re.IGNORECASE)
 _VOLTAGE_RE = re.compile(

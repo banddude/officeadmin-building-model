@@ -1063,6 +1063,77 @@ def _normalize_tag(value: str) -> str:
     return value.strip().strip(".,:;()[]{}").upper()
 
 
+def _parse_explicit_circuit_tag(
+    text: str,
+    *,
+    recognized_panels: set[str],
+    schedule_circuits: Mapping[str, set[int]],
+) -> tuple[str | None, tuple[int, ...], str | None]:
+    match = _HOMERUN_TAG_RE.search(text)
+    if match is None:
+        return None, (), "no_panel_token"
+    panel_tag = _normalize_tag(match.group("panel"))
+    try:
+        numbers = tuple(int(item.strip()) for item in match.group("circuits").split(","))
+    except ValueError:
+        return panel_tag, (), "unparseable_circuit_list"
+    if not numbers:
+        return panel_tag, (), "unparseable_circuit_list"
+    if panel_tag not in recognized_panels:
+        return panel_tag, numbers, "panel_id_not_recognized"
+    scheduled = schedule_circuits.get(panel_tag)
+    if scheduled is not None and any(number not in scheduled for number in numbers):
+        return panel_tag, numbers, "circuit_outside_panel_schedule"
+    return panel_tag, numbers, None
+
+
+def _panel_schedule_circuits(
+    texts: Sequence[PdfTextObservation],
+    *,
+    recognized_panels: set[str],
+) -> tuple[dict[str, set[int]], set[str]]:
+    schedules: dict[str, set[int]] = {}
+    consumed_ids: set[str] = set()
+    for heading in texts:
+        match = _PANEL_SCHEDULE_HEADING_RE.search(heading.text)
+        if match is None:
+            continue
+        panel_tag = _normalize_tag(match.group("panel"))
+        if panel_tag not in recognized_panels:
+            continue
+        consumed_ids.add(heading.element_id)
+        for row in texts:
+            if (
+                row.page != heading.page
+                or row.element_id == heading.element_id
+                or abs(row.x_pt - heading.x_pt) > 180.0
+                or not (heading.y_pt - 240.0 <= row.y_pt < heading.y_pt)
+            ):
+                continue
+            row_match = _PANEL_SCHEDULE_ROW_RE.match(row.text)
+            if row_match is None:
+                continue
+            schedules.setdefault(panel_tag, set()).add(int(row_match.group("circuit")))
+            consumed_ids.add(row.element_id)
+    return schedules, consumed_ids
+
+
+def _component_has_homerun_arrowhead(
+    component: Sequence[PdfVectorPathObservation],
+) -> bool:
+    for vector in component:
+        if vector.closed or len(vector.points_pt) != 3:
+            continue
+        first, apex, last = vector.points_pt
+        if (
+            _distance_pt(first[0], first[1], apex[0], apex[1]) <= 14.0
+            and _distance_pt(last[0], last[1], apex[0], apex[1]) <= 14.0
+            and _distance_pt(first[0], first[1], last[0], last[1]) >= 4.0
+        ):
+            return True
+    return False
+
+
 def _semantic_text(symbol: PdfSymbolObservation) -> str:
     parts = [symbol.name]
     for key in ("subject", "contents", "native_id"):

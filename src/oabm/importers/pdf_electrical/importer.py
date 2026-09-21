@@ -5905,6 +5905,141 @@ class ElectricalPdfImporter:
             topology_row["circuit_callout_ids"] = callout_ids
             topology_conflicted_callout_ids.update(callout_ids)
 
+        recognized_panels = {
+            entity.name: entity
+            for entity in equipment
+            if entity.equipment_type == "panelboard" and entity.name
+        }
+        schedule_circuits, schedule_text_ids = _panel_schedule_circuits(
+            texts,
+            recognized_panels=set(recognized_panels),
+        )
+
+        def record_explicit_circuit(
+            *,
+            observation: PdfTextObservation,
+            panel_tag: str,
+            numbers: Sequence[int],
+            load_entities: Sequence[ElectricalDevice],
+            method: str,
+            confidence: float,
+            branch_vector_ids: Sequence[str] = (),
+        ) -> None:
+            source_entity = recognized_panels[panel_tag]
+            circuit_number = ",".join(str(number) for number in numbers)
+            provenance = _provenance(
+                document,
+                element_id=observation.element_id,
+                page=observation.page,
+                method=method,
+                confidence=confidence,
+                attributes={
+                    "source_text": observation.text,
+                    "panel_tag": panel_tag,
+                    "circuit_numbers": list(numbers),
+                    "schedule_validated": panel_tag in schedule_circuits,
+                    **(
+                        {"branch_vector_element_ids": list(branch_vector_ids)}
+                        if branch_vector_ids
+                        else {}
+                    ),
+                },
+            )
+            source_port = port_for(
+                source_entity,
+                f"source:circuit:{circuit_number}",
+                provenance,
+            )
+            load_ports = tuple(
+                port_for(
+                    entity,
+                    f"sink:circuit:{circuit_number}",
+                    provenance,
+                )
+                for entity in sorted(load_entities, key=lambda item: item.id)
+            )
+            circuit_id = stable_id(
+                "circuit",
+                (
+                    f"pdf-electrical:{document.source_id}:"
+                    f"{source_entity.id}:{circuit_number}"
+                ),
+            )
+            bucket = evidence_bucket(
+                circuit_id=circuit_id,
+                name=f"{panel_tag} {circuit_number}",
+                source_port_id=source_port.id,
+                circuit_number=circuit_number,
+            )
+            bucket["load_port_ids"].update(port.id for port in load_ports)
+            record_port_provenance(
+                bucket,
+                (source_port.id, *(port.id for port in load_ports)),
+                (provenance,),
+            )
+            bucket["confidence"].add(confidence)
+            bucket["evidence_methods"].add(method)
+            bucket["provenance"].append(provenance)
+            bucket["evidence"].append(
+                {
+                    "page": observation.page,
+                    "source_element_id": observation.element_id,
+                    "source_text": observation.text,
+                    "method": method,
+                    "panel_tag": panel_tag,
+                    "circuit_number": circuit_number,
+                    "circuit_numbers": list(numbers),
+                    "load_ids": [entity.id for entity in load_entities],
+                    "schedule_validated": panel_tag in schedule_circuits,
+                    "confidence": confidence,
+                    "status": "resolved",
+                }
+            )
+
+        circuit_vectors = [
+            vector
+            for vector in vectors
+            if not vector.closed
+            and not _vector_contains_bezier(vector)
+            and vector.element_id not in vector_symbol_ids
+            and vector.element_id not in glyph_vector_ids
+            and sum(
+                _distance_pt(first[0], first[1], second[0], second[1])
+                for first, second in _vector_segments(vector)
+            ) >= 4.0
+        ]
+        component_parent = list(range(len(circuit_vectors)))
+
+        def circuit_component_find(index: int) -> int:
+            while component_parent[index] != index:
+                component_parent[index] = component_parent[component_parent[index]]
+                index = component_parent[index]
+            return index
+
+        for first_index, first_vector in enumerate(circuit_vectors):
+            for second_index in range(first_index + 1, len(circuit_vectors)):
+                if not _paths_touch(
+                    first_vector,
+                    circuit_vectors[second_index],
+                    tolerance_pt=self.topology_snap_radius_pt,
+                ):
+                    continue
+                first_root = circuit_component_find(first_index)
+                second_root = circuit_component_find(second_index)
+                if first_root != second_root:
+                    component_parent[max(first_root, second_root)] = min(
+                        first_root,
+                        second_root,
+                    )
+
+        circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
+        for index, vector in enumerate(circuit_vectors):
+            circuit_components.setdefault(
+                circuit_component_find(index),
+                [],
+            ).append(vector)
+
+        consumed_explicit_tag_ids: set[str] = set()
         for observation in texts:
             circuit_match = _CIRCUIT_RE.search(observation.text)
             if not circuit_match:

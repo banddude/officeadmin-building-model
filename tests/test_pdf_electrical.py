@@ -43,6 +43,9 @@ NOTES_COLUMN_LEGEND_FIXTURE = (
 REAL_CAD_GLYPH_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-real-cad-glyphs.pdf"
 )
+CIRCUIT_HOMERUN_FIXTURE = (
+    FIXTURE_DIR / "geometry-only-power-sheet-circuit-homeruns.pdf"
+)
 INNER_VIEW_BORDER_LEGEND_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-inner-view-border-legend.pdf"
 )
@@ -982,6 +985,72 @@ def test_issue70_non_device_symbol_probes_still_yield_zero_devices(
     assert model.electrical_equipment == ()
     assert _legend_shape_matched_devices(model) == []
 
+
+
+def test_homeruns_circuit_tags_and_panel_schedule_resolve_fail_closed() -> None:
+    assert CIRCUIT_HOMERUN_FIXTURE.exists()
+    assert not CIRCUIT_HOMERUN_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        CIRCUIT_HOMERUN_FIXTURE,
+        source_id="fixture:issue72-circuit-homeruns",
+    )
+    repeated = extract_pdf(
+        CIRCUIT_HOMERUN_FIXTURE,
+        source_id="fixture:issue72-circuit-homeruns",
+    )
+    assert extracted == repeated
+
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert len(model.electrical_equipment) == 1
+    assert model.electrical_equipment[0].equipment_type == "panelboard"
+    assert model.electrical_equipment[0].name == "LP"
+    assert {circuit.circuit_number for circuit in model.circuits} == {
+        "1,3,5",
+        "7",
+    }
+    assert len(model.circuits) == 2
+    assert len(model.ports) == 6
+
+    homerun = next(
+        circuit for circuit in model.circuits if circuit.circuit_number == "1,3,5"
+    )
+    direct = next(
+        circuit for circuit in model.circuits if circuit.circuit_number == "7"
+    )
+    assert len(homerun.load_port_ids) == 3
+    assert len(direct.load_port_ids) == 1
+    assert homerun.attributes["pdf_electrical"]["evidence_methods"] == [
+        "pdf-homerun-annotation"
+    ]
+    assert direct.attributes["pdf_electrical"]["evidence_methods"] == [
+        "pdf-device-circuit-tag"
+    ]
+    assert all(
+        row["schedule_validated"]
+        for circuit in model.circuits
+        for row in circuit.attributes["pdf_electrical"]["evidence"]
+    )
+
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    reason_codes = {row.get("reason_code") for row in misses}
+    assert "no_panel_token" in reason_codes
+    assert "panel_id_not_recognized" in reason_codes
+    assert "circuit_outside_panel_schedule" in reason_codes
+    assert all(circuit.circuit_number != "2" for circuit in model.circuits)
+    assert all(circuit.circuit_number != "99" for circuit in model.circuits)
+    assert all(
+        circuit.name is None or not circuit.name.startswith("ZZ ")
+        for circuit in model.circuits
+    )
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\\n".join(error.message for error in errors)
 
 
 def test_unresolved_legend_glyph_records_nearest_two_match_diagnostics() -> None:

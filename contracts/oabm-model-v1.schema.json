@@ -1,1 +1,1402 @@
-{"$defs":{"Box3D":{"additionalProperties":false,"properties":{"kind":{"const":"box3d"},"pose":{"$ref":"#/$defs/Pose"},"size":{"$ref":"#/$defs/Size3"}},"required":["kind","pose","size"],"type":"object"},"Ceiling":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"footprint":{"$ref":"#/$defs/Polygon3D"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"thickness_m":{"exclusiveMinimum":0,"type":["number","null"]}},"required":["id","level_id","footprint"],"type":"object"},"Circuit":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"circuit_number":{"type":["string","null"]},"confidence":{"maximum":1,"minimum":0,"type":"number"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"load_port_ids":{"items":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"minItems":1,"type":"array","uniqueItems":true},"load_va":{"minimum":0,"type":["number","null"]},"name":{"type":["string","null"]},"phase":{"type":["string","null"]},"poles":{"minimum":1,"type":["integer","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"route_ids":{"items":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"type":"array","uniqueItems":true},"source_port_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"voltage_v":{"exclusiveMinimum":0,"type":["number","null"]}},"required":["id","source_port_id","load_port_ids"],"type":"object"},"Conductor":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"circuit_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"count":{"minimum":1,"type":"integer"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"insulation":{"type":["string","null"]},"material":{"type":["string","null"]},"name":{"type":["string","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"role":{"minLength":1,"type":"string"},"route_ids":{"items":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"type":"array","uniqueItems":true},"size":{"type":["string","null"]}},"required":["id","circuit_id","role"],"type":"object"},"CoordinateSystem":{"additionalProperties":false,"properties":{"angle_unit":{"const":"rad"},"crs":{"type":["string","null"]},"frame_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"handedness":{"const":"right"},"length_unit":{"const":"m"},"origin_in_crs":{"oneOf":[{"$ref":"#/$defs/Point3"},{"type":"null"}]},"true_north_radians":{"type":["number","null"]},"up_axis":{"const":"+Z"}},"required":["frame_id","handedness","up_axis","length_unit","angle_unit"],"type":"object"},"ElectricalDevice":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"device_type":{"minLength":1,"type":"string"},"host_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"name":{"type":["string","null"]},"pose":{"$ref":"#/$defs/Pose"},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"rated_voltage_v":{"exclusiveMinimum":0,"type":["number","null"]},"size":{"oneOf":[{"$ref":"#/$defs/Size3"},{"type":"null"}]},"space_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"system":{"type":["string","null"]}},"required":["id","device_type","pose"],"type":"object"},"ElectricalEquipment":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"equipment_type":{"minLength":1,"type":"string"},"host_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"name":{"type":["string","null"]},"pose":{"$ref":"#/$defs/Pose"},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"rated_voltage_v":{"exclusiveMinimum":0,"type":["number","null"]},"size":{"oneOf":[{"$ref":"#/$defs/Size3"},{"type":"null"}]},"space_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"system":{"type":["string","null"]}},"required":["id","equipment_type","pose"],"type":"object"},"Geometry3D":{"oneOf":[{"$ref":"#/$defs/Box3D"},{"$ref":"#/$defs/Polyline3D"},{"$ref":"#/$defs/Polygon3D"}]},"Level":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"elevation_m":{"type":"number"},"height_m":{"exclusiveMinimum":0,"type":["number","null"]},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"}},"required":["id","elevation_m"],"type":"object"},"Obstacle":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"clearance_m":{"minimum":0,"type":"number"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"geometry":{"oneOf":[{"$ref":"#/$defs/Box3D"},{"$ref":"#/$defs/Polyline3D"},{"$ref":"#/$defs/Polygon3D"}]},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"name":{"type":["string","null"]},"obstacle_type":{"minLength":1,"type":"string"},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"}},"required":["id","geometry"],"type":"object"},"Opening":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"host_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"opening_type":{"minLength":1,"type":"string"},"pose":{"$ref":"#/$defs/Pose"},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"size":{"$ref":"#/$defs/Size3"}},"required":["id","host_id","opening_type","pose","size"],"type":"object"},"Point3":{"additionalProperties":false,"properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}},"required":["x","y","z"],"type":"object"},"Polygon3D":{"additionalProperties":false,"properties":{"kind":{"const":"polygon3d"},"points":{"items":{"$ref":"#/$defs/Point3"},"minItems":3,"type":"array"}},"required":["kind","points"],"type":"object"},"Polyline3D":{"additionalProperties":false,"properties":{"kind":{"const":"polyline3d"},"points":{"items":{"$ref":"#/$defs/Point3"},"minItems":2,"type":"array"}},"required":["kind","points"],"type":"object"},"Port":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"connected_port_ids":{"items":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"type":"array","uniqueItems":true},"direction":{"$ref":"#/$defs/Vector3"},"domain":{"minLength":1,"type":"string"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"nominal_diameter_m":{"exclusiveMinimum":0,"type":["number","null"]},"owner_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"pose":{"$ref":"#/$defs/Pose"},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"role":{"minLength":1,"type":"string"}},"required":["id","owner_id","domain","role","pose","direction"],"type":"object"},"Pose":{"additionalProperties":false,"properties":{"position":{"$ref":"#/$defs/Point3"},"rotation":{"$ref":"#/$defs/Quaternion"}},"required":["position"],"type":"object"},"Provenance":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"method":{"type":["string","null"]},"page":{"minimum":1,"type":["integer","null"]},"source_element_id":{"type":["string","null"]},"source_id":{"minLength":1,"type":"string"},"source_kind":{"minLength":1,"type":"string"}},"required":["source_kind","source_id"],"type":"object"},"Quaternion":{"additionalProperties":false,"properties":{"w":{"type":"number"},"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}},"type":"object"},"Route":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"centerline":{"$ref":"#/$defs/Polyline3D"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"end_port_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"fitting_ids":{"items":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"type":"array","uniqueItems":true},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"nominal_diameter_m":{"exclusiveMinimum":0,"type":["number","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"route_type":{"minLength":1,"type":"string"},"start_port_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"}},"required":["id","route_type","start_port_id","end_port_id","centerline"],"type":"object"},"RouteConstraint":{"additionalProperties":false,"properties":{"applies_to":{"items":{"type":"string"},"type":"array"},"attributes":{"type":"object"},"clearance_m":{"minimum":0,"type":"number"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"constraint_type":{"minLength":1,"type":"string"},"geometry":{"oneOf":[{"$ref":"#/$defs/Box3D"},{"$ref":"#/$defs/Polyline3D"},{"$ref":"#/$defs/Polygon3D"}]},"hard":{"type":"boolean"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"anyOf":[{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},{"type":"null"}]},"name":{"type":["string","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"}},"required":["id","constraint_type","geometry"],"type":"object"},"RouteFitting":{"additionalProperties":false,"properties":{"angle_radians":{"type":["number","null"]},"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"fitting_type":{"minLength":1,"type":"string"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"nominal_diameter_m":{"exclusiveMinimum":0,"type":["number","null"]},"pose":{"$ref":"#/$defs/Pose"},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"route_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"}},"required":["id","route_id","fitting_type","pose"],"type":"object"},"Size3":{"additionalProperties":false,"properties":{"x":{"exclusiveMinimum":0,"type":"number"},"y":{"exclusiveMinimum":0,"type":"number"},"z":{"exclusiveMinimum":0,"type":"number"}},"required":["x","y","z"],"type":"object"},"Slab":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"footprint":{"$ref":"#/$defs/Polygon3D"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"thickness_m":{"exclusiveMinimum":0,"type":"number"}},"required":["id","level_id","footprint","thickness_m"],"type":"object"},"Space":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"footprint":{"$ref":"#/$defs/Polygon3D"},"height_m":{"exclusiveMinimum":0,"type":["number","null"]},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"usage":{"type":["string","null"]}},"required":["id","level_id","footprint"],"type":"object"},"Vector3":{"additionalProperties":false,"properties":{"x":{"type":"number"},"y":{"type":"number"},"z":{"type":"number"}},"required":["x","y","z"],"type":"object"},"Wall":{"additionalProperties":false,"properties":{"attributes":{"type":"object"},"centerline":{"$ref":"#/$defs/Polyline3D"},"confidence":{"maximum":1,"minimum":0,"type":"number"},"height_m":{"exclusiveMinimum":0,"type":"number"},"id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"level_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"thickness_m":{"exclusiveMinimum":0,"type":"number"}},"required":["id","level_id","centerline","thickness_m","height_m"],"type":"object"}},"$id":"https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.schema.json","$schema":"https://json-schema.org/draft/2020-12/schema","additionalProperties":false,"description":"Application-neutral semantic 3D building and electrical model. Canonical linear unit is metre; angular unit is radian; coordinates are right-handed +Z-up.","properties":{"attributes":{"type":"object"},"ceilings":{"items":{"$ref":"#/$defs/Ceiling"},"type":"array"},"circuits":{"items":{"$ref":"#/$defs/Circuit"},"type":"array"},"conductors":{"items":{"$ref":"#/$defs/Conductor"},"type":"array"},"coordinate_system":{"$ref":"#/$defs/CoordinateSystem"},"electrical_devices":{"items":{"$ref":"#/$defs/ElectricalDevice"},"type":"array"},"electrical_equipment":{"items":{"$ref":"#/$defs/ElectricalEquipment"},"type":"array"},"levels":{"items":{"$ref":"#/$defs/Level"},"type":"array"},"model_id":{"pattern":"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$","type":"string"},"name":{"type":["string","null"]},"obstacles":{"items":{"$ref":"#/$defs/Obstacle"},"type":"array"},"openings":{"items":{"$ref":"#/$defs/Opening"},"type":"array"},"ports":{"items":{"$ref":"#/$defs/Port"},"type":"array"},"provenance":{"items":{"$ref":"#/$defs/Provenance"},"type":"array"},"route_constraints":{"items":{"$ref":"#/$defs/RouteConstraint"},"type":"array"},"route_fittings":{"items":{"$ref":"#/$defs/RouteFitting"},"type":"array"},"routes":{"items":{"$ref":"#/$defs/Route"},"type":"array"},"schema_version":{"const":"1.0.0"},"slabs":{"items":{"$ref":"#/$defs/Slab"},"type":"array"},"spaces":{"items":{"$ref":"#/$defs/Space"},"type":"array"},"walls":{"items":{"$ref":"#/$defs/Wall"},"type":"array"}},"required":["model_id","schema_version","coordinate_system"],"title":"OfficeAdmin Building Model canonical contract v1","type":"object"}
+{
+  "$defs": {
+    "Box3D": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "box3d"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "size": {
+          "$ref": "#/$defs/Size3"
+        }
+      },
+      "required": [
+        "kind",
+        "pose",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Ceiling": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "footprint": {
+          "$ref": "#/$defs/Polygon3D"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "thickness_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "footprint"
+      ],
+      "type": "object"
+    },
+    "Circuit": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "circuit_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "load_port_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "load_va": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "poles": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "source_port_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "voltage_v": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "source_port_id",
+        "load_port_ids"
+      ],
+      "type": "object"
+    },
+    "Conductor": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "circuit_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "count": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "insulation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "material": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "route_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "size": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "circuit_id",
+        "role"
+      ],
+      "type": "object"
+    },
+    "CoordinateSystem": {
+      "additionalProperties": false,
+      "properties": {
+        "angle_unit": {
+          "const": "rad"
+        },
+        "crs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frame_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "handedness": {
+          "const": "right"
+        },
+        "length_unit": {
+          "const": "m"
+        },
+        "origin_in_crs": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Point3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "true_north_radians": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "up_axis": {
+          "const": "+Z"
+        }
+      },
+      "required": [
+        "frame_id",
+        "handedness",
+        "up_axis",
+        "length_unit",
+        "angle_unit"
+      ],
+      "type": "object"
+    },
+    "ElectricalDevice": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "device_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "host_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "rated_voltage_v": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "size": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Size3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "space_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "system": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "device_type",
+        "pose"
+      ],
+      "type": "object"
+    },
+    "ElectricalEquipment": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "equipment_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "host_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "rated_voltage_v": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "size": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Size3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "space_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "system": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "equipment_type",
+        "pose"
+      ],
+      "type": "object"
+    },
+    "Geometry3D": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Box3D"
+        },
+        {
+          "$ref": "#/$defs/Polyline3D"
+        },
+        {
+          "$ref": "#/$defs/Polygon3D"
+        }
+      ]
+    },
+    "Level": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "elevation_m": {
+          "type": "number"
+        },
+        "height_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "elevation_m"
+      ],
+      "type": "object"
+    },
+    "Obstacle": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "clearance_m": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "geometry": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Box3D"
+            },
+            {
+              "$ref": "#/$defs/Polyline3D"
+            },
+            {
+              "$ref": "#/$defs/Polygon3D"
+            }
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obstacle_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "geometry"
+      ],
+      "type": "object"
+    },
+    "Opening": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "host_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opening_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/Size3"
+        }
+      },
+      "required": [
+        "id",
+        "host_id",
+        "opening_type",
+        "pose",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Point3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Polygon3D": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "polygon3d"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Point3"
+          },
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "points"
+      ],
+      "type": "object"
+    },
+    "Polyline3D": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "polyline3d"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Point3"
+          },
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "points"
+      ],
+      "type": "object"
+    },
+    "Port": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "connected_port_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "direction": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "domain": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_diameter_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "owner_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "owner_id",
+        "domain",
+        "role",
+        "pose",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "Pose": {
+      "additionalProperties": false,
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/Point3"
+        },
+        "rotation": {
+          "$ref": "#/$defs/Quaternion"
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "derivation": {
+          "description": "How the element came to exist: observed from a source, placed by a user, or synthesized by us. Unset is not a claim of observation.",
+          "enum": [
+            "observed",
+            "user",
+            "inferred",
+            null
+          ]
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_element_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_kind": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_kind",
+        "source_id"
+      ],
+      "type": "object"
+    },
+    "Quaternion": {
+      "additionalProperties": false,
+      "properties": {
+        "w": {
+          "type": "number"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "Route": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "centerline": {
+          "$ref": "#/$defs/Polyline3D"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "end_port_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "fitting_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_diameter_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "start_port_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route_type",
+        "start_port_id",
+        "end_port_id",
+        "centerline"
+      ],
+      "type": "object"
+    },
+    "RouteConstraint": {
+      "additionalProperties": false,
+      "properties": {
+        "applies_to": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "clearance_m": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "constraint_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "geometry": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Box3D"
+            },
+            {
+              "$ref": "#/$defs/Polyline3D"
+            },
+            {
+              "$ref": "#/$defs/Polygon3D"
+            }
+          ]
+        },
+        "hard": {
+          "type": "boolean"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "constraint_type",
+        "geometry"
+      ],
+      "type": "object"
+    },
+    "RouteFitting": {
+      "additionalProperties": false,
+      "properties": {
+        "angle_radians": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "fitting_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_diameter_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route_id",
+        "fitting_type",
+        "pose"
+      ],
+      "type": "object"
+    },
+    "Size3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "y": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "z": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Slab": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "footprint": {
+          "$ref": "#/$defs/Polygon3D"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "thickness_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "footprint",
+        "thickness_m"
+      ],
+      "type": "object"
+    },
+    "Space": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "footprint": {
+          "$ref": "#/$defs/Polygon3D"
+        },
+        "height_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "footprint"
+      ],
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Wall": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "centerline": {
+          "$ref": "#/$defs/Polyline3D"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "height_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "thickness_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "centerline",
+        "thickness_m",
+        "height_m"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Application-neutral semantic 3D building and electrical model. Canonical linear unit is metre; angular unit is radian; coordinates are right-handed +Z-up.",
+  "properties": {
+    "attributes": {
+      "type": "object"
+    },
+    "ceilings": {
+      "items": {
+        "$ref": "#/$defs/Ceiling"
+      },
+      "type": "array"
+    },
+    "circuits": {
+      "items": {
+        "$ref": "#/$defs/Circuit"
+      },
+      "type": "array"
+    },
+    "conductors": {
+      "items": {
+        "$ref": "#/$defs/Conductor"
+      },
+      "type": "array"
+    },
+    "coordinate_system": {
+      "$ref": "#/$defs/CoordinateSystem"
+    },
+    "electrical_devices": {
+      "items": {
+        "$ref": "#/$defs/ElectricalDevice"
+      },
+      "type": "array"
+    },
+    "electrical_equipment": {
+      "items": {
+        "$ref": "#/$defs/ElectricalEquipment"
+      },
+      "type": "array"
+    },
+    "levels": {
+      "items": {
+        "$ref": "#/$defs/Level"
+      },
+      "type": "array"
+    },
+    "model_id": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+      "type": "string"
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "obstacles": {
+      "items": {
+        "$ref": "#/$defs/Obstacle"
+      },
+      "type": "array"
+    },
+    "openings": {
+      "items": {
+        "$ref": "#/$defs/Opening"
+      },
+      "type": "array"
+    },
+    "ports": {
+      "items": {
+        "$ref": "#/$defs/Port"
+      },
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/Provenance"
+      },
+      "type": "array"
+    },
+    "route_constraints": {
+      "items": {
+        "$ref": "#/$defs/RouteConstraint"
+      },
+      "type": "array"
+    },
+    "route_fittings": {
+      "items": {
+        "$ref": "#/$defs/RouteFitting"
+      },
+      "type": "array"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/Route"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "slabs": {
+      "items": {
+        "$ref": "#/$defs/Slab"
+      },
+      "type": "array"
+    },
+    "spaces": {
+      "items": {
+        "$ref": "#/$defs/Space"
+      },
+      "type": "array"
+    },
+    "walls": {
+      "items": {
+        "$ref": "#/$defs/Wall"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "model_id",
+    "schema_version",
+    "coordinate_system"
+  ],
+  "title": "OfficeAdmin Building Model canonical contract v1",
+  "type": "object"
+}

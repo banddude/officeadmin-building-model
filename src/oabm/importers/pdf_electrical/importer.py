@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from oabm.model import (
+    DERIVATION_INFERRED,
+    DERIVATION_OBSERVED,
+    DERIVATION_USER,
     BuildingModel,
     Circuit,
     CoordinateSystem,
@@ -3964,8 +3967,15 @@ def _provenance(
     method: str,
     confidence: float,
     source_kind: str = "pdf-electrical",
+    derivation: str = DERIVATION_OBSERVED,
     attributes: Mapping[str, Any] | None = None,
 ) -> Provenance:
+    """Record one piece of recognition evidence.
+
+    Defaults to ``observed`` because every caller here is reporting something
+    actually found on a sheet. Anything this importer *synthesizes* rather than
+    reads -- a port invented to give a circuit an endpoint -- must override this.
+    """
     return Provenance(
         source_kind=source_kind,
         source_id=document.source_id,
@@ -3973,6 +3983,7 @@ def _provenance(
         page=page,
         method=method,
         confidence=confidence,
+        derivation=derivation,
         attributes=dict(attributes or {}),
     )
 
@@ -5026,6 +5037,7 @@ class ElectricalPdfImporter:
                     method=hint.note,
                     confidence=hint.confidence,
                     source_kind="caller-instance-hint",
+                    derivation=DERIVATION_USER,
                     attributes={
                         "stable_identity_key": hint.identity_key,
                         "entity_kind": hint.entity_kind,
@@ -5729,6 +5741,11 @@ class ElectricalPdfImporter:
             role: str,
             provenance: Provenance,
         ) -> Port:
+            # Every record on a synthesized port describes evidence for a port
+            # we invented so a circuit has an endpoint. The evidence is real;
+            # the port is not something a sheet draws. Normalize here so the
+            # merge path below cannot quietly re-add an observed record.
+            provenance = replace(provenance, derivation=DERIVATION_INFERRED)
             key = (entity.id, role)
             existing = ports_by_owner_role.get(key)
             if existing is not None:
@@ -5760,6 +5777,10 @@ class ElectricalPdfImporter:
                 pose=entity.pose,
                 direction=Vector3(x=0.0, y=0.0, z=1.0),
                 confidence=provenance.confidence,
+                # The evidence behind this port is real, but the port itself is
+                # synthesized so a circuit has an endpoint -- no sheet draws it.
+                # Carrying the evidence record unchanged would let a consumer
+                # read this port as observed, which it is not.
                 provenance=(provenance,),
                 attributes={
                     "pdf_electrical": {
@@ -5815,7 +5836,14 @@ class ElectricalPdfImporter:
             port_ids: Iterable[str],
             provenances: Iterable[Provenance],
         ) -> None:
-            provenance_items = tuple(provenances)
+            # These records are the evidence FOR a port we synthesized, not
+            # evidence that a sheet drew the port. The ports are later rebuilt
+            # from exactly this collection, so marking here is what actually
+            # reaches the model.
+            provenance_items = tuple(
+                replace(record, derivation=DERIVATION_INFERRED)
+                for record in provenances
+            )
             for port_id in port_ids:
                 bucket["port_provenance"].setdefault(port_id, []).extend(
                     provenance_items

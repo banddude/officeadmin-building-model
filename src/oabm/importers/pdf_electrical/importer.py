@@ -1041,6 +1041,7 @@ _GENERIC_DEVICE_TAGS: frozenset[str] = frozenset(
 
 _CIRCUIT_RE = re.compile(r"\b(?:CKT|CIRCUIT)\s*#?\s*(?P<number>[A-Z0-9.-]+)\b", re.IGNORECASE)
 _HOMERUN_TAG_RE = re.compile(r"(?<![A-Z0-9_.-])(?P<panel>[A-Z][A-Z0-9_.]*?)-(?P<circuits>\d+(?:\s*,\s*\d+)*)\b", re.IGNORECASE)
+_TRAILING_CIRCUIT_LIST_RE = re.compile(r"\s*,")
 _PANEL_SCHEDULE_HEADING_RE = re.compile(r"\bPANEL\s+(?P<panel>[A-Z][A-Z0-9_.-]*)\s+SCHEDULE\b", re.IGNORECASE)
 _PANEL_SCHEDULE_ROW_RE = re.compile(r"^\s*(?P<circuit>\d+)\s+\S", re.IGNORECASE)
 _POLES_RE = re.compile(r"\b(?P<poles>[1234])\s*P\b", re.IGNORECASE)
@@ -1073,6 +1074,12 @@ def _parse_explicit_circuit_tag(
     if match is None:
         return None, (), "no_panel_token"
     panel_tag = _normalize_tag(match.group("panel"))
+    # The circuit group stops at the last numeric list item, so a comma still
+    # following the match means the annotation carries a list item we could not
+    # parse. ``LP-1,X`` must fail closed rather than silently resolve as
+    # ``LP-1``; #72 forbids resolving a circuit the annotation does not state.
+    if _TRAILING_CIRCUIT_LIST_RE.match(text[match.end("circuits") :]):
+        return panel_tag, (), "unparseable_circuit_list"
     try:
         numbers = tuple(int(item.strip()) for item in match.group("circuits").split(","))
     except ValueError:
@@ -1107,9 +1114,17 @@ def _is_explicit_circuit_annotation(
         # Legacy explicit CKT/CIRCUIT callouts belong to the circuit-text and
         # topology paths; a load tag embedded in one is not a panel tag.
         return False
+    hits = _text_entity_hits(text)
+    if any(kind == "device" for kind, _canonical, _tag, _confidence in hits):
+        # A text the device rules already recognize as a device identity is a
+        # device label, never a circuit annotation -- even when its prefix
+        # collides with a recognized panel name. A panel legitimately named
+        # ``EVSE`` must not turn every ``EVSE-1`` device label into circuit 1,
+        # which would invent a circuit number no annotation states.
+        return False
     if _normalize_tag(match.group("panel")) in recognized_panels:
         return True
-    return not _text_entity_hits(text)
+    return not hits
 
 
 def _panel_schedule_circuits(
@@ -6088,10 +6103,11 @@ class ElectricalPdfImporter:
             for vector in vectors
             if _homerun_arrowhead_apex(vector) is not None
         ]
+        homerun_arrowhead_ids = {vector.element_id for vector in homerun_arrowheads}
         circuit_vectors = [
             vector
             for vector in vectors
-            if vector not in homerun_arrowheads
+            if vector.element_id not in homerun_arrowhead_ids
             and not vector.closed
             and not _vector_contains_bezier(vector)
             and vector.element_id not in vector_symbol_ids
@@ -6117,21 +6133,30 @@ class ElectricalPdfImporter:
                 index = component_parent[index]
             return index
 
-        for first_index, first_vector in enumerate(circuit_vectors):
-            for second_index in range(first_index + 1, len(circuit_vectors)):
-                if not _paths_touch(
-                    first_vector,
-                    circuit_vectors[second_index],
-                    tolerance_pt=self.topology_snap_radius_pt,
-                ):
-                    continue
-                first_root = circuit_component_find(first_index)
-                second_root = circuit_component_find(second_index)
-                if first_root != second_root:
-                    component_parent[max(first_root, second_root)] = min(
-                        first_root,
-                        second_root,
-                    )
+        # `_paths_touch` is False across pages, so pairing within one page at a
+        # time is exactly equivalent to the all-pairs scan and keeps the cost
+        # quadratic in one page's eligible vectors rather than the whole set.
+        circuit_vector_pages: dict[int, list[int]] = {}
+        for index, vector in enumerate(circuit_vectors):
+            circuit_vector_pages.setdefault(vector.page, []).append(index)
+
+        for page_indexes in circuit_vector_pages.values():
+            for position, first_index in enumerate(page_indexes):
+                first_vector = circuit_vectors[first_index]
+                for second_index in page_indexes[position + 1 :]:
+                    if not _paths_touch(
+                        first_vector,
+                        circuit_vectors[second_index],
+                        tolerance_pt=self.topology_snap_radius_pt,
+                    ):
+                        continue
+                    first_root = circuit_component_find(first_index)
+                    second_root = circuit_component_find(second_index)
+                    if first_root != second_root:
+                        component_parent[max(first_root, second_root)] = min(
+                            first_root,
+                            second_root,
+                        )
 
         circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
         for index, vector in enumerate(circuit_vectors):
@@ -6204,6 +6229,11 @@ class ElectricalPdfImporter:
                 continue
             if len(parsed) != 1:
                 for observation, panel_tag, numbers, reason_code in parsed:
+                    # Consume every competing annotation. Without this the
+                    # direct-device-tag pass below re-reads the same text and
+                    # resolves it anyway, which is the opposite of failing
+                    # closed on an ambiguous association.
+                    consumed_explicit_tag_ids.add(observation.element_id)
                     unresolved_circuits.append(
                         {
                             "kind": "homerun",

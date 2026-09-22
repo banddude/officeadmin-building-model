@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
@@ -1064,6 +1064,133 @@ def test_homeruns_circuit_tags_and_panel_schedule_resolve_fail_closed() -> None:
         key=lambda error: list(error.path),
     )
     assert not errors, "\\n".join(error.message for error in errors)
+
+
+def _write_circuit_probe_pdf(path: Path, body: bytes) -> None:
+    """Write a one-page power sheet whose content stream is exactly ``body``.
+
+    Source PDF only, per #60: the test reads it back through ``extract_pdf``
+    and no paired ``.expected.json`` is ever written.
+    """
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=792, height=612)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
+    )
+    content = DecodedStreamObject()
+    content.set_data(body)
+    page[NameObject("/Contents")] = writer._add_object(content)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def _circuit_probe_model(path: Path, body: bytes, source_id: str):
+    _write_circuit_probe_pdf(path, body)
+    assert not path.with_suffix(".expected.json").exists()
+    return ElectricalPdfImporter().import_document(
+        extract_pdf(path, source_id=source_id)
+    )
+
+
+def test_device_tag_sharing_a_panel_name_prefix_creates_no_circuit(
+    tmp_path: Path,
+) -> None:
+    """A panel named ``EVSE`` must not turn ``EVSE-1`` into circuit 1.
+
+    ``EVSE-1`` is a device identity tag and states no circuit assignment, so
+    resolving it would invent a circuit number no annotation states.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "panel-name-collides-with-device-tag.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL EVSE 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL EVSE SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-panel-device-prefix-collision",
+    )
+
+    assert [entity.name for entity in model.electrical_equipment] == ["EVSE"]
+    assert [device.name for device in model.electrical_devices] == ["EVSE-1"]
+    assert model.circuits == ()
+    assert model.ports == ()
+
+
+def test_two_competing_homerun_annotations_resolve_no_circuit(
+    tmp_path: Path,
+) -> None:
+    """An ambiguous homerun must not be rescued by the direct-tag pass.
+
+    Both annotations are diagnosed as conflicting, and neither may then be
+    re-read as a direct device circuit tag.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "competing-homerun-annotations.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        # Both annotations sit close enough to the device that the
+        # direct-device-tag pass would otherwise pick them up.
+        b"BT /F1 8 Tf 1 0 0 1 190 470 Tm (LP-1) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 200 485 Tm (LP-3) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 495 Tm (3 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-competing-homerun-annotations",
+    )
+
+    assert model.circuits == ()
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    conflicted = [
+        row for row in misses if row.get("reason_code") == "conflicting_homerun_annotations"
+    ]
+    assert {row["source_text"] for row in conflicted} == {"LP-1", "LP-3"}
+    # The conflicted texts must not reappear as resolved direct tags.
+    assert all(row["status"] == "unresolved" for row in conflicted)
+
+
+def test_malformed_circuit_list_fails_closed_instead_of_resolving_prefix(
+    tmp_path: Path,
+) -> None:
+    """``LP-1,X`` must not silently resolve as ``LP-1``."""
+    model = _circuit_probe_model(
+        tmp_path / "unparseable-circuit-list.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1,X) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-unparseable-circuit-list",
+    )
+
+    assert model.circuits == ()
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    assert any(row.get("reason_code") == "unparseable_circuit_list" for row in misses)
+    assert all(row.get("circuit_numbers") != [1] for row in misses)
+
+
+def test_circuit_homerun_fixture_is_a_structurally_valid_pdf() -> None:
+    """The committed fixture must parse without reader error recovery.
+
+    It was previously written with a wrong ``/Length`` and an unusable xref,
+    so ``extract_pdf`` only succeeded because pypdf silently repaired it.
+    """
+    reader = PdfReader(str(CIRCUIT_HOMERUN_FIXTURE), strict=True)
+    assert len(reader.pages) == 1
 
 
 def test_unresolved_legend_glyph_records_nearest_two_match_diagnostics() -> None:

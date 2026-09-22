@@ -1118,20 +1118,35 @@ def _panel_schedule_circuits(
     return schedules, consumed_ids
 
 
+def _homerun_arrowhead_apex(
+    vector: PdfVectorPathObservation,
+) -> tuple[float, float] | None:
+    if len(vector.points_pt) != 3:
+        return None
+    first, apex, last = vector.points_pt
+    if (
+        _distance_pt(first[0], first[1], apex[0], apex[1]) <= 14.0
+        and _distance_pt(last[0], last[1], apex[0], apex[1]) <= 14.0
+        and _distance_pt(first[0], first[1], last[0], last[1]) >= 4.0
+    ):
+        return apex
+    return None
+
+
 def _component_has_homerun_arrowhead(
     component: Sequence[PdfVectorPathObservation],
+    arrowheads: Sequence[PdfVectorPathObservation],
+    *,
+    tolerance_pt: float,
 ) -> bool:
-    for vector in component:
-        if vector.closed or len(vector.points_pt) != 3:
-            continue
-        first, apex, last = vector.points_pt
-        if (
-            _distance_pt(first[0], first[1], apex[0], apex[1]) <= 14.0
-            and _distance_pt(last[0], last[1], apex[0], apex[1]) <= 14.0
-            and _distance_pt(first[0], first[1], last[0], last[1]) >= 4.0
-        ):
-            return True
-    return False
+    return any(
+        any(
+            _point_path_distance_pt(apex, branch) <= tolerance_pt
+            for branch in component
+        )
+        for arrowhead in arrowheads
+        if (apex := _homerun_arrowhead_apex(arrowhead)) is not None
+    )
 
 
 def _semantic_text(symbol: PdfSymbolObservation) -> str:
@@ -5926,7 +5941,18 @@ class ElectricalPdfImporter:
             branch_vector_ids: Sequence[str] = (),
         ) -> None:
             source_entity = recognized_panels[panel_tag]
-            circuit_number = ",".join(str(number) for number in numbers)
+            shared_raceway_group = (
+                stable_id(
+                    "circuit-group",
+                    (
+                        f"pdf-electrical:{document.source_id}:"
+                        f"{observation.element_id}:{panel_tag}:"
+                        + ",".join(str(number) for number in numbers)
+                    ),
+                )
+                if len(numbers) > 1
+                else None
+            )
             provenance = _provenance(
                 document,
                 element_id=observation.element_id,
@@ -5945,67 +5971,102 @@ class ElectricalPdfImporter:
                     ),
                 },
             )
-            source_port = port_for(
-                source_entity,
-                f"source:circuit:{circuit_number}",
-                provenance,
-            )
-            load_ports = tuple(
-                port_for(
-                    entity,
-                    f"sink:circuit:{circuit_number}",
+            for number in numbers:
+                circuit_number = str(number)
+                number_provenance = replace(
                     provenance,
+                    attributes={
+                        **dict(provenance.attributes),
+                        "circuit_number": circuit_number,
+                        **(
+                            {"shared_raceway_group": shared_raceway_group}
+                            if shared_raceway_group is not None
+                            else {}
+                        ),
+                    },
                 )
-                for entity in sorted(load_entities, key=lambda item: item.id)
-            )
-            circuit_id = stable_id(
-                "circuit",
-                (
-                    f"pdf-electrical:{document.source_id}:"
-                    f"{source_entity.id}:{circuit_number}"
-                ),
-            )
-            bucket = evidence_bucket(
-                circuit_id=circuit_id,
-                name=f"{panel_tag} {circuit_number}",
-                source_port_id=source_port.id,
-                circuit_number=circuit_number,
-            )
-            bucket["load_port_ids"].update(port.id for port in load_ports)
-            record_port_provenance(
-                bucket,
-                (source_port.id, *(port.id for port in load_ports)),
-                (provenance,),
-            )
-            bucket["confidence"].add(confidence)
-            bucket["evidence_methods"].add(method)
-            bucket["provenance"].append(provenance)
-            bucket["evidence"].append(
-                {
-                    "page": observation.page,
-                    "source_element_id": observation.element_id,
-                    "source_text": observation.text,
-                    "method": method,
-                    "panel_tag": panel_tag,
-                    "circuit_number": circuit_number,
-                    "circuit_numbers": list(numbers),
-                    "load_ids": [entity.id for entity in load_entities],
-                    "schedule_validated": panel_tag in schedule_circuits,
-                    "confidence": confidence,
-                    "status": "resolved",
-                }
-            )
+                source_port = port_for(
+                    source_entity,
+                    f"source:circuit:{circuit_number}",
+                    number_provenance,
+                )
+                load_ports = tuple(
+                    port_for(
+                        entity,
+                        f"sink:circuit:{circuit_number}",
+                        number_provenance,
+                    )
+                    for entity in sorted(load_entities, key=lambda item: item.id)
+                )
+                circuit_id = stable_id(
+                    "circuit",
+                    (
+                        f"pdf-electrical:{document.source_id}:"
+                        f"{source_entity.id}:{circuit_number}"
+                    ),
+                )
+                bucket = evidence_bucket(
+                    circuit_id=circuit_id,
+                    name=f"{panel_tag} {circuit_number}",
+                    source_port_id=source_port.id,
+                    circuit_number=circuit_number,
+                )
+                bucket["load_port_ids"].update(port.id for port in load_ports)
+                record_port_provenance(
+                    bucket,
+                    (source_port.id, *(port.id for port in load_ports)),
+                    (number_provenance,),
+                )
+                bucket["confidence"].add(confidence)
+                bucket["evidence_methods"].add(method)
+                bucket["provenance"].append(number_provenance)
+                bucket["evidence"].append(
+                    {
+                        "page": observation.page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "method": method,
+                        "panel_tag": panel_tag,
+                        "circuit_number": circuit_number,
+                        "circuit_numbers": list(numbers),
+                        "load_ids": [entity.id for entity in load_entities],
+                        "schedule_validated": panel_tag in schedule_circuits,
+                        "confidence": confidence,
+                        "status": "resolved",
+                        **(
+                            {"shared_raceway_group": shared_raceway_group}
+                            if shared_raceway_group is not None
+                            else {}
+                        ),
+                    }
+                )
 
+        recognized_panel_tag_re = re.compile(
+            r"(?<![A-Z0-9_.-])(?:"
+            + "|".join(
+                re.escape(panel)
+                for panel in sorted(recognized_panels, key=lambda item: (-len(item), item))
+            )
+            + r")-\\d+(?:\\s*,\\s*\\d+)*\\b",
+            re.IGNORECASE,
+        ) if recognized_panels else None
         explicit_circuit_tag_texts = [
             observation
             for observation in texts
             if observation.element_id not in schedule_text_ids
-            and _HOMERUN_TAG_RE.search(observation.text)
+            and recognized_panel_tag_re is not None
+            and recognized_panel_tag_re.search(observation.text)
+        ]
+        homerun_arrowheads = [
+            vector
+            for vector in vectors
+            if _homerun_arrowhead_apex(vector) is not None
         ]
         circuit_vectors = [
             vector
             for vector in vectors
-            if not vector.closed
+            if vector not in homerun_arrowheads
+            and not vector.closed
             and not _vector_contains_bezier(vector)
             and vector.element_id not in vector_symbol_ids
             and vector.element_id not in glyph_vector_ids
@@ -6061,7 +6122,11 @@ class ElectricalPdfImporter:
                 tuple(sorted(item.element_id for item in items)),
             ),
         ):
-            if not _component_has_homerun_arrowhead(component):
+            if not _component_has_homerun_arrowhead(
+                component,
+                homerun_arrowheads,
+                tolerance_pt=self.topology_snap_radius_pt + 2.0,
+            ):
                 continue
             page = component[0].page
             nearby_annotations = [
@@ -6194,6 +6259,17 @@ class ElectricalPdfImporter:
                 observation.element_id in consumed_explicit_tag_ids
                 or observation.element_id in schedule_text_ids
                 or _HOMERUN_TAG_RE.search(observation.text) is None
+            ):
+                continue
+            raw_match = _HOMERUN_TAG_RE.search(observation.text)
+            assert raw_match is not None
+            raw_panel_tag = _normalize_tag(raw_match.group("panel"))
+            # Do not reinterpret ordinary device identity tags (EVSE-1,
+            # REC-1, etc.) as circuit annotations. Unknown panels remain
+            # diagnosable when the text is annotation-like rather than a
+            # recognized device tag.
+            if raw_panel_tag not in recognized_panels and _text_entity_hits(
+                observation.text
             ):
                 continue
             panel_tag, numbers, reason_code = _parse_explicit_circuit_tag(

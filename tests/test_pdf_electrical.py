@@ -1296,6 +1296,44 @@ def test_tee_drawn_as_three_segments_from_one_point_still_resolves(
     ]
 
 
+def test_collinear_run_with_a_drafting_gap_is_not_read_as_a_loop(
+    tmp_path: Path,
+) -> None:
+    """A small gap in one run must not look like an enclosure.
+
+    Component assembly joins path ends within the snap tolerance, so two
+    collinear segments with a drafting gap are one run, and the isolation check
+    has to agree. Clustering their contact points by rounding into fixed bins
+    does not agree: two points a hair under the tolerance apart can straddle a
+    bin boundary, split into two nodes, and turn that single run into a
+    two-edge "loop" which is then rejected.
+
+    Geometry from the review that found it. The gaps sit either side of the
+    boundary on purpose.
+    """
+    for gap_start, gap_end in ((180.0, 183.5), (181.0, 184.0), (180.0, 180.5)):
+        model = _circuit_probe_model(
+            tmp_path / f"drafting-gap-{gap_start}-{gap_end}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 55 650 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 700 650 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 700 625 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 110 400 Tm (EVSE-1) Tj ET\n"
+            b"105 390 10 10 re S\n"
+            + f"110 400 m {gap_start} 400 l S\n".encode()
+            + f"{gap_end} 400 m 260 400 l S\n".encode()
+            + b"254 396 m 260 400 l 254 404 l S\n"
+            b"BT /F1 9 Tf 1 0 0 1 268 402 Tm (LP-1) Tj ET\n",
+            f"fixture:issue72-drafting-gap-{gap_start}-{gap_end}",
+        )
+        gap = round(gap_end - gap_start, 2)
+        assert model.circuits, f"a {gap} pt gap broke one run into a loop"
+        assert not [
+            row
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+            if row.get("reason_code") == "branch_run_not_isolated"
+        ], f"a {gap} pt gap was misread as enclosed area"
+
+
 def test_branch_run_absorbed_into_a_wall_network_fails_closed(
     tmp_path: Path,
 ) -> None:

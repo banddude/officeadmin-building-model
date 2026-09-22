@@ -6242,55 +6242,126 @@ class ElectricalPdfImporter:
             wall grids, partitions, hatching -- exists to enclose space, so it
             does.
 
-            The graph has to be built on CONTACT POINTS, not on vectors. A tee
-            drawn as three segments leaving one point is ordinary wiring, yet
-            each of those segments touches the other two, so a vector-level
-            graph sees a triangle and calls it a loop. With points as nodes
-            that tee is a single node of degree three: still a tree, still
-            lawful.
+            The graph is built on CONTACT POINTS, not on vectors. A tee drawn
+            as three segments leaving one point is ordinary wiring, yet each of
+            those segments touches the other two, so a vector-level graph sees
+            a triangle and calls it a loop. With points as nodes that tee is a
+            single node of degree three: still a tree, still lawful.
+
+            Points are clustered by the same snap relation the component
+            builder used, through a grid of neighbouring cells rather than by
+            rounding each coordinate independently. Independent rounding made
+            the verdict depend on where identical geometry happened to fall
+            against the bin boundaries, so one run with a drafting gap could
+            split into two nodes and read as a two-edge loop.
+
+            Both the adjacency scan and the clustering are spatially local, and
+            the search returns on the first cycle it sees rather than after a
+            complete pass.
 
             Known gap, tracked in #76: architecture drawn as a simple chain is
             also a tree, so this does not catch it. Connectivity alone cannot
             separate a chain of wall segments from a chain of conduit; that
-            needs the architectural lane's own classification.
+            needs evidence this lane does not currently receive.
             """
             tolerance = self.topology_snap_radius_pt
-            quantum = max(tolerance, 1e-6)
+            cell = max(tolerance * 2.0, 1.0)
 
-            def node_of(point: tuple[float, float]) -> tuple[int, int]:
-                return (round(point[0] / quantum), round(point[1] / quantum))
+            def cells_around(point: tuple[float, float]):
+                base_x, base_y = int(point[0] // cell), int(point[1] // cell)
+                for offset_x in (-1, 0, 1):
+                    for offset_y in (-1, 0, 1):
+                        yield (base_x + offset_x, base_y + offset_y)
 
-            # Every point where two members meet, plus each member's own ends.
-            contacts: dict[str, list[tuple[float, float]]] = {
-                vector.element_id: [vector.points_pt[0], vector.points_pt[-1]]
-                for vector in component
+            # Local index over this component's own members.
+            member_grid: dict[tuple[int, int], list[int]] = {}
+            member_cells: list[set[tuple[int, int]]] = []
+            for index, vector in enumerate(component):
+                own = circuit_cells(vector)
+                member_cells.append(own)
+                for key in own:
+                    member_grid.setdefault(key, []).append(index)
+
+            # Contact points per member, found only against local candidates.
+            contacts: dict[int, list[tuple[float, float]]] = {
+                index: [vector.points_pt[0], vector.points_pt[-1]]
+                for index, vector in enumerate(component)
             }
             for index, vector in enumerate(component):
-                for other in component[index + 1 :]:
+                candidates: set[int] = set()
+                for cell_x, cell_y in member_cells[index]:
+                    for offset_x in (-1, 0, 1):
+                        for offset_y in (-1, 0, 1):
+                            candidates.update(
+                                member_grid.get((cell_x + offset_x, cell_y + offset_y), ())
+                            )
+                for other_index in candidates:
+                    if other_index <= index:
+                        continue
+                    other = component[other_index]
                     if not _paths_touch(vector, other, tolerance_pt=tolerance):
                         continue
                     for point in (other.points_pt[0], other.points_pt[-1]):
                         if _point_path_distance_pt(point, vector) <= tolerance:
-                            contacts[vector.element_id].append(point)
-                            contacts[other.element_id].append(point)
+                            contacts[index].append(point)
+                            contacts[other_index].append(point)
                     for point in (vector.points_pt[0], vector.points_pt[-1]):
                         if _point_path_distance_pt(point, other) <= tolerance:
-                            contacts[vector.element_id].append(point)
-                            contacts[other.element_id].append(point)
+                            contacts[index].append(point)
+                            contacts[other_index].append(point)
 
-            parent: dict[tuple[int, int], tuple[int, int]] = {}
+            # Cluster points by proximity, again only against local candidates.
+            points: list[tuple[float, float]] = [
+                point for values in contacts.values() for point in values
+            ]
+            point_grid: dict[tuple[int, int], list[int]] = {}
+            for index, point in enumerate(points):
+                point_grid.setdefault(
+                    (int(point[0] // cell), int(point[1] // cell)), []
+                ).append(index)
 
-            def find(key: tuple[int, int]) -> tuple[int, int]:
+            point_parent = list(range(len(points)))
+
+            def point_find(index: int) -> int:
+                while point_parent[index] != index:
+                    point_parent[index] = point_parent[point_parent[index]]
+                    index = point_parent[index]
+                return index
+
+            for index, point in enumerate(points):
+                for key in cells_around(point):
+                    for other_index in point_grid.get(key, ()):
+                        if other_index <= index:
+                            continue
+                        other = points[other_index]
+                        if (
+                            _distance_pt(point[0], point[1], other[0], other[1])
+                            <= tolerance
+                        ):
+                            left, right = point_find(index), point_find(other_index)
+                            if left != right:
+                                point_parent[max(left, right)] = min(left, right)
+
+            node_of: dict[tuple[float, float], int] = {}
+            for index, point in enumerate(points):
+                node_of.setdefault(point, point_find(index))
+
+            parent: dict[int, int] = {}
+
+            def find(key: int) -> int:
                 parent.setdefault(key, key)
                 while parent[key] != key:
                     parent[key] = parent[parent[key]]
                     key = parent[key]
                 return key
 
-            for vector in component:
+            for index, vector in enumerate(component):
                 start_point = vector.points_pt[0]
+                seen: dict[int, tuple[float, float]] = {}
+                for point in contacts[index]:
+                    seen.setdefault(node_of[point], point)
                 ordered = sorted(
-                    {node_of(point): point for point in contacts[vector.element_id]}.items(),
+                    seen.items(),
                     key=lambda item: _distance_pt(
                         start_point[0], start_point[1], item[1][0], item[1][1]
                     ),

@@ -1132,6 +1132,7 @@ def _panel_schedule_circuits(
 ) -> tuple[dict[str, set[int]], set[str]]:
     schedules: dict[str, set[int]] = {}
     consumed_ids: set[str] = set()
+    headings: list[tuple[PdfTextObservation, str]] = []
     for heading in texts:
         match = _PANEL_SCHEDULE_HEADING_RE.search(heading.text)
         if match is None:
@@ -1140,19 +1141,41 @@ def _panel_schedule_circuits(
         if panel_tag not in recognized_panels:
             continue
         consumed_ids.add(heading.element_id)
-        for row in texts:
-            if (
-                row.page != heading.page
-                or row.element_id == heading.element_id
-                or abs(row.x_pt - heading.x_pt) > 180.0
-                or not (heading.y_pt - 240.0 <= row.y_pt < heading.y_pt)
-            ):
-                continue
-            row_match = _PANEL_SCHEDULE_ROW_RE.match(row.text)
-            if row_match is None:
-                continue
-            schedules.setdefault(panel_tag, set()).add(int(row_match.group("circuit")))
-            consumed_ids.add(row.element_id)
+        headings.append((heading, panel_tag))
+
+    heading_ids = {heading.element_id for heading, _tag in headings}
+    for row in texts:
+        if row.element_id in heading_ids:
+            continue
+        row_match = _PANEL_SCHEDULE_ROW_RE.match(row.text)
+        if row_match is None:
+            continue
+        # A row belongs to ONE schedule: the nearest heading whose block covers
+        # it. Letting every heading in range claim it lets an adjacent panel's
+        # schedule validate a circuit the named panel does not have, which is
+        # precisely the out-of-schedule parse #72 says to reject.
+        candidates = [
+            (
+                _distance_pt(row.x_pt, row.y_pt, heading.x_pt, heading.y_pt),
+                heading.element_id,
+                panel_tag,
+            )
+            for heading, panel_tag in headings
+            if row.page == heading.page
+            and abs(row.x_pt - heading.x_pt) <= 180.0
+            and heading.y_pt - 240.0 <= row.y_pt < heading.y_pt
+        ]
+        if not candidates:
+            continue
+        candidates.sort()
+        if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
+            # Equidistant between two schedules: which panel owns this row is
+            # genuinely ambiguous, so claim it for neither.
+            continue
+        schedules.setdefault(candidates[0][2], set()).add(
+            int(row_match.group("circuit"))
+        )
+        consumed_ids.add(row.element_id)
     return schedules, consumed_ids
 
 
@@ -4838,8 +4861,6 @@ class ElectricalPdfImporter:
         topology_snap_radius_pt: float = 4.0,
         topology_endpoint_radius_pt: float = 18.0,
         topology_annotation_radius_pt: float = 60.0,
-        homerun_branch_reach_pt: float = 240.0,
-        homerun_branch_max_vectors: int = 64,
     ) -> None:
         self.symbol_rules = tuple(symbol_rules)
         self.instance_hints = tuple(instance_hints)
@@ -4865,16 +4886,6 @@ class ElectricalPdfImporter:
         self.topology_snap_radius_pt = float(topology_snap_radius_pt)
         self.topology_endpoint_radius_pt = float(topology_endpoint_radius_pt)
         self.topology_annotation_radius_pt = float(topology_annotation_radius_pt)
-        # How far a branch run may be followed from its homerun arrowhead.
-        # Without this the component search walks transitively through any
-        # touching vector and a single arrow landing on a wall line would
-        # absorb the whole sheet into one 'branch run'.
-        self.homerun_branch_reach_pt = float(homerun_branch_reach_pt)
-        # An arrowed leader that resolves into more connected vectors than
-        # this is not a recognizable branch run -- on a real sheet it has
-        # walked into the architecture. Fail closed and say so rather than
-        # circuit whatever devices that sprawl happens to cover.
-        self.homerun_branch_max_vectors = int(homerun_branch_max_vectors)
 
     def _instance_hint_source_rejection(
         self,
@@ -6165,13 +6176,28 @@ class ElectricalPdfImporter:
                 cells.add((int(point[0] // cell_pt), int(point[1] // cell_pt)))
             return cells
 
+        assigned: dict[int, int] = {}
         circuit_vector_cells: list[set[tuple[int, int]]] = []
-        circuit_grid: dict[tuple[int, int, int], list[int]] = {}
+        circuit_grid: dict[tuple[int, int, int], set[int]] = {}
         for index, vector in enumerate(circuit_vectors):
             cells = circuit_cells(vector)
             circuit_vector_cells.append(cells)
             for cell_x, cell_y in cells:
-                circuit_grid.setdefault((vector.page, cell_x, cell_y), []).append(index)
+                circuit_grid.setdefault((vector.page, cell_x, cell_y), set()).add(index)
+
+        def claim_circuit_vector(index: int, component_key: int) -> None:
+            """Take a vector out of the index as it joins a component.
+
+            A claimed vector can never be claimed again, so leaving it in the
+            grid only makes every later neighbour query re-walk it. Removing it
+            is what keeps a dense cluster from costing one full scan per member.
+            """
+            assigned[index] = component_key
+            vector = circuit_vectors[index]
+            for cell_x, cell_y in circuit_vector_cells[index]:
+                bucket = circuit_grid.get((vector.page, cell_x, cell_y))
+                if bucket is not None:
+                    bucket.discard(index)
 
         def circuit_neighbors_of_path(
             path: PdfVectorPathObservation,
@@ -6206,8 +6232,49 @@ class ElectricalPdfImporter:
         # The arrowhead is the signature of a homerun, so this both bounds the
         # work by the (small) arrowhead count and finds arrowed runs whose
         # annotation is absent or unparseable.
+        # Enclosure edges: closed paths that no recognized device or legend
+        # glyph claims. A room boundary, a hatch outline, a wall enclosure. A
+        # branch run legitimately ends at a device's own symbol outline, but a
+        # run that has walked through an unclaimed enclosure edge is no longer
+        # distinguishable from the architecture it crossed.
+        enclosure_vectors = [
+            vector
+            for vector in vectors
+            if vector.closed
+            and vector.element_id not in vector_symbol_ids
+            and vector.element_id not in glyph_vector_ids
+        ]
+        enclosure_grid: dict[tuple[int, int, int], set[int]] = {}
+        for index, vector in enumerate(enclosure_vectors):
+            for cell_x, cell_y in circuit_cells(vector):
+                enclosure_grid.setdefault(
+                    (vector.page, cell_x, cell_y), set()
+                ).add(index)
+
+        def touches_enclosure(
+            component: Sequence[PdfVectorPathObservation],
+        ) -> PdfVectorPathObservation | None:
+            for vector in component:
+                candidates: set[int] = set()
+                for cell_x, cell_y in circuit_cells(vector):
+                    for offset_x in (-1, 0, 1):
+                        for offset_y in (-1, 0, 1):
+                            candidates.update(
+                                enclosure_grid.get(
+                                    (vector.page, cell_x + offset_x, cell_y + offset_y),
+                                    (),
+                                )
+                            )
+                for index in candidates:
+                    if _paths_touch(
+                        vector,
+                        enclosure_vectors[index],
+                        tolerance_pt=self.topology_snap_radius_pt,
+                    ):
+                        return enclosure_vectors[index]
+            return None
+
         circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
-        assigned: dict[int, int] = {}
         for arrow_position, arrowhead in enumerate(homerun_arrowheads):
             seeds = [
                 index
@@ -6227,29 +6294,33 @@ class ElectricalPdfImporter:
             if not seeds:
                 continue
             component_key = arrow_position
-            apex = _homerun_arrowhead_apex(arrowhead)
-            queue = list(seeds)
+            # Claim membership at ENQUEUE, not at dequeue. Marking on dequeue
+            # left every queued-but-unclaimed vector visible to each subsequent
+            # pop, so a densely touching cluster re-compared the same pairs
+            # once per member and the scan stayed quadratic. Claiming on entry
+            # means each vector is compared once.
             members: list[int] = []
+            queue: list[int] = []
+            for seed in seeds:
+                if seed in assigned:
+                    continue
+                claim_circuit_vector(seed, component_key)
+                members.append(seed)
+                queue.append(seed)
             while queue:
                 index = queue.pop()
-                if index in assigned:
-                    continue
-                if apex is not None and _point_path_distance_pt(
-                    apex,
-                    circuit_vectors[index],
-                ) > self.homerun_branch_reach_pt:
-                    continue
-                assigned[index] = component_key
-                members.append(index)
                 for neighbor in circuit_neighbors(index):
                     if neighbor in assigned:
                         continue
-                    if _paths_touch(
+                    if not _paths_touch(
                         circuit_vectors[index],
                         circuit_vectors[neighbor],
                         tolerance_pt=snap_tolerance_pt,
                     ):
-                        queue.append(neighbor)
+                        continue
+                    claim_circuit_vector(neighbor, component_key)
+                    members.append(neighbor)
+                    queue.append(neighbor)
             if members:
                 circuit_components[component_key] = [
                     circuit_vectors[index] for index in sorted(members)
@@ -6309,7 +6380,8 @@ class ElectricalPdfImporter:
                     for vector in component
                 ) <= self.topology_endpoint_radius_pt
             ]
-            if len(component) > self.homerun_branch_max_vectors:
+            enclosure = touches_enclosure(component)
+            if enclosure is not None:
                 unresolved_circuits.append(
                     {
                         "kind": "homerun",
@@ -6320,9 +6392,10 @@ class ElectricalPdfImporter:
                         "status": "unresolved",
                         "reason_code": "branch_run_not_isolated",
                         "reason": (
-                            "arrowed leader expands into more connected geometry "
-                            "than a branch run can be distinguished from"
+                            "arrowed leader reaches geometry that is not "
+                            "distinguishable from the architecture it crosses"
                         ),
+                        "enclosure_element_id": enclosure.element_id,
                         "component_vector_count": len(component),
                     }
                 )

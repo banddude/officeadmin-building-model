@@ -1216,43 +1216,49 @@ def test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token(
     assert any(row.get("reason_code") == "no_panel_token" for row in misses)
 
 
-def test_sprawling_branch_geometry_fails_closed_instead_of_circuiting(
+def test_branch_run_crossing_an_enclosure_edge_fails_closed(
     tmp_path: Path,
 ) -> None:
-    """An arrowed leader that walks into dense geometry must not circuit it.
+    """A run that has walked into the architecture must never become a circuit.
 
-    Without a bound the component search grows through any touching vector, so
-    one arrow landing on architectural linework would absorb the sheet and
-    circuit every device that sprawl happened to cover.
+    Component assembly grows outward from a homerun arrowhead through any
+    touching vector, so on a real sheet an arrow landing near linework can
+    absorb geometry that is not wiring at all. The reject is semantic, not a
+    size cutoff: an unclaimed CLOSED path is an enclosure edge (a room
+    boundary, a hatch outline), as distinct from a device's own symbol
+    outline, which a branch run legitimately terminates at.
+
+    Pinned in CI on purpose. It must not depend on any pilot's counts, and it
+    must keep holding until the branch-geometry discriminator lands.
     """
-    body = [
-        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n",
-        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n",
-        b"175 445 10 10 re S\n",
-        b"180 450 m 300 450 l S\n",
-        b"294 446 m 300 450 l 294 454 l S\n",
-        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n",
-        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n",
-        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
-    ]
-    # A connected chain of linework hanging off the same branch run.
-    for index in range(120):
-        x = 180 + index
-        body.append(f"{x} 450 m {x} {450 - (index % 7) - 2} l S\n".encode())
     model = _circuit_probe_model(
-        tmp_path / "sprawling-branch.pdf",
-        b"".join(body),
-        "fixture:issue72-sprawling-branch",
+        tmp_path / "branch-crosses-enclosure.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        # A room enclosure whose left edge the branch run runs into, which is
+        # how sprawl actually happens: the run continues into linework and the
+        # component grows through it.
+        b"300 390 120 130 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-branch-crosses-enclosure",
     )
 
     assert model.circuits == ()
     assert model.ports == ()
     misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
-    sprawl = [
+    rejected = [
         row for row in misses if row.get("reason_code") == "branch_run_not_isolated"
     ]
-    assert sprawl
-    assert all(row["component_vector_count"] > 64 for row in sprawl)
+    assert rejected, (
+        "a branch run touching an unclaimed enclosure edge must be rejected "
+        "explicitly, not silently resolved into a circuit"
+    )
+    assert all(row.get("enclosure_element_id") for row in rejected)
 
 
 def test_circuit_homerun_fixture_is_a_structurally_valid_pdf() -> None:

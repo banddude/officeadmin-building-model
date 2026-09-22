@@ -1087,6 +1087,31 @@ def _parse_explicit_circuit_tag(
     return panel_tag, numbers, None
 
 
+def _is_explicit_circuit_annotation(
+    text: str,
+    *,
+    recognized_panels: Iterable[str],
+) -> bool:
+    """Tell a panel/circuit annotation from an ordinary device identity tag.
+
+    ``EVSE-1`` and ``REC-1`` parse the same shape as ``LP-1``, so a homerun
+    branch run picks up the device labels sitting beside it and every
+    annotation looks ambiguous. A text is an annotation when it names a
+    recognized panel, or when it is annotation-like rather than a device tag
+    we already recognize, which keeps an unknown panel id diagnosable.
+    """
+    match = _HOMERUN_TAG_RE.search(text)
+    if match is None:
+        return False
+    if _CIRCUIT_RE.search(text):
+        # Legacy explicit CKT/CIRCUIT callouts belong to the circuit-text and
+        # topology paths; a load tag embedded in one is not a panel tag.
+        return False
+    if _normalize_tag(match.group("panel")) in recognized_panels:
+        return True
+    return not _text_entity_hits(text)
+
+
 def _panel_schedule_circuits(
     texts: Sequence[PdfTextObservation],
     *,
@@ -6048,7 +6073,7 @@ class ElectricalPdfImporter:
                 re.escape(panel)
                 for panel in sorted(recognized_panels, key=lambda item: (-len(item), item))
             )
-            + r")-\\d+(?:\\s*,\\s*\\d+)*\\b",
+            + r")-\d+(?:\s*,\s*\d+)*\b",
             re.IGNORECASE,
         ) if recognized_panels else None
         explicit_circuit_tag_texts = [
@@ -6153,7 +6178,10 @@ class ElectricalPdfImporter:
                     ),
                 )
                 for observation in nearby_annotations
-                if _HOMERUN_TAG_RE.search(observation.text)
+                if _is_explicit_circuit_annotation(
+                    observation.text,
+                    recognized_panels=recognized_panels,
+                )
             ]
             if not parsed:
                 unresolved_circuits.append(
@@ -6259,23 +6287,10 @@ class ElectricalPdfImporter:
             if (
                 observation.element_id in consumed_explicit_tag_ids
                 or observation.element_id in schedule_text_ids
-                or _HOMERUN_TAG_RE.search(observation.text) is None
-            ):
-                continue
-            # Legacy explicit CKT/CIRCUIT callouts are handled by the
-            # existing circuit-text/topology paths below; a load tag embedded
-            # in one must not be reinterpreted as a panel-circuit tag.
-            if _CIRCUIT_RE.search(observation.text):
-                continue
-            raw_match = _HOMERUN_TAG_RE.search(observation.text)
-            assert raw_match is not None
-            raw_panel_tag = _normalize_tag(raw_match.group("panel"))
-            # Do not reinterpret ordinary device identity tags (EVSE-1,
-            # REC-1, etc.) as circuit annotations. Unknown panels remain
-            # diagnosable when the text is annotation-like rather than a
-            # recognized device tag.
-            if raw_panel_tag not in recognized_panels and _text_entity_hits(
-                observation.text
+                or not _is_explicit_circuit_annotation(
+                    observation.text,
+                    recognized_panels=recognized_panels,
+                )
             ):
                 continue
             panel_tag, numbers, reason_code = _parse_explicit_circuit_tag(

@@ -18,6 +18,7 @@ The model is the source of truth. A floor plan is a derived view of that model.
 - `src/oabm/importers/roomplan`: RoomPlan / scan ingestion
 - `src/oabm/importers/pdf_architecture`: architectural plan ingestion
 - `src/oabm/importers/pdf_electrical`: electrical plan ingestion
+- `src/oabm/conductors`: individual conductors derived from canonical circuits, labelled as engineering inference
 - `src/oabm/quantities`: model-derived takeoff quantities
 - `src/oabm/drawings`: generated plans, elevations, sections, and schedules
 - `src/oabm/qa`: reusable canonical handoff validators and golden regression harness

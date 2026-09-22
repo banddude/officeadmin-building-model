@@ -163,6 +163,7 @@ Keep these responsibilities separated:
 - `src/oabm/importers/roomplan`: RoomPlan / LiDAR ingestion
 - `src/oabm/importers/pdf_architecture`: architectural PDF ingestion
 - `src/oabm/importers/pdf_electrical`: electrical PDF ingestion
+- `src/oabm/conductors`: derivation of individual conductors from canonical circuits (engineering inference, explicitly labelled)
 - `src/oabm/quantities`: model and route derived quantities
 - `src/oabm/drawings`: plans, elevations, sections, schedules, and derived drawing outputs
 - `fixtures` and QA tests: known-answer public-safe regression data

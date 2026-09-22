@@ -7,6 +7,7 @@ has an endpoint still carries the importer's own `source_kind`.
 
 from __future__ import annotations
 
+import ast
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -309,4 +310,37 @@ def test_classification_test_would_fail_if_observed_classes_were_lost(
     )
     assert not is_observed(stripped.provenance), (
         "an entity whose class has been removed must stop reading as observed"
+    )
+
+
+def test_no_producer_constructs_provenance_without_stating_a_class() -> None:
+    """Every Provenance built in the package states how the thing came to be.
+
+    Ad-hoc edits missed sites twice: first `pdf_architecture` and `roomplan`,
+    then a multi-page placement branch and three convergence records. Each miss
+    failed the same silent way, because an unset class reads as "no claim" and
+    only shows up if somebody happens to probe that code path.
+
+    So this greps the AST rather than trusting a reviewer to find the next one.
+    It fails on any `Provenance(...)` constructed without `derivation`, which is
+    a cheap structural check for an expensive class of mistake.
+    """
+    package = Path(__file__).resolve().parents[1] / "src" / "oabm"
+    offenders: list[str] = []
+    for module in sorted(package.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "id", None) != "Provenance":
+                continue
+            if "derivation" not in {kw.arg for kw in node.keywords if kw.arg}:
+                offenders.append(
+                    f"{module.relative_to(package.parent.parent)}:{node.lineno}"
+                )
+
+    assert not offenders, (
+        "these construct Provenance without stating observed/user/inferred, so "
+        "whatever they produce silently reads as an unproven claim: "
+        + ", ".join(offenders)
     )

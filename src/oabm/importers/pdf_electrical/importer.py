@@ -6504,6 +6504,10 @@ class ElectricalPdfImporter:
                         page=page,
                         method="deterministic per-page best-effort unregistered placement",
                         confidence=0.25,
+                        # We chose this placement because the document states
+                        # no registration. It is our proposal, not something
+                        # the sheet shows.
+                        derivation=DERIVATION_INFERRED,
                         attributes={
                             "registration_status": "unregistered-best-effort",
                             "page_transform": transforms[page].to_attributes(),

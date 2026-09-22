@@ -6232,34 +6232,75 @@ class ElectricalPdfImporter:
         # The arrowhead is the signature of a homerun, so this both bounds the
         # work by the (small) arrowhead count and finds arrowed runs whose
         # annotation is absent or unparseable.
-        def component_junction_witness(
+        def component_encloses_area(
             component: Sequence[PdfVectorPathObservation],
         ) -> PdfVectorPathObservation | None:
-            """Return a vector proving this component is a network, not a run.
+            """Return a vector proving this component encloses space.
 
-            A branch circuit run is a chain: each piece continues into at most
-            one piece before it and one after. Architectural linework -- wall
-            grids, partition networks, hatching -- is a mesh, where a single
-            segment meets three or more others at junctions.
+            Branch wiring distributes radially: it tees, but it never loops
+            back on itself, so it spans no area. Architectural linework --
+            wall grids, partitions, hatching -- exists to enclose space, so it
+            does.
 
-            That is a structural property of the geometry, not a tuned
-            threshold. It is also the shape that actually matters: on a real
-            sheet walls are OPEN polylines, so a rule that only looked at
-            closed paths missed the very geometry a run sprawls into.
+            The graph has to be built on CONTACT POINTS, not on vectors. A tee
+            drawn as three segments leaving one point is ordinary wiring, yet
+            each of those segments touches the other two, so a vector-level
+            graph sees a triangle and calls it a loop. With points as nodes
+            that tee is a single node of degree three: still a tree, still
+            lawful.
+
+            Known gap, tracked in #76: architecture drawn as a simple chain is
+            also a tree, so this does not catch it. Connectivity alone cannot
+            separate a chain of wall segments from a chain of conduit; that
+            needs the architectural lane's own classification.
             """
-            for vector in component:
-                touching = 0
-                for other in component:
-                    if other.element_id == vector.element_id:
+            tolerance = self.topology_snap_radius_pt
+            quantum = max(tolerance, 1e-6)
+
+            def node_of(point: tuple[float, float]) -> tuple[int, int]:
+                return (round(point[0] / quantum), round(point[1] / quantum))
+
+            # Every point where two members meet, plus each member's own ends.
+            contacts: dict[str, list[tuple[float, float]]] = {
+                vector.element_id: [vector.points_pt[0], vector.points_pt[-1]]
+                for vector in component
+            }
+            for index, vector in enumerate(component):
+                for other in component[index + 1 :]:
+                    if not _paths_touch(vector, other, tolerance_pt=tolerance):
                         continue
-                    if _paths_touch(
-                        vector,
-                        other,
-                        tolerance_pt=self.topology_snap_radius_pt,
-                    ):
-                        touching += 1
-                        if touching >= 3:
-                            return vector
+                    for point in (other.points_pt[0], other.points_pt[-1]):
+                        if _point_path_distance_pt(point, vector) <= tolerance:
+                            contacts[vector.element_id].append(point)
+                            contacts[other.element_id].append(point)
+                    for point in (vector.points_pt[0], vector.points_pt[-1]):
+                        if _point_path_distance_pt(point, other) <= tolerance:
+                            contacts[vector.element_id].append(point)
+                            contacts[other.element_id].append(point)
+
+            parent: dict[tuple[int, int], tuple[int, int]] = {}
+
+            def find(key: tuple[int, int]) -> tuple[int, int]:
+                parent.setdefault(key, key)
+                while parent[key] != key:
+                    parent[key] = parent[parent[key]]
+                    key = parent[key]
+                return key
+
+            for vector in component:
+                start_point = vector.points_pt[0]
+                ordered = sorted(
+                    {node_of(point): point for point in contacts[vector.element_id]}.items(),
+                    key=lambda item: _distance_pt(
+                        start_point[0], start_point[1], item[1][0], item[1][1]
+                    ),
+                )
+                # Each span between consecutive contacts is one edge.
+                for (left, _lp), (right, _rp) in zip(ordered, ordered[1:]):
+                    left_root, right_root = find(left), find(right)
+                    if left_root == right_root:
+                        return vector
+                    parent[left_root] = right_root
             return None
 
         circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
@@ -6368,26 +6409,6 @@ class ElectricalPdfImporter:
                     for vector in component
                 ) <= self.topology_endpoint_radius_pt
             ]
-            junction = component_junction_witness(component)
-            if junction is not None:
-                unresolved_circuits.append(
-                    {
-                        "kind": "homerun",
-                        "page": page,
-                        "source_element_id": sorted(
-                            item.element_id for item in component
-                        )[0],
-                        "status": "unresolved",
-                        "reason_code": "branch_run_not_isolated",
-                        "reason": (
-                            "arrowed leader runs into a junctioned network "
-                            "rather than continuing as a branch run"
-                        ),
-                        "junction_element_id": junction.element_id,
-                        "component_vector_count": len(component),
-                    }
-                )
-                continue
             if not load_entities:
                 # An arrowed leader touching no recognized device is a
                 # dimension or annotation leader, not a homerun. #72 names this
@@ -6404,6 +6425,26 @@ class ElectricalPdfImporter:
                         "reason": (
                             "homerun arrow is not associated with a recognized device"
                         ),
+                    }
+                )
+                continue
+            enclosing = component_encloses_area(component)
+            if enclosing is not None:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "status": "unresolved",
+                        "reason_code": "branch_run_not_isolated",
+                        "reason": (
+                            "arrowed leader reaches geometry that encloses "
+                            "space, which branch wiring does not do"
+                        ),
+                        "cycle_element_id": enclosing.element_id,
+                        "component_vector_count": len(component),
                     }
                 )
                 continue

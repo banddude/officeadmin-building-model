@@ -1216,49 +1216,133 @@ def test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token(
     assert any(row.get("reason_code") == "no_panel_token" for row in misses)
 
 
+def test_lawful_tee_serving_two_devices_still_resolves(tmp_path: Path) -> None:
+    """Branch wiring tees. That must not be mistaken for architecture.
+
+    A run that splits to serve two devices is ordinary, lawful wiring. An
+    earlier version of the isolation guard rejected any component containing a
+    degree-3 junction, which is exactly what a tee is, so it discarded valid
+    circuits the same way the arbitrary size and reach cutoffs did before it.
+
+    The guard now keys on cycles instead: wiring distributes radially and never
+    loops back on itself, while architectural linework encloses space. This
+    pins the lawful side of that distinction.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "lawful-tee.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 392 Tm (EVSE-2) Tj ET\n"
+        b"175 375 10 10 re S\n"
+        b"180 450 m 260 450 l S\n"
+        b"180 380 m 260 380 l S\n"
+        b"260 450 m 260 380 l S\n"
+        b"260 415 m 340 415 l S\n"
+        b"334 411 m 340 415 l 334 419 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 345 417 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-lawful-tee",
+    )
+
+    assert {circuit.circuit_number for circuit in model.circuits} == {"1"}
+    circuit = model.circuits[0]
+    assert len(circuit.load_port_ids) == 2, (
+        "both devices on the teed run belong to the circuit"
+    )
+    assert not [
+        row
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        if row.get("reason_code") == "branch_run_not_isolated"
+    ]
+
+
+def test_tee_drawn_as_three_segments_from_one_point_still_resolves(
+    tmp_path: Path,
+) -> None:
+    """The natural way to draw a tee must resolve too.
+
+    Three segments leaving a single point is how a tap is normally drawn, and
+    it is the case that killed the first two versions of this guard. Each
+    segment touches the other two, so a graph whose nodes are VECTORS sees a
+    triangle and calls it a loop. With contact points as nodes it is one node
+    of degree three: a tree, and lawful.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "tee-three-segments-one-point.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 600 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 700 600 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 700 575 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 130 417 Tm (EVSE-1) Tj ET\n"
+        b"135 395 10 10 re S\n"
+        b"140 400 m 220 400 l S\n"
+        b"220 400 m 300 460 l S\n"
+        b"220 400 m 300 340 l S\n"
+        b"294 456 m 300 460 l 292 461 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 308 462 Tm (LP-1) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 295 337 Tm (EVSE-2) Tj ET\n"
+        b"295 335 10 10 re S\n",
+        "fixture:issue72-tee-three-segments",
+    )
+
+    assert model.circuits, (
+        "three segments leaving one point is a tap, not an enclosure"
+    )
+    assert not [
+        row
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        if row.get("reason_code") == "branch_run_not_isolated"
+    ]
+
+
 def test_branch_run_absorbed_into_a_wall_network_fails_closed(
     tmp_path: Path,
 ) -> None:
     """A run that has walked into the architecture must never become a circuit.
 
-    Component assembly grows outward from a homerun arrowhead through any
-    touching vector, so on a real sheet an arrow landing near linework can
-    absorb geometry that is not wiring at all and circuit every device that
-    sprawl happens to cover.
+    Geometry taken from the independent review that found this defect: a short
+    real branch crosses an OPEN wall grid carrying eleven further recognized
+    loads. Without the guard the importer produces one circuit with twelve
+    loads and no diagnostic at all.
 
-    The reject is structural, not a size cutoff. A branch run is a chain: each
-    piece continues into at most one before it and one after. Architectural
-    linework is a mesh, where a segment meets three or more others at
-    junctions. Walls on a real sheet are OPEN polylines, so a rule that only
-    looked at closed paths would miss exactly the geometry that matters.
+    Two things this pins deliberately. The linework is open, so a rule that
+    only inspected closed paths missed it, which is what the first version of
+    this guard did. And the reject is structural rather than a size cutoff:
+    branch wiring is radial and never closes a loop, while a wall grid
+    encloses space and therefore does.
 
-    Pinned in CI deliberately. It must not depend on any pilot's counts, and it
-    must keep holding until the full discriminator in #76 lands.
+    Must not depend on any pilot's counts, and must keep holding until the
+    full discriminator in #76 lands.
     """
     body = [
-        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n",
-        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n",
-        b"175 445 10 10 re S\n",
-        # The real branch run, arrowed and annotated.
-        b"180 450 m 300 450 l S\n",
-        b"294 446 m 300 450 l 294 454 l S\n",
-        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n",
+        b"BT /F1 10 Tf 1 0 0 1 70 600 Tm (PANEL LP 120/208V 3PH) Tj ET\n",
+        b"BT /F1 10 Tf 1 0 0 1 700 600 Tm (PANEL LP SCHEDULE) Tj ET\n",
+        b"BT /F1 8 Tf 1 0 0 1 700 575 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        # the genuine short branch, arrowed and annotated
+        b"BT /F1 8 Tf 1 0 0 1 130 417 Tm (EVSE-1) Tj ET\n",
+        b"135 395 10 10 re S\n",
+        b"140 400 m 230 400 l S\n",
+        b"224 396 m 230 400 l 224 404 l S\n",
+        b"BT /F1 9 Tf 1 0 0 1 238 402 Tm (LP-1) Tj ET\n",
     ]
-    # An open wall/partition grid the run connects into. No closed path here:
-    # this is the shape a closed-path-only guard misses.
-    for offset in range(4):
-        x = 180 + offset * 40
-        body.append(f"{x} 450 m {x} 560 l S\n".encode())
-        body.append(f"{x} 500 m {x + 40} 500 l S\n".encode())
-    # Extra recognized loads sitting on that grid, which a bogus circuit would
-    # sweep up.
-    for index, x in enumerate(range(200, 320, 40), start=2):
+    # An open wall mesh the branch crosses. No closed paths anywhere in it.
+    for x in (180, 260, 340, 420, 500, 580, 660):
+        body.append(f"{x} 260 m {x} 540 l S\n".encode())
+    for y in (300, 400, 500):
+        body.append(f"180 {y} m 660 {y} l S\n".encode())
+    # Further recognized loads sitting on the grid, which a bogus circuit
+    # would sweep up.
+    positions = [
+        (255, 300), (335, 300), (415, 300), (495, 300),
+        (575, 300), (655, 300), (255, 500), (335, 500),
+        (415, 500), (495, 500), (575, 500),
+    ]
+    for index, (cx, cy) in enumerate(positions, start=2):
         body.append(
-            f"BT /F1 8 Tf 1 0 0 1 {x} 512 Tm (EVSE-{index}) Tj ET\n".encode()
+            f"BT /F1 8 Tf 1 0 0 1 {cx - 5} {cy + 17} Tm (EVSE-{index}) Tj ET\n".encode()
         )
-        body.append(f"{x} 495 10 10 re S\n".encode())
-    body.append(b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n")
-    body.append(b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n")
+        body.append(f"{cx - 5} {cy - 5} 10 10 re S\n".encode())
 
     model = _circuit_probe_model(
         tmp_path / "branch-absorbed-into-wall-network.pdf",
@@ -1266,8 +1350,11 @@ def test_branch_run_absorbed_into_a_wall_network_fails_closed(
         "fixture:issue72-branch-absorbed-into-network",
     )
 
+    # Twelve devices are recognized; the point is that none of them get
+    # circuited off geometry that is not wiring.
+    assert len(model.electrical_devices) == 12
     assert model.circuits == (), (
-        "a run absorbed into a junctioned network must not circuit the devices "
+        "a run absorbed into looping architecture must not circuit the devices "
         "that sprawl happened to cover"
     )
     assert model.ports == ()
@@ -1276,7 +1363,7 @@ def test_branch_run_absorbed_into_a_wall_network_fails_closed(
         row for row in misses if row.get("reason_code") == "branch_run_not_isolated"
     ]
     assert rejected, "the absorbed run must be rejected explicitly, not silently"
-    assert all(row.get("junction_element_id") for row in rejected)
+    assert all(row.get("cycle_element_id") for row in rejected)
 
 
 def test_circuit_homerun_fixture_is_a_structurally_valid_pdf() -> None:

@@ -1141,11 +1141,12 @@ def _component_has_homerun_arrowhead(
 ) -> bool:
     return any(
         any(
-            _point_path_distance_pt(apex, branch) <= tolerance_pt
+            _point_path_distance_pt(point, branch) <= tolerance_pt
+            for point in arrowhead.points_pt
             for branch in component
         )
         for arrowhead in arrowheads
-        if (apex := _homerun_arrowhead_apex(arrowhead)) is not None
+        if _homerun_arrowhead_apex(arrowhead) is not None
     )
 
 
@@ -6260,6 +6261,11 @@ class ElectricalPdfImporter:
                 or observation.element_id in schedule_text_ids
                 or _HOMERUN_TAG_RE.search(observation.text) is None
             ):
+                continue
+            # Legacy explicit CKT/CIRCUIT callouts are handled by the
+            # existing circuit-text/topology paths below; a load tag embedded
+            # in one must not be reinterpreted as a panel-circuit tag.
+            if _CIRCUIT_RE.search(observation.text):
                 continue
             raw_match = _HOMERUN_TAG_RE.search(observation.text)
             assert raw_match is not None

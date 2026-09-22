@@ -204,3 +204,59 @@ def test_recognized_devices_are_observed_but_synthesized_ports_are_not(
         assert any(
             record.derivation == DERIVATION_INFERRED for record in port.provenance
         )
+
+
+def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
+    """A consumer must never have to sniff `attributes` to classify an element.
+
+    Two separate lanes shipped bugs from exactly that: a flag written nested
+    under `attributes["pdf_electrical"]` but read at the top level, and a key
+    buried inside a list that a lookup did not walk. Both failed silently and
+    in the dangerous direction -- the value was simply absent, which reads as
+    "not inferred", which renders as observed.
+
+    So this asserts the contract, not an implementation detail: every entity an
+    importer produces can be classified from `provenance` alone.
+    """
+    sheet = tmp_path / "classification-only-sheet.pdf"
+    _write_power_sheet(sheet)
+    model = ElectricalPdfImporter().import_document(
+        extract_pdf(sheet, source_id="fixture:classification-only")
+    )
+
+    def classify(entity) -> str:
+        # Deliberately touches ONLY provenance. No entity.attributes anywhere.
+        records = entity.provenance
+        if not records:
+            return DERIVATION_INFERRED
+        classes = {record.derivation for record in records}
+        if classes == {DERIVATION_OBSERVED}:
+            return DERIVATION_OBSERVED
+        if classes == {DERIVATION_USER}:
+            return DERIVATION_USER
+        return DERIVATION_INFERRED
+
+    everything = [
+        *model.electrical_devices,
+        *model.electrical_equipment,
+        *model.ports,
+        *model.circuits,
+        *model.routes,
+        *model.route_fittings,
+    ]
+    assert everything
+
+    for entity in everything:
+        assert classify(entity) in DERIVATION_CLASSES
+        # Nothing may be classified observed unless every record says so, and
+        # is_observed must agree with a consumer that reads only the field.
+        assert (classify(entity) == DERIVATION_OBSERVED) == is_observed(
+            entity.provenance
+        )
+
+    assert model.ports
+    for port in model.ports:
+        assert classify(port) == DERIVATION_INFERRED, (
+            f"{port.id} is synthesized; classifying from the canonical field "
+            "alone must still reach 'inferred' without reading attributes"
+        )

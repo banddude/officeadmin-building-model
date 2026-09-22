@@ -228,6 +228,15 @@ def is_observed(provenance: Sequence["Provenance"]) -> bool:
     Fails closed: an unset ``derivation`` is not a claim of observation, and a
     mixed set is not either. A renderer must not present anything this returns
     ``False`` for as if it were seen in the source.
+
+    ``derivation`` is the single authoritative location for this fact.  Do not
+    determine it by reading an entity's ``attributes``.  Lane attributes such
+    as ``inferred_for_circuit_semantics`` are diagnostics, not the source of
+    truth: ``attributes`` is free-form, so where a fact lives has no single
+    answer, and a consumer that guesses the wrong nesting level finds nothing.
+    Absent reads as "not inferred", which renders as observed -- the failure is
+    silent and biased toward the dangerous direction.  Two lanes shipped that
+    exact bug before this field existed.
     """
     return bool(provenance) and all(
         record.derivation == DERIVATION_OBSERVED for record in provenance

@@ -1048,7 +1048,12 @@ def test_homeruns_circuit_tags_and_panel_schedule_resolve_fail_closed() -> None:
 
     misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
     reason_codes = {row.get("reason_code") for row in misses}
-    assert "no_panel_token" in reason_codes
+    # The dimension leader is an arrowed leader that touches no device, so
+    # `arrow_not_associated_to_device` is its accurate code. `no_panel_token`
+    # is reserved for an arrowed run that DOES reach a device but carries no
+    # panel annotation; see
+    # test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token.
+    assert "arrow_not_associated_to_device" in reason_codes
     assert "panel_id_not_recognized" in reason_codes
     assert "circuit_outside_panel_schedule" in reason_codes
     assert all(circuit.circuit_number != "2" for circuit in model.circuits)
@@ -1181,6 +1186,73 @@ def test_malformed_circuit_list_fails_closed_instead_of_resolving_prefix(
     misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
     assert any(row.get("reason_code") == "unparseable_circuit_list" for row in misses)
     assert all(row.get("circuit_numbers") != [1] for row in misses)
+
+
+def test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token(
+    tmp_path: Path,
+) -> None:
+    """An arrowed run that reaches a device but names no panel fails closed.
+
+    This is the case #72 means by `no panel token`: a homerun IS found, and the
+    part that failed is the missing panel designation. An arrowed leader that
+    reaches no device at all is a dimension or annotation leader and gets
+    `arrow_not_associated_to_device` instead.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "homerun-without-annotation.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-homerun-without-annotation",
+    )
+
+    assert model.circuits == ()
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    assert any(row.get("reason_code") == "no_panel_token" for row in misses)
+
+
+def test_sprawling_branch_geometry_fails_closed_instead_of_circuiting(
+    tmp_path: Path,
+) -> None:
+    """An arrowed leader that walks into dense geometry must not circuit it.
+
+    Without a bound the component search grows through any touching vector, so
+    one arrow landing on architectural linework would absorb the sheet and
+    circuit every device that sprawl happened to cover.
+    """
+    body = [
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n",
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n",
+        b"175 445 10 10 re S\n",
+        b"180 450 m 300 450 l S\n",
+        b"294 446 m 300 450 l 294 454 l S\n",
+        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n",
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n",
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+    ]
+    # A connected chain of linework hanging off the same branch run.
+    for index in range(120):
+        x = 180 + index
+        body.append(f"{x} 450 m {x} {450 - (index % 7) - 2} l S\n".encode())
+    model = _circuit_probe_model(
+        tmp_path / "sprawling-branch.pdf",
+        b"".join(body),
+        "fixture:issue72-sprawling-branch",
+    )
+
+    assert model.circuits == ()
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    sprawl = [
+        row for row in misses if row.get("reason_code") == "branch_run_not_isolated"
+    ]
+    assert sprawl
+    assert all(row["component_vector_count"] > 64 for row in sprawl)
 
 
 def test_circuit_homerun_fixture_is_a_structurally_valid_pdf() -> None:

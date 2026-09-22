@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -1114,17 +1115,14 @@ def _is_explicit_circuit_annotation(
         # Legacy explicit CKT/CIRCUIT callouts belong to the circuit-text and
         # topology paths; a load tag embedded in one is not a panel tag.
         return False
-    hits = _text_entity_hits(text)
-    if any(kind == "device" for kind, _canonical, _tag, _confidence in hits):
-        # A text the device rules already recognize as a device identity is a
-        # device label, never a circuit annotation -- even when its prefix
-        # collides with a recognized panel name. A panel legitimately named
-        # ``EVSE`` must not turn every ``EVSE-1`` device label into circuit 1,
-        # which would invent a circuit number no annotation states.
-        return False
     if _normalize_tag(match.group("panel")) in recognized_panels:
+        # A recognized panelboard by that name is real corroborating evidence.
+        # Whether this particular text is an annotation or a device's own label
+        # is decided per resolution site by the self-reference rule, not here:
+        # rejecting every device-shaped text outright would make a genuine
+        # `REC-1` annotation on a sheet with a panel named `REC` unresolvable.
         return True
-    return not hits
+    return not _text_entity_hits(text)
 
 
 def _panel_schedule_circuits(
@@ -4840,6 +4838,8 @@ class ElectricalPdfImporter:
         topology_snap_radius_pt: float = 4.0,
         topology_endpoint_radius_pt: float = 18.0,
         topology_annotation_radius_pt: float = 60.0,
+        homerun_branch_reach_pt: float = 240.0,
+        homerun_branch_max_vectors: int = 64,
     ) -> None:
         self.symbol_rules = tuple(symbol_rules)
         self.instance_hints = tuple(instance_hints)
@@ -4865,6 +4865,16 @@ class ElectricalPdfImporter:
         self.topology_snap_radius_pt = float(topology_snap_radius_pt)
         self.topology_endpoint_radius_pt = float(topology_endpoint_radius_pt)
         self.topology_annotation_radius_pt = float(topology_annotation_radius_pt)
+        # How far a branch run may be followed from its homerun arrowhead.
+        # Without this the component search walks transitively through any
+        # touching vector and a single arrow landing on a wall line would
+        # absorb the whole sheet into one 'branch run'.
+        self.homerun_branch_reach_pt = float(homerun_branch_reach_pt)
+        # An arrowed leader that resolves into more connected vectors than
+        # this is not a recognizable branch run -- on a real sheet it has
+        # walked into the architecture. Fail closed and say so rather than
+        # circuit whatever devices that sprawl happens to cover.
+        self.homerun_branch_max_vectors = int(homerun_branch_max_vectors)
 
     def _instance_hint_source_rejection(
         self,
@@ -5698,6 +5708,11 @@ class ElectricalPdfImporter:
         devices: list[ElectricalDevice] = []
         entity_by_page_tag: dict[tuple[int, str], ElectricalEquipment | ElectricalDevice] = {}
         entity_source_positions: dict[str, tuple[int, float, float]] = {}
+        # Which text observation supplied each entity's own identity. A text
+        # that labels a device must never be read as that same device's circuit
+        # annotation; that self-reference is how an ordinary `EVSE-1` label on
+        # a sheet whose panel is also named `EVSE` invented a circuit.
+        entity_identity_text_owner: dict[str, str] = {}
         identity_owners: dict[str, str] = {}
 
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
@@ -5844,6 +5859,8 @@ class ElectricalPdfImporter:
                 candidate.x_pt,
                 candidate.y_pt,
             )
+            for source_element_id in candidate.source_element_ids:
+                entity_identity_text_owner.setdefault(source_element_id, entity.id)
             if candidate.tag:
                 entity_by_page_tag[(candidate.page, candidate.tag)] = entity
 
@@ -6104,6 +6121,12 @@ class ElectricalPdfImporter:
             if _homerun_arrowhead_apex(vector) is not None
         ]
         homerun_arrowhead_ids = {vector.element_id for vector in homerun_arrowheads}
+
+        # Branch-run candidates are every plausible wiring vector, NOT only
+        # those near an already-recognized panel tag. Seeding from annotations
+        # meant an arrowed leader whose annotation does not parse was never
+        # assembled at all, so it could not be diagnosed -- which made
+        # `no_panel_token` unreachable for exactly the case #72 names.
         circuit_vectors = [
             vector
             for vector in vectors
@@ -6112,74 +6135,217 @@ class ElectricalPdfImporter:
             and not _vector_contains_bezier(vector)
             and vector.element_id not in vector_symbol_ids
             and vector.element_id not in glyph_vector_ids
-            and any(
-                observation.page == vector.page
-                and _point_path_distance_pt(
-                    (observation.x_pt, observation.y_pt),
-                    vector,
-                ) <= 180.0
-                for observation in explicit_circuit_tag_texts
-            )
             and sum(
                 _distance_pt(first[0], first[1], second[0], second[1])
                 for first, second in _vector_segments(vector)
             ) >= 4.0
         ]
-        component_parent = list(range(len(circuit_vectors)))
 
-        def circuit_component_find(index: int) -> int:
-            while component_parent[index] != index:
-                component_parent[index] = component_parent[component_parent[index]]
-                index = component_parent[index]
-            return index
+        # Spatial index so neighbour lookup is local instead of all-pairs. Cells
+        # are keyed by page, and each vector is registered along its segments at
+        # cell-sized steps so a long run is found from anywhere it passes, not
+        # only at its vertices.
+        snap_tolerance_pt = self.topology_snap_radius_pt
+        cell_pt = max(snap_tolerance_pt * 4.0, 8.0)
 
-        # `_paths_touch` is False across pages, so pairing within one page at a
-        # time is exactly equivalent to the all-pairs scan and keeps the cost
-        # quadratic in one page's eligible vectors rather than the whole set.
-        circuit_vector_pages: dict[int, list[int]] = {}
-        for index, vector in enumerate(circuit_vectors):
-            circuit_vector_pages.setdefault(vector.page, []).append(index)
-
-        for page_indexes in circuit_vector_pages.values():
-            for position, first_index in enumerate(page_indexes):
-                first_vector = circuit_vectors[first_index]
-                for second_index in page_indexes[position + 1 :]:
-                    if not _paths_touch(
-                        first_vector,
-                        circuit_vectors[second_index],
-                        tolerance_pt=self.topology_snap_radius_pt,
-                    ):
-                        continue
-                    first_root = circuit_component_find(first_index)
-                    second_root = circuit_component_find(second_index)
-                    if first_root != second_root:
-                        component_parent[max(first_root, second_root)] = min(
-                            first_root,
-                            second_root,
+        def circuit_cells(vector: PdfVectorPathObservation) -> set[tuple[int, int]]:
+            cells: set[tuple[int, int]] = set()
+            for first, second in _vector_segments(vector) or ():
+                span = _distance_pt(first[0], first[1], second[0], second[1])
+                steps = int(span / cell_pt) + 1
+                for step in range(steps + 1):
+                    ratio = step / steps
+                    cells.add(
+                        (
+                            int((first[0] + (second[0] - first[0]) * ratio) // cell_pt),
+                            int((first[1] + (second[1] - first[1]) * ratio) // cell_pt),
                         )
+                    )
+            for point in vector.points_pt:
+                cells.add((int(point[0] // cell_pt), int(point[1] // cell_pt)))
+            return cells
 
-        circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
+        circuit_vector_cells: list[set[tuple[int, int]]] = []
+        circuit_grid: dict[tuple[int, int, int], list[int]] = {}
         for index, vector in enumerate(circuit_vectors):
-            circuit_components.setdefault(
-                circuit_component_find(index),
-                [],
-            ).append(vector)
+            cells = circuit_cells(vector)
+            circuit_vector_cells.append(cells)
+            for cell_x, cell_y in cells:
+                circuit_grid.setdefault((vector.page, cell_x, cell_y), []).append(index)
+
+        def circuit_neighbors_of_path(
+            path: PdfVectorPathObservation,
+            grid: dict[tuple[int, int, int], list[int]],
+            cells: set[tuple[int, int]],
+        ) -> set[int]:
+            found: set[int] = set()
+            for cell_x, cell_y in cells:
+                for offset_x in (-1, 0, 1):
+                    for offset_y in (-1, 0, 1):
+                        found.update(
+                            grid.get((path.page, cell_x + offset_x, cell_y + offset_y), ())
+                        )
+            return found
+
+        def circuit_neighbors(index: int) -> set[int]:
+            vector = circuit_vectors[index]
+            found: set[int] = set()
+            for cell_x, cell_y in circuit_vector_cells[index]:
+                for offset_x in (-1, 0, 1):
+                    for offset_y in (-1, 0, 1):
+                        found.update(
+                            circuit_grid.get(
+                                (vector.page, cell_x + offset_x, cell_y + offset_y),
+                                (),
+                            )
+                        )
+            found.discard(index)
+            return found
+
+        # Assemble components by growing outward from each homerun arrowhead.
+        # The arrowhead is the signature of a homerun, so this both bounds the
+        # work by the (small) arrowhead count and finds arrowed runs whose
+        # annotation is absent or unparseable.
+        circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
+        assigned: dict[int, int] = {}
+        for arrow_position, arrowhead in enumerate(homerun_arrowheads):
+            seeds = [
+                index
+                for index in circuit_neighbors_of_path(
+                    arrowhead,
+                    circuit_grid,
+                    circuit_cells(arrowhead),
+                )
+                if circuit_vectors[index].page == arrowhead.page
+                and index not in assigned
+                and _paths_touch(
+                    arrowhead,
+                    circuit_vectors[index],
+                    tolerance_pt=snap_tolerance_pt + 2.0,
+                )
+            ]
+            if not seeds:
+                continue
+            component_key = arrow_position
+            apex = _homerun_arrowhead_apex(arrowhead)
+            queue = list(seeds)
+            members: list[int] = []
+            while queue:
+                index = queue.pop()
+                if index in assigned:
+                    continue
+                if apex is not None and _point_path_distance_pt(
+                    apex,
+                    circuit_vectors[index],
+                ) > self.homerun_branch_reach_pt:
+                    continue
+                assigned[index] = component_key
+                members.append(index)
+                for neighbor in circuit_neighbors(index):
+                    if neighbor in assigned:
+                        continue
+                    if _paths_touch(
+                        circuit_vectors[index],
+                        circuit_vectors[neighbor],
+                        tolerance_pt=snap_tolerance_pt,
+                    ):
+                        queue.append(neighbor)
+            if members:
+                circuit_components[component_key] = [
+                    circuit_vectors[index] for index in sorted(members)
+                ]
 
         consumed_explicit_tag_ids: set[str] = set()
-        for component in sorted(
-            circuit_components.values(),
-            key=lambda items: (
-                items[0].page,
-                tuple(sorted(item.element_id for item in items)),
-            ),
-        ):
-            if not _component_has_homerun_arrowhead(
-                component,
-                homerun_arrowheads,
-                tolerance_pt=self.topology_snap_radius_pt + 2.0,
-            ):
-                continue
+        homerun_components = [
+            component
+            for component in sorted(
+                circuit_components.values(),
+                key=lambda items: (
+                    items[0].page,
+                    tuple(sorted(item.element_id for item in items)),
+                ),
+            )
+        ]
+
+        # One annotation cannot circuit two disconnected branch runs. Count how
+        # many components each annotation is in range of first, so an
+        # annotation claimed by more than one fails closed as ambiguous instead
+        # of silently attaching every run it happens to sit near.
+        annotation_claim_counts: Counter[str] = Counter()
+        for component in homerun_components:
+            for observation in texts:
+                if (
+                    observation.page != component[0].page
+                    or observation.element_id in schedule_text_ids
+                    or not _is_explicit_circuit_annotation(
+                        observation.text,
+                        recognized_panels=recognized_panels,
+                    )
+                ):
+                    continue
+                if min(
+                    _point_path_distance_pt(
+                        (observation.x_pt, observation.y_pt),
+                        vector,
+                    )
+                    for vector in component
+                ) <= self.topology_annotation_radius_pt:
+                    annotation_claim_counts[observation.element_id] += 1
+
+        for component in homerun_components:
             page = component[0].page
+            load_entities = [
+                entity
+                for entity in devices
+                if entity_source_positions[entity.id][0] == page
+                and min(
+                    _point_path_distance_pt(
+                        (
+                            entity_source_positions[entity.id][1],
+                            entity_source_positions[entity.id][2],
+                        ),
+                        vector,
+                    )
+                    for vector in component
+                ) <= self.topology_endpoint_radius_pt
+            ]
+            if len(component) > self.homerun_branch_max_vectors:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "status": "unresolved",
+                        "reason_code": "branch_run_not_isolated",
+                        "reason": (
+                            "arrowed leader expands into more connected geometry "
+                            "than a branch run can be distinguished from"
+                        ),
+                        "component_vector_count": len(component),
+                    }
+                )
+                continue
+            if not load_entities:
+                # An arrowed leader touching no recognized device is a
+                # dimension or annotation leader, not a homerun. #72 names this
+                # case directly, and it is the accurate code for it.
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "status": "unresolved",
+                        "reason_code": "arrow_not_associated_to_device",
+                        "reason": (
+                            "homerun arrow is not associated with a recognized device"
+                        ),
+                    }
+                )
+                continue
             nearby_annotations = [
                 observation
                 for observation in texts
@@ -6254,6 +6420,24 @@ class ElectricalPdfImporter:
                 continue
             observation, panel_tag, numbers, reason_code = parsed[0]
             consumed_explicit_tag_ids.add(observation.element_id)
+            if annotation_claim_counts.get(observation.element_id, 0) > 1:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": "ambiguous_homerun_association",
+                        "reason": (
+                            "one circuit annotation is in range of more than one "
+                            "disconnected branch run"
+                        ),
+                    }
+                )
+                continue
             if reason_code is not None or panel_tag is None:
                 unresolved_circuits.append(
                     {
@@ -6269,21 +6453,16 @@ class ElectricalPdfImporter:
                     }
                 )
                 continue
-            load_entities = [
-                entity
-                for entity in devices
-                if entity_source_positions[entity.id][0] == page
-                and min(
-                    _point_path_distance_pt(
-                        (
-                            entity_source_positions[entity.id][1],
-                            entity_source_positions[entity.id][2],
-                        ),
-                        vector,
-                    )
-                    for vector in component
-                ) <= self.topology_endpoint_radius_pt
-            ]
+            # A text used as the circuit annotation is not itself a load on the
+            # circuit it names. This is what keeps an ordinary `EVSE-1` device
+            # label from circuiting the device it labels, while still letting a
+            # genuine `REC-1` annotation resolve on a sheet whose panel is also
+            # named `REC`.
+            annotation_owner_id = entity_identity_text_owner.get(observation.element_id)
+            if annotation_owner_id is not None:
+                load_entities = [
+                    entity for entity in load_entities if entity.id != annotation_owner_id
+                ]
             if not load_entities:
                 unresolved_circuits.append(
                     {
@@ -6339,6 +6518,13 @@ class ElectricalPdfImporter:
                     entity_source_positions[entity.id][2],
                 ) <= 42.0
             ]
+            if len(nearby_devices) == 1 and entity_identity_text_owner.get(
+                observation.element_id
+            ) == nearby_devices[0].id:
+                # This text IS that device's identity label. Reading it as the
+                # device's own circuit assignment is self-referential and
+                # states no circuit; #72 forbids inventing one.
+                continue
             if reason_code is not None or panel_tag is None or len(nearby_devices) != 1:
                 unresolved_circuits.append(
                     {

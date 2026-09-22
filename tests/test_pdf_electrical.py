@@ -1007,23 +1007,36 @@ def test_homeruns_circuit_tags_and_panel_schedule_resolve_fail_closed() -> None:
     assert model.electrical_equipment[0].equipment_type == "panelboard"
     assert model.electrical_equipment[0].name == "LP"
     assert {circuit.circuit_number for circuit in model.circuits} == {
-        "1,3,5",
+        "1",
+        "3",
+        "5",
         "7",
     }
-    assert len(model.circuits) == 2
-    assert len(model.ports) == 6
+    assert len(model.circuits) == 4
+    # Each circuit owns one panel source port. The three homerun circuits
+    # share the same three loads but keep distinct load ports per circuit;
+    # circuit 7 has one direct-tagged load.
+    assert len(model.ports) == 14
 
-    homerun = next(
-        circuit for circuit in model.circuits if circuit.circuit_number == "1,3,5"
-    )
+    homeruns = [
+        circuit for circuit in model.circuits if circuit.circuit_number in {"1", "3", "5"}
+    ]
     direct = next(
         circuit for circuit in model.circuits if circuit.circuit_number == "7"
     )
-    assert len(homerun.load_port_ids) == 3
+    assert all(len(circuit.load_port_ids) == 3 for circuit in homeruns)
     assert len(direct.load_port_ids) == 1
-    assert homerun.attributes["pdf_electrical"]["evidence_methods"] == [
-        "pdf-homerun-annotation"
-    ]
+    assert all(
+        circuit.attributes["pdf_electrical"]["evidence_methods"]
+        == ["pdf-homerun-annotation"]
+        for circuit in homeruns
+    )
+    raceway_groups = {
+        row["shared_raceway_group"]
+        for circuit in homeruns
+        for row in circuit.attributes["pdf_electrical"]["evidence"]
+    }
+    assert len(raceway_groups) == 1
     assert direct.attributes["pdf_electrical"]["evidence_methods"] == [
         "pdf-device-circuit-tag"
     ]

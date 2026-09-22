@@ -1216,49 +1216,67 @@ def test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token(
     assert any(row.get("reason_code") == "no_panel_token" for row in misses)
 
 
-def test_branch_run_crossing_an_enclosure_edge_fails_closed(
+def test_branch_run_absorbed_into_a_wall_network_fails_closed(
     tmp_path: Path,
 ) -> None:
     """A run that has walked into the architecture must never become a circuit.
 
     Component assembly grows outward from a homerun arrowhead through any
     touching vector, so on a real sheet an arrow landing near linework can
-    absorb geometry that is not wiring at all. The reject is semantic, not a
-    size cutoff: an unclaimed CLOSED path is an enclosure edge (a room
-    boundary, a hatch outline), as distinct from a device's own symbol
-    outline, which a branch run legitimately terminates at.
+    absorb geometry that is not wiring at all and circuit every device that
+    sprawl happens to cover.
 
-    Pinned in CI on purpose. It must not depend on any pilot's counts, and it
-    must keep holding until the branch-geometry discriminator lands.
+    The reject is structural, not a size cutoff. A branch run is a chain: each
+    piece continues into at most one before it and one after. Architectural
+    linework is a mesh, where a segment meets three or more others at
+    junctions. Walls on a real sheet are OPEN polylines, so a rule that only
+    looked at closed paths would miss exactly the geometry that matters.
+
+    Pinned in CI deliberately. It must not depend on any pilot's counts, and it
+    must keep holding until the full discriminator in #76 lands.
     """
+    body = [
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n",
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n",
+        b"175 445 10 10 re S\n",
+        # The real branch run, arrowed and annotated.
+        b"180 450 m 300 450 l S\n",
+        b"294 446 m 300 450 l 294 454 l S\n",
+        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n",
+    ]
+    # An open wall/partition grid the run connects into. No closed path here:
+    # this is the shape a closed-path-only guard misses.
+    for offset in range(4):
+        x = 180 + offset * 40
+        body.append(f"{x} 450 m {x} 560 l S\n".encode())
+        body.append(f"{x} 500 m {x + 40} 500 l S\n".encode())
+    # Extra recognized loads sitting on that grid, which a bogus circuit would
+    # sweep up.
+    for index, x in enumerate(range(200, 320, 40), start=2):
+        body.append(
+            f"BT /F1 8 Tf 1 0 0 1 {x} 512 Tm (EVSE-{index}) Tj ET\n".encode()
+        )
+        body.append(f"{x} 495 10 10 re S\n".encode())
+    body.append(b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n")
+    body.append(b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n")
+
     model = _circuit_probe_model(
-        tmp_path / "branch-crosses-enclosure.pdf",
-        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
-        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
-        b"175 445 10 10 re S\n"
-        # A room enclosure whose left edge the branch run runs into, which is
-        # how sprawl actually happens: the run continues into linework and the
-        # component grows through it.
-        b"300 390 120 130 re S\n"
-        b"180 450 m 300 450 l S\n"
-        b"294 446 m 300 450 l 294 454 l S\n"
-        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n"
-        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
-        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
-        "fixture:issue72-branch-crosses-enclosure",
+        tmp_path / "branch-absorbed-into-wall-network.pdf",
+        b"".join(body),
+        "fixture:issue72-branch-absorbed-into-network",
     )
 
-    assert model.circuits == ()
+    assert model.circuits == (), (
+        "a run absorbed into a junctioned network must not circuit the devices "
+        "that sprawl happened to cover"
+    )
     assert model.ports == ()
     misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
     rejected = [
         row for row in misses if row.get("reason_code") == "branch_run_not_isolated"
     ]
-    assert rejected, (
-        "a branch run touching an unclaimed enclosure edge must be rejected "
-        "explicitly, not silently resolved into a circuit"
-    )
-    assert all(row.get("enclosure_element_id") for row in rejected)
+    assert rejected, "the absorbed run must be rejected explicitly, not silently"
+    assert all(row.get("junction_element_id") for row in rejected)
 
 
 def test_circuit_homerun_fixture_is_a_structurally_valid_pdf() -> None:

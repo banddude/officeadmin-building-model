@@ -6232,46 +6232,34 @@ class ElectricalPdfImporter:
         # The arrowhead is the signature of a homerun, so this both bounds the
         # work by the (small) arrowhead count and finds arrowed runs whose
         # annotation is absent or unparseable.
-        # Enclosure edges: closed paths that no recognized device or legend
-        # glyph claims. A room boundary, a hatch outline, a wall enclosure. A
-        # branch run legitimately ends at a device's own symbol outline, but a
-        # run that has walked through an unclaimed enclosure edge is no longer
-        # distinguishable from the architecture it crossed.
-        enclosure_vectors = [
-            vector
-            for vector in vectors
-            if vector.closed
-            and vector.element_id not in vector_symbol_ids
-            and vector.element_id not in glyph_vector_ids
-        ]
-        enclosure_grid: dict[tuple[int, int, int], set[int]] = {}
-        for index, vector in enumerate(enclosure_vectors):
-            for cell_x, cell_y in circuit_cells(vector):
-                enclosure_grid.setdefault(
-                    (vector.page, cell_x, cell_y), set()
-                ).add(index)
-
-        def touches_enclosure(
+        def component_junction_witness(
             component: Sequence[PdfVectorPathObservation],
         ) -> PdfVectorPathObservation | None:
+            """Return a vector proving this component is a network, not a run.
+
+            A branch circuit run is a chain: each piece continues into at most
+            one piece before it and one after. Architectural linework -- wall
+            grids, partition networks, hatching -- is a mesh, where a single
+            segment meets three or more others at junctions.
+
+            That is a structural property of the geometry, not a tuned
+            threshold. It is also the shape that actually matters: on a real
+            sheet walls are OPEN polylines, so a rule that only looked at
+            closed paths missed the very geometry a run sprawls into.
+            """
             for vector in component:
-                candidates: set[int] = set()
-                for cell_x, cell_y in circuit_cells(vector):
-                    for offset_x in (-1, 0, 1):
-                        for offset_y in (-1, 0, 1):
-                            candidates.update(
-                                enclosure_grid.get(
-                                    (vector.page, cell_x + offset_x, cell_y + offset_y),
-                                    (),
-                                )
-                            )
-                for index in candidates:
+                touching = 0
+                for other in component:
+                    if other.element_id == vector.element_id:
+                        continue
                     if _paths_touch(
                         vector,
-                        enclosure_vectors[index],
+                        other,
                         tolerance_pt=self.topology_snap_radius_pt,
                     ):
-                        return enclosure_vectors[index]
+                        touching += 1
+                        if touching >= 3:
+                            return vector
             return None
 
         circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
@@ -6380,8 +6368,8 @@ class ElectricalPdfImporter:
                     for vector in component
                 ) <= self.topology_endpoint_radius_pt
             ]
-            enclosure = touches_enclosure(component)
-            if enclosure is not None:
+            junction = component_junction_witness(component)
+            if junction is not None:
                 unresolved_circuits.append(
                     {
                         "kind": "homerun",
@@ -6392,10 +6380,10 @@ class ElectricalPdfImporter:
                         "status": "unresolved",
                         "reason_code": "branch_run_not_isolated",
                         "reason": (
-                            "arrowed leader reaches geometry that is not "
-                            "distinguishable from the architecture it crosses"
+                            "arrowed leader runs into a junctioned network "
+                            "rather than continuing as a branch run"
                         ),
-                        "enclosure_element_id": enclosure.element_id,
+                        "junction_element_id": junction.element_id,
                         "component_vector_count": len(component),
                     }
                 )

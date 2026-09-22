@@ -16,6 +16,7 @@ from statistics import median
 from typing import Iterable
 
 from oabm.model import (
+    DERIVATION_OBSERVED,
     BuildingModel,
     Ceiling,
     CoordinateSystem,
@@ -1901,6 +1902,7 @@ def _provenance(
     return (
         Provenance(
             source_kind="architectural_pdf",
+            derivation=DERIVATION_OBSERVED,
             source_id=source_id,
             source_element_id=source_element_id,
             page=page_number,
@@ -3945,6 +3947,7 @@ def import_observations(
             registration_fallback_provenance.append(
                 Provenance(
                     source_kind="architectural_pdf",
+            derivation=DERIVATION_OBSERVED,
                     source_id=document.source_id,
                     page=page.page_number,
                     method=transform.method,
@@ -4188,6 +4191,7 @@ def import_observations(
     model_provenance = (
         Provenance(
             source_kind="architectural_pdf",
+            derivation=DERIVATION_OBSERVED,
             source_id=document.source_id,
             method="deterministic vector/text architectural PDF importer",
             confidence=model_confidence,

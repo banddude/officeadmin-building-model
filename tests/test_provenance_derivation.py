@@ -8,6 +8,7 @@ has an endpoint still carries the importer's own `source_kind`.
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,9 @@ import pytest
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
+from oabm.importers.pdf_architecture.importer import import_architectural_pdf
 from oabm.importers.pdf_electrical import ElectricalPdfImporter, extract_pdf
+from oabm.importers.roomplan import load_captured_room
 from oabm.model import (
     DERIVATION_CLASSES,
     DERIVATION_INFERRED,
@@ -207,22 +210,19 @@ def test_recognized_devices_are_observed_but_synthesized_ports_are_not(
 
 
 def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
-    """A consumer must never have to sniff `attributes` to classify an element.
+    """Every required producer states its class, readable from provenance alone.
 
-    Two separate lanes shipped bugs from exactly that: a flag written nested
-    under `attributes["pdf_electrical"]` but read at the top level, and a key
-    buried inside a list that a lookup did not walk. Both failed silently and
-    in the dangerous direction -- the value was simply absent, which reads as
-    "not inferred", which renders as observed.
+    Two lanes shipped bugs from reading a provenance signal at the wrong
+    nesting level inside free-form ``attributes``. Both failed silently and in
+    the dangerous direction, because absent reads as "not inferred" and
+    not-inferred renders as observed.
 
-    So this asserts the contract, not an implementation detail: every entity an
-    importer produces can be classified from `provenance` alone.
+    So this asserts the EXPECTED CLASS PER PRODUCER, not merely that the answer
+    is a valid token. An earlier version of this test checked only enum
+    membership and agreement with ``is_observed()``, which both return
+    ``inferred`` when every derivation is stripped -- so it passed against a
+    model with no classification at all and proved nothing.
     """
-    sheet = tmp_path / "classification-only-sheet.pdf"
-    _write_power_sheet(sheet)
-    model = ElectricalPdfImporter().import_document(
-        extract_pdf(sheet, source_id="fixture:classification-only")
-    )
 
     def classify(entity) -> str:
         # Deliberately touches ONLY provenance. No entity.attributes anywhere.
@@ -236,27 +236,77 @@ def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
             return DERIVATION_USER
         return DERIVATION_INFERRED
 
-    everything = [
-        *model.electrical_devices,
-        *model.electrical_equipment,
-        *model.ports,
-        *model.circuits,
-        *model.routes,
-        *model.route_fittings,
-    ]
-    assert everything
+    # --- electrical: recognized entities observed, synthesized ports inferred
+    sheet = tmp_path / "classification-sheet.pdf"
+    _write_power_sheet(sheet)
+    elec = ElectricalPdfImporter().import_document(
+        extract_pdf(sheet, source_id="fixture:classification-electrical")
+    )
+    assert elec.electrical_devices and elec.electrical_equipment and elec.ports
+    for entity in (*elec.electrical_devices, *elec.electrical_equipment):
+        assert classify(entity) == DERIVATION_OBSERVED, entity.id
+    for port in elec.ports:
+        assert classify(port) == DERIVATION_INFERRED, port.id
+    assert classify(elec) == DERIVATION_OBSERVED
 
-    for entity in everything:
-        assert classify(entity) in DERIVATION_CLASSES
-        # Nothing may be classified observed unless every record says so, and
-        # is_observed must agree with a consumer that reads only the field.
-        assert (classify(entity) == DERIVATION_OBSERVED) == is_observed(
-            entity.provenance
-        )
+    # --- architecture and roomplan: real input, so observed
+    arch = import_architectural_pdf(
+        Path("fixtures/pdf_architecture/v1/cad-export-geometry-plus-text.pdf"),
+        source_id="fixture:classification-arch",
+    )
+    arch_entities = (*arch.levels, *arch.spaces, *arch.walls)
+    assert arch_entities
+    for entity in arch_entities:
+        assert classify(entity) == DERIVATION_OBSERVED, entity.id
+    assert classify(arch) == DERIVATION_OBSERVED
 
-    assert model.ports
-    for port in model.ports:
-        assert classify(port) == DERIVATION_INFERRED, (
-            f"{port.id} is synthesized; classifying from the canonical field "
-            "alone must still reach 'inferred' without reading attributes"
-        )
+    room = load_captured_room(
+        Path("fixtures/roomplan/captured-room-3d.json"),
+        source_id="fixture:classification-room",
+    )
+    room_entities = (*room.levels, *room.spaces, *room.walls)
+    assert room_entities
+    for entity in room_entities:
+        assert classify(entity) == DERIVATION_OBSERVED, entity.id
+    assert classify(room) == DERIVATION_OBSERVED
+
+    # --- router: a computed centerline is never observed
+    routing = _routing_model()
+    route, fittings = route_between_ports(
+        routing,
+        stable_id("port", "prov:source"),
+        stable_id("port", "prov:load"),
+        "emt",
+    )
+    assert fittings, "the probe must actually produce fittings to classify"
+    for entity in (route, *fittings):
+        assert classify(entity) == DERIVATION_INFERRED, entity.id
+
+
+def test_classification_test_would_fail_if_observed_classes_were_lost(
+    tmp_path: Path,
+) -> None:
+    """Guard the guard: stripping the class must break classification.
+
+    The previous version of the test above could not tell a correctly
+    classified model from one carrying no classification at all. This pins
+    that it now can, so the contract test cannot quietly rot back into a
+    tautology.
+    """
+    sheet = tmp_path / "classification-strip.pdf"
+    _write_power_sheet(sheet)
+    model = ElectricalPdfImporter().import_document(
+        extract_pdf(sheet, source_id="fixture:classification-strip")
+    )
+    device = model.electrical_devices[0]
+    assert is_observed(device.provenance)
+
+    stripped = replace(
+        device,
+        provenance=tuple(
+            replace(record, derivation=None) for record in device.provenance
+        ),
+    )
+    assert not is_observed(stripped.provenance), (
+        "an entity whose class has been removed must stop reading as observed"
+    )

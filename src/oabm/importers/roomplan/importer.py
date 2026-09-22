@@ -8,6 +8,7 @@ from statistics import median
 from typing import Any, Mapping, Sequence
 
 from oabm.model import (
+    DERIVATION_OBSERVED,
     Box3D,
     BuildingModel,
     CoordinateSystem,
@@ -416,6 +417,7 @@ def import_captured_room(
                 provenance=(
                     Provenance(
                         source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
                         source_id=provenance_source_id,
                         source_element_id=f"story:{story}",
                         method="CapturedRoom story grouping",
@@ -450,6 +452,7 @@ def import_captured_room(
                 provenance=(
                     Provenance(
                         source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
                         source_id=provenance_source_id,
                         source_element_id=room_identifier,
                         method="CapturedRoom floor footprint",
@@ -666,6 +669,7 @@ def import_captured_room(
         provenance=(
             Provenance(
                 source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
                 source_id=provenance_source_id,
                 source_element_id=room_identifier,
                 method="CapturedRoom JSON import",
@@ -1087,6 +1091,7 @@ def _provenance(
 ) -> Provenance:
     return Provenance(
         source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
         source_id=source_id,
         source_element_id=source_element_id,
         method="CapturedRoom JSON import",

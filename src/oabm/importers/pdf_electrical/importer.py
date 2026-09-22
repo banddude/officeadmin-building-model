@@ -6460,6 +6460,7 @@ class ElectricalPdfImporter:
             Provenance(
                 source_kind="pdf-electrical",
                 source_id=document.source_id,
+                derivation=DERIVATION_OBSERVED,
                 method="pypdf-text-xobject-annotation-vector extraction",
                 confidence=1.0,
                 attributes={"page_count": document.page_count},
@@ -6470,6 +6471,7 @@ class ElectricalPdfImporter:
                 Provenance(
                     source_kind="pdf-electrical",
                     source_id=document.source_id,
+                    derivation=DERIVATION_OBSERVED,
                     page=page,
                     method="pypdf-page-display-normalization",
                     confidence=1.0,
@@ -6481,6 +6483,7 @@ class ElectricalPdfImporter:
                 Provenance(
                     source_kind="pdf-electrical",
                     source_id=document.source_id,
+                    derivation=DERIVATION_OBSERVED,
                     source_element_id=str(note["source_element_id"]),
                     page=int(note["page"]),
                     method="pdf-page-frame-media-box-rederivation",

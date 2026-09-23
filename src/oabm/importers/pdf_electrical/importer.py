@@ -1047,6 +1047,8 @@ _PANEL_SCHEDULE_HEADING_RE = re.compile(r"\bPANEL\s+(?P<panel>[A-Z][A-Z0-9_.-]*)
 _PANEL_SCHEDULE_ROW_RE = re.compile(r"^\s*(?P<circuit>\d+)\s+\S", re.IGNORECASE)
 _PANEL_SCHEDULE_NOTE_ROW_RE = re.compile(r"^\s*\d+\s+(?:(?:DETAIL|GENERAL)\s+)?NOTES?\b", re.IGNORECASE)
 _NOTES_HEADING_RE = re.compile(r"^\s*(?:(?:DETAIL|GENERAL)\s+)?NOTES?\b", re.IGNORECASE)
+_SCHEDULE_CIRCUIT_COLUMN_RE = re.compile(r"\b(?:CKT|CIRCUITS?)\b", re.IGNORECASE)
+_SCHEDULE_LOAD_COLUMN_RE = re.compile(r"\b(?:LOAD|DESCRIPTION|SERVES)\b", re.IGNORECASE)
 _POLES_RE = re.compile(r"\b(?P<poles>[1234])\s*P\b", re.IGNORECASE)
 _PHASE_RE = re.compile(r"\b(?P<phase>[123])\s*PH\b", re.IGNORECASE)
 _VOLTAGE_RE = re.compile(
@@ -1180,6 +1182,20 @@ def _panel_schedule_circuits(
                 and header_left == left
                 and header_right == right
                 and bottom < header_bottom < heading.y_pt < header_top <= top
+                and any(
+                    text.page == heading.page
+                    and header_left < text.x_pt < header_right
+                    and header_bottom < text.y_pt < heading.y_pt
+                    and _SCHEDULE_CIRCUIT_COLUMN_RE.search(text.text)
+                    for text in texts
+                )
+                and any(
+                    text.page == heading.page
+                    and header_left < text.x_pt < header_right
+                    and header_bottom < text.y_pt < heading.y_pt
+                    and _SCHEDULE_LOAD_COLUMN_RE.search(text.text)
+                    for text in texts
+                )
                 and not any(
                     text.page == heading.page
                     and text.element_id != heading.element_id

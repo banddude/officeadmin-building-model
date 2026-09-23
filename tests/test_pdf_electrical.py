@@ -1115,6 +1115,10 @@ def _write_circuit_probe_pdf(
             row_bottoms = row_tops[1:] + [row_positions[-1][1] - 5]
             frame_bottom = row_bottoms[-1]
             cells.append(
+                f"BT /F1 8 Tf 1 0 0 1 {float(heading.group(1)):g} "
+                f"{float(heading.group(2)) - 10:g} Tm (CKT LOAD) Tj ET\n".encode()
+            )
+            cells.append(
                 f"{frame_left:g} {row_tops[0]:g} "
                 f"{frame_right - frame_left:g} {frame_top - row_tops[0]:g} re S\n".encode()
             )
@@ -1365,6 +1369,7 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
         b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
         b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 SPARE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (CKT LOAD) Tj ET\n"
         b"590 530 160 30 re S\n"
         b"590 520 160 10 re S\n"
         b"590 520 160 40 re S\n",
@@ -1398,6 +1403,7 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
     standalone = _circuit_probe_model(
         tmp_path / "standalone-notes-frame.pdf",
         body
+        + b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (CKT LOAD) Tj ET\n"
         + b"590 530 160 30 re S\n"
         + b"590 520 160 10 re S\n"
         + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
@@ -1415,6 +1421,7 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
     standalone_valid = _circuit_probe_model(
         tmp_path / "standalone-notes-frame-valid.pdf",
         body.replace(b"(LP-99)", b"(LP-1)")
+        + b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (CKT LOAD) Tj ET\n"
         + b"590 530 160 30 re S\n"
         + b"590 520 160 10 re S\n"
         + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
@@ -1446,9 +1453,12 @@ def test_moving_a_complete_ruled_schedule_does_not_change_its_circuit(
 
 def test_ruled_note_block_is_not_a_panel_schedule_load_row(tmp_path: Path) -> None:
     """A note label stays a note even inside a schedule-shaped outline."""
-    for label, extra in (
-        ("bare", b""),
-        ("general-notes", b"BT /F1 8 Tf 1 0 0 1 600 300 Tm (GENERAL NOTES) Tj ET\n"),
+    for label, note, extra in (
+        ("bare", b"99 DETAIL NOTE", b""),
+        ("general-notes", b"99 DETAIL NOTE", b"BT /F1 8 Tf 1 0 0 1 600 300 Tm (GENERAL NOTES) Tj ET\n"),
+        ("keynote", b"99 KEYNOTE", b""),
+        ("key-notes", b"99 KEYNOTE", b"BT /F1 8 Tf 1 0 0 1 600 300 Tm (KEY NOTES) Tj ET\n"),
+        ("detail-callout", b"99 DETAIL CALLOUT", b""),
     ):
         model = _circuit_probe_model(
             tmp_path / f"ruled-note-block-{label}.pdf",
@@ -1457,7 +1467,7 @@ def test_ruled_note_block_is_not_a_panel_schedule_load_row(tmp_path: Path) -> No
             b"175 445 10 10 re S\n"
             b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
             b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
-            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (" + note + b") Tj ET\n"
             b"590 125 160 435 re S\n"
             b"590 115 160 10 re S\n"
             b"590 100 160 460 re S\n"

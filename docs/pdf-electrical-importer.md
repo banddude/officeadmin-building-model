@@ -76,7 +76,10 @@ unambiguous, closed table cell below the heading, inside a separate closed
 schedule frame that also contains the heading. A ruled header cell must contain
 the heading and share a horizontal edge with the first row cell; successive row
 cells must share edges. Header, rows, and frame share their left and right table
-edges. The shortest unambiguous same-column frame owns the table, so a page
+edges. The header must also label both the circuit-number and load-description
+columns (`CKT`/`CIRCUIT` and `LOAD`/`DESCRIPTION`/`SERVES`); a numbered note
+under a heading alone is not sufficient table evidence. The shortest
+unambiguous same-column frame owns the table, so a page
 border or broader notes-column frame cannot extend it. A detached boxed note
 cannot become a row merely because a tall column outline encloses both texts.
 Texts labeled as note rows (for example, `99 DETAIL NOTE`) are not load

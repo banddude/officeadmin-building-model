@@ -1148,15 +1148,20 @@ def _panel_schedule_circuits(
         schedules.setdefault(panel_tag, set())
 
     heading_ids = {heading.element_id for heading, _tag in headings}
+    column_rows: dict[str, list[tuple[PdfTextObservation, int, str]]] = {}
     for row in texts:
         if row.element_id in heading_ids:
             continue
         row_match = _PANEL_SCHEDULE_ROW_RE.match(row.text)
         if row_match is None:
             continue
-        # A row belongs to ONE schedule: the nearest heading above it on the
-        # page. A fixed block width or height can silently make a real schedule
-        # disappear and turn an invalid circuit into an accepted one.
+        # A row needs positive evidence of the schedule's circuit-number
+        # column. The text origin is the only column geometry retained by the
+        # extractor, so require alignment with the heading's origin within one
+        # source font em. Vertical proximity alone can claim unrelated numbered
+        # notes elsewhere on a sheet as valid panel circuits. Keep the
+        # vertical extent open: a fixed block height can silently make a real
+        # schedule disappear and waive validation of an invalid circuit.
         candidates = [
             (
                 _distance_pt(row.x_pt, row.y_pt, heading.x_pt, heading.y_pt),
@@ -1166,6 +1171,8 @@ def _panel_schedule_circuits(
             for heading, panel_tag in headings
             if row.page == heading.page
             and row.y_pt < heading.y_pt
+            and abs(row.x_pt - heading.x_pt)
+            <= max(row.font_size_pt or 0.0, heading.font_size_pt or 0.0)
         ]
         if not candidates:
             continue
@@ -1174,10 +1181,28 @@ def _panel_schedule_circuits(
             # Equidistant between two schedules: which panel owns this row is
             # genuinely ambiguous, so claim it for neither.
             continue
-        schedules.setdefault(candidates[0][2], set()).add(
-            int(row_match.group("circuit"))
+        column_rows.setdefault(candidates[0][1], []).append(
+            (row, int(row_match.group("circuit")), candidates[0][2])
         )
-        consumed_ids.add(row.element_id)
+
+    for heading, _panel_tag in headings:
+        rows = sorted(
+            column_rows.get(heading.element_id, ()),
+            key=lambda item: (-item[0].y_pt, item[0].element_id),
+        )
+        if not rows:
+            continue
+        # The first aligned row establishes the schedule's own line spacing.
+        # Later rows must form a continuous column. A distant numbered note,
+        # even if horizontally aligned, cannot join a separated table block.
+        max_gap = heading.y_pt - rows[0][0].y_pt
+        previous_y = heading.y_pt
+        for row, circuit, panel_tag in rows:
+            if previous_y - row.y_pt > max_gap:
+                break
+            schedules[panel_tag].add(circuit)
+            consumed_ids.add(row.element_id)
+            previous_y = row.y_pt
     return schedules, consumed_ids
 
 

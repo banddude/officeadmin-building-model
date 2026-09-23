@@ -1269,6 +1269,35 @@ def test_schedule_row_position_cannot_validate_an_absent_circuit(tmp_path: Path)
         )
 
 
+def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path) -> None:
+    """A note in another column or a separated block is not a schedule row."""
+    body = (
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    for label, extra in (
+        ("control", b""),
+        ("unrelated-99", b"BT /F1 8 Tf 1 0 0 1 60 120 Tm (99 DETAIL NOTE) Tj ET\n"),
+        ("unrelated-42", b"BT /F1 8 Tf 1 0 0 1 60 120 Tm (42 DETAIL NOTE) Tj ET\n"),
+        ("aligned-but-separated", b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"schedule-note-{label}.pdf",
+            body + extra,
+            f"fixture:issue72-schedule-note-{label}",
+        )
+        assert model.circuits == (), label
+        assert any(
+            row.get("source_text") == "LP-99"
+            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        ), label
+
+
 def test_unparsed_present_schedule_does_not_become_absent(tmp_path: Path) -> None:
     """A visible schedule with no parseable rows cannot waive validation."""
     model = _circuit_probe_model(

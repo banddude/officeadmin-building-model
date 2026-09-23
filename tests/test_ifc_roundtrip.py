@@ -1,3 +1,4 @@
+import math
 import copy
 import json
 from pathlib import Path
@@ -11,13 +12,25 @@ import numpy as np
 import pytest
 
 from oabm.ifc import (
+    GEOMETRIC_TOLERANCE,
+    geometry_matches,
     IfcAdapterError,
     canonical_id_to_ifc_guid,
     from_ifc,
     round_trip,
     to_ifc,
 )
-from oabm.model import BuildingModel
+from oabm.model import (
+    BuildingModel,
+    CoordinateSystem,
+    ElectricalDevice,
+    Point3,
+    Pose,
+    Provenance,
+    Quaternion,
+    Size3,
+    stable_id,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_FIXTURE = ROOT / "fixtures" / "model" / "v1" / "garage-route.json"
@@ -54,12 +67,12 @@ def _all_canonical_ids(model: BuildingModel) -> set[str]:
 def test_garage_fixture_round_trips_in_memory_and_through_step(tmp_path: Path) -> None:
     model = _garage()
 
-    assert round_trip(model).to_dict() == model.to_dict()
+    assert geometry_matches(round_trip(model).to_dict(), model.to_dict())
 
     path = tmp_path / "garage-route.ifc"
     to_ifc(model, path)
     assert path.read_text(encoding="utf-8").startswith("ISO-10303-21;")
-    assert from_ifc(path).to_dict() == model.to_dict()
+    assert geometry_matches(from_ifc(path).to_dict(), model.to_dict())
 
 
 def test_ifc_materialization_matches_expected_electrical_shape() -> None:
@@ -173,7 +186,7 @@ def test_explicit_canonical_port_connectivity_is_ifc_native_and_round_trips() ->
         canonical_id_to_ifc_guid(first["id"]),
         canonical_id_to_ifc_guid(second["id"]),
     }
-    assert from_ifc(ifc).to_dict() == model.to_dict()
+    assert geometry_matches(from_ifc(ifc).to_dict(), model.to_dict())
 
 
 def _connected_port_model() -> BuildingModel:
@@ -294,4 +307,58 @@ def test_route_types_use_expected_ifc_distribution_classes(
         for fitting in model.route_fittings
     ]
     assert all(item.is_a(fitting_class) for item in fittings)
-    assert from_ifc(ifc).to_dict() == model.to_dict()
+    assert geometry_matches(from_ifc(ifc).to_dict(), model.to_dict())
+
+
+def test_an_arbitrary_rotation_survives_the_round_trip_but_not_bit_for_bit() -> None:
+    """The fixtures were self-selecting; this one is not.
+
+    Every committed fixture uses an axis-aligned orientation, so its quaternion
+    components are zeros and ones and survive the IFC axis / reference-direction
+    decomposition exactly. Real captured orientations are arbitrary and do not,
+    which is why the round-trip property held in tests while failing on a real
+    scan.
+
+    So this asserts BOTH halves of the contract, and asserts that they are
+    different claims:
+
+      * the round trip preserves geometry within `GEOMETRIC_TOLERANCE`
+      * exact byte equality is NOT the property, and is expected to fail here
+      * canonical serialization is still deterministic, exactly
+    """
+    angle = 1.0472956  # radians; deliberately not a right angle
+    rotation = Quaternion(
+        x=0.0, y=0.0, z=math.sin(angle / 2.0), w=math.cos(angle / 2.0)
+    )
+    provenance = (Provenance(source_kind="synthetic", source_id="fixture:arbitrary-rotation"),)
+    device = ElectricalDevice(
+        id=stable_id("device", "arbitrary-rotation:probe"),
+        device_type="receptacle",
+        pose=Pose(
+            position=Point3(x=1.2345678, y=2.3456789, z=0.9876543),
+            rotation=rotation,
+        ),
+        size=Size3(x=0.1, y=0.05, z=0.12),
+        provenance=provenance,
+    )
+    model = BuildingModel(
+        model_id="arbitrary-rotation-probe",
+        coordinate_system=CoordinateSystem(frame_id="model"),
+        electrical_devices=(device,),
+        provenance=provenance,
+    )
+
+    restored = from_ifc(to_ifc(model))
+
+    assert geometry_matches(restored.to_dict(), model.to_dict()), (
+        "an IFC round trip must preserve geometry within tolerance"
+    )
+    assert restored.to_dict() != model.to_dict(), (
+        "this fixture exists precisely because an arbitrary rotation does NOT "
+        "come back bit-for-bit; if it ever does, it has stopped guarding "
+        "against fixtures that only pass by being axis-aligned"
+    )
+    assert BuildingModel.from_dict(model.to_dict()).to_dict() == model.to_dict(), (
+        "canonical serialization stays exactly deterministic; only the IFC "
+        "round trip carries a tolerance"
+    )

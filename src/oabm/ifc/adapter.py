@@ -60,6 +60,67 @@ class IfcAdapterError(ValueError):
     """Raised when IFC cannot be mapped to the canonical OABM contract safely."""
 
 
+#: Largest difference two float values may show and still count as the same
+#: geometry after an IFC round trip.
+#:
+#: A quaternion is written to IFC as an axis plus a reference direction and
+#: rebuilt from them, and that trigonometry does not land on the identical
+#: double. On the committed fixtures it happens to: their rotations are
+#: axis-aligned, so the components are zeros and ones and survive exactly. Real
+#: captured orientations are arbitrary and differ by an ULP or so.
+#:
+#: This tolerance is deliberately tiny. It exists to absorb the last bits of a
+#: double, not to excuse geometric drift: 1e-9 m is a nanometre, and 1e-9 on a
+#: unit quaternion is far below any angle a survey or a drawing can express.
+GEOMETRIC_TOLERANCE = 1e-9
+
+
+def geometry_matches(
+    left: Any,
+    right: Any,
+    *,
+    tolerance: float = GEOMETRIC_TOLERANCE,
+) -> bool:
+    """Compare two serialized models as GEOMETRY, not as bytes.
+
+    Two separate properties are worth asserting about this adapter and they are
+    not the same claim:
+
+    * **Canonical serialization is deterministic.** The same model serializes to
+      the same bytes every time. That is a property of the model contract, it is
+      what the golden known-answer hashes pin, and it is exact.
+    * **An IFC round trip preserves semantics and geometry.** Ids, types,
+      relationships and references come back identical; coordinates and
+      orientations come back within this tolerance.
+
+    Asserting the first about the second is what made the round-trip tests pass
+    only for fixtures whose rotations happen to be bit-exact. Structure is still
+    compared exactly here -- only leaf floats are allowed to differ, and only by
+    ``tolerance``.
+    """
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        if set(left) != set(right):
+            return False
+        return all(
+            geometry_matches(left[key], right[key], tolerance=tolerance)
+            for key in left
+        )
+    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
+        if len(left) != len(right):
+            return False
+        return all(
+            geometry_matches(a, b, tolerance=tolerance)
+            for a, b in zip(left, right)
+        )
+    if isinstance(left, bool) or isinstance(right, bool):
+        return left is right
+    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
+        if math.isnan(left) or math.isnan(right):
+            return False
+        return abs(float(left) - float(right)) <= tolerance
+    return left == right
+
+
 def canonical_id_to_ifc_guid(canonical_id: str) -> str:
     """Return a deterministic IFC GlobalId for a canonical or adapter-stable key."""
 

@@ -277,6 +277,9 @@ def _find_dimension(text: str) -> tuple[float, tuple[int, int]] | None:
 
 
 def classify_page(page: PdfPageObservation) -> SheetClassification:
+    drawing_title = _explicit_drawing_title(page)
+    if drawing_title and re.search(r"\b(?:DETAILS?|MILLWORK|INTERIOR ELEVATIONS?)\b", drawing_title):
+        return SheetClassification("other", 0.95, 0, 0)
     text = "\n".join(item.text.upper() for item in page.texts)
     architectural_score = 0
     electrical_score = 0
@@ -311,6 +314,42 @@ def classify_page(page: PdfPageObservation) -> SheetClassification:
     if "PLAN" in text and architectural_score > electrical_score:
         return SheetClassification("architectural_plan", 0.6, architectural_score, electrical_score)
     return SheetClassification("other", 0.5, architectural_score, electrical_score)
+
+
+def _explicit_drawing_title(page: PdfPageObservation) -> str | None:
+    """Read a ruled title-block drawing title when the source provides one."""
+
+    markers = [
+        item for item in page.texts
+        if _clean_text(item.text).upper() == "DRAWING TITLE:"
+        and item.center_pt[0] >= 0.70 * page.width_pt
+        and item.center_pt[1] <= 0.30 * page.height_pt
+    ]
+    if len(markers) != 1:
+        return None
+    marker = markers[0]
+    sheet_markers = [
+        item for item in page.texts
+        if _clean_text(item.text).upper() in {"SHEET NO:", "SHEET NUMBER:"}
+        and item.center_pt[0] >= 0.70 * page.width_pt
+        and item.center_pt[1] < marker.center_pt[1]
+    ]
+    lower_y = max(
+        (item.center_pt[1] for item in sheet_markers),
+        default=marker.center_pt[1] - 90.0,
+    )
+    title_lines = [
+        item for item in page.texts
+        if item.element_id != marker.element_id
+        and item.center_pt[0] >= 0.70 * page.width_pt
+        and lower_y < item.center_pt[1] < marker.center_pt[1]
+    ]
+    if not title_lines:
+        return None
+    return " ".join(
+        _clean_text(item.text).upper()
+        for item in sorted(title_lines, key=lambda value: (-value.center_pt[1], value.center_pt[0]))
+    )
 
 
 def _scale_candidates(page: PdfPageObservation) -> list[tuple[float, str]]:
@@ -602,11 +641,12 @@ def _find_level_override(page_number: int, overrides: Iterable[LevelOverride]) -
 
 
 def _level_name_from_text(page: PdfPageObservation) -> str | None:
-    explicit = re.compile(r"\bLEVEL\s*[:#-]?\s*([A-Z0-9][A-Z0-9 ._-]{0,30})$", re.IGNORECASE)
+    explicit = re.compile(r"^LEVEL\s*[:#-]\s*([A-Z0-9][A-Z0-9 ._-]{0,30})$", re.IGNORECASE)
+    bare_level = re.compile(r"^LEVEL\s+((?:GROUND|BASEMENT|\d{1,2}(?:ST|ND|RD|TH)?)(?:\s+FLOOR)?)$", re.IGNORECASE)
     floor_suffix = re.compile(r"\b(GROUND|FIRST|SECOND|THIRD|FOURTH|FIFTH)\s+FLOOR\b", re.IGNORECASE)
     for item in page.texts:
         text = _clean_text(item.text)
-        match = explicit.search(text)
+        match = explicit.fullmatch(text) or bare_level.fullmatch(text)
         if match:
             candidate = _clean_text(match.group(1))
             if candidate.upper() != "PLAN":
@@ -1396,6 +1436,30 @@ def _inside(bbox: tuple[float, float, float, float], point: tuple[float, float])
     return bbox[0] <= point[0] <= bbox[2] and bbox[1] <= point[1] <= bbox[3]
 
 
+def _is_sheet_frame_enclosure(
+    page: PdfPageObservation,
+    bbox: tuple[float, float, float, float],
+) -> bool:
+    """Reject an almost page-sized ruled frame as a room or wall enclosure.
+
+    The source plan may fill a large drawing field, so require both near-page
+    coverage and proximity to all four media edges. Ordinary room enclosures
+    need not be rectangular, but the current rectangle recognizers do.
+    """
+
+    x0, y0, x1, y1 = bbox
+    width = page.width_pt
+    height = page.height_pt
+    return (
+        (x1 - x0) >= 0.75 * width
+        and (y1 - y0) >= 0.85 * height
+        and x0 <= 0.10 * width
+        and y0 <= 0.10 * height
+        and x1 >= 0.85 * width
+        and y1 >= 0.90 * height
+    )
+
+
 def _shell_candidates(
     page: PdfPageObservation,
     scale: _Scale,
@@ -1404,7 +1468,11 @@ def _shell_candidates(
     ambiguities: list[dict[str, object]],
 ) -> tuple[_Shell, ...]:
     candidates: list[tuple[float, float, PdfRectObservation, PdfRectObservation]] = []
+    rejected_frames = 0
     for outer in page.rects:
+        if _is_sheet_frame_enclosure(page, outer.bbox_pt):
+            rejected_frames += 1
+            continue
         for inner in page.rects:
             if outer is inner:
                 continue
@@ -1433,6 +1501,13 @@ def _shell_candidates(
             area_m2 = inner.width_pt * inner.height_pt * scale.meters_per_point**2
             asymmetry = abs(thickness_x - thickness_y)
             candidates.append((area_m2, asymmetry, outer, inner))
+    if rejected_frames:
+        ambiguities.append({
+            "page": page.page_number,
+            "code": "sheet_frame_enclosure_rejected",
+            "detail": "near-page ruled frame is not building geometry",
+            "rejected_rectangle_count": rejected_frames,
+        })
 
     rooms_by_pair: dict[
         tuple[str, str],
@@ -1644,7 +1719,18 @@ def _ordinary_vector_shell_candidates(
     *,
     excluded_room_anchors: set[str],
 ) -> tuple[_Shell, ...]:
-    loops = _ordinary_vector_rect_loops(page)
+    raw_loops = _ordinary_vector_rect_loops(page)
+    loops = tuple(
+        loop for loop in raw_loops
+        if not _is_sheet_frame_enclosure(page, loop.bbox_pt)
+    )
+    if len(loops) != len(raw_loops):
+        ambiguities.append({
+            "page": page.page_number,
+            "code": "sheet_frame_enclosure_rejected",
+            "detail": "near-page ruled frame is not building geometry",
+            "rejected_loop_count": len(raw_loops) - len(loops),
+        })
     candidates: list[tuple[float, float, _ShellBoundary, _ShellBoundary]] = []
     for outer in loops:
         for inner in loops:
@@ -3367,7 +3453,32 @@ def _geometric_wall_loop_entities(
         diagnostics["partial_pair_count"] = 0
         return (), (), diagnostics
 
-    loops = _wall_pair_closed_loops(pairs, transform, options)
+    raw_loops = _wall_pair_closed_loops(pairs, transform, options)
+    rejected_frame_pairs: set[int] = set()
+    loops = []
+    for loop_indexes, polygon, endpoint_vertices in raw_loops:
+        source_points = [
+            point
+            for index in loop_indexes
+            for point in (pairs[index].start_pt, pairs[index].end_pt)
+        ]
+        source_bbox = (
+            min(point[0] for point in source_points),
+            min(point[1] for point in source_points),
+            max(point[0] for point in source_points),
+            max(point[1] for point in source_points),
+        )
+        if _is_sheet_frame_enclosure(page, source_bbox):
+            rejected_frame_pairs.update(loop_indexes)
+        else:
+            loops.append((loop_indexes, polygon, endpoint_vertices))
+    if rejected_frame_pairs:
+        ambiguities.append({
+            "page": page.page_number,
+            "code": "sheet_frame_enclosure_rejected",
+            "detail": "near-page paired wall-face frame is not building geometry",
+            "rejected_wall_pair_count": len(rejected_frame_pairs),
+        })
     loop_endpoint_vertices: dict[
         int,
         tuple[tuple[float, float], tuple[float, float]],
@@ -3383,7 +3494,8 @@ def _geometric_wall_loop_entities(
 
     diagnostics["closed_loop_pair_count"] = len(loop_pair_indexes)
     partial_pair_indexes = {
-        index for index in range(len(pairs)) if index not in loop_pair_indexes
+        index for index in range(len(pairs))
+        if index not in loop_pair_indexes and index not in rejected_frame_pairs
     }
     partial_min_length_m = 24.0 * _INCH_M
     short_partial_pair_indexes = {

@@ -4,6 +4,8 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from oabm.model import BuildingModel, validate_model
 from oabm.importers.pdf_architecture import ImportOptions, LevelOverride, RegistrationHint
@@ -138,6 +140,99 @@ def _loop_lines(
 
 def _ambiguity_codes(model: BuildingModel) -> set[str]:
     return {item["code"] for item in model.attributes["pdf_architecture"]["ambiguities"]}
+
+
+def _write_source_pdf_with_page_frame(
+    path: Path, *, room: bool, drawing_title: str | None = None,
+    frame_as_lines: bool = False,
+) -> None:
+    """Synthetic CAD-like source PDF: page frame plus optional true room."""
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)}),
+    })
+    if frame_as_lines:
+        frame = [
+            "10 10 m 602 10 l S", "602 10 m 602 782 l S",
+            "602 782 m 10 782 l S", "10 782 m 10 10 l S",
+            "12 12 m 600 12 l S", "600 12 m 600 780 l S",
+            "600 780 m 12 780 l S", "12 780 m 12 12 l S",
+        ]
+    else:
+        frame = ["10 10 592 772 re S", "12 12 588 768 re S"]
+    commands = [
+        *frame,
+        "BT /F1 10 Tf 1 0 0 1 25 740 Tm (A210 FLOOR PLAN) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 25 722 Tm (SCALE: 1:100) Tj ET",
+        "BT /F1 9 Tf 1 0 0 1 320 650 Tm (TAPED TO LEVEL 4 FINISH) Tj ET",
+    ]
+    if room:
+        commands.extend((
+            "100 200 200 200 re S", "104 204 192 192 re S",
+            "BT /F1 12 Tf 1 0 0 1 175 300 Tm (ROOM: OFFICE) Tj ET",
+        ))
+    if drawing_title:
+        commands.extend((
+            "BT /F1 10 Tf 1 0 0 1 470 140 Tm (DRAWING TITLE:) Tj ET",
+            f"BT /F1 10 Tf 1 0 0 1 470 110 Tm ({drawing_title}) Tj ET",
+            "BT /F1 10 Tf 1 0 0 1 470 60 Tm (SHEET NO:) Tj ET",
+        ))
+    stream = DecodedStreamObject()
+    stream.set_data(("\n".join(commands) + "\n").encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def test_source_pdf_rejects_sheet_frame_and_keeps_real_room(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-floor-with-frame.pdf"
+    _write_source_pdf_with_page_frame(source, room=True)
+    assert not source.with_suffix(".expected.json").exists()
+    extracted = extract_pdf(source, source_id="fixture:floor-with-frame")
+    model = import_observations(extracted, options=ImportOptions(default_wall_height_m=3.0))
+    assert len(model.spaces) == 1
+    assert len(model.walls) == 4
+    assert model.levels[0].name == "Unlabeled Level"
+    assert "sheet_frame_enclosure_rejected" in _ambiguity_codes(model)
+    assert max(point.x for point in model.spaces[0].footprint.points) < 12.0
+
+
+def test_source_pdf_sheet_frame_alone_is_not_building_geometry(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-floor-frame-only.pdf"
+    _write_source_pdf_with_page_frame(source, room=False)
+    assert not source.with_suffix(".expected.json").exists()
+    model = import_observations(extract_pdf(source, source_id="fixture:frame-only"))
+    assert model.spaces == ()
+    assert model.walls == ()
+    assert model.attributes["pdf_architecture"]["pages"][0]["status"] == "no_supported_geometry_recognized"
+
+
+def test_source_pdf_ordinary_vector_frame_is_not_a_room(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-vector-frame.pdf"
+    _write_source_pdf_with_page_frame(source, room=False, frame_as_lines=True)
+    assert not source.with_suffix(".expected.json").exists()
+    model = import_observations(extract_pdf(source, source_id="fixture:vector-frame"))
+    assert model.spaces == ()
+    assert model.walls == ()
+    assert "sheet_frame_enclosure_rejected" in _ambiguity_codes(model)
+
+
+def test_source_pdf_detail_title_overrules_incidental_floor_plan_words(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-detail-sheet.pdf"
+    _write_source_pdf_with_page_frame(source, room=True, drawing_title="INTERIOR ELEVATIONS")
+    assert not source.with_suffix(".expected.json").exists()
+    extracted = extract_pdf(source, source_id="fixture:detail-sheet")
+    assert classify_page(extracted.pages[0]).kind == "other"
+    model = import_observations(extracted)
+    assert model.spaces == ()
+    assert model.walls == ()
 
 
 
@@ -1741,4 +1836,3 @@ def test_multiple_ordinary_vector_enclosures_are_explicitly_ambiguous() -> None:
         model.attributes["pdf_architecture"]["pages"][0]["status"]
         == "no_supported_geometry_recognized"
     )
-

@@ -36,3 +36,88 @@ only the explicit shared-frame registration plus known hosting answers. See
 ## RoomPlan
 
 `roomplan/captured-room-3d.json` is a synthetic CapturedRoom-shaped fixture for the RoomPlan / LiDAR importer. It includes nonzero story elevation, 4x4 transforms, polygon and curved wall surfaces, openings, source confidence, an object, and section metadata. It contains no customer or private scan data.
+
+`roomplan/bundle-v3-envelope-room.json` carries the *envelope shape* a real
+RoomPlan Bundle v3 export actually has: `coreModel` and
+`referenceOriginTransform` are present, and there is **no top-level
+identifier** -- the capture's identity lives in the bundle around the room.
+The importer used to refuse that outright, so the scan lane had only ever run
+against a fixture that happened to state an identifier while the real
+production format failed to load. There is no paired expected-output artifact.
+
+Only the key layout is taken from the real format. Every value in the file is
+synthetic:
+
+1. The six element collections (`walls`, `floors`, `doors`, `windows`,
+   `openings`, `objects`) and `sections`, `story` and `version` are copied
+   byte-for-byte from `roomplan/captured-room-3d.json`. The file is built by
+   textual surgery on that fixture -- removing its `identifier` and inserting
+   the two envelope keys -- rather than by re-serializing a parsed copy, which
+   would silently reorder keys and break the byte-identity this claims.
+2. `coreModel` is the literal placeholder `BUNDLE-V3-CORE-MODEL-BLOB-PLACEHOLDER`.
+   A real export stores an opaque binary blob here.
+3. `referenceOriginTransform` is a hand-written quarter-turn about +Y with a
+   half-metre/quarter-metre offset -- `[0,0,1,0, 0,1,0,0, -1,0,0,0, 0.5,0,0.25,1]`
+   in the column-major order the real field uses.
+4. `sections[0].center` is the pre-existing synthetic `[0, 3.2, 0]` from
+   `captured-room-3d.json`.
+
+**The importer does read the two envelope fields.** It does not interpret them,
+but it copies every unrecognised top-level key of a capture verbatim into
+`model.attributes.roomplan.extra_fields`, so both reach the canonical model and
+everything derived from it, including IFC exports, which embed the canonical
+model as JSON. For this synthetic fixture that is harmless. For a REAL capture it
+means the real transform and the real `coreModel` blob travel into every derived
+artifact, which is why derived artifacts of a real import must be handled as
+private.
+
+No captured coordinates, transforms, room dimensions or other measurements
+from any real scan appear in this file. `coreModel` and the `0.25` translation
+component are the only two scalars in it that do not also appear in
+`captured-room-3d.json`.
+
+`test_the_bundle_envelope_fixture_carries_no_captured_measurements` requires the
+file's **bytes on disk** to equal its documented construction,
+`_build_envelope_fixture` in `tests/test_roomplan_importer.py`. It also refuses,
+in both this file and the synthetic one, every byte a reviewer could not see in a
+diff: carriage returns, a byte-order mark, any non-ASCII byte (a zero-width
+character renders as nothing), tabs, and trailing whitespace.
+That function is the construction above made executable, and it is also how to
+regenerate the fixture after a deliberate change to the synthetic one.
+
+Bytes, not text: `Path.read_text` translates CRLF and a lone CR into LF before
+any comparison sees them, so a text-level check can be passed by a file whose
+line endings carry an encoded payload. A lone CR is also left alone by git's own
+text normalisation, so a `.gitattributes` rule would only close part of that.
+
+Weaker versions of this guard were each defeated. Every defeat is kept as a
+regression, run through the same file-reading path as the guard itself:
+
+- a global whitelist of permitted scalars let an existing synthetic
+  high-precision number be moved into `referenceOriginTransform`;
+- a first-occurrence scan let a duplicate key hide a poisoned value, since the
+  JSON parser keeps the LAST occurrence;
+- comparing the envelope fields as parsed values let arbitrary digits sit in the
+  text, because the float parser rounds away digits past double precision --
+  `0.2500000000000000000012345678` parses to exactly `0.25`;
+- comparing TEXT rather than bytes let a payload ride in the line endings, one
+  bit per line, with every text comparison seeing a clean file.
+
+The byte-channel checks matter most for the SYNTHETIC file: the envelope fixture
+reproduces it faithfully, so a channel planted there would pass the byte
+comparison on its own. Each check has a regression that plants its channel
+upstream and fails if that check is removed.
+
+**Trust boundary.** The guard proves this file is exactly a deterministic
+function of two things it cannot itself vouch for:
+
+- `roomplan/captured-room-3d.json`. No check on a file can establish where its
+  numbers came from. An edit introducing captured data there would flow into
+  this fixture, so changes to it deserve the same scrutiny. What the guard does
+  close in that file is every channel a reviewer could not see; what remains is
+  what a reviewer CAN see -- its JSON values and visible formatting.
+- the envelope constants in `tests/test_roomplan_importer.py` --
+  `_ENVELOPE_CORE_MODEL` and `_ENVELOPE_TRANSFORM`. The likeliest well-meaning
+  mistake is editing those to "more realistic" values. That passes, because it
+  edits the guard's own definition of correct; it is a code change a reviewer
+  must catch, not something a test can.

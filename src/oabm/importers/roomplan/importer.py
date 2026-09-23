@@ -92,7 +92,12 @@ def load_captured_room(
         raise RoomPlanImportError("CapturedRoom document root must be a JSON object")
     return import_captured_room(
         document,
-        source_id=source_id or str(source_path),
+        source_id=source_id,
+        # Where the file was read from is descriptive, not identity. Passing it
+        # as `source_id` would make a moved or renamed copy of the same capture
+        # produce different stable entity ids, which is exactly the invented
+        # identity this importer refuses.
+        provenance_source_id=source_id or str(source_path),
         name=name,
         options=options,
     )
@@ -102,6 +107,7 @@ def import_captured_room(
     document: Mapping[str, Any],
     *,
     source_id: str | None = None,
+    provenance_source_id: str | None = None,
     name: str | None = None,
     options: RoomPlanImportOptions | None = None,
 ) -> BuildingModel:
@@ -116,8 +122,23 @@ def import_captured_room(
         raise RoomPlanImportError("CapturedRoom document must be a mapping")
 
     options = options or RoomPlanImportOptions()
-    room_identifier = _required_identifier(document, "CapturedRoom")
-    provenance_source_id = source_id or room_identifier
+    # A CapturedRoom exported inside a scan bundle carries its identity in the
+    # bundle rather than in the room document: the real Bundle v3 envelope has
+    # `coreModel` and `referenceOriginTransform` but no top-level identifier.
+    # Accept the caller's `source_id` as the identity in that case, because the
+    # caller is the thing that knows which capture this is. Identity is still
+    # required and still never invented -- with neither, this fails.
+    room_identifier = _stated_identifier(document, "CapturedRoom") or source_id
+    if not room_identifier:
+        raise RoomPlanImportError(
+            "CapturedRoom.identifier is absent, so a source_id is required to "
+            "identify the capture"
+        )
+    # Identity and description are different things. `room_identifier` seeds
+    # stable entity ids, so it may only come from what the document states or
+    # from what the caller asserts. `provenance_source_id` merely records where
+    # the document came from and may be a file path.
+    provenance_source_id = provenance_source_id or source_id or room_identifier
     room_story = _story(document.get("story", 0), "CapturedRoom.story")
     room_version = document.get("version")
 
@@ -1225,6 +1246,27 @@ def _single_section_usage(sections: Sequence[Mapping[str, Any]]) -> str | None:
         }
     )
     return labels[0] if len(labels) == 1 else None
+
+
+def _stated_identifier(item: Mapping[str, Any], label: str) -> str | None:
+    """Return the identifier if the document states one, else None.
+
+    Distinct from `_required_identifier`, which is right for the elements
+    inside a room: a wall with no identifier is malformed. A room document
+    exported inside a bundle legitimately carries its identity elsewhere.
+
+    Absence is decided by the key, never by the value. A document that states
+    `"identifier": null` has stated an identifier and stated a malformed one;
+    reading it through `.get()` would conflate that with a bundle envelope
+    that states none, and let the caller's source_id quietly stand in for a
+    field the document got wrong.
+    """
+    if "identifier" not in item:
+        return None
+    value = item["identifier"]
+    if not isinstance(value, str) or not value.strip():
+        raise RoomPlanImportError(f"{label}.identifier must be a non-empty string")
+    return value.strip()
 
 
 def _required_identifier(item: Mapping[str, Any], label: str) -> str:

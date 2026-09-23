@@ -299,6 +299,17 @@ def provenance_applies_to(record: Provenance, consumed_paths: Iterable[str]) -> 
     """
     if record.scope_paths is None:
         return True
+    # Materialize once: a caller may provide a generator, and each scope must
+    # be compared against the same consumed claims. Missing or malformed
+    # consumed claims cannot safely exclude an inferred record.
+    if isinstance(consumed_paths, str):
+        return True
+    consumed_paths = tuple(consumed_paths)
+    if not consumed_paths or any(
+        not isinstance(path, str) or _SCOPE_PATH_RE.fullmatch(path) is None
+        for path in consumed_paths
+    ):
+        return True
     return any(
         scope == consumed
         or scope.startswith(consumed + ".")

@@ -69,6 +69,9 @@ def test_provenance_scope_is_typed_validated_and_serialized() -> None:
     model = replace(base, walls=(replace(wall, provenance=(*wall.provenance, record)), *base.walls[1:]))
     assert provenance_applies_to(record, ("thickness_m",))
     assert not provenance_applies_to(record, ("centerline", "height_m"))
+    assert provenance_applies_to(record, ())
+    assert provenance_applies_to(record, "thickness_m")
+    assert provenance_applies_to(record, ("thikness-m",))
     assert list(_schema_validator().iter_errors(model.to_dict())) == []
     assert BuildingModel.from_json(model.to_json()).to_dict() == model.to_dict()
 
@@ -117,6 +120,8 @@ def test_provenance_scope_rejects_empty_duplicate_and_unknown_paths() -> None:
     assert provenance_applies_to(nested, ("attributes.mounting",))
     assert provenance_applies_to(nested, ("attributes",))
     assert not provenance_applies_to(nested, ("thickness_m",))
+    multi_scope = replace(nested, scope_paths=("height_m", "attributes.mounting"))
+    assert provenance_applies_to(multi_scope, (path for path in ("attributes.mounting",)))
     with pytest.raises(ContractError, match="scope path 'attributes.mounting'"):
         replace(base, walls=(replace(wall, provenance=(*wall.provenance, nested)), *base.walls[1:]))
 

@@ -103,6 +103,8 @@ rule: a scoped record applies when a consumed path is the same as, contains,
 or is contained by one of the record's paths. Unknown or empty typed scopes
 are invalid; they must never cause an inferred record to be ignored and a
 quantity to be promoted to observed.
+Missing or malformed consumed paths also cannot exclude a scoped record;
+`provenance_applies_to()` conservatively returns true for those inputs.
 
 This optional field is a compatible v1 extension. Legacy records without it
 remain byte-identical and are treated as entity-wide. RoomPlan's former

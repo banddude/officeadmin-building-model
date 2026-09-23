@@ -79,9 +79,13 @@ component are the only two scalars in it that do not also appear in
 `test_the_bundle_envelope_fixture_carries_no_captured_measurements` requires the
 file's **bytes on disk** to equal its documented construction,
 `_build_envelope_fixture` in `tests/test_roomplan_importer.py`. It also refuses,
-in both this file and the synthetic one, every byte a reviewer could not see in a
-diff: carriage returns, a byte-order mark, any non-ASCII byte (a zero-width
-character renders as nothing), tabs, and trailing whitespace.
+in both JSON files and the test source that contains the trusted constants,
+every byte a reviewer could not see in a diff: carriage returns, non-ASCII
+bytes (including a byte-order mark or zero-width character), tabs, and trailing
+whitespace. All three paths must be regular files: a symlink would make
+`read_bytes()` validate its target while Git stores the link name at the
+protected path. Both JSON files are parsed with duplicate-key rejection at
+every depth, because an ordinary parser silently keeps only the last value.
 That function is the construction above made executable, and it is also how to
 regenerate the fixture after a deliberate change to the synthetic one.
 
@@ -105,11 +109,14 @@ regression, run through the same file-reading path as the guard itself:
 
 The byte-channel checks matter most for the SYNTHETIC file: the envelope fixture
 reproduces it faithfully, so a channel planted there would pass the byte
-comparison on its own. Each check has a regression that plants its channel
-upstream and fails if that check is removed.
+comparison on its own. The source file carrying the constants gets the same
+byte check. Regressions plant channels upstream, change a regular file to a
+symlink, and duplicate a key while regenerating the envelope. A BOM is refused
+by the non-ASCII check and by whole-file equality; there is no separate
+BOM-specific check to claim as independently necessary.
 
-**Trust boundary.** The guard proves this file is exactly a deterministic
-function of two things it cannot itself vouch for:
+**Trust boundary.** The guard proves this regular file is exactly a deterministic
+function of two sets of semantic values it cannot itself vouch for:
 
 - `roomplan/captured-room-3d.json`. No check on a file can establish where its
   numbers came from. An edit introducing captured data there would flow into
@@ -121,3 +128,7 @@ function of two things it cannot itself vouch for:
   mistake is editing those to "more realistic" values. That passes, because it
   edits the guard's own definition of correct; it is a code change a reviewer
   must catch, not something a test can.
+
+The guard checks the source file's hidden bytes, but it cannot judge the
+meaning or origin of visible edits to either trust root. Review those edits as
+carefully as changes to the fixture itself.

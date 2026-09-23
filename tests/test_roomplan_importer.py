@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import re
+import stat
 from pathlib import Path
 
 import pytest
@@ -612,7 +613,17 @@ def _first_difference_line(actual: bytes, expected: bytes) -> int:
     return actual[:offset].count(b"\n") + 1
 
 
-def _assert_envelope_fixture_file_is_synthetic(bundle_path: Path, synthetic_path: Path) -> None:
+def _unique_json_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        assert key not in result, f"duplicate JSON key {key!r}: the parser would keep only the last value"
+        result[key] = value
+    return result
+
+
+def _assert_envelope_fixture_file_is_synthetic(
+    bundle_path: Path, synthetic_path: Path, source_path: Path | None = None
+) -> None:
     """Raise unless the fixture's BYTES ON DISK are exactly its documented construction.
 
     Compares bytes, never text. A text read -- `Path.read_text` included --
@@ -622,7 +633,8 @@ def _assert_envelope_fixture_file_is_synthetic(bundle_path: Path, synthetic_path
     measurement one bit per line (LF for 0, CRLF for 1) into this fixture, and
     a text-comparing version of this guard passed it.
 
-    Every byte a reviewer could not see in a diff is refused in BOTH files:
+    Every byte a reviewer could not see in a diff is refused in both JSON files
+    and the Python source file containing the trusted envelope constants:
     carriage returns, a byte-order mark, any non-ASCII byte (a zero-width
     character renders as nothing), tabs, and trailing whitespace. The
     construction below reproduces the synthetic fixture faithfully, so a
@@ -631,14 +643,20 @@ def _assert_envelope_fixture_file_is_synthetic(bundle_path: Path, synthetic_path
     them narrows its trust boundary to what a reviewer CAN see: its JSON values
     and visible formatting.
 
-    Given that, the byte comparison is the whole guard. Once the file is
-    exactly a deterministic function of the synthetic fixture, no value in it
-    can be unaccounted for, and per-field checks would only restate it.
+    Each path must be a regular file, so the bytes checked are the bytes Git
+    stores at that path rather than the target of a symlink. JSON keys must be
+    unique at every depth, so the parser cannot discard a visible first value.
+    The remaining semantic trust roots are the synthetic values and the two
+    envelope constants; a reviewer must judge those values themselves.
     """
-    bundle = bundle_path.read_bytes()
-    synthetic = synthetic_path.read_bytes()
-    for path, raw in ((bundle_path, bundle), (synthetic_path, synthetic)):
-        assert not raw.startswith(b"\xef\xbb\xbf"), f"{path.name}: starts with a byte-order mark"
+    source_path = source_path or Path(__file__)
+    files = []
+    for path in (bundle_path, synthetic_path, source_path):
+        assert stat.S_ISREG(path.lstat().st_mode), (
+            f"{path.name}: must be a regular file, not a symlink or special file"
+        )
+        files.append((path, path.read_bytes()))
+    for path, raw in files:
         assert b"\r" not in raw, (
             f"{path.name}: contains a carriage return; line endings are translated "
             "before any text comparison sees them, so they can carry data unseen"
@@ -659,6 +677,10 @@ def _assert_envelope_fixture_file_is_synthetic(bundle_path: Path, synthetic_path
             f"{path.name}: trailing whitespace on line {trailing}, which most diffs "
             "do not show"
         )
+    bundle = files[0][1]
+    synthetic = files[1][1]
+    for raw in (bundle, synthetic):
+        json.loads(raw, object_pairs_hook=_unique_json_pairs)
     expected = _build_envelope_fixture(synthetic.decode("utf-8")).encode("utf-8")
     if bundle != expected:
         raise AssertionError(
@@ -682,6 +704,51 @@ def test_the_bundle_envelope_fixture_carries_no_captured_measurements() -> None:
     a value past an earlier version of this guard through the same disk path.
     """
     _assert_envelope_fixture_file_is_synthetic(BUNDLE_FIXTURE, FIXTURE)
+
+
+def test_the_fixture_guard_rejects_symlinks_to_approved_bytes(tmp_path: Path) -> None:
+    """The tracked path must contain the JSON bytes, not a symlink target name."""
+    target = tmp_path / "bundle-v3-envelope-987.1234567890123.json"
+    target.write_bytes(BUNDLE_FIXTURE.read_bytes())
+    bundle = tmp_path / BUNDLE_FIXTURE.name
+    bundle.symlink_to(target.name)
+    with pytest.raises(AssertionError, match="must be a regular file"):
+        _assert_envelope_fixture_file_is_synthetic(bundle, FIXTURE)
+
+    bundle.unlink()
+    bundle.write_bytes(BUNDLE_FIXTURE.read_bytes())
+    synthetic = tmp_path / FIXTURE.name
+    synthetic.symlink_to(FIXTURE)
+    with pytest.raises(AssertionError, match="must be a regular file"):
+        _assert_envelope_fixture_file_is_synthetic(bundle, synthetic)
+
+
+def test_the_fixture_guard_checks_its_trusted_source_bytes(tmp_path: Path) -> None:
+    """Mixed source line endings preserve Python semantics but can carry bits."""
+    raw = Path(__file__).read_bytes()
+    at = raw.index(b"_ENVELOPE_CORE_MODEL = ")
+    line_end = raw.index(b"\n", at)
+    mutated = raw[:line_end] + b"\r" + raw[line_end:]
+    source = tmp_path / Path(__file__).name
+    source.write_bytes(mutated)
+    assert source.read_text(encoding="utf-8") == Path(__file__).read_text(encoding="utf-8")
+    compile(mutated, str(source), "exec")
+    with pytest.raises(AssertionError, match="test_roomplan_importer.py: contains a carriage return"):
+        _assert_envelope_fixture_file_is_synthetic(BUNDLE_FIXTURE, FIXTURE, source)
+
+
+def test_the_fixture_guard_rejects_duplicate_keys_in_the_synthetic_root(tmp_path: Path) -> None:
+    """Regeneration can preserve duplicate keys while the parser discards one."""
+    raw = FIXTURE.read_bytes()
+    duplicated = raw.replace(b'  "story": 1,\n', b'  "story": 1,\n  "story": 1,\n', 1)
+    assert duplicated != raw
+    json.loads(duplicated)
+    synthetic = tmp_path / FIXTURE.name
+    synthetic.write_bytes(duplicated)
+    bundle = tmp_path / BUNDLE_FIXTURE.name
+    bundle.write_bytes(_build_envelope_fixture(duplicated.decode("utf-8")).encode("utf-8"))
+    with pytest.raises(AssertionError, match="duplicate JSON key 'story'"):
+        _assert_envelope_fixture_file_is_synthetic(bundle, synthetic)
 
 
 def _top_level_span_bounds(text: str, key: str) -> tuple[int, int]:

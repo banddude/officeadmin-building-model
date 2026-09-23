@@ -67,6 +67,7 @@ class SourceProvenance:
     page: int | None
     method: str | None
     confidence: float
+    derivation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +225,10 @@ def union_bounds(points: Iterable[Point2], *, padding: float = 0.5) -> Bounds2:
 
 def _encode(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
-        return {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        encoded = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, SourceProvenance) and value.derivation is None:
+            encoded.pop("derivation")
+        return encoded
     if isinstance(value, tuple):
         return [_encode(item) for item in value]
     if isinstance(value, list):

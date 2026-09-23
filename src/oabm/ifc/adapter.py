@@ -662,6 +662,18 @@ def _add_canonical_pset(
     payload: Mapping[str, Any],
 ) -> None:
     pset = ifcopenshell.api.pset.add_pset(ifc, product=product, name=CANONICAL_PSET)
+    visible_properties: dict[str, Any] = {}
+    attributes = payload.get("attributes", {})
+    if kind == "electrical_equipment" and isinstance(attributes, Mapping):
+        placement = attributes.get("placement")
+        if isinstance(placement, Mapping):
+            visible_properties["PlacementStatus"] = str(placement.get("status", "unknown"))
+            visible_properties["SourceLocationObserved"] = False
+    if kind in {"circuit", "route", "conductor"} and isinstance(attributes, Mapping):
+        design = attributes.get("design")
+        status = design.get("status") if isinstance(design, Mapping) else attributes.get("design_status")
+        if status is not None:
+            visible_properties["DesignStatus"] = str(status)
     ifcopenshell.api.pset.edit_pset(
         ifc,
         pset=pset,
@@ -672,6 +684,7 @@ def _add_canonical_pset(
             "CanonicalJson": ifc.createIfcText(
                 json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
             ),
+            **visible_properties,
         },
     )
 

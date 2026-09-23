@@ -227,10 +227,13 @@ def test_native_connectivity_export_rejects_unrepresentable_fanout() -> None:
     first, second = document["ports"]
     third = copy.deepcopy(second)
     third["id"] = "port:evse-feed-alt"
-    first["connected_port_ids"] = [second["id"], third["id"]]
+    fourth = copy.deepcopy(second)
+    fourth["id"] = "port:evse-feed-third"
+    first["connected_port_ids"] = [second["id"], third["id"], fourth["id"]]
     second["connected_port_ids"] = [first["id"]]
     third["connected_port_ids"] = [first["id"]]
-    document["ports"].append(third)
+    fourth["connected_port_ids"] = [first["id"]]
+    document["ports"].extend((third, fourth))
     document["routes"] = []
     document["route_fittings"] = []
     document["circuits"] = []
@@ -239,9 +242,79 @@ def test_native_connectivity_export_rejects_unrepresentable_fanout() -> None:
 
     with pytest.raises(
         IfcAdapterError,
-        match="cannot be represented natively without loss",
+        match="at most two connections",
     ):
         to_ifc(model)
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        (("a", "b"), ("b", "c")),
+        (("a", "b"), ("b", "c"), ("c", "a")),
+        (("a", "b"), ("b", "c"), ("x", "y"), ("y", "z")),
+    ],
+    ids=["degree-two-path", "degree-two-cycle", "disconnected-paths"],
+)
+def test_degree_two_canonical_port_graph_round_trips_exactly(edges) -> None:
+    """Both IFC role slots are usable without changing canonical peer order."""
+    document = copy.deepcopy(_garage().to_dict())
+    template = document["ports"][0]
+    for collection in ("routes", "route_fittings", "circuits", "conductors"):
+        document[collection] = []
+    names = sorted({name for edge in edges for name in edge})
+    peers = {name: [] for name in names}
+    for left, right in edges:
+        peers[left].append(f"port:{right}")
+        peers[right].append(f"port:{left}")
+    document["ports"] = []
+    for name in names:
+        port = copy.deepcopy(template)
+        port["id"] = f"port:{name}"
+        port["connected_port_ids"] = list(reversed(peers[name]))
+        document["ports"].append(port)
+    model = BuildingModel.from_dict(document)
+
+    ifc = to_ifc(model)
+    assert len(ifc.by_type("IfcRelConnectsPorts")) == len(edges)
+    restored = from_ifc(ifc)
+    assert restored.to_dict() == model.to_dict()
+    assert restored.to_json() == model.to_json()
+    import ifcopenshell.validate
+
+    logger = ifcopenshell.validate.json_logger()
+    ifcopenshell.validate.validate(ifc, logger, express_rules=True)
+    assert logger.statements == []
+
+
+def test_flow_direction_survives_step_reopen(tmp_path: Path) -> None:
+    """Canonical port roles reach native IFC instead of all becoming NOTDEFINED."""
+    document = copy.deepcopy(_garage().to_dict())
+    template = document["ports"][0]
+    for collection in ("routes", "route_fittings", "circuits", "conductors"):
+        document[collection] = []
+    roles = {
+        "source": "SOURCE",
+        "sink": "SINK",
+        "bidirectional": "SOURCEANDSINK",
+        "source-and-sink": "SOURCEANDSINK",
+        "unspecified": "NOTDEFINED",
+    }
+    document["ports"] = []
+    for role in roles:
+        port = copy.deepcopy(template)
+        port["id"] = f"port:flow:{role}"
+        port["role"] = role
+        port["connected_port_ids"] = []
+        document["ports"].append(port)
+
+    path = tmp_path / "port-flow-direction.ifc"
+    to_ifc(BuildingModel.from_dict(document)).write(str(path))
+    reopened = ifcopenshell.open(str(path))
+    assert {
+        role: reopened.by_guid(canonical_id_to_ifc_guid(f"port:flow:{role}")).FlowDirection
+        for role in roles
+    } == roles
 
 
 def test_removing_all_native_route_segments_is_rejected() -> None:

@@ -283,15 +283,6 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
     # Explicit canonical connectivity must be present in native IFC when export
     # succeeds. Never let the JSON shadow conceal an unexpected IfcOpenShell/API
     # failure, because Bonsai edits need a single authoritative representation.
-    fanout_ports = sorted(
-        port.id for port in model.ports if len(port.connected_port_ids) > 1
-    )
-    if fanout_ports:
-        raise IfcAdapterError(
-            "canonical port connectivity cannot be represented natively without loss; "
-            f"IFC ports support one connected peer: {fanout_ports!r}"
-        )
-
     # Port connections are collected and materialized once, at the end. IFC4
     # bounds IfcPort.ConnectedTo and IfcPort.ConnectedFrom at SET [0:1] each, so
     # a port supports two IfcRelConnectsPorts in distinct roles. Writing them in
@@ -1241,7 +1232,15 @@ def _apply_ifc_overrides(
             raise IfcAdapterError(
                 f"canonical port {data['id']!r} is missing from native connectivity scan"
             )
-        data["connected_port_ids"] = sorted(native_connections[data["id"]])
+        native_peers = native_connections[data["id"]]
+        shadow_peers = data["connected_port_ids"]
+        # Connectivity is native-authoritative. When the native graph has not
+        # changed, retain the valid canonical tuple order from the shadow;
+        # sorting it would change exact canonical serialization. An edited
+        # native graph has no source order, so sort that new set deterministically.
+        data["connected_port_ids"] = (
+            shadow_peers if set(shadow_peers) == native_peers else sorted(native_peers)
+        )
         return
 
     if kind == "wall":

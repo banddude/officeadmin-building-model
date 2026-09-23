@@ -989,6 +989,11 @@ _PANEL_PROSE_TAGS = frozenset({
     "AS", "AT", "BY", "CEILINGS", "DESIGNS", "FOR", "IN", "LOCATED",
     "LOCATIONS", "OF", "ON", "SCHEDULE", "SHOWN", "THE", "TO", "WITH",
 })
+_PANEL_BARE_TAGS = frozenset({
+    "D", "DP", "EDP", "EP", "H", "HP", "L", "LP", "M", "MDP", "MP",
+    "P", "PP", "R", "RP", "S", "SP", "UPS",
+})
+_PANEL_NUMBERED_TAG_RE = re.compile(r"[A-Z]{1,4}[-_.]?\d+[A-Z0-9_.-]*")
 _EQUIPMENT_TEXT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"\b(?:SWBD|SWGR|SWITCHBOARD|SWITCHGEAR)\s+(?P<tag>[A-Z][A-Z0-9_.-]*)\b", re.IGNORECASE),
@@ -1351,11 +1356,29 @@ def _classify_symbol(
     *,
     ambiguity_margin: float,
 ) -> tuple[tuple[str, str, float] | None, list[dict[str, Any]]]:
-    return _classify_semantic_text(
+    classification, ranked = _classify_semantic_text(
         _semantic_text(symbol),
         rules,
         ambiguity_margin=ambiguity_margin,
     )
+    # Metadata can contain free-form notes and opaque native IDs. A panelboard
+    # symbol needs a valid label in the symbol name itself; annotation text is
+    # examined separately and cannot establish equipment through its symbol.
+    if (
+        classification is not None
+        and classification[:2] == ("equipment", "panelboard")
+        and (
+            symbol.source_kind.startswith("annotation:")
+            or not any(
+                kind == "equipment" and canonical_type == "panelboard"
+                for kind, canonical_type, _tag, _confidence in _text_entity_hits(
+                    symbol.name.replace("/", " ").replace("_", " ")
+                )
+            )
+        )
+    ):
+        return None, ranked
+    return classification, ranked
 
 
 def _text_entity_hits(text: str) -> list[tuple[str, str, str, float]]:
@@ -1368,8 +1391,15 @@ def _text_entity_hits(text: str) -> list[tuple[str, str, str, float]]:
         return []
     hits: list[tuple[str, str, str, float]] = []
     panel = _PANEL_EQUIPMENT_RE.fullmatch(text)
-    if panel and _normalize_tag(panel.group("tag")) not in _PANEL_PROSE_TAGS:
-        hits.append(("equipment", "panelboard", _normalize_tag(panel.group("tag")), 0.97))
+    if panel:
+        tag = _normalize_tag(panel.group("tag"))
+        has_rating = bool(text[panel.end("tag"):].strip())
+        if tag not in _PANEL_PROSE_TAGS and (
+            tag in _PANEL_BARE_TAGS
+            or _PANEL_NUMBERED_TAG_RE.fullmatch(tag)
+            or (has_rating and re.fullmatch(r"[A-Z]{1,4}", tag))
+        ):
+            hits.append(("equipment", "panelboard", tag, 0.97))
     for pattern, canonical_type in _EQUIPMENT_TEXT_RULES:
         for match in pattern.finditer(text):
             hits.append(("equipment", canonical_type, _normalize_tag(match.group("tag")), 0.95))

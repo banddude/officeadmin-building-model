@@ -13,6 +13,7 @@ from pypdf.generic import (
     DictionaryObject,
     NameObject,
     NumberObject,
+    TextStringObject,
 )
 
 from oabm.importers.pdf_electrical import importer as pdf_electrical_importer
@@ -1170,6 +1171,9 @@ def test_panel_prose_cannot_materialize_panelboards_from_source_pdf(tmp_path: Pa
         "PANEL DP 120/208V 3PH",
         "PANEL AS SHOWN",
         "PANEL TO",
+        "PANEL ABOVE",
+        "PANEL NEAR",
+        "PANEL MOUNTING",
         "PANEL LOCATED AT WALL",
         "PANEL LOCATIONS ARE INDICATED",
         "PANEL DESIGNS ARE TYPICAL",
@@ -1185,6 +1189,38 @@ def test_panel_prose_cannot_materialize_panelboards_from_source_pdf(tmp_path: Pa
         "fixture:issue72-panel-labels-versus-prose", schedule_cells=False,
     )
     assert sorted(e.name for e in model.electrical_equipment) == ["DP", "LP"]
+
+
+def test_panel_prose_stamp_cannot_materialize_panelboard_from_source_pdf(
+    tmp_path: Path,
+) -> None:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    annotations = ArrayObject()
+    for index, (subject, contents) in enumerate((
+        ("REVIEW STAMP", "PANEL LOCATED AT WALL"),
+        ("PANEL NEAR", "REVIEWED"),
+    )):
+        annotation = DictionaryObject({
+            NameObject("/Type"): NameObject("/Annot"),
+            NameObject("/Subtype"): NameObject("/Stamp"),
+            NameObject("/Rect"): ArrayObject([
+                NumberObject(70), NumberObject(500 - 30 * index),
+                NumberObject(120), NumberObject(520 - 30 * index),
+            ]),
+            NameObject("/NM"): TextStringObject(f"stable-stamp-{index}"),
+            NameObject("/Subj"): TextStringObject(subject),
+            NameObject("/Contents"): TextStringObject(contents),
+        })
+        annotations.append(writer._add_object(annotation))
+    page[NameObject("/Annots")] = annotations
+    path = tmp_path / "panel-prose-stamps.pdf"
+    with path.open("wb") as handle:
+        writer.write(handle)
+    model = ElectricalPdfImporter().import_document(
+        extract_pdf(path, source_id="fixture:issue72-panel-prose-stamps")
+    )
+    assert model.electrical_equipment == ()
 
 
 def test_device_tag_sharing_a_panel_name_prefix_creates_no_circuit(

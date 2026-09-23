@@ -307,3 +307,59 @@ def test_conflicting_user_decision_id_is_rejected() -> None:
             user_input_id="decision:one", wall_id=equipment.host_id,
             space_id=equipment.space_id, direction=Vector3(x=0, y=1, z=0),
         )
+
+
+def test_two_panels_keep_quantity_origins_separate_and_decision_ids_global() -> None:
+    model = _model()
+    equipment_ids = []
+    for key, name in (("first-panel", "FIRST"), ("second-panel", "SECOND")):
+        proposal = propose_equipment_placement(
+            model, identity_key=key, equipment_type="panelboard", name=name,
+            level_id="level:one",
+            served_device_ids=tuple(item.id for item in model.electrical_devices),
+        )
+        model = apply_equipment_proposal(model, proposal)
+        equipment_ids.append(next(item.id for item in model.electrical_equipment
+                                  if item.name == name))
+    first_id, second_id = equipment_ids
+    model = design_proposed_circuits(
+        model, equipment_id=first_id, device_ids=("device:1",),
+    )
+    model = design_proposed_circuits(
+        model, equipment_id=second_id, device_ids=("device:2", "device:3"),
+        user_groups=(("device:2", "device:3"),),
+        user_input_id="decision:second-panel-groups",
+    )
+    route_lines = [item for item in extract_quantities(model).items
+                   if item.category == "route_length"]
+    assert {item.to_dict()["design_status"] for item in route_lines} == {
+        "system-designed", "user-directed",
+    }
+    assert all(len({record.source_kind for record in item.provenance}
+                   & {"system-design", "user-override"}) == 1
+               for item in route_lines)
+    with pytest.raises(PlacementError, match="another circuit design"):
+        design_proposed_circuits(
+            model, equipment_id=first_id, device_ids=("device:1",),
+            user_groups=(("device:1",),),
+            user_input_id="decision:second-panel-groups",
+        )
+
+    first = next(item for item in model.electrical_equipment if item.id == first_id)
+    second = next(item for item in model.electrical_equipment if item.id == second_id)
+    model = set_user_equipment_placement(
+        model, equipment_id=first_id, position=first.pose.position,
+        user_input_id="decision:shared-placement", wall_id=first.host_id,
+        space_id=first.space_id, direction=Vector3(x=0, y=1, z=0),
+    )
+    model = set_user_equipment_placement(
+        model, equipment_id=first_id, position=Point3(x=0.75, y=0, z=1.5),
+        user_input_id="decision:first-move", wall_id=first.host_id,
+        space_id=first.space_id, direction=Vector3(x=0, y=1, z=0),
+    )
+    with pytest.raises(PlacementError, match="another equipment placement"):
+        set_user_equipment_placement(
+            model, equipment_id=second_id, position=second.pose.position,
+            user_input_id="decision:shared-placement", wall_id=second.host_id,
+            space_id=second.space_id, direction=Vector3(x=0, y=1, z=0),
+        )

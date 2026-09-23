@@ -148,6 +148,12 @@ def design_proposed_circuits(
     prior = tuple(item for item in model.circuits if (
         item.attributes.get("design", {}).get("equipment_id") == equipment_id
     ))
+    if user_input_id is not None and any(
+        item.attributes.get("design", {}).get("user_input_id") == user_input_id
+        and item.attributes.get("design", {}).get("equipment_id") != equipment_id
+        for item in model.circuits
+    ):
+        raise PlacementError("user_input_id already belongs to another circuit design")
     decision_history = model.attributes.get("design_decision_history", [])
     if not isinstance(decision_history, list):
         raise PlacementError("design decision history must be a list")

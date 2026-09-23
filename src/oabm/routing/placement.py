@@ -219,8 +219,11 @@ def set_user_equipment_placement(
                 and directions and all(item == direction for item in directions)):
             return model
         raise PlacementError("one user_input_id cannot describe conflicting placements")
-    if any(item.id != equipment_id and item.attributes.get("placement", {}).get("user_input_id") == user_input_id
-           for item in model.electrical_equipment):
+    if any(item.id != equipment_id and (
+        item.attributes.get("placement", {}).get("user_input_id") == user_input_id
+        or any(row.get("user_input_id") == user_input_id
+               for row in item.attributes.get("placement", {}).get("history", []))
+    ) for item in model.electrical_equipment):
         raise PlacementError("user_input_id already belongs to another equipment placement")
     wall = next((item for item in model.walls if item.id == wall_id), None)
     if wall is None or wall.level_id != equipment.level_id:

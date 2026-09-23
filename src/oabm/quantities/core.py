@@ -69,8 +69,7 @@ class QuantityItem:
     assembly_key: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        derivations = {item.derivation for item in self.provenance}
-        source_kinds = {item.source_kind for item in self.provenance}
+        design_status, geometry_status, placement_status = _provenance_statuses(self.provenance)
         return {
             "category": self.category,
             "item_type": self.item_type,
@@ -79,20 +78,9 @@ class QuantityItem:
             "variant": {key: value for key, value in self.variant},
             "source_entity_ids": list(self.source_entity_ids),
             "provenance": [asdict(item) for item in self.provenance],
-            "design_status": (
-                "user-directed" if "user-override" in source_kinds else
-                "system-designed" if "system-design" in source_kinds else
-                "inferred" if "inferred" in derivations else
-                "user" if "user" in derivations else
-                "observed" if derivations == {"observed"} else "unknown"
-            ),
-            "geometry_status": (
-                "inferred" if "router" in source_kinds else None
-            ),
-            "placement_status": (
-                "inferred" if "placement-engine" in source_kinds else
-                "user" if "user-placement" in source_kinds else None
-            ),
+            "design_status": design_status,
+            "geometry_status": geometry_status,
+            "placement_status": placement_status,
             "confidence": self.confidence,
             "assembly_key": self.assembly_key,
         }
@@ -290,7 +278,7 @@ def _contribution(
 
 
 def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ...]:
-    grouped: dict[tuple[str, str, str, str, str | None], list[_Contribution]] = {}
+    grouped: dict[tuple[str, str, str, str, str | None, str, str | None, str | None], list[_Contribution]] = {}
     for contribution in contributions:
         variant_key = json.dumps(
             {key: value for key, value in contribution.variant},
@@ -304,6 +292,7 @@ def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ..
             contribution.unit,
             variant_key,
             contribution.assembly_key,
+            *_provenance_statuses(contribution.provenance),
         )
         grouped.setdefault(key, []).append(contribution)
 
@@ -326,6 +315,26 @@ def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ..
             )
         )
     return tuple(items)
+
+
+def _provenance_statuses(
+    provenance: tuple[Provenance, ...],
+) -> tuple[str, str | None, str | None]:
+    source_kinds = {item.source_kind for item in provenance}
+    derivations = {item.derivation for item in provenance}
+    design_status = (
+        "user-directed" if "user-override" in source_kinds else
+        "system-designed" if "system-design" in source_kinds else
+        "inferred" if "inferred" in derivations else
+        "user" if "user" in derivations else
+        "observed" if derivations == {"observed"} else "unknown"
+    )
+    geometry_status = "inferred" if "router" in source_kinds else None
+    placement_status = (
+        "inferred" if "placement-engine" in source_kinds else
+        "user" if "user-placement" in source_kinds else None
+    )
+    return design_status, geometry_status, placement_status
 
 
 def _polyline_length(route: Route) -> float:

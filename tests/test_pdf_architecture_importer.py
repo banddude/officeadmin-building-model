@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, TextStringObject
 
 from oabm.model import BuildingModel, validate_model
-from oabm.importers.pdf_architecture import ImportOptions, LevelOverride, RegistrationHint
-from oabm.importers.pdf_architecture.extract import _group_words, extract_pdf
+from oabm.importers.pdf_architecture import ImportOptions, LevelOverride, RegistrationHint, ScaleOverride
+from oabm.importers.pdf_architecture.extract import _group_words, _unique_lines, extract_pdf
 from oabm.importers.pdf_architecture.importer import classify_page, import_architectural_pdf, import_observations
 from oabm.importers.pdf_architecture.types import (
     PdfDocumentObservation,
@@ -233,6 +233,83 @@ def test_source_pdf_detail_title_overrules_incidental_floor_plan_words(tmp_path:
     model = import_observations(extracted)
     assert model.spaces == ()
     assert model.walls == ()
+
+
+def test_source_pdf_wall_layers_support_partial_walls_without_false_rooms(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-layered-walls.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    wall_group = DictionaryObject({
+        NameObject("/Type"): NameObject("/OCG"),
+        NameObject("/Name"): TextStringObject("A-WALL"),
+    })
+    annotation_group = DictionaryObject({
+        NameObject("/Type"): NameObject("/OCG"),
+        NameObject("/Name"): TextStringObject("A-ANNO-DIMS"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)}),
+        NameObject("/Properties"): DictionaryObject({
+            NameObject("/WALL"): writer._add_object(wall_group),
+            NameObject("/NOTE"): writer._add_object(annotation_group),
+        }),
+    })
+    commands = [
+        "BT /F1 12 Tf 1 0 0 1 20 740 Tm (A210 FLOOR PLAN) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 20 720 Tm (SCALE: 1/8\" = 1'-0\") Tj ET",
+        "/OC /WALL BDC",
+        "100 200 m 100 500 l S", "103 200 m 103 500 l S",
+        "100 200 m 300 200 l S", "100 203 m 300 203 l S",
+        "EMC",
+        "/OC /NOTE BDC",
+        "350 200 m 350 500 l S", "353 200 m 353 500 l S",
+        "EMC",
+    ]
+    stream = DecodedStreamObject()
+    stream.set_data(("\n".join(commands) + "\n").encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with source.open("wb") as handle:
+        writer.write(handle)
+
+    extracted = extract_pdf(source, source_id="fixture:layered-walls")
+    wall_lines = [
+        line for line in extracted.pages[0].lines
+        if "A-WALL" in line.source_layers
+    ]
+    assert len(wall_lines) == 4
+    assert sum("A-ANNO-DIMS" in line.source_layers for line in extracted.pages[0].lines) == 2
+    model = import_observations(
+        extracted,
+        options=ImportOptions(
+            default_wall_height_m=3.0,
+            scale_overrides=(ScaleOverride(1, 0.03386666666666666),),
+        ),
+    )
+    assert model.spaces == ()
+    assert len(model.walls) == 2
+    assert all(
+        wall.attributes["pdf_architecture"]["source_layers"] == ["A-WALL"]
+        for wall in model.walls
+    )
+    validate_model(model)
+
+
+def test_identical_pdf_geometry_preserves_all_source_layer_evidence() -> None:
+    line = {"x0": 10.0, "y0": 20.0, "x1": 110.0, "y1": 20.0}
+    observations = _unique_lines(
+        (
+            {**line, "_oabm_source_layer": "A-ANNO-DIMS"},
+            {**line, "_oabm_source_layer": "A-WALL"},
+        ),
+        1,
+    )
+    assert len(observations) == 1
+    assert observations[0].source_layers == ("A-ANNO-DIMS", "A-WALL")
 
 
 

@@ -3441,13 +3441,36 @@ def _geometric_wall_loop_entities(
         return (), (), {}
 
     diagnostics: dict[str, object] = {}
+    explicit_wall_lines = tuple(
+        line
+        for line in page.lines
+        if any(
+            layer.rsplit("|", 1)[-1].upper().lstrip("_") in {"A-WALL", "AE-WALL"}
+            for layer in line.source_layers
+        )
+    )
+    pair_page = replace(page, lines=explicit_wall_lines) if len(explicit_wall_lines) >= 4 else page
     pairs = _geometric_wall_face_pairs(
-        page,
+        pair_page,
         transform,
         options,
         excluded_element_ids=excluded_element_ids,
         diagnostics=diagnostics,
     )
+    if pair_page is not page and not pairs:
+        diagnostics = {}
+        pair_page = page
+        pairs = _geometric_wall_face_pairs(
+            page,
+            transform,
+            options,
+            excluded_element_ids=excluded_element_ids,
+            diagnostics=diagnostics,
+        )
+    diagnostics["wall_source_layer_filter"] = (
+        "explicit_wall_layers" if pair_page is not page else "all_source_vectors"
+    )
+    diagnostics["explicit_wall_source_segment_count"] = len(explicit_wall_lines)
     if not pairs:
         diagnostics["closed_loop_pair_count"] = 0
         diagnostics["partial_pair_count"] = 0
@@ -3539,6 +3562,9 @@ def _geometric_wall_loop_entities(
     contexts_by_anchor: dict[str, _WallContext] = {}
     spaces: list[Space] = []
     height_confidence = level_info.height_confidence or options.assumed_value_confidence
+    source_layers_by_element = {
+        line.element_id: line.source_layers for line in pair_page.lines
+    }
 
     for index, pair in enumerate(pairs):
         if (
@@ -3551,6 +3577,11 @@ def _geometric_wall_loop_entities(
             f"wall-geometry:{pair.geometry_anchor}"
         )
         wall_id = stable_id("wall", wall_identity)
+        source_layer_names = sorted({
+            layer
+            for element_id in pair.source_element_ids
+            for layer in source_layers_by_element.get(element_id, ())
+        })
         if index in loop_endpoint_vertices:
             first_xy, second_xy = loop_endpoint_vertices[index]
             wall_confidence = min(transform.confidence, height_confidence, 0.78)
@@ -3597,6 +3628,7 @@ def _geometric_wall_loop_entities(
                         "dashed_source": pair.dashed,
                         "junction_supported": pair.junction_supported,
                         "closed_loop": index in loop_pair_indexes,
+                        "source_layers": source_layer_names,
                     },
                 )
                 + _level_measurement_provenance(
@@ -3614,6 +3646,7 @@ def _geometric_wall_loop_entities(
                     "dashed_source": pair.dashed,
                     "junction_supported": pair.junction_supported,
                     "closed_loop": index in loop_pair_indexes,
+                    "source_layers": source_layer_names,
                 }
             },
         )

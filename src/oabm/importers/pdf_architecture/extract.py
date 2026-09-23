@@ -13,6 +13,9 @@ from statistics import median
 from typing import Iterable
 
 import pdfplumber
+from pdfminer.pdfinterp import PDFPageInterpreter
+from pdfminer.pdftypes import resolve1
+from pdfplumber.page import PDFPageAggregatorWithMarkedContent, Page
 
 from .types import (
     PdfDocumentObservation,
@@ -149,8 +152,7 @@ def _dash_present(value: object) -> bool:
 
 
 def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple[PdfLineObservation, ...]:
-    seen: set[tuple[float, float, float, float]] = set()
-    result: list[PdfLineObservation] = []
+    evidence: dict[tuple[float, float, float, float], tuple[dict[str, object], set[str]]] = {}
     for obj in lines:
         a = (round(float(obj["x0"]), 4), round(float(obj["y0"]), 4))
         b = (round(float(obj["x1"]), 4), round(float(obj["y1"]), 4))
@@ -158,9 +160,16 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
             continue
         start, end = sorted((a, b))
         signature_tuple = (start[0], start[1], end[0], end[1])
-        if signature_tuple in seen:
+        layer = obj.get("_oabm_source_layer")
+        if signature_tuple in evidence:
+            if isinstance(layer, str) and layer:
+                evidence[signature_tuple][1].add(layer)
             continue
-        seen.add(signature_tuple)
+        evidence[signature_tuple] = (obj, {layer} if isinstance(layer, str) and layer else set())
+    result: list[PdfLineObservation] = []
+    for signature_tuple, (obj, source_layers) in evidence.items():
+        start = (signature_tuple[0], signature_tuple[1])
+        end = (signature_tuple[2], signature_tuple[3])
         signature = "|".join(f"{value:.4f}" for value in signature_tuple)
         primitive_family = str(obj.get("_oabm_primitive_family") or "line")
         result.append(
@@ -172,6 +181,7 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
                 primitive_family=primitive_family,
                 dashed=bool(obj.get("_oabm_dashed", False)),
                 filled=bool(obj.get("_oabm_filled", False)),
+                source_layers=tuple(sorted(source_layers)),
             )
         )
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
@@ -231,11 +241,73 @@ def _curve_polyline_segments(
                 "_oabm_primitive_family": primitive_family,
                 "_oabm_dashed": dashed,
                 "_oabm_filled": filled,
+                "_oabm_source_layer": curve.get("_oabm_source_layer"),
             }
             if isinstance(curve.get("mcid"), int):
                 segment["mcid"] = curve["mcid"]
             segments.append(segment)
     return tuple(segments)
+
+
+class _LayerAggregator(PDFPageAggregatorWithMarkedContent):
+    """Keep optional-content group names attached to PDF source primitives."""
+
+    def __init__(self, *args: object, layer_names: dict[str, str], **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.layer_names = layer_names
+        self.layer_stack: list[str | None] = []
+
+    def begin_tag(self, tag: object, props: object = None) -> None:
+        layer = None
+        if getattr(tag, "name", None) == "OC":
+            layer = self.layer_names.get(getattr(props, "name", None))
+        self.layer_stack.append(layer if layer is not None else (self.layer_stack[-1] if self.layer_stack else None))
+        super().begin_tag(tag, props)
+
+    def end_tag(self) -> None:
+        if self.layer_stack:
+            self.layer_stack.pop()
+        super().end_tag()
+
+    def tag_cur_item(self) -> None:
+        super().tag_cur_item()
+        if self.cur_item._objs:
+            self.cur_item._objs[-1]._oabm_source_layer = self.layer_stack[-1] if self.layer_stack else None
+
+
+class _LayerPage(Page):
+    @property
+    def layout(self):  # type: ignore[override]
+        if not hasattr(self, "_layout"):
+            resources = resolve1(self.page_obj.resources)
+            properties = resolve1(resources.get("Properties", {}))
+            layer_names: dict[str, str] = {}
+            if isinstance(properties, dict):
+                for key, value in properties.items():
+                    group = resolve1(value)
+                    if not isinstance(group, dict):
+                        continue
+                    name = group.get("Name")
+                    if isinstance(name, bytes):
+                        layer_names[str(key)] = name.decode("utf-8", "replace")
+                    elif isinstance(name, str):
+                        layer_names[str(key)] = name
+            device = _LayerAggregator(
+                self.pdf.rsrcmgr,
+                pageno=self.page_number,
+                laparams=self.pdf.laparams,
+                layer_names=layer_names,
+            )
+            PDFPageInterpreter(self.pdf.rsrcmgr, device).process_page(self.page_obj)
+            self._layout = device.get_result()
+        return self._layout
+
+    def process_object(self, obj):  # type: ignore[override]
+        result = super().process_object(obj)
+        layer = getattr(obj, "_oabm_source_layer", None)
+        if isinstance(layer, str) and layer:
+            result["_oabm_source_layer"] = layer
+        return result
 
 
 def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumentObservation:
@@ -246,7 +318,8 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
 
     pages: list[PdfPageObservation] = []
     with pdfplumber.open(pdf_path) as document:
-        for index, page in enumerate(document.pages, start=1):
+        for index, original_page in enumerate(document.pages, start=1):
+            page = _LayerPage(document, original_page.page_obj, index, original_page.initial_doctop)
             pages.append(
                 PdfPageObservation(
                     page_number=index,
@@ -261,6 +334,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                                     "_oabm_primitive_family": "line",
                                     "_oabm_dashed": _dash_present(line.get("dash")),
                                     "_oabm_filled": bool(line.get("fill", False)),
+                                    "_oabm_source_layer": line.get("_oabm_source_layer"),
                                 }
                                 for line in page.lines
                             ),

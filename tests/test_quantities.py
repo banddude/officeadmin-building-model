@@ -1,12 +1,43 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from oabm.model import BuildingModel, ContractError, ElectricalDevice, Point3, Pose, Size3
-from oabm.quantities import COUNT_UNIT, LENGTH_UNIT, QuantityError, extract_quantities
+from oabm.importers.roomplan import import_captured_room
+from oabm.model import (
+    DERIVATION_INFERRED,
+    DERIVATION_OBSERVED,
+    DERIVATION_USER,
+    Box3D,
+    BuildingModel,
+    Ceiling,
+    ContractError,
+    ElectricalDevice,
+    Level,
+    Obstacle,
+    Opening,
+    Point3,
+    Polygon3D,
+    Polyline3D,
+    Pose,
+    Provenance,
+    Size3,
+    Slab,
+    Space,
+    Wall,
+)
+from oabm.quantities import (
+    AREA_UNIT,
+    COUNT_UNIT,
+    LENGTH_UNIT,
+    MEASURABLE_KINDS,
+    VOLUME_UNIT,
+    QuantityError,
+    extract_quantities,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "fixtures" / "quantities" / "synthetic-route-model.json"
@@ -212,7 +243,443 @@ def test_invalid_assembly_resolver_value_is_rejected() -> None:
         extract_quantities(_model(), assembly_resolver=lambda category, entity: "")
 
 
-def test_empty_model_has_empty_takeoff() -> None:
+def test_empty_model_says_why_it_is_empty_instead_of_staying_silent() -> None:
     report = extract_quantities(BuildingModel(model_id="model:empty"))
     assert report.items == ()
-    assert report.warnings == ()
+    assert [warning.code for warning in report.warnings] == ["empty_takeoff"]
+    assert report.scope.empty_reason == (
+        "the model contains no entities, so there is nothing to measure"
+    )
+    assert report.scope.present_kinds == ()
+
+
+# --- issue #80: architectural quantities, scope reporting, per-claim provenance ---
+
+ROOMPLAN_FIXTURE = ROOT / "fixtures" / "roomplan" / "captured-room-3d.json"
+
+LEVEL = Level(id="level:ground", elevation_m=0.0)
+
+_OBSERVED = Provenance(
+    source_kind="test", source_id="scan:1", derivation=DERIVATION_OBSERVED
+)
+#: The shape a scanner-backed importer emits for a dimension it had to supply:
+#: a second record, scoped by name to the one dimension it assumed.
+_ASSUMED_THICKNESS = Provenance(
+    source_kind="test",
+    source_id="scan:1",
+    derivation=DERIVATION_INFERRED,
+    attributes={"assumed_dimension": "thickness_m"},
+)
+
+
+def _wall(
+    *,
+    wall_id: str = "wall:a",
+    length_m: float = 4.0,
+    height_m: float = 3.0,
+    thickness_m: float = 0.2,
+    provenance: tuple[Provenance, ...] = (_OBSERVED,),
+) -> Wall:
+    return Wall(
+        id=wall_id,
+        level_id=LEVEL.id,
+        centerline=Polyline3D(
+            points=(Point3(x=0.0, y=0.0, z=0.0), Point3(x=length_m, y=0.0, z=0.0))
+        ),
+        thickness_m=thickness_m,
+        height_m=height_m,
+        provenance=provenance,
+    )
+
+
+def _rect(width: float, depth: float, z: float = 0.0) -> Polygon3D:
+    return Polygon3D(
+        points=(
+            Point3(x=0.0, y=0.0, z=z),
+            Point3(x=width, y=0.0, z=z),
+            Point3(x=width, y=depth, z=z),
+            Point3(x=0.0, y=depth, z=z),
+        )
+    )
+
+
+def _architectural_model(**kwargs) -> BuildingModel:
+    return BuildingModel(model_id="model:architectural", levels=(LEVEL,), **kwargs)
+
+
+def test_building_without_electrical_content_still_produces_a_takeoff() -> None:
+    """The issue's headline: 20 architectural entities used to yield items: 0."""
+
+    model = _architectural_model(
+        walls=(_wall(),),
+        slabs=(
+            Slab(
+                id="slab:a",
+                level_id=LEVEL.id,
+                footprint=_rect(4.0, 3.0),
+                thickness_m=0.1,
+                provenance=(_OBSERVED,),
+            ),
+        ),
+        spaces=(
+            Space(
+                id="space:a",
+                level_id=LEVEL.id,
+                footprint=_rect(4.0, 3.0),
+                height_m=2.5,
+                usage="kitchen",
+                provenance=(_OBSERVED,),
+            ),
+        ),
+    )
+    report = extract_quantities(model)
+
+    assert report.items != ()
+    assert _item(report, "wall_length", "wall").quantity == pytest.approx(4.0)
+    assert _item(report, "wall_face_area", "wall", faces="single").quantity == pytest.approx(12.0)
+    assert _item(report, "wall_volume", "wall").quantity == pytest.approx(2.4)
+    assert _item(report, "slab_area", "slab").quantity == pytest.approx(12.0)
+    assert _item(report, "slab_volume", "slab").quantity == pytest.approx(1.2)
+    assert _item(report, "space_floor_area", "kitchen").quantity == pytest.approx(12.0)
+    assert _item(report, "space_volume", "kitchen").quantity == pytest.approx(30.0)
+    assert report.scope.empty_reason is None
+
+
+def test_wall_face_area_is_measured_while_its_volume_is_inferred_in_one_report() -> None:
+    """The distinction issue #80 turns on.
+
+    The wall's position and extent were scanned; its thickness is a default the
+    importer chose.  Face area = length x height consumes only observed
+    dimensions, so it is a measurement.  Volume multiplies the assumed
+    thickness in, so it is an inference.  Tainting both because the entity
+    carries one inferred record would report a measured area as a guess.
+    """
+
+    wall = _wall(provenance=(_OBSERVED, _ASSUMED_THICKNESS))
+    report = extract_quantities(_architectural_model(walls=(wall,)))
+
+    assert _item(report, "wall_face_area", "wall", faces="single").derivation == DERIVATION_OBSERVED
+    assert _item(report, "wall_volume", "wall").derivation == DERIVATION_INFERRED
+    # The length never multiplied a thickness in either, even though thickness
+    # is in its variant so materially different walls stay on separate lines.
+    assert _item(report, "wall_length", "wall").derivation == DERIVATION_OBSERVED
+    assert dict(_item(report, "wall_length", "wall").variant)["thickness_m"] == 0.2
+
+
+def test_assumed_dimension_reaches_only_the_quantities_that_consume_it() -> None:
+    """A slab's area is measured from its footprint; its volume is not."""
+
+    slab = Slab(
+        id="slab:a",
+        level_id=LEVEL.id,
+        footprint=_rect(4.0, 3.0),
+        thickness_m=0.001,
+        provenance=(_OBSERVED, _ASSUMED_THICKNESS),
+    )
+    report = extract_quantities(_architectural_model(slabs=(slab,)))
+
+    assert _item(report, "slab_area", "slab").derivation == DERIVATION_OBSERVED
+    assert _item(report, "slab_volume", "slab").derivation == DERIVATION_INFERRED
+
+
+def test_a_count_is_not_tainted_by_an_assumed_dimension() -> None:
+    """Counting an opening asserts only that it exists, not how big it is."""
+
+    wall = _wall()
+    opening = Opening(
+        id="opening:a",
+        host_id=wall.id,
+        opening_type="door",
+        pose=Pose(position=Point3(x=1.0, y=0.0, z=1.0)),
+        size=Size3(x=0.9, y=0.2, z=2.1),
+        provenance=(
+            _OBSERVED,
+            Provenance(
+                source_kind="test",
+                source_id="scan:1",
+                derivation=DERIVATION_INFERRED,
+                attributes={"assumed_dimension": "size"},
+            ),
+        ),
+    )
+    report = extract_quantities(_architectural_model(walls=(wall,), openings=(opening,)))
+
+    assert _item(report, "opening_count", "door").derivation == DERIVATION_OBSERVED
+
+
+def test_unstated_provenance_never_reads_as_observed() -> None:
+    """Fail closed: a record that never said how it came to exist is not a sighting."""
+
+    unstated = Provenance(source_kind="test", source_id="scan:1")
+    assert unstated.derivation is None
+    report = extract_quantities(_architectural_model(walls=(_wall(provenance=(unstated,)),)))
+
+    derivation = _item(report, "wall_length", "wall").derivation
+    assert derivation != DERIVATION_OBSERVED
+    assert derivation is None
+
+
+def test_a_quantity_with_no_provenance_at_all_is_not_observed() -> None:
+    report = extract_quantities(_architectural_model(walls=(_wall(provenance=()),)))
+    assert _item(report, "wall_length", "wall").derivation is None
+
+
+@pytest.mark.parametrize(
+    ("derivations", "expected"),
+    [
+        ((DERIVATION_OBSERVED,), DERIVATION_OBSERVED),
+        ((DERIVATION_USER,), DERIVATION_USER),
+        # user outranks observed, inferred outranks both, unstated sits between
+        # inferred and user so it can never be mistaken for a sighting.
+        ((DERIVATION_OBSERVED, DERIVATION_USER), DERIVATION_USER),
+        ((DERIVATION_OBSERVED, DERIVATION_USER, None), None),
+        ((DERIVATION_OBSERVED, None, DERIVATION_INFERRED), DERIVATION_INFERRED),
+        ((DERIVATION_USER, DERIVATION_INFERRED), DERIVATION_INFERRED),
+    ],
+)
+def test_derivation_precedence_is_inferred_then_unstated_then_user_then_observed(
+    derivations, expected
+) -> None:
+    provenance = tuple(
+        Provenance(source_kind="test", source_id=f"scan:{index}", derivation=value)
+        for index, value in enumerate(derivations)
+    )
+    report = extract_quantities(_architectural_model(walls=(_wall(provenance=provenance),)))
+    assert _item(report, "wall_length", "wall").derivation == expected
+
+
+def test_aggregated_line_takes_the_weakest_derivation_of_its_parts() -> None:
+    """Two identical walls, one with an assumed thickness, land on one line."""
+
+    measured = _wall(wall_id="wall:a", provenance=(_OBSERVED,))
+    assumed = _wall(wall_id="wall:b", provenance=(_OBSERVED, _ASSUMED_THICKNESS))
+    report = extract_quantities(_architectural_model(walls=(measured, assumed)))
+
+    volume = _item(report, "wall_volume", "wall")
+    assert volume.source_entity_ids == ("wall:a", "wall:b")
+    assert volume.quantity == pytest.approx(4.8)
+    assert volume.derivation == DERIVATION_INFERRED
+    # The face areas of both walls are still measurements.
+    assert _item(report, "wall_face_area", "wall", faces="single").derivation == DERIVATION_OBSERVED
+
+
+def test_polygon_area_is_computed_for_any_plane_not_a_horizontal_projection() -> None:
+    """A pitched ceiling: 20 m2 of surface whose XY shadow is only 12 m2."""
+
+    ceiling = Ceiling(
+        id="ceiling:pitched",
+        level_id=LEVEL.id,
+        footprint=Polygon3D(
+            points=(
+                Point3(x=0.0, y=0.0, z=0.0),
+                Point3(x=4.0, y=0.0, z=0.0),
+                Point3(x=4.0, y=3.0, z=4.0),
+                Point3(x=0.0, y=3.0, z=4.0),
+            )
+        ),
+        provenance=(_OBSERVED,),
+    )
+    report = extract_quantities(_architectural_model(ceilings=(ceiling,)))
+
+    area = _item(report, "ceiling_area", "ceiling").quantity
+    assert area == pytest.approx(20.0)
+    assert area != pytest.approx(12.0)
+
+
+def test_wall_face_area_states_whether_it_is_one_face_or_both() -> None:
+    report = extract_quantities(_architectural_model(walls=(_wall(),)))
+    item = _item(report, "wall_face_area", "wall", faces="single")
+    assert dict(item.variant)["faces"] == "single"
+    assert item.quantity == pytest.approx(12.0)
+    assert item.unit == AREA_UNIT == "m2"
+
+
+def test_materially_different_walls_stay_on_separate_lines() -> None:
+    thin = _wall(wall_id="wall:thin", thickness_m=0.1)
+    thick = _wall(wall_id="wall:thick", thickness_m=0.3)
+    tall = _wall(wall_id="wall:tall", thickness_m=0.1, height_m=4.0)
+    report = extract_quantities(_architectural_model(walls=(thin, thick, tall)))
+
+    lines = [item for item in report.items if item.category == "wall_volume"]
+    assert len(lines) == 3
+    assert {dict(item.variant)["thickness_m"] for item in lines} == {0.1, 0.3}
+    assert {dict(item.variant)["height_m"] for item in lines} == {3.0, 4.0}
+
+
+def test_units_cover_area_and_volume() -> None:
+    report = extract_quantities(
+        _architectural_model(
+            walls=(_wall(),),
+            slabs=(
+                Slab(
+                    id="slab:a",
+                    level_id=LEVEL.id,
+                    footprint=_rect(4.0, 3.0),
+                    thickness_m=0.1,
+                    provenance=(_OBSERVED,),
+                ),
+            ),
+        )
+    )
+    assert report.area_unit == AREA_UNIT == "m2"
+    assert report.volume_unit == VOLUME_UNIT == "m3"
+    assert all(
+        item.unit == "m2"
+        for item in report.items
+        if item.category in {"wall_face_area", "slab_area", "ceiling_area", "space_floor_area"}
+    )
+    assert all(
+        item.unit == "m3"
+        for item in report.items
+        if item.category in {"wall_volume", "slab_volume", "space_volume"}
+    )
+
+
+def test_openings_are_counted_and_the_host_wall_area_is_not_deducted() -> None:
+    """Fail closed on semantics: count what is certain, decline what is not."""
+
+    wall = _wall(length_m=4.0, height_m=3.0)
+    openings = tuple(
+        Opening(
+            id=f"opening:{index}",
+            host_id=wall.id,
+            opening_type=opening_type,
+            pose=Pose(position=Point3(x=0.5 + index, y=0.0, z=1.0)),
+            size=Size3(x=0.9, y=0.2, z=2.1),
+            provenance=(_OBSERVED,),
+        )
+        for index, opening_type in enumerate(("door", "window", "window"))
+    )
+    report = extract_quantities(_architectural_model(walls=(wall,), openings=openings))
+
+    assert _item(report, "opening_count", "door").quantity == 1
+    assert _item(report, "opening_count", "window").quantity == 2
+    # Full 4 m x 3 m face, with nothing taken out for the three openings in it.
+    assert _item(report, "wall_face_area", "wall", faces="single").quantity == pytest.approx(12.0)
+
+    declined = {entry.subject: entry.reason for entry in report.scope.declined_derivations}
+    assert "opening_area_deducted_from_host_wall" in declined
+    assert "contract does not state" in declined["opening_area_deducted_from_host_wall"]
+
+
+def test_scope_names_what_is_measurable_present_measured_and_deliberately_not() -> None:
+    wall = _wall()
+    model = _architectural_model(
+        walls=(wall,),
+        obstacles=(
+            Obstacle(
+                id="obstacle:a",
+                level_id=LEVEL.id,
+                geometry=Box3D(
+                    pose=Pose(position=Point3(x=0.0, y=0.0, z=0.0)),
+                    size=Size3(x=1.0, y=1.0, z=1.0),
+                ),
+            ),
+        ),
+    )
+    report = extract_quantities(model)
+    scope = report.scope
+
+    assert "wall" in scope.measurable_kinds
+    assert set(scope.measurable_kinds) == set(MEASURABLE_KINDS)
+    assert scope.present_kinds == ("level", "obstacle", "wall")
+    assert scope.measured_kinds == ("wall",)
+
+    reasons = {entry.subject: entry.reason for entry in scope.unmeasured_kinds}
+    assert set(reasons) == {"level", "obstacle"}
+    assert "organizing datum" in reasons["level"]
+    assert "keep clear when routing" in reasons["obstacle"]
+
+
+def test_every_kind_that_is_not_a_quantity_states_a_reason() -> None:
+    """level, port, obstacle, route_constraint and circuit each need an answer."""
+
+    model = BuildingModel.load(FIXTURE)
+    report = extract_quantities(model)
+    reasons = {entry.subject: entry.reason for entry in report.scope.unmeasured_kinds}
+
+    for kind in ("port", "circuit"):
+        assert kind in report.scope.present_kinds
+        assert reasons[kind].strip() != ""
+    # A circuit's work is already on the conductor and route lines.
+    assert "double-count" in reasons["circuit"]
+    assert "conductors and routes" in reasons["circuit"]
+
+
+def test_model_this_lane_cannot_measure_warns_rather_than_returning_silence() -> None:
+    model = _architectural_model(
+        obstacles=(
+            Obstacle(
+                id="obstacle:a",
+                level_id=LEVEL.id,
+                geometry=Box3D(
+                    pose=Pose(position=Point3(x=0.0, y=0.0, z=0.0)),
+                    size=Size3(x=1.0, y=1.0, z=1.0),
+                ),
+            ),
+        ),
+    )
+    report = extract_quantities(model)
+
+    assert report.items == ()
+    codes = [warning.code for warning in report.warnings]
+    assert "empty_takeoff" in codes
+    reason = report.scope.empty_reason
+    assert reason is not None
+    assert "does not measure any kind present" in reason
+    assert "obstacle" in reason
+    # and it names what it *would* have measured, so the caller can tell the
+    # two failure modes apart.
+    assert "wall" in reason
+
+
+def test_a_measurable_kind_that_produced_nothing_is_warned_about() -> None:
+    model = BuildingModel.load(FIXTURE)
+    stripped = replace(
+        model,
+        conductors=tuple(replace(item, route_ids=()) for item in model.conductors),
+    )
+    report = extract_quantities(stripped)
+
+    kind_warnings = [w for w in report.warnings if w.code == "kind_not_measured"]
+    assert [w.message.split(":")[0] for w in kind_warnings] == ["conductor"]
+    assert "conductor" not in report.scope.measured_kinds
+
+
+def test_scope_survives_the_json_round_trip() -> None:
+    report = extract_quantities(_architectural_model(walls=(_wall(),)))
+    document = json.loads(report.to_json())
+
+    assert document["scope"]["measured_kinds"] == ["wall"]
+    assert document["area_unit"] == "m2"
+    assert document["volume_unit"] == "m3"
+    assert {item["category"] for item in document["items"]} == {
+        "wall_length",
+        "wall_face_area",
+        "wall_volume",
+    }
+    assert {item["derivation"] for item in document["items"]} == {DERIVATION_OBSERVED}
+
+
+def test_scanned_wall_reports_measured_face_area_and_inferred_volume() -> None:
+    """The same rule, end to end on importer output rather than a hand-built wall.
+
+    RoomPlan reports surfaces with no thickness, so the importer supplies one
+    and records that it did.  This is what stops the feature from being true
+    only in a test.
+    """
+
+    model = import_captured_room(json.loads(ROOMPLAN_FIXTURE.read_text(encoding="utf-8")))
+    scanned = [wall for wall in model.walls if wall.thickness_m == 0.001]
+    assert scanned, "fixture no longer exercises a defaulted wall thickness"
+    assert any(
+        record.attributes.get("assumed_dimension") == "thickness_m"
+        and record.derivation == DERIVATION_INFERRED
+        for record in scanned[0].provenance
+    )
+
+    report = extract_quantities(model)
+    assert _item(report, "wall_face_area", "wall", faces="single").derivation == DERIVATION_OBSERVED
+    assert _item(report, "wall_volume", "wall").derivation == DERIVATION_INFERRED
+    assert _item(report, "slab_area", "slab").derivation == DERIVATION_OBSERVED
+    assert _item(report, "slab_volume", "slab").derivation == DERIVATION_INFERRED

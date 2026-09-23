@@ -1,11 +1,12 @@
 import json
 import math
+import re
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from jsonschema import Draft202012Validator
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
@@ -42,6 +43,9 @@ NOTES_COLUMN_LEGEND_FIXTURE = (
 )
 REAL_CAD_GLYPH_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-real-cad-glyphs.pdf"
+)
+CIRCUIT_HOMERUN_FIXTURE = (
+    FIXTURE_DIR / "geometry-only-power-sheet-circuit-homeruns.pdf"
 )
 INNER_VIEW_BORDER_LEGEND_FIXTURE = (
     FIXTURE_DIR / "geometry-only-power-sheet-inner-view-border-legend.pdf"
@@ -982,6 +986,887 @@ def test_issue70_non_device_symbol_probes_still_yield_zero_devices(
     assert model.electrical_equipment == ()
     assert _legend_shape_matched_devices(model) == []
 
+
+
+def test_homeruns_circuit_tags_and_panel_schedule_resolve_fail_closed() -> None:
+    assert CIRCUIT_HOMERUN_FIXTURE.exists()
+    assert not CIRCUIT_HOMERUN_FIXTURE.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        CIRCUIT_HOMERUN_FIXTURE,
+        source_id="fixture:issue72-circuit-homeruns",
+    )
+    repeated = extract_pdf(
+        CIRCUIT_HOMERUN_FIXTURE,
+        source_id="fixture:issue72-circuit-homeruns",
+    )
+    assert extracted == repeated
+
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert len(model.electrical_equipment) == 1
+    assert model.electrical_equipment[0].equipment_type == "panelboard"
+    assert model.electrical_equipment[0].name == "LP"
+    assert {circuit.circuit_number for circuit in model.circuits} == {
+        "1",
+        "3",
+        "5",
+        "7",
+    }
+    assert len(model.circuits) == 4
+    # Each circuit owns one panel source port. The three homerun circuits
+    # share the same three loads but keep distinct load ports per circuit;
+    # circuit 7 has one direct-tagged load.
+    assert len(model.ports) == 14
+
+    homeruns = [
+        circuit for circuit in model.circuits if circuit.circuit_number in {"1", "3", "5"}
+    ]
+    direct = next(
+        circuit for circuit in model.circuits if circuit.circuit_number == "7"
+    )
+    assert all(len(circuit.load_port_ids) == 3 for circuit in homeruns)
+    assert len(direct.load_port_ids) == 1
+    assert all(
+        circuit.attributes["pdf_electrical"]["evidence_methods"]
+        == ["pdf-homerun-annotation"]
+        for circuit in homeruns
+    )
+    raceway_groups = {
+        row["shared_raceway_group"]
+        for circuit in homeruns
+        for row in circuit.attributes["pdf_electrical"]["evidence"]
+    }
+    assert len(raceway_groups) == 1
+    assert direct.attributes["pdf_electrical"]["evidence_methods"] == [
+        "pdf-device-circuit-tag"
+    ]
+    assert all(
+        row["schedule_validated"]
+        for circuit in model.circuits
+        for row in circuit.attributes["pdf_electrical"]["evidence"]
+    )
+
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    reason_codes = {row.get("reason_code") for row in misses}
+    # The dimension leader is an arrowed leader that touches no device, so
+    # `arrow_not_associated_to_device` is its accurate code. `no_panel_token`
+    # is reserved for an arrowed run that DOES reach a device but carries no
+    # panel annotation; see
+    # test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token.
+    assert "arrow_not_associated_to_device" in reason_codes
+    assert "panel_id_not_recognized" in reason_codes
+    assert "circuit_outside_panel_schedule" in reason_codes
+    assert all(circuit.circuit_number != "2" for circuit in model.circuits)
+    assert all(circuit.circuit_number != "99" for circuit in model.circuits)
+    assert all(
+        circuit.name is None or not circuit.name.startswith("ZZ ")
+        for circuit in model.circuits
+    )
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\\n".join(error.message for error in errors)
+
+
+def _write_circuit_probe_pdf(
+    path: Path, body: bytes, *, schedule_cells: bool = True,
+    schedule_divider: bool = True,
+) -> None:
+    """Write a one-page power sheet with explicit synthetic schedule cells.
+
+    Source PDF only, per #60: the test reads it back through ``extract_pdf``
+    and no paired ``.expected.json`` is ever written.
+    """
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=792, height=612)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
+    )
+    # Source-PDF schedule rows have separate number and description cells and
+    # an explicit divider. Numbered notes do not get this source structure.
+    cells = []
+    row_positions = []
+    if schedule_cells:
+        for match in re.finditer(
+            rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \((\d+) (RECEPTACLE LOAD|SPARE)\) Tj ET",
+            body,
+        ):
+            x, y = float(match.group(1)), float(match.group(2))
+            row_positions.append((x, y))
+            body = body.replace(
+                match.group(0),
+                f"1 0 0 1 {x:g} {y:g} Tm ({match.group(3).decode()}) Tj ET\n"
+                f"BT /F1 8 Tf 1 0 0 1 {x + 40:g} {y:g} Tm "
+                f"({match.group(4).decode()}) Tj ET".encode(),
+            )
+        heading = re.search(
+            rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(PANEL [A-Z0-9_.-]+ SCHEDULE\) Tj",
+            body,
+        )
+        if heading is not None and row_positions:
+            row_positions.sort(key=lambda position: -position[1])
+            frame_left = min(float(heading.group(1)), *(x for x, _y in row_positions)) - 10
+            divider = frame_left + 40
+            frame_right = max(x for x, _y in row_positions) + 150
+            frame_top = float(heading.group(2)) + 10
+            row_tops = [y + 5 for _x, y in row_positions]
+            row_bottoms = row_tops[1:] + [row_positions[-1][1] - 5]
+            frame_bottom = row_bottoms[-1]
+            cells.append(
+                f"BT /F1 8 Tf 1 0 0 1 {frame_left + 10:g} "
+                f"{row_tops[0] + 5:g} Tm (CKT) Tj ET\n"
+                f"BT /F1 8 Tf 1 0 0 1 {divider + 10:g} "
+                f"{row_tops[0] + 5:g} Tm (LOAD) Tj ET\n".encode()
+            )
+            cells.append(
+                f"{frame_left:g} {row_tops[0] + 10:g} "
+                f"{frame_right - frame_left:g} {frame_top - row_tops[0] - 10:g} re S\n".encode()
+            )
+            for x0, x1 in ((frame_left, divider), (divider, frame_right)):
+                cells.append(f"{x0:g} {row_tops[0]:g} {x1-x0:g} 10 re S\n".encode())
+            for row_top, row_bottom in zip(row_tops, row_bottoms):
+                for x0, x1 in ((frame_left, divider), (divider, frame_right)):
+                    cells.append(f"{x0:g} {row_bottom:g} {x1-x0:g} {row_top-row_bottom:g} re S\n".encode())
+            if schedule_divider:
+                cells.append(f"{divider:g} {frame_bottom:g} m {divider:g} {row_tops[0]+10:g} l S\n".encode())
+            cells.append(
+                f"{frame_left:g} {frame_bottom:g} "
+                f"{frame_right - frame_left:g} {frame_top - frame_bottom:g} re S\n".encode()
+            )
+    content = DecodedStreamObject()
+    content.set_data(body + b"".join(cells))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def _circuit_probe_model(
+    path: Path, body: bytes, source_id: str, *, schedule_cells: bool = True,
+    schedule_divider: bool = True,
+):
+    _write_circuit_probe_pdf(path, body, schedule_cells=schedule_cells,
+                             schedule_divider=schedule_divider)
+    assert not path.with_suffix(".expected.json").exists()
+    return ElectricalPdfImporter().import_document(
+        extract_pdf(path, source_id=source_id)
+    )
+
+
+def test_device_tag_sharing_a_panel_name_prefix_creates_no_circuit(
+    tmp_path: Path,
+) -> None:
+    """A panel named ``EVSE`` must not turn ``EVSE-1`` into circuit 1.
+
+    ``EVSE-1`` is a device identity tag and states no circuit assignment, so
+    resolving it would invent a circuit number no annotation states.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "panel-name-collides-with-device-tag.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL EVSE 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL EVSE SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-panel-device-prefix-collision",
+    )
+
+    assert [entity.name for entity in model.electrical_equipment] == ["EVSE"]
+    assert [device.name for device in model.electrical_devices] == ["EVSE-1"]
+    assert model.circuits == ()
+    assert model.ports == ()
+
+
+def test_two_competing_homerun_annotations_resolve_no_circuit(
+    tmp_path: Path,
+) -> None:
+    """An ambiguous homerun must not be rescued by the direct-tag pass.
+
+    Both annotations are diagnosed as conflicting, and neither may then be
+    re-read as a direct device circuit tag.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "competing-homerun-annotations.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        # Both annotations sit close enough to the device that the
+        # direct-device-tag pass would otherwise pick them up.
+        b"BT /F1 8 Tf 1 0 0 1 190 470 Tm (LP-1) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 200 485 Tm (LP-3) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 495 Tm (3 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-competing-homerun-annotations",
+    )
+
+    assert model.circuits == ()
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    conflicted = [
+        row for row in misses if row.get("reason_code") == "conflicting_homerun_annotations"
+    ]
+    assert {row["source_text"] for row in conflicted} == {"LP-1", "LP-3"}
+    # The conflicted texts must not reappear as resolved direct tags.
+    assert all(row["status"] == "unresolved" for row in conflicted)
+
+
+def test_malformed_circuit_list_fails_closed_instead_of_resolving_prefix(
+    tmp_path: Path,
+) -> None:
+    """``LP-1,X`` must not silently resolve as ``LP-1``."""
+    model = _circuit_probe_model(
+        tmp_path / "unparseable-circuit-list.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1,X) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-unparseable-circuit-list",
+    )
+
+    assert model.circuits == ()
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    assert any(row.get("reason_code") == "unparseable_circuit_list" for row in misses)
+    assert all(row.get("circuit_numbers") != [1] for row in misses)
+
+
+def test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token(
+    tmp_path: Path,
+) -> None:
+    """An arrowed run that reaches a device but names no panel fails closed.
+
+    This is the case #72 means by `no panel token`: a homerun IS found, and the
+    part that failed is the missing panel designation. An arrowed leader that
+    reaches no device at all is a dimension or annotation leader and gets
+    `arrow_not_associated_to_device` instead.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "homerun-without-annotation.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-homerun-without-annotation",
+    )
+
+    assert model.circuits == ()
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    assert any(row.get("reason_code") == "no_panel_token" for row in misses)
+
+
+def test_unclaimed_closed_path_touching_branch_fails_closed(tmp_path: Path) -> None:
+    """A device's own outline is lawful; a separate crossing enclosure is not."""
+    base = (
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    clean = _circuit_probe_model(
+        tmp_path / "device-outline-only.pdf", base, "fixture:issue72-device-outline-only"
+    )
+    assert [circuit.circuit_number for circuit in clean.circuits] == ["1"]
+
+    crossing = _circuit_probe_model(
+        tmp_path / "unclaimed-closed-crossing.pdf",
+        base + b"235 430 30 40 re S\n",
+        "fixture:issue72-unclaimed-closed-crossing",
+    )
+    assert crossing.circuits == ()
+    assert crossing.ports == ()
+    assert any(
+        row.get("reason_code") == "branch_run_not_isolated"
+        and row.get("cycle_element_id")
+        for row in crossing.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+
+def test_schedule_row_position_cannot_validate_an_absent_circuit(tmp_path: Path) -> None:
+    """Moving the same schedule row cannot turn LP-99 into a valid circuit."""
+    for delta in (239, 240, 241, 242):
+        row_y = 550 - delta
+        model = _circuit_probe_model(
+            tmp_path / f"schedule-row-delta-{delta}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            + f"BT /F1 8 Tf 1 0 0 1 600 {row_y} Tm (1 RECEPTACLE LOAD) Tj ET\n".encode(),
+            f"fixture:issue72-schedule-row-delta-{delta}",
+        )
+        assert model.circuits == (), f"LP-99 resolved when schedule row moved {delta} pt"
+        assert any(
+            row.get("source_text") == "LP-99"
+            and row.get("reason_code") in {
+                "circuit_outside_panel_schedule", "schedule_structure_not_confirmed"
+            }
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        )
+
+
+def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path) -> None:
+    """A note in another column or a separated block is not a schedule row."""
+    body = (
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    for label, extra in (
+        ("control", b""),
+        ("unrelated-99", b"BT /F1 8 Tf 1 0 0 1 60 120 Tm (99 DETAIL NOTE) Tj ET\n"),
+        ("unrelated-42", b"BT /F1 8 Tf 1 0 0 1 60 120 Tm (42 DETAIL NOTE) Tj ET\n"),
+        ("aligned-but-separated", b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"),
+        ("aligned-before-row", b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (99 DETAIL NOTE) Tj ET\n"),
+        ("aligned-near-row", b"BT /F1 8 Tf 1 0 0 1 600 528 Tm (99 DETAIL NOTE) Tj ET\n"),
+        (
+            "boxed-note-with-page-border",
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"595 115 145 10 re S\n"
+            b"5 5 780 600 re S\n",
+        ),
+        (
+            "full-column-box-with-page-border",
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"590 115 160 10 re S\n"
+            b"5 5 780 600 re S\n",
+        ),
+        (
+            "full-column-box-with-notes-frame",
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"590 115 160 10 re S\n"
+            b"590 100 160 460 re S\n",
+        ),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"schedule-note-{label}.pdf",
+            body + extra,
+            f"fixture:issue72-schedule-note-{label}",
+        )
+        assert model.circuits == (), label
+        assert any(
+            row.get("source_text") == "LP-99"
+            and row.get("reason_code") in {
+                "circuit_outside_panel_schedule", "schedule_structure_not_confirmed"
+            }
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        ), label
+
+    spare = _circuit_probe_model(
+        tmp_path / "ruled-spare-row.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 SPARE) Tj ET\n",
+        "fixture:issue72-ruled-spare-row",
+    )
+    assert [circuit.circuit_number for circuit in spare.circuits] == ["1"]
+
+    valid = _circuit_probe_model(
+        tmp_path / "schedule-cell-real-circuit.pdf",
+        body.replace(b"(LP-99)", b"(LP-1)"),
+        "fixture:issue72-schedule-cell-real-circuit",
+    )
+    assert [circuit.circuit_number for circuit in valid.circuits] == ["1"]
+
+    distant_row = _circuit_probe_model(
+        tmp_path / "distant-cell-plus-numbered-note.pdf",
+        body.replace(b"600 525 Tm (1 RECEPTACLE LOAD)", b"600 250 Tm (1 RECEPTACLE LOAD)")
+        + b"BT /F1 8 Tf 1 0 0 1 600 10 Tm (99 DETAIL NOTE) Tj ET\n",
+        "fixture:issue72-distant-cell-plus-numbered-note",
+    )
+    assert distant_row.circuits == ()
+    assert any(
+        row.get("source_text") == "LP-99"
+        and row.get("reason_code") == "circuit_outside_panel_schedule"
+        for row in distant_row.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+    # A tall same-width notes frame is not schedule ownership by itself,
+    # even when it contains the heading and a boxed numbered note.
+    standalone = _circuit_probe_model(
+        tmp_path / "standalone-notes-frame.pdf",
+        body
+        + b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (CKT LOAD) Tj ET\n"
+        + b"590 530 160 30 re S\n"
+        + b"590 520 160 10 re S\n"
+        + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+        + b"590 115 160 10 re S\n"
+        + b"590 100 160 460 re S\n",
+        "fixture:issue72-standalone-notes-frame",
+        schedule_cells=False,
+    )
+    assert standalone.circuits == ()
+    assert any(
+        row.get("source_text") == "LP-99"
+        and row.get("reason_code") == "schedule_structure_not_confirmed"
+        for row in standalone.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+    standalone_valid = _circuit_probe_model(
+        tmp_path / "standalone-notes-frame-valid.pdf",
+        body.replace(b"(LP-99)", b"(LP-1)")
+        + b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (CKT LOAD) Tj ET\n"
+        + b"590 530 160 30 re S\n"
+        + b"590 520 160 10 re S\n"
+        + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+        + b"590 115 160 10 re S\n"
+        + b"590 100 160 460 re S\n",
+        "fixture:issue72-standalone-notes-frame-valid",
+        schedule_cells=False,
+    )
+    assert standalone_valid.circuits == ()
+    assert any(row.get("reason") == "schedule found, structure not confirmed"
+               for row in standalone_valid.attributes["pdf_electrical"]["unresolved_circuits"])
+
+
+def test_moving_a_complete_ruled_schedule_does_not_change_its_circuit(
+    tmp_path: Path,
+) -> None:
+    """Source-drawn grid edges, not a point-distance cutoff, own the row."""
+    for y in (525, 524, 250):
+        model = _circuit_probe_model(
+            tmp_path / f"translated-ruled-schedule-{y}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            + f"BT /F1 8 Tf 1 0 0 1 600 {y} Tm (1 RECEPTACLE LOAD) Tj ET\n".encode(),
+            f"fixture:issue72-translated-ruled-schedule-{y}",
+        )
+        assert [circuit.circuit_number for circuit in model.circuits] == ["1"], y
+
+
+def test_ruled_note_block_is_not_a_panel_schedule_load_row(tmp_path: Path) -> None:
+    """A note label stays a note even inside a schedule-shaped outline."""
+    for label, note, extra in (
+        ("bare", b"99 DETAIL NOTE", b""),
+        ("general-notes", b"99 DETAIL NOTE", b"BT /F1 8 Tf 1 0 0 1 600 300 Tm (GENERAL NOTES) Tj ET\n"),
+        ("keynote", b"99 KEYNOTE", b""),
+        ("key-notes", b"99 KEYNOTE", b"BT /F1 8 Tf 1 0 0 1 600 300 Tm (KEY NOTES) Tj ET\n"),
+        ("detail-callout", b"99 DETAIL CALLOUT", b""),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"ruled-note-block-{label}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (" + note + b") Tj ET\n"
+            b"590 125 160 435 re S\n"
+            b"590 115 160 10 re S\n"
+            b"590 100 160 460 re S\n"
+            + extra,
+            f"fixture:issue72-ruled-note-block-{label}",
+            schedule_cells=False,
+        )
+        assert model.circuits == (), label
+        assert any(
+            row.get("source_text") == "LP-99"
+            and row.get("reason_code") == "schedule_structure_not_confirmed"
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        ), label
+
+
+def test_unruled_numeric_text_cannot_validate_a_present_schedule(tmp_path: Path) -> None:
+    """A heading plus a number or isolated box do not prove table ownership."""
+    body = (
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    for label, extra in (
+        ("unruled", b""),
+        ("isolated-box", b"595 520 145 10 re S\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"{label}-schedule-number.pdf",
+            body + extra,
+            f"fixture:issue72-{label}-schedule-number",
+            schedule_cells=False,
+        )
+        assert model.circuits == (), label
+        assert any(
+            row.get("source_text") == "LP-1"
+            and row.get("reason_code") == "schedule_structure_not_confirmed"
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        ), label
+
+
+def test_single_column_circuit_load_notes_is_present_but_unconfirmed(tmp_path: Path) -> None:
+    """A tall notes box cannot certify LP-99 without separate source columns."""
+    model = _circuit_probe_model(
+        tmp_path / "single-column-circuit-load-notes.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 535 Tm (CIRCUIT LOAD NOTES) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 KEYNOTE) Tj ET\n"
+        b"590 125 160 435 re S\n590 115 160 10 re S\n590 100 160 460 re S\n",
+        "fixture:issue72-single-column-circuit-load-notes",
+        schedule_cells=False,
+    )
+    assert model.circuits == ()
+    assert model.attributes["pdf_electrical"]["panel_schedules"]["LP"] == {
+        "status": "structure_not_confirmed", "circuits": [],
+        "reason": "schedule found, structure not confirmed",
+    }
+    assert any(
+        row.get("source_text") == "LP-99"
+        and row.get("reason_code") == "schedule_structure_not_confirmed"
+        and row.get("reason") == "schedule found, structure not confirmed"
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+
+def test_separate_column_boxes_without_source_divider_do_not_validate(tmp_path: Path) -> None:
+    body = (
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    model = _circuit_probe_model(
+        tmp_path / "no-source-divider.pdf", body, "fixture:issue72-no-divider",
+        schedule_divider=False,
+    )
+    assert model.circuits == ()
+    assert model.attributes["pdf_electrical"]["panel_schedules"]["LP"]["status"] == "structure_not_confirmed"
+    assert any(row.get("reason_code") == "schedule_structure_not_confirmed"
+               for row in model.attributes["pdf_electrical"]["unresolved_circuits"])
+
+
+def test_unparsed_present_schedule_does_not_become_absent(tmp_path: Path) -> None:
+    """A visible schedule with no parseable rows cannot waive validation."""
+    model = _circuit_probe_model(
+        tmp_path / "schedule-heading-without-rows.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n",
+        "fixture:issue72-schedule-heading-without-rows",
+    )
+    assert model.circuits == ()
+    assert any(
+        row.get("source_text") == "LP-1"
+        and row.get("reason_code") == "schedule_structure_not_confirmed"
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+
+def test_arrow_and_branch_scale_do_not_set_hard_cutoffs(tmp_path: Path) -> None:
+    """V shape and positive branch length matter, not a fixed point size."""
+    for name, end_x, arrow in (
+        ("short-branch", 183.9, b"178 448 m 183.9 450 l 178 452 l S\n"),
+        ("small-arrow-base", 300.0, b"294 448.05 m 300 450 l 294 451.95 l S\n"),
+        ("large-arrow-legs", 300.0, b"286 448 m 300 450 l 286 452 l S\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"scaled-{name}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            + f"180 450 m {end_x} 450 l S\n".encode()
+            + arrow
+            + f"BT /F1 9 Tf 1 0 0 1 {end_x + 5} 452 Tm (LP-1) Tj ET\n".encode()
+            + b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+            f"fixture:issue72-scaled-{name}",
+        )
+        assert [circuit.circuit_number for circuit in model.circuits] == ["1"], name
+
+
+def test_direct_tag_beyond_old_fixed_radius_can_resolve(tmp_path: Path) -> None:
+    """A corroborated direct tag uses the lane's annotation association rule."""
+    model = _circuit_probe_model(
+        tmp_path / "direct-tag-dx-43.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 213 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-direct-tag-dx-43",
+    )
+    assert [circuit.circuit_number for circuit in model.circuits] == ["1"]
+
+
+def test_lawful_tee_serving_two_devices_still_resolves(tmp_path: Path) -> None:
+    """Branch wiring tees. That must not be mistaken for architecture.
+
+    A run that splits to serve two devices is ordinary, lawful wiring. An
+    earlier version of the isolation guard rejected any component containing a
+    degree-3 junction, which is exactly what a tee is, so it discarded valid
+    circuits the same way the arbitrary size and reach cutoffs did before it.
+
+    The guard now keys on cycles instead: wiring distributes radially and never
+    loops back on itself, while architectural linework encloses space. This
+    pins the lawful side of that distinction.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "lawful-tee.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 392 Tm (EVSE-2) Tj ET\n"
+        b"175 375 10 10 re S\n"
+        b"180 450 m 260 450 l S\n"
+        b"180 380 m 260 380 l S\n"
+        b"260 450 m 260 380 l S\n"
+        b"260 415 m 340 415 l S\n"
+        b"334 411 m 340 415 l 334 419 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 345 417 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-lawful-tee",
+    )
+
+    assert {circuit.circuit_number for circuit in model.circuits} == {"1"}
+    circuit = model.circuits[0]
+    assert len(circuit.load_port_ids) == 2, (
+        "both devices on the teed run belong to the circuit"
+    )
+    assert not [
+        row
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        if row.get("reason_code") == "branch_run_not_isolated"
+    ]
+
+
+def test_tee_drawn_as_three_segments_from_one_point_still_resolves(
+    tmp_path: Path,
+) -> None:
+    """The natural way to draw a tee must resolve too.
+
+    Three segments leaving a single point is how a tap is normally drawn, and
+    it is the case that killed the first two versions of this guard. Each
+    segment touches the other two, so a graph whose nodes are VECTORS sees a
+    triangle and calls it a loop. With contact points as nodes it is one node
+    of degree three: a tree, and lawful.
+    """
+    model = _circuit_probe_model(
+        tmp_path / "tee-three-segments-one-point.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 600 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 700 600 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 700 575 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 130 417 Tm (EVSE-1) Tj ET\n"
+        b"135 395 10 10 re S\n"
+        b"140 400 m 220 400 l S\n"
+        b"220 400 m 300 460 l S\n"
+        b"220 400 m 300 340 l S\n"
+        b"294 456 m 300 460 l 292 461 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 308 462 Tm (LP-1) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 295 337 Tm (EVSE-2) Tj ET\n"
+        b"295 335 10 10 re S\n",
+        "fixture:issue72-tee-three-segments",
+    )
+
+    assert model.circuits, (
+        "three segments leaving one point is a tap, not an enclosure"
+    )
+    assert not [
+        row
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        if row.get("reason_code") == "branch_run_not_isolated"
+    ]
+
+
+def test_collinear_run_with_a_drafting_gap_is_not_read_as_a_loop(
+    tmp_path: Path,
+) -> None:
+    """A small gap in one run must not look like an enclosure.
+
+    Component assembly joins path ends within the snap tolerance, so two
+    collinear segments with a drafting gap are one run, and the isolation check
+    has to agree. Clustering their contact points by rounding into fixed bins
+    does not agree: two points a hair under the tolerance apart can straddle a
+    bin boundary, split into two nodes, and turn that single run into a
+    two-edge "loop" which is then rejected.
+
+    Geometry from the review that found it. The gaps sit either side of the
+    boundary on purpose.
+    """
+    for gap_start, gap_end in ((180.0, 183.5), (181.0, 184.0), (180.0, 180.5)):
+        model = _circuit_probe_model(
+            tmp_path / f"drafting-gap-{gap_start}-{gap_end}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 55 650 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 700 650 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 700 625 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 110 400 Tm (EVSE-1) Tj ET\n"
+            b"105 390 10 10 re S\n"
+            + f"110 400 m {gap_start} 400 l S\n".encode()
+            + f"{gap_end} 400 m 260 400 l S\n".encode()
+            + b"254 396 m 260 400 l 254 404 l S\n"
+            b"BT /F1 9 Tf 1 0 0 1 268 402 Tm (LP-1) Tj ET\n",
+            f"fixture:issue72-drafting-gap-{gap_start}-{gap_end}",
+        )
+        gap = round(gap_end - gap_start, 2)
+        assert model.circuits, f"a {gap} pt gap broke one run into a loop"
+        assert not [
+            row
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+            if row.get("reason_code") == "branch_run_not_isolated"
+        ], f"a {gap} pt gap was misread as enclosed area"
+
+
+def test_overprinted_duplicate_strokes_do_not_read_as_an_enclosure(
+    tmp_path: Path,
+) -> None:
+    """The same edge drawn twice encloses nothing.
+
+    Exported CAD routinely paints a line more than once, sometimes offset by a
+    fraction of a point. Those are parallel edges between the same two nodes,
+    and parallel edges bound zero area, so they must not be mistaken for a
+    loop.
+
+    Two things make that work: each member contributes its own midpoint as a
+    node, so coincident strokes collapse onto one edge while two genuinely
+    different paths between the same ends keep distinct midpoints; and an edge
+    already drawn is not counted a second time.
+    """
+    for label, second in (
+        ("exact", "140 400 m 220 400 l S\n"),
+        ("offset-1pt", "140 401 m 220 401 l S\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"duplicate-stroke-{label}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 55 650 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 800 650 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 800 625 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 130 404 Tm (EVSE-1) Tj ET\n"
+            b"135 395 10 10 re S\n"
+            b"140 400 m 220 400 l S\n"
+            + second.encode()
+            + b"214 396 m 220 400 l 214 404 l S\n"
+            b"BT /F1 9 Tf 1 0 0 1 228 402 Tm (LP-1) Tj ET\n",
+            f"fixture:issue72-duplicate-stroke-{label}",
+        )
+
+        assert model.circuits, f"{label} duplicate stroke was read as an enclosure"
+        assert not [
+            row
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+            if row.get("reason_code") == "branch_run_not_isolated"
+        ], f"{label} duplicate stroke wrongly rejected"
+
+
+def test_branch_run_absorbed_into_a_wall_network_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A run that has walked into the architecture must never become a circuit.
+
+    Geometry taken from the independent review that found this defect: a short
+    real branch crosses an OPEN wall grid carrying eleven further recognized
+    loads. Without the guard the importer produces one circuit with twelve
+    loads and no diagnostic at all.
+
+    Two things this pins deliberately. The linework is open, so a rule that
+    only inspected closed paths missed it, which is what the first version of
+    this guard did. And the reject is structural rather than a size cutoff:
+    branch wiring is radial and never closes a loop, while a wall grid
+    encloses space and therefore does.
+
+    Must not depend on any pilot's counts, and must keep holding until the
+    full discriminator in #76 lands.
+    """
+    body = [
+        b"BT /F1 10 Tf 1 0 0 1 70 600 Tm (PANEL LP 120/208V 3PH) Tj ET\n",
+        b"BT /F1 10 Tf 1 0 0 1 700 600 Tm (PANEL LP SCHEDULE) Tj ET\n",
+        b"BT /F1 8 Tf 1 0 0 1 700 575 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        # the genuine short branch, arrowed and annotated
+        b"BT /F1 8 Tf 1 0 0 1 130 417 Tm (EVSE-1) Tj ET\n",
+        b"135 395 10 10 re S\n",
+        b"140 400 m 230 400 l S\n",
+        b"224 396 m 230 400 l 224 404 l S\n",
+        b"BT /F1 9 Tf 1 0 0 1 238 402 Tm (LP-1) Tj ET\n",
+    ]
+    # An open wall mesh the branch crosses. No closed paths anywhere in it.
+    for x in (180, 260, 340, 420, 500, 580, 660):
+        body.append(f"{x} 260 m {x} 540 l S\n".encode())
+    for y in (300, 400, 500):
+        body.append(f"180 {y} m 660 {y} l S\n".encode())
+    # Further recognized loads sitting on the grid, which a bogus circuit
+    # would sweep up.
+    positions = [
+        (255, 300), (335, 300), (415, 300), (495, 300),
+        (575, 300), (655, 300), (255, 500), (335, 500),
+        (415, 500), (495, 500), (575, 500),
+    ]
+    for index, (cx, cy) in enumerate(positions, start=2):
+        body.append(
+            f"BT /F1 8 Tf 1 0 0 1 {cx - 5} {cy + 17} Tm (EVSE-{index}) Tj ET\n".encode()
+        )
+        body.append(f"{cx - 5} {cy - 5} 10 10 re S\n".encode())
+
+    model = _circuit_probe_model(
+        tmp_path / "branch-absorbed-into-wall-network.pdf",
+        b"".join(body),
+        "fixture:issue72-branch-absorbed-into-network",
+    )
+
+    # Twelve devices are recognized; the point is that none of them get
+    # circuited off geometry that is not wiring.
+    assert len(model.electrical_devices) == 12
+    assert model.circuits == (), (
+        "a run absorbed into looping architecture must not circuit the devices "
+        "that sprawl happened to cover"
+    )
+    assert model.ports == ()
+    misses = model.attributes["pdf_electrical"]["unresolved_circuits"]
+    rejected = [
+        row for row in misses if row.get("reason_code") == "branch_run_not_isolated"
+    ]
+    assert rejected, "the absorbed run must be rejected explicitly, not silently"
+    assert all(row.get("cycle_element_id") for row in rejected)
+
+
+def test_circuit_homerun_fixture_is_a_structurally_valid_pdf() -> None:
+    """The committed fixture must parse without reader error recovery.
+
+    It was previously written with a wrong ``/Length`` and an unusable xref,
+    so ``extract_pdf`` only succeeded because pypdf silently repaired it.
+    """
+    reader = PdfReader(str(CIRCUIT_HOMERUN_FIXTURE), strict=True)
+    assert len(reader.pages) == 1
 
 
 def test_unresolved_legend_glyph_records_nearest_two_match_diagnostics() -> None:

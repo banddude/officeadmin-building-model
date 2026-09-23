@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -1043,6 +1044,13 @@ _GENERIC_DEVICE_TAGS: frozenset[str] = frozenset(
 )
 
 _CIRCUIT_RE = re.compile(r"\b(?:CKT|CIRCUIT)\s*#?\s*(?P<number>[A-Z0-9.-]+)\b", re.IGNORECASE)
+_HOMERUN_TAG_RE = re.compile(r"(?<![A-Z0-9_.-])(?P<panel>[A-Z][A-Z0-9_.]*?)-(?P<circuits>\d+(?:\s*,\s*\d+)*)\b", re.IGNORECASE)
+_TRAILING_CIRCUIT_LIST_RE = re.compile(r"\s*,")
+_PANEL_SCHEDULE_HEADING_RE = re.compile(r"\bPANEL\s+(?P<panel>[A-Z][A-Z0-9_.-]*)\s+SCHEDULE\b", re.IGNORECASE)
+_PANEL_SCHEDULE_NUMBER_RE = re.compile(r"^\s*(?P<circuit>\d+)\s*$")
+_NOTES_HEADING_RE = re.compile(r"^\s*(?:(?:DETAIL|GENERAL)\s+)?NOTES?\b", re.IGNORECASE)
+_SCHEDULE_CIRCUIT_COLUMN_RE = re.compile(r"^\s*(?:CKT|CIRCUITS?)\s*$", re.IGNORECASE)
+_SCHEDULE_LOAD_COLUMN_RE = re.compile(r"^\s*(?:LOAD|DESCRIPTION|SERVES)\s*$", re.IGNORECASE)
 _POLES_RE = re.compile(r"\b(?P<poles>[1234])\s*P\b", re.IGNORECASE)
 _PHASE_RE = re.compile(r"\b(?P<phase>[123])\s*PH\b", re.IGNORECASE)
 _VOLTAGE_RE = re.compile(
@@ -1061,6 +1069,228 @@ _MOUNT_FT_RE = re.compile(
 
 def _normalize_tag(value: str) -> str:
     return value.strip().strip(".,:;()[]{}").upper()
+
+
+def _parse_explicit_circuit_tag(
+    text: str,
+    *,
+    recognized_panels: set[str],
+    schedule_circuits: Mapping[str, set[int]],
+    confirmed_schedules: set[str],
+) -> tuple[str | None, tuple[int, ...], str | None]:
+    match = _HOMERUN_TAG_RE.search(text)
+    if match is None:
+        return None, (), "no_panel_token"
+    panel_tag = _normalize_tag(match.group("panel"))
+    # The circuit group stops at the last numeric list item, so a comma still
+    # following the match means the annotation carries a list item we could not
+    # parse. ``LP-1,X`` must fail closed rather than silently resolve as
+    # ``LP-1``; #72 forbids resolving a circuit the annotation does not state.
+    if _TRAILING_CIRCUIT_LIST_RE.match(text[match.end("circuits") :]):
+        return panel_tag, (), "unparseable_circuit_list"
+    try:
+        numbers = tuple(int(item.strip()) for item in match.group("circuits").split(","))
+    except ValueError:
+        return panel_tag, (), "unparseable_circuit_list"
+    if not numbers:
+        return panel_tag, (), "unparseable_circuit_list"
+    if panel_tag not in recognized_panels:
+        return panel_tag, numbers, "panel_id_not_recognized"
+    scheduled = schedule_circuits.get(panel_tag)
+    if scheduled is not None and panel_tag not in confirmed_schedules:
+        return panel_tag, numbers, "schedule_structure_not_confirmed"
+    if scheduled is not None and any(number not in scheduled for number in numbers):
+        return panel_tag, numbers, "circuit_outside_panel_schedule"
+    return panel_tag, numbers, None
+
+
+def _is_explicit_circuit_annotation(
+    text: str,
+    *,
+    recognized_panels: Iterable[str],
+) -> bool:
+    """Tell a panel/circuit annotation from an ordinary device identity tag.
+
+    ``EVSE-1`` and ``REC-1`` parse the same shape as ``LP-1``, so a homerun
+    branch run picks up the device labels sitting beside it and every
+    annotation looks ambiguous. A text is an annotation when it names a
+    recognized panel, or when it is annotation-like rather than a device tag
+    we already recognize, which keeps an unknown panel id diagnosable.
+    """
+    match = _HOMERUN_TAG_RE.search(text)
+    if match is None:
+        return False
+    if _CIRCUIT_RE.search(text):
+        # Legacy explicit CKT/CIRCUIT callouts belong to the circuit-text and
+        # topology paths; a load tag embedded in one is not a panel tag.
+        return False
+    if _normalize_tag(match.group("panel")) in recognized_panels:
+        # A recognized panelboard by that name is real corroborating evidence.
+        # Whether this particular text is an annotation or a device's own label
+        # is decided per resolution site by the self-reference rule, not here:
+        # rejecting every device-shaped text outright would make a genuine
+        # `REC-1` annotation on a sheet with a panel named `REC` unresolvable.
+        return True
+    return not _text_entity_hits(text)
+
+
+def _panel_schedule_circuits(
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+    *,
+    recognized_panels: set[str],
+) -> tuple[dict[str, set[int]], set[str], set[str]]:
+    schedules: dict[str, set[int]] = {}
+    consumed_ids: set[str] = set()
+    confirmed: set[str] = set()
+    headings: list[tuple[PdfTextObservation, str]] = []
+    for heading in texts:
+        match = _PANEL_SCHEDULE_HEADING_RE.search(heading.text)
+        if match is None:
+            continue
+        panel_tag = _normalize_tag(match.group("panel"))
+        if panel_tag not in recognized_panels:
+            continue
+        consumed_ids.add(heading.element_id)
+        headings.append((heading, panel_tag))
+        # A visible schedule heading is evidence of a schedule even when no
+        # row can be parsed. An empty parsed set must reject circuit claims,
+        # not silently behave like an absent schedule.
+        schedules.setdefault(panel_tag, set())
+
+    # Only a two-column source grid can validate rows. A single-column notes
+    # box can carry the same words and numbers, so it stays present/unconfirmed.
+    rectangles: list[tuple[PdfVectorPathObservation, float, float, float, float]] = []
+    for vector in vectors:
+        if not vector.closed or len(vector.points_pt) != 4:
+            continue
+        xs = {point[0] for point in vector.points_pt}
+        ys = {point[1] for point in vector.points_pt}
+        if len(xs) != 2 or len(ys) != 2:
+            continue
+        if set(vector.points_pt) != {(x, y) for x in xs for y in ys}:
+            continue
+        rectangles.append((vector, min(xs), min(ys), max(xs), max(ys)))
+
+    for heading, panel_tag in headings:
+        candidate_tables: list[
+            tuple[float, tuple[tuple[PdfTextObservation, int], ...]]
+        ] = []
+        for frame, left, bottom, right, top in rectangles:
+            if not (frame.page == heading.page and left < heading.x_pt < right and bottom < heading.y_pt < top):
+                continue
+            titles = [
+                (cell, cell_bottom)
+                for cell, x0, cell_bottom, x1, cell_top in rectangles
+                if cell.page == heading.page and cell.element_id != frame.element_id
+                and (x0, x1, cell_top) == (left, right, top)
+                and cell_bottom < heading.y_pt < cell_top
+                and not any(t.page == heading.page and t.element_id != heading.element_id
+                            and x0 < t.x_pt < x1 and cell_bottom < t.y_pt < cell_top
+                            for t in texts)
+            ]
+            if len(titles) != 1:
+                continue
+            title_bottom = titles[0][1]
+            dividers = {
+                line.points_pt[0][0]
+                for line in vectors
+                if line.page == heading.page and not line.closed and len(line.points_pt) == 2
+                and line.points_pt[0][0] == line.points_pt[1][0]
+                and {line.points_pt[0][1], line.points_pt[1][1]} == {bottom, title_bottom}
+                and left < line.points_pt[0][0] < right
+            }
+            if len(dividers) != 1:
+                continue
+            divider = next(iter(dividers))
+
+            def cell_text(x0: float, y0: float, x1: float, y1: float) -> list[PdfTextObservation]:
+                return [t for t in texts if t.page == heading.page
+                        and x0 < t.x_pt < x1 and y0 < t.y_pt < y1]
+
+            headers = [
+                (a, b, y0)
+                for a, ax0, y0, ax1, y1 in rectangles
+                for b, bx0, by0, bx1, by1 in rectangles
+                if a.page == heading.page and b.page == heading.page
+                and (ax0, ax1, bx0, bx1) == (left, divider, divider, right)
+                and (y0, y1) == (by0, by1) and y1 == title_bottom and y0 > bottom
+                and len(cell_text(ax0, y0, ax1, y1)) == 1
+                and len(cell_text(bx0, y0, bx1, y1)) == 1
+                and _SCHEDULE_CIRCUIT_COLUMN_RE.fullmatch(cell_text(ax0, y0, ax1, y1)[0].text)
+                and _SCHEDULE_LOAD_COLUMN_RE.fullmatch(cell_text(bx0, y0, bx1, y1)[0].text)
+            ]
+            if len(headers) != 1:
+                continue
+            edge = headers[0][2]
+            parsed_rows: list[tuple[PdfTextObservation, int]] = []
+            while True:
+                touching = [(a, b, y0)
+                    for a, ax0, y0, ax1, y1 in rectangles
+                    for b, bx0, by0, bx1, by1 in rectangles
+                    if a.page == heading.page and b.page == heading.page
+                    and (ax0, ax1, bx0, bx1) == (left, divider, divider, right)
+                    and (y0, y1) == (by0, by1) and y1 == edge
+                    and bottom <= y0 < edge]
+                if len(touching) != 1:
+                    break
+                row_bottom = touching[0][2]
+                numbers = cell_text(left, row_bottom, divider, edge)
+                loads = cell_text(divider, row_bottom, right, edge)
+                if len(numbers) != 1 or len(loads) != 1 or not loads[0].text.strip():
+                    break
+                match = _PANEL_SCHEDULE_NUMBER_RE.fullmatch(numbers[0].text)
+                if match is None:
+                    break
+                parsed_rows.append((numbers[0], int(match.group("circuit"))))
+                edge = row_bottom
+            if parsed_rows:
+                candidate_tables.append((top - bottom, tuple(parsed_rows)))
+
+        if not candidate_tables:
+            continue
+        shortest = min(height for height, _rows in candidate_tables)
+        owned = [rows for height, rows in candidate_tables if height == shortest]
+        if len(owned) != 1:
+            # Two equally tight source tables cannot uniquely own the rows.
+            continue
+        confirmed.add(panel_tag)
+        for row, circuit in owned[0]:
+            schedules[panel_tag].add(circuit)
+            consumed_ids.add(row.element_id)
+    return schedules, consumed_ids, confirmed
+
+
+def _homerun_arrowhead_apex(
+    vector: PdfVectorPathObservation,
+) -> tuple[float, float] | None:
+    if len(vector.points_pt) != 3:
+        return None
+    first, apex, last = vector.points_pt
+    left = (first[0] - apex[0], first[1] - apex[1])
+    right = (last[0] - apex[0], last[1] - apex[1])
+    cross = left[0] * right[1] - left[1] * right[0]
+    dot = left[0] * right[0] + left[1] * right[1]
+    # An open, nondegenerate V with an acute tip is an arrowhead regardless of
+    # its absolute size on the sheet. Length cutoffs rejected lawful arrows.
+    return apex if not vector.closed and cross != 0.0 and dot > 0.0 else None
+
+
+def _component_has_homerun_arrowhead(
+    component: Sequence[PdfVectorPathObservation],
+    arrowheads: Sequence[PdfVectorPathObservation],
+    *,
+    tolerance_pt: float,
+) -> bool:
+    return any(
+        any(
+            _point_path_distance_pt(point, branch) <= tolerance_pt
+            for point in arrowhead.points_pt
+            for branch in component
+        )
+        for arrowhead in arrowheads
+        if _homerun_arrowhead_apex(arrowhead) is not None
+    )
 
 
 def _semantic_text(symbol: PdfSymbolObservation) -> str:
@@ -1210,6 +1440,49 @@ def _paths_touch(
         _point_path_distance_pt(endpoint, first) <= tolerance_pt
         for endpoint in second_endpoints
     )
+
+
+def _paths_cross_or_touch(
+    first: PdfVectorPathObservation,
+    second: PdfVectorPathObservation,
+    *,
+    tolerance_pt: float,
+) -> bool:
+    """Include mid-segment crossings, which endpoint-only contact misses."""
+    if first.page != second.page:
+        return False
+
+    def side(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        point: tuple[float, float],
+    ) -> float:
+        return (
+            (end[0] - start[0]) * (point[1] - start[1])
+            - (end[1] - start[1]) * (point[0] - start[0])
+        )
+
+    for a, b in _vector_segments(first):
+        for c, d in _vector_segments(second):
+            if (
+                max(a[0], b[0]) + tolerance_pt < min(c[0], d[0])
+                or max(c[0], d[0]) + tolerance_pt < min(a[0], b[0])
+                or max(a[1], b[1]) + tolerance_pt < min(c[1], d[1])
+                or max(c[1], d[1]) + tolerance_pt < min(a[1], b[1])
+            ):
+                continue
+            if any(
+                _point_segment_distance_pt(point, start, end) <= tolerance_pt
+                for point, start, end in ((a, c, d), (b, c, d), (c, a, b), (d, a, b))
+            ):
+                return True
+
+            if (
+                side(a, b, c) * side(a, b, d) < 0
+                and side(c, d, a) * side(c, d, b) < 0
+            ):
+                return True
+    return False
 
 
 def _simple_rectangle_marker(
@@ -5580,6 +5853,11 @@ class ElectricalPdfImporter:
         devices: list[ElectricalDevice] = []
         entity_by_page_tag: dict[tuple[int, str], ElectricalEquipment | ElectricalDevice] = {}
         entity_source_positions: dict[str, tuple[int, float, float]] = {}
+        # Which text observation supplied each entity's own identity. A text
+        # that labels a device must never be read as that same device's circuit
+        # annotation; that self-reference is how an ordinary `EVSE-1` label on
+        # a sheet whose panel is also named `EVSE` invented a circuit.
+        entity_identity_text_owner: dict[str, str] = {}
         identity_owners: dict[str, str] = {}
 
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
@@ -5726,6 +6004,8 @@ class ElectricalPdfImporter:
                 candidate.x_pt,
                 candidate.y_pt,
             )
+            for source_element_id in candidate.source_element_ids:
+                entity_identity_text_owner.setdefault(source_element_id, entity.id)
             if candidate.tag:
                 entity_by_page_tag[(candidate.page, candidate.tag)] = entity
 
@@ -5858,6 +6138,804 @@ class ElectricalPdfImporter:
             )
             topology_row["circuit_callout_ids"] = callout_ids
             topology_conflicted_callout_ids.update(callout_ids)
+
+        recognized_panels = {
+            entity.name: entity
+            for entity in equipment
+            if entity.equipment_type == "panelboard" and entity.name
+        }
+        schedule_circuits, schedule_text_ids, confirmed_schedules = _panel_schedule_circuits(
+            texts,
+            vectors,
+            recognized_panels=set(recognized_panels),
+        )
+
+        def record_explicit_circuit(
+            *,
+            observation: PdfTextObservation,
+            panel_tag: str,
+            numbers: Sequence[int],
+            load_entities: Sequence[ElectricalDevice],
+            method: str,
+            confidence: float,
+            branch_vector_ids: Sequence[str] = (),
+        ) -> None:
+            source_entity = recognized_panels[panel_tag]
+            shared_raceway_group = (
+                stable_id(
+                    "circuit-group",
+                    (
+                        f"pdf-electrical:{document.source_id}:"
+                        f"{observation.element_id}:{panel_tag}:"
+                        + ",".join(str(number) for number in numbers)
+                    ),
+                )
+                if len(numbers) > 1
+                else None
+            )
+            provenance = _provenance(
+                document,
+                element_id=observation.element_id,
+                page=observation.page,
+                method=method,
+                confidence=confidence,
+                attributes={
+                    "source_text": observation.text,
+                    "panel_tag": panel_tag,
+                    "circuit_numbers": list(numbers),
+                    "schedule_validated": panel_tag in confirmed_schedules,
+                    **(
+                        {"branch_vector_element_ids": list(branch_vector_ids)}
+                        if branch_vector_ids
+                        else {}
+                    ),
+                },
+            )
+            for number in numbers:
+                circuit_number = str(number)
+                number_provenance = replace(
+                    provenance,
+                    attributes={
+                        **dict(provenance.attributes),
+                        "circuit_number": circuit_number,
+                        **(
+                            {"shared_raceway_group": shared_raceway_group}
+                            if shared_raceway_group is not None
+                            else {}
+                        ),
+                    },
+                )
+                source_port = port_for(
+                    source_entity,
+                    f"source:circuit:{circuit_number}",
+                    number_provenance,
+                )
+                load_ports = tuple(
+                    port_for(
+                        entity,
+                        f"sink:circuit:{circuit_number}",
+                        number_provenance,
+                    )
+                    for entity in sorted(load_entities, key=lambda item: item.id)
+                )
+                circuit_id = stable_id(
+                    "circuit",
+                    (
+                        f"pdf-electrical:{document.source_id}:"
+                        f"{source_entity.id}:{circuit_number}"
+                    ),
+                )
+                bucket = evidence_bucket(
+                    circuit_id=circuit_id,
+                    name=f"{panel_tag} {circuit_number}",
+                    source_port_id=source_port.id,
+                    circuit_number=circuit_number,
+                )
+                bucket["load_port_ids"].update(port.id for port in load_ports)
+                record_port_provenance(
+                    bucket,
+                    (source_port.id, *(port.id for port in load_ports)),
+                    (number_provenance,),
+                )
+                bucket["confidence"].add(confidence)
+                bucket["evidence_methods"].add(method)
+                bucket["provenance"].append(number_provenance)
+                bucket["evidence"].append(
+                    {
+                        "page": observation.page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "method": method,
+                        "panel_tag": panel_tag,
+                        "circuit_number": circuit_number,
+                        "circuit_numbers": list(numbers),
+                        "load_ids": [entity.id for entity in load_entities],
+                        "schedule_validated": panel_tag in confirmed_schedules,
+                        "confidence": confidence,
+                        "status": "resolved",
+                        **(
+                            {"shared_raceway_group": shared_raceway_group}
+                            if shared_raceway_group is not None
+                            else {}
+                        ),
+                    }
+                )
+
+        recognized_panel_tag_re = re.compile(
+            r"(?<![A-Z0-9_.-])(?:"
+            + "|".join(
+                re.escape(panel)
+                for panel in sorted(recognized_panels, key=lambda item: (-len(item), item))
+            )
+            + r")-\d+(?:\s*,\s*\d+)*\b",
+            re.IGNORECASE,
+        ) if recognized_panels else None
+        explicit_circuit_tag_texts = [
+            observation
+            for observation in texts
+            if observation.element_id not in schedule_text_ids
+            and recognized_panel_tag_re is not None
+            and recognized_panel_tag_re.search(observation.text)
+        ]
+        homerun_arrowheads = [
+            vector
+            for vector in vectors
+            if _homerun_arrowhead_apex(vector) is not None
+        ]
+        homerun_arrowhead_ids = {vector.element_id for vector in homerun_arrowheads}
+
+        # Branch-run candidates are every plausible wiring vector, NOT only
+        # those near an already-recognized panel tag. Seeding from annotations
+        # meant an arrowed leader whose annotation does not parse was never
+        # assembled at all, so it could not be diagnosed -- which made
+        # `no_panel_token` unreachable for exactly the case #72 names.
+        circuit_vectors = [
+            vector
+            for vector in vectors
+            if vector.element_id not in homerun_arrowhead_ids
+            and not vector.closed
+            and not _vector_contains_bezier(vector)
+            and vector.element_id not in vector_symbol_ids
+            and vector.element_id not in glyph_vector_ids
+            and any(first != second for first, second in _vector_segments(vector))
+        ]
+
+        # Spatial index so neighbour lookup is local instead of all-pairs. Cells
+        # are keyed by page, and each vector is registered along its segments at
+        # cell-sized steps so a long run is found from anywhere it passes, not
+        # only at its vertices.
+        snap_tolerance_pt = self.topology_snap_radius_pt
+        cell_pt = max(snap_tolerance_pt * 4.0, 8.0)
+
+        def circuit_cells(vector: PdfVectorPathObservation) -> set[tuple[int, int]]:
+            cells: set[tuple[int, int]] = set()
+            for first, second in _vector_segments(vector) or ():
+                span = _distance_pt(first[0], first[1], second[0], second[1])
+                steps = int(span / cell_pt) + 1
+                for step in range(steps + 1):
+                    ratio = step / steps
+                    cells.add(
+                        (
+                            int((first[0] + (second[0] - first[0]) * ratio) // cell_pt),
+                            int((first[1] + (second[1] - first[1]) * ratio) // cell_pt),
+                        )
+                    )
+            for point in vector.points_pt:
+                cells.add((int(point[0] // cell_pt), int(point[1] // cell_pt)))
+            return cells
+
+        assigned: dict[int, int] = {}
+        circuit_vector_cells: list[set[tuple[int, int]]] = []
+        circuit_grid: dict[tuple[int, int, int], set[int]] = {}
+        for index, vector in enumerate(circuit_vectors):
+            cells = circuit_cells(vector)
+            circuit_vector_cells.append(cells)
+            for cell_x, cell_y in cells:
+                circuit_grid.setdefault((vector.page, cell_x, cell_y), set()).add(index)
+
+        def claim_circuit_vector(index: int, component_key: int) -> None:
+            """Take a vector out of the index as it joins a component.
+
+            A claimed vector can never be claimed again, so leaving it in the
+            grid only makes every later neighbour query re-walk it. Removing it
+            is what keeps a dense cluster from costing one full scan per member.
+            """
+            assigned[index] = component_key
+            vector = circuit_vectors[index]
+            for cell_x, cell_y in circuit_vector_cells[index]:
+                bucket = circuit_grid.get((vector.page, cell_x, cell_y))
+                if bucket is not None:
+                    bucket.discard(index)
+
+        def circuit_neighbors_of_path(
+            path: PdfVectorPathObservation,
+            grid: dict[tuple[int, int, int], list[int]],
+            cells: set[tuple[int, int]],
+        ) -> set[int]:
+            found: set[int] = set()
+            for cell_x, cell_y in cells:
+                for offset_x in (-1, 0, 1):
+                    for offset_y in (-1, 0, 1):
+                        found.update(
+                            grid.get((path.page, cell_x + offset_x, cell_y + offset_y), ())
+                        )
+            return found
+
+        def circuit_neighbors(index: int) -> set[int]:
+            vector = circuit_vectors[index]
+            found: set[int] = set()
+            for cell_x, cell_y in circuit_vector_cells[index]:
+                for offset_x in (-1, 0, 1):
+                    for offset_y in (-1, 0, 1):
+                        found.update(
+                            circuit_grid.get(
+                                (vector.page, cell_x + offset_x, cell_y + offset_y),
+                                (),
+                            )
+                        )
+            found.discard(index)
+            return found
+
+        # Closed paths are not branch members, but an unclaimed outline that
+        # touches a branch is positive evidence that it entered architecture.
+        # Keep recognized symbol outlines out of this index: a branch may
+        # legitimately terminate at its device's own closed mark.
+        unclaimed_closed = [
+            vector for vector in vectors
+            if vector.closed
+            and vector.element_id not in vector_symbol_ids
+        ]
+        closed_grid: dict[tuple[int, int, int], list[int]] = {}
+        for index, vector in enumerate(unclaimed_closed):
+            for cell_x, cell_y in circuit_cells(vector):
+                closed_grid.setdefault((vector.page, cell_x, cell_y), []).append(index)
+
+        def touching_unclaimed_closed(
+            component: Sequence[PdfVectorPathObservation],
+        ) -> PdfVectorPathObservation | None:
+            for branch in component:
+                for index in sorted(
+                    circuit_neighbors_of_path(branch, closed_grid, circuit_cells(branch)),
+                    key=lambda item: unclaimed_closed[item].element_id,
+                ):
+                    closed = unclaimed_closed[index]
+                    if _paths_cross_or_touch(branch, closed, tolerance_pt=snap_tolerance_pt):
+                        return closed
+            return None
+
+        # Assemble components by growing outward from each homerun arrowhead.
+        # The arrowhead is the signature of a homerun, so this both bounds the
+        # work by the (small) arrowhead count and finds arrowed runs whose
+        # annotation is absent or unparseable.
+        def component_encloses_area(
+            component: Sequence[PdfVectorPathObservation],
+        ) -> PdfVectorPathObservation | None:
+            """Return a vector proving this component encloses space.
+
+            Branch wiring distributes radially: it tees, but it never loops
+            back on itself, so it spans no area. Architectural linework --
+            wall grids, partitions, hatching -- exists to enclose space, so it
+            does.
+
+            The graph is built on CONTACT POINTS, not on vectors. A tee drawn
+            as three segments leaving one point is ordinary wiring, yet each of
+            those segments touches the other two, so a vector-level graph sees
+            a triangle and calls it a loop. With points as nodes that tee is a
+            single node of degree three: still a tree, still lawful.
+
+            Points are clustered by the same snap relation the component
+            builder used, through a grid of neighbouring cells rather than by
+            rounding each coordinate independently. Independent rounding made
+            the verdict depend on where identical geometry happened to fall
+            against the bin boundaries, so one run with a drafting gap could
+            split into two nodes and read as a two-edge loop.
+
+            Both the adjacency scan and the clustering are spatially local, and
+            the search returns on the first cycle it sees rather than after a
+            complete pass.
+
+            Known gap, tracked in #76: architecture drawn as a simple chain is
+            also a tree, so this does not catch it. Connectivity alone cannot
+            separate a chain of wall segments from a chain of conduit; that
+            needs evidence this lane does not currently receive.
+            """
+            tolerance = self.topology_snap_radius_pt
+            cell = max(tolerance * 2.0, 1.0)
+
+            def cells_around(point: tuple[float, float]):
+                base_x, base_y = int(point[0] // cell), int(point[1] // cell)
+                for offset_x in (-1, 0, 1):
+                    for offset_y in (-1, 0, 1):
+                        yield (base_x + offset_x, base_y + offset_y)
+
+            # Local index over this component's own members.
+            member_grid: dict[tuple[int, int], list[int]] = {}
+            member_cells: list[set[tuple[int, int]]] = []
+            for index, vector in enumerate(component):
+                own = circuit_cells(vector)
+                member_cells.append(own)
+                for key in own:
+                    member_grid.setdefault(key, []).append(index)
+
+            # Contact points per member, found only against local candidates.
+            def midpoint(vector: PdfVectorPathObservation) -> tuple[float, float]:
+                points = vector.points_pt
+                middle = points[len(points) // 2]
+                return (float(middle[0]), float(middle[1]))
+
+            # Each member contributes its own midpoint as a node. Two strokes
+            # painted over each other share that midpoint and collapse to one
+            # edge, while two genuinely different paths between the same pair
+            # of ends keep distinct midpoints and still form a real loop.
+            contacts: dict[int, list[tuple[float, float]]] = {
+                index: [vector.points_pt[0], midpoint(vector), vector.points_pt[-1]]
+                for index, vector in enumerate(component)
+            }
+            for index, vector in enumerate(component):
+                candidates: set[int] = set()
+                for cell_x, cell_y in member_cells[index]:
+                    for offset_x in (-1, 0, 1):
+                        for offset_y in (-1, 0, 1):
+                            candidates.update(
+                                member_grid.get((cell_x + offset_x, cell_y + offset_y), ())
+                            )
+                for other_index in candidates:
+                    if other_index <= index:
+                        continue
+                    other = component[other_index]
+                    if not _paths_touch(vector, other, tolerance_pt=tolerance):
+                        continue
+                    for point in (other.points_pt[0], other.points_pt[-1]):
+                        if _point_path_distance_pt(point, vector) <= tolerance:
+                            contacts[index].append(point)
+                            contacts[other_index].append(point)
+                    for point in (vector.points_pt[0], vector.points_pt[-1]):
+                        if _point_path_distance_pt(point, other) <= tolerance:
+                            contacts[index].append(point)
+                            contacts[other_index].append(point)
+
+            # Cluster points by proximity, again only against local candidates.
+            points: list[tuple[float, float]] = [
+                point for values in contacts.values() for point in values
+            ]
+            point_grid: dict[tuple[int, int], list[int]] = {}
+            for index, point in enumerate(points):
+                point_grid.setdefault(
+                    (int(point[0] // cell), int(point[1] // cell)), []
+                ).append(index)
+
+            point_parent = list(range(len(points)))
+
+            def point_find(index: int) -> int:
+                while point_parent[index] != index:
+                    point_parent[index] = point_parent[point_parent[index]]
+                    index = point_parent[index]
+                return index
+
+            for index, point in enumerate(points):
+                for key in cells_around(point):
+                    for other_index in point_grid.get(key, ()):
+                        if other_index <= index:
+                            continue
+                        other = points[other_index]
+                        if (
+                            _distance_pt(point[0], point[1], other[0], other[1])
+                            <= tolerance
+                        ):
+                            left, right = point_find(index), point_find(other_index)
+                            if left != right:
+                                point_parent[max(left, right)] = min(left, right)
+
+            node_of: dict[tuple[float, float], int] = {}
+            for index, point in enumerate(points):
+                node_of.setdefault(point, point_find(index))
+
+            parent: dict[int, int] = {}
+
+            def find(key: int) -> int:
+                parent.setdefault(key, key)
+                while parent[key] != key:
+                    parent[key] = parent[parent[key]]
+                    key = parent[key]
+                return key
+
+            # A cycle needs DISTINCT edges. Two vectors drawing the same edge
+            # are parallel edges in a multigraph, and parallel edges enclose no
+            # area, so they must not read as a loop. Overprinted and duplicated
+            # strokes are ordinary in exported CAD.
+            drawn: set[tuple[int, int]] = set()
+            for index, vector in enumerate(component):
+                start_point = vector.points_pt[0]
+                seen: dict[int, tuple[float, float]] = {}
+                for point in contacts[index]:
+                    seen.setdefault(node_of[point], point)
+                ordered = sorted(
+                    seen.items(),
+                    key=lambda item: _distance_pt(
+                        start_point[0], start_point[1], item[1][0], item[1][1]
+                    ),
+                )
+                # Each span between consecutive contacts is one edge.
+                for (left, _lp), (right, _rp) in zip(ordered, ordered[1:]):
+                    if left == right:
+                        continue
+                    edge = (min(left, right), max(left, right))
+                    if edge in drawn:
+                        continue
+                    drawn.add(edge)
+                    left_root, right_root = find(left), find(right)
+                    if left_root == right_root:
+                        return vector
+                    parent[left_root] = right_root
+            return None
+
+        circuit_components: dict[int, list[PdfVectorPathObservation]] = {}
+        for arrow_position, arrowhead in enumerate(homerun_arrowheads):
+            seeds = [
+                index
+                for index in circuit_neighbors_of_path(
+                    arrowhead,
+                    circuit_grid,
+                    circuit_cells(arrowhead),
+                )
+                if circuit_vectors[index].page == arrowhead.page
+                and index not in assigned
+                and _paths_touch(
+                    arrowhead,
+                    circuit_vectors[index],
+                    tolerance_pt=snap_tolerance_pt,
+                )
+            ]
+            if not seeds:
+                continue
+            component_key = arrow_position
+            # Claim membership at ENQUEUE, not at dequeue. Marking on dequeue
+            # left every queued-but-unclaimed vector visible to each subsequent
+            # pop, so a densely touching cluster re-compared the same pairs
+            # once per member and the scan stayed quadratic. Claiming on entry
+            # means each vector is compared once.
+            members: list[int] = []
+            queue: list[int] = []
+            for seed in seeds:
+                if seed in assigned:
+                    continue
+                claim_circuit_vector(seed, component_key)
+                members.append(seed)
+                queue.append(seed)
+            while queue:
+                index = queue.pop()
+                for neighbor in circuit_neighbors(index):
+                    if neighbor in assigned:
+                        continue
+                    if not _paths_touch(
+                        circuit_vectors[index],
+                        circuit_vectors[neighbor],
+                        tolerance_pt=snap_tolerance_pt,
+                    ):
+                        continue
+                    claim_circuit_vector(neighbor, component_key)
+                    members.append(neighbor)
+                    queue.append(neighbor)
+            if members:
+                circuit_components[component_key] = [
+                    circuit_vectors[index] for index in sorted(members)
+                ]
+
+        consumed_explicit_tag_ids: set[str] = set()
+        homerun_components = [
+            component
+            for component in sorted(
+                circuit_components.values(),
+                key=lambda items: (
+                    items[0].page,
+                    tuple(sorted(item.element_id for item in items)),
+                ),
+            )
+        ]
+
+        # One annotation cannot circuit two disconnected branch runs. Count how
+        # many components each annotation is in range of first, so an
+        # annotation claimed by more than one fails closed as ambiguous instead
+        # of silently attaching every run it happens to sit near.
+        annotation_claim_counts: Counter[str] = Counter()
+        for component in homerun_components:
+            for observation in texts:
+                if (
+                    observation.page != component[0].page
+                    or observation.element_id in schedule_text_ids
+                    or not _is_explicit_circuit_annotation(
+                        observation.text,
+                        recognized_panels=recognized_panels,
+                    )
+                ):
+                    continue
+                if min(
+                    _point_path_distance_pt(
+                        (observation.x_pt, observation.y_pt),
+                        vector,
+                    )
+                    for vector in component
+                ) <= self.topology_annotation_radius_pt:
+                    annotation_claim_counts[observation.element_id] += 1
+
+        for component in homerun_components:
+            page = component[0].page
+            load_entities = [
+                entity
+                for entity in devices
+                if entity_source_positions[entity.id][0] == page
+                and min(
+                    _point_path_distance_pt(
+                        (
+                            entity_source_positions[entity.id][1],
+                            entity_source_positions[entity.id][2],
+                        ),
+                        vector,
+                    )
+                    for vector in component
+                ) <= self.topology_endpoint_radius_pt
+            ]
+            if not load_entities:
+                # An arrowed leader touching no recognized device is a
+                # dimension or annotation leader, not a homerun. #72 names this
+                # case directly, and it is the accurate code for it.
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "status": "unresolved",
+                        "reason_code": "arrow_not_associated_to_device",
+                        "reason": (
+                            "homerun arrow is not associated with a recognized device"
+                        ),
+                    }
+                )
+                continue
+            enclosing = touching_unclaimed_closed(component) or component_encloses_area(component)
+            if enclosing is not None:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "status": "unresolved",
+                        "reason_code": "branch_run_not_isolated",
+                        "reason": (
+                            "arrowed leader reaches geometry that encloses "
+                            "space, which branch wiring does not do"
+                        ),
+                        "cycle_element_id": enclosing.element_id,
+                        "component_vector_count": len(component),
+                    }
+                )
+                continue
+            nearby_annotations = [
+                observation
+                for observation in texts
+                if observation.page == page
+                and observation.element_id not in schedule_text_ids
+                and min(
+                    _point_path_distance_pt(
+                        (observation.x_pt, observation.y_pt),
+                        vector,
+                    )
+                    for vector in component
+                ) <= self.topology_annotation_radius_pt
+            ]
+            parsed = [
+                (
+                    observation,
+                    *_parse_explicit_circuit_tag(
+                        observation.text,
+                        recognized_panels=set(recognized_panels),
+                        schedule_circuits=schedule_circuits,
+                        confirmed_schedules=confirmed_schedules,
+                    ),
+                )
+                for observation in nearby_annotations
+                if _is_explicit_circuit_annotation(
+                    observation.text,
+                    recognized_panels=recognized_panels,
+                )
+            ]
+            if not parsed:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "source_element_ids": sorted(
+                            item.element_id for item in component
+                        ),
+                        "status": "unresolved",
+                        "reason_code": "no_panel_token",
+                        "reason": (
+                            "arrowed leader has no explicit panel/circuit annotation"
+                        ),
+                    }
+                )
+                continue
+            if len(parsed) != 1:
+                for observation, panel_tag, numbers, reason_code in parsed:
+                    # Consume every competing annotation. Without this the
+                    # direct-device-tag pass below re-reads the same text and
+                    # resolves it anyway, which is the opposite of failing
+                    # closed on an ambiguous association.
+                    consumed_explicit_tag_ids.add(observation.element_id)
+                    unresolved_circuits.append(
+                        {
+                            "kind": "homerun",
+                            "page": page,
+                            "source_element_id": observation.element_id,
+                            "source_text": observation.text,
+                            "panel_tag": panel_tag,
+                            "circuit_numbers": list(numbers),
+                            "status": "unresolved",
+                            "reason_code": (
+                                reason_code or "conflicting_homerun_annotations"
+                            ),
+                            "reason": (
+                                "homerun does not have one unambiguous circuit annotation"
+                            ),
+                        }
+                    )
+                continue
+            observation, panel_tag, numbers, reason_code = parsed[0]
+            consumed_explicit_tag_ids.add(observation.element_id)
+            if annotation_claim_counts.get(observation.element_id, 0) > 1:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": "ambiguous_homerun_association",
+                        "reason": (
+                            "one circuit annotation is in range of more than one "
+                            "disconnected branch run"
+                        ),
+                    }
+                )
+                continue
+            if reason_code is not None or panel_tag is None:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": reason_code,
+                        "reason": (
+                            "schedule found, structure not confirmed"
+                            if reason_code == "schedule_structure_not_confirmed"
+                            else "homerun annotation failed closed"
+                        ),
+                    }
+                )
+                continue
+            # A text used as the circuit annotation is not itself a load on the
+            # circuit it names. This is what keeps an ordinary `EVSE-1` device
+            # label from circuiting the device it labels, while still letting a
+            # genuine `REC-1` annotation resolve on a sheet whose panel is also
+            # named `REC`.
+            annotation_owner_id = entity_identity_text_owner.get(observation.element_id)
+            if annotation_owner_id is not None:
+                load_entities = [
+                    entity for entity in load_entities if entity.id != annotation_owner_id
+                ]
+            if not load_entities:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": "arrow_not_associated_to_device",
+                        "reason": (
+                            "homerun arrow is not associated with a recognized device"
+                        ),
+                    }
+                )
+                continue
+            record_explicit_circuit(
+                observation=observation,
+                panel_tag=panel_tag,
+                numbers=numbers,
+                load_entities=load_entities,
+                method="pdf-homerun-annotation",
+                confidence=0.96,
+                branch_vector_ids=sorted(
+                    item.element_id for item in component
+                ),
+            )
+
+        for observation in texts:
+            if (
+                observation.element_id in consumed_explicit_tag_ids
+                or observation.element_id in schedule_text_ids
+                or not _is_explicit_circuit_annotation(
+                    observation.text,
+                    recognized_panels=recognized_panels,
+                )
+            ):
+                continue
+            panel_tag, numbers, reason_code = _parse_explicit_circuit_tag(
+                observation.text,
+                recognized_panels=set(recognized_panels),
+                schedule_circuits=schedule_circuits,
+                confirmed_schedules=confirmed_schedules,
+            )
+            # A direct tag has no leader to trace. Use the same configurable
+            # local annotation association radius as the homerun pass, rather
+            # than a second hard-coded cutoff with different boundary behavior.
+            nearby_devices = [
+                entity
+                for entity in devices
+                if entity_source_positions[entity.id][0] == observation.page
+                and _distance_pt(
+                    observation.x_pt,
+                    observation.y_pt,
+                    entity_source_positions[entity.id][1],
+                    entity_source_positions[entity.id][2],
+                ) <= self.topology_annotation_radius_pt
+            ]
+            if len(nearby_devices) == 1 and entity_identity_text_owner.get(
+                observation.element_id
+            ) == nearby_devices[0].id:
+                # This text IS that device's identity label. Reading it as the
+                # device's own circuit assignment is self-referential and
+                # states no circuit; #72 forbids inventing one.
+                continue
+            if reason_code is not None or panel_tag is None or len(nearby_devices) != 1:
+                unresolved_circuits.append(
+                    {
+                        "kind": "device_circuit_tag",
+                        "page": observation.page,
+                        "source_element_id": observation.element_id,
+                        "source_text": observation.text,
+                        "panel_tag": panel_tag,
+                        "circuit_numbers": list(numbers),
+                        "status": "unresolved",
+                        "reason_code": (
+                            reason_code
+                            or (
+                                "arrow_not_associated_to_device"
+                                if not nearby_devices
+                                else "ambiguous_device_association"
+                            )
+                        ),
+                        "reason": (
+                            "schedule found, structure not confirmed"
+                            if reason_code == "schedule_structure_not_confirmed"
+                            else "direct circuit tag failed closed"
+                        ),
+                    }
+                )
+                continue
+            record_explicit_circuit(
+                observation=observation,
+                panel_tag=panel_tag,
+                numbers=numbers,
+                load_entities=nearby_devices,
+                method="pdf-device-circuit-tag",
+                confidence=0.94,
+            )
 
         for observation in texts:
             circuit_match = _CIRCUIT_RE.search(observation.text)
@@ -6557,6 +7635,21 @@ class ElectricalPdfImporter:
                         else {}
                     ),
                     "legend_recognition": legend_recognition,
+                    "panel_schedules": {
+                        panel: {
+                            "status": (
+                                "validated" if panel in confirmed_schedules
+                                else "structure_not_confirmed"
+                            ),
+                            "circuits": sorted(schedule_circuits[panel]),
+                            **(
+                                {}
+                                if panel in confirmed_schedules
+                                else {"reason": "schedule found, structure not confirmed"}
+                            ),
+                        }
+                        for panel in sorted(schedule_circuits)
+                    },
                     "best_effort_page_transforms": (
                         {
                             str(page): transforms[page].to_attributes()

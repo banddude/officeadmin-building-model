@@ -5197,9 +5197,27 @@ def _recognize_lighting(
 
     # A symbol that looks like a known lighting prototype but has no readable
     # local tag is evidence of a miss, never permission to infer its type.
+    # Exact switching codes are handled below and therefore are not fixture misses.
     for cluster in field_clusters:
         key = (cluster.page, cluster.geometry_key)
         if key in ambiguous_cluster_keys or set(cluster.source_element_ids) & claimed_vector_ids:
+            continue
+        nearby_switch_code = any(
+            observation.page == cluster.page
+            and re.sub(r"\s+", "", observation.text.strip().upper())
+            in _LIGHTING_SWITCH_CODES
+            and re.sub(r"\s+", "", observation.text.strip().upper())
+            not in fixture_tags_by_page.get(cluster.page, set())
+            and _distance_pt(
+                cluster.center_pt[0],
+                cluster.center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            <= _LIGHTING_TAG_CLUSTER_RADIUS_PT
+            for observation in texts
+        )
+        if nearby_switch_code:
             continue
         entry, score = _lighting_shape_support(
             cluster,

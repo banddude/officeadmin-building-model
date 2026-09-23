@@ -520,6 +520,24 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
         if circuit is not None:
             ifcopenshell.api.system.assign_system(ifc, products=[item], system=circuit)
 
+    # An IfcSystem is only reachable to a consumer once it is declared to serve a
+    # spatial structure. Without IfcRelServicesBuildings a route or circuit is
+    # present in the file but belongs to no building, so viewers and MVD
+    # checkers drop it.
+    for canonical_id in (
+        *(route.id for route in model.routes),
+        *(circuit.id for circuit in model.circuits),
+    ):
+        system = entity_ifc.get(canonical_id)
+        if system is None or not system.is_a("IfcSystem"):
+            continue
+        ifc.create_entity(
+            "IfcRelServicesBuildings",
+            GlobalId=canonical_id_to_ifc_guid(f"{canonical_id}#services-building"),
+            RelatingSystem=system,
+            RelatedBuildings=[building],
+        )
+
     if destination is not None:
         ifc.write(str(Path(destination)))
     return ifc
@@ -738,6 +756,20 @@ def _set_pose(ifc: ifcopenshell.file, product: Any, pose: Pose) -> None:
     )
 
 
+def _ensure_placement(ifc: ifcopenshell.file, product: Any) -> None:
+    """Give a product an identity placement when it does not already have one.
+
+    IFC4 ``IfcProduct.PlacementForShapeRepresentation`` requires any product
+    carrying an ``IfcShapeRepresentation`` to also carry an ``ObjectPlacement``.
+    Canonical geometry is authored in world coordinates, so identity is the
+    correct placement and moves nothing.
+    """
+
+    if getattr(product, "ObjectPlacement", None) is not None:
+        return
+    _set_pose(ifc, product, Pose(position=Point3(x=0.0, y=0.0, z=0.0)))
+
+
 def _pose_from_product(product: Any) -> dict[str, Any] | None:
     placement = getattr(product, "ObjectPlacement", None)
     if placement is None:
@@ -800,6 +832,7 @@ def _assign_polyline_representation(
     points = tuple(points)
     if len(points) < 2:
         return
+    _ensure_placement(ifc, product)
     cartesian = [
         ifc.create_entity("IfcCartesianPoint", Coordinates=(float(p.x), float(p.y), float(p.z)))
         for p in points
@@ -827,6 +860,7 @@ def _assign_round_body(
 ) -> None:
     if nominal_diameter_m is None or nominal_diameter_m <= 0:
         return
+    _ensure_placement(ifc, product)
     cartesian = [
         ifc.create_entity("IfcCartesianPoint", Coordinates=(float(p.x), float(p.y), float(p.z)))
         for p in (start, end)

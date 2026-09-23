@@ -295,3 +295,107 @@ def test_route_types_use_expected_ifc_distribution_classes(
     ]
     assert all(item.is_a(fitting_class) for item in fittings)
     assert from_ifc(ifc).to_dict() == model.to_dict()
+
+
+GOLDEN_TWO_LEVEL = ROOT / "fixtures" / "golden" / "v1" / "two-level-building.json"
+
+
+def _shape_representation_products(ifc: ifcopenshell.file) -> list:
+    """Every IfcProduct that carries at least one IfcShapeRepresentation."""
+
+    products = []
+    for product in ifc.by_type("IfcProduct"):
+        representation = getattr(product, "Representation", None)
+        if representation is None:
+            continue
+        if any(
+            shape.is_a("IfcShapeRepresentation")
+            for shape in representation.Representations
+        ):
+            products.append(product)
+    return products
+
+
+@pytest.mark.parametrize(
+    "fixture", [MODEL_FIXTURE, GOLDEN_TWO_LEVEL], ids=["garage-route", "two-level"]
+)
+def test_every_product_with_a_shape_representation_has_an_object_placement(
+    fixture: Path,
+) -> None:
+    """IFC4 IfcProduct.PlacementForShapeRepresentation.
+
+    Walls, slabs, ceilings and conductors used to be exported with an Axis
+    representation and no ObjectPlacement, which is an EXPRESS where-rule
+    violation a strict consumer may reject outright.
+    """
+
+    ifc = to_ifc(BuildingModel.load(fixture))
+
+    placed = _shape_representation_products(ifc)
+    assert placed, "fixture must exercise products that carry geometry"
+
+    unplaced = [
+        f"{product.is_a()}:{product.GlobalId}"
+        for product in placed
+        if product.ObjectPlacement is None
+    ]
+    assert unplaced == []
+
+
+@pytest.mark.parametrize(
+    "fixture", [MODEL_FIXTURE, GOLDEN_TWO_LEVEL], ids=["garage-route", "two-level"]
+)
+def test_export_passes_ifc4_express_rule_validation(fixture: Path) -> None:
+    """The exported file must satisfy IFC4 EXPRESS where-rules, not just typing."""
+
+    import ifcopenshell.validate
+
+    ifc = to_ifc(BuildingModel.load(fixture))
+    logger = ifcopenshell.validate.json_logger()
+    ifcopenshell.validate.validate(ifc, logger, express_rules=True)
+
+    assert logger.statements == []
+
+
+def test_identity_placement_does_not_move_geometry_on_a_raised_level() -> None:
+    """The added placement must be identity in world space, not storey-relative.
+
+    two-level-building puts a storey at a non-zero elevation, so a placement
+    that silently rebased onto the storey would shift every wall on it.
+    """
+
+    model = BuildingModel.load(GOLDEN_TWO_LEVEL)
+    assert any(level.elevation_m != 0 for level in model.levels)
+
+    assert round_trip(model).to_dict() == model.to_dict()
+
+    ifc = to_ifc(model)
+    walls = ifc.by_type("IfcWall")
+    assert walls
+    for wall in walls:
+        assert wall.ObjectPlacement is not None
+        matrix = ifcopenshell.util.placement.get_local_placement(wall.ObjectPlacement)
+        assert np.allclose(matrix, np.eye(4))
+
+
+def test_every_system_is_declared_to_serve_the_building() -> None:
+    """Routes and circuits are IfcSystem; a system with no IfcRelServicesBuildings
+    belongs to no building and is dropped by viewers and MVD checkers."""
+
+    model = _garage()
+    assert model.routes and model.circuits
+
+    ifc = to_ifc(model)
+    building = ifc.by_type("IfcBuilding")[0]
+
+    systems = ifc.by_type("IfcSystem")
+    assert len(systems) == len(model.routes) + len(model.circuits)
+
+    served = {}
+    for relation in ifc.by_type("IfcRelServicesBuildings"):
+        served[relation.RelatingSystem.GlobalId] = relation.RelatedBuildings
+
+    unserved = [system.GlobalId for system in systems if system.GlobalId not in served]
+    assert unserved == []
+    for buildings in served.values():
+        assert list(buildings) == [building]

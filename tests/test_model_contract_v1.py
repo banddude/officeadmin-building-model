@@ -14,6 +14,7 @@ from oabm.model import (
     Port,
     Pose,
     Provenance,
+    provenance_applies_to,
     Route,
     UnsupportedSchemaVersion,
     Vector3,
@@ -54,6 +55,76 @@ def test_stable_id_is_deterministic_and_namespaced() -> None:
     assert first == second
     assert first.startswith("wall:")
     assert first != other_kind
+
+
+def test_provenance_scope_is_typed_validated_and_serialized() -> None:
+    base = BuildingModel.load(FIXTURE_DIR / "garage-route.json")
+    wall = base.walls[0]
+    record = Provenance(
+        source_kind="synthetic",
+        source_id="fixture:scoped-thickness",
+        derivation="inferred",
+        scope_paths=("thickness_m",),
+    )
+    model = replace(base, walls=(replace(wall, provenance=(*wall.provenance, record)), *base.walls[1:]))
+    assert provenance_applies_to(record, ("thickness_m",))
+    assert not provenance_applies_to(record, ("centerline", "height_m"))
+    assert list(_schema_validator().iter_errors(model.to_dict())) == []
+    assert BuildingModel.from_json(model.to_json()).to_dict() == model.to_dict()
+
+    legacy = Provenance(
+        source_kind="synthetic",
+        source_id="fixture:legacy-scope",
+        derivation="inferred",
+        attributes={"assumed_dimension": "thikness_m"},
+    )
+    assert legacy.scope_paths is None
+    assert provenance_applies_to(legacy, ("centerline",))
+    assert provenance_applies_to(legacy, ("thickness_m",))
+    assert "scope_paths" not in BuildingModel(
+        model_id="model:legacy-scope", provenance=(legacy,)
+    ).to_dict()["provenance"][0]
+
+
+def test_provenance_scope_rejects_empty_duplicate_and_unknown_paths() -> None:
+    for scope in ((), ("thickness_m", "thickness_m"), ("bad-path",)):
+        with pytest.raises(ContractError, match="scope_paths"):
+            Provenance(source_kind="synthetic", source_id="fixture:bad", scope_paths=scope)
+
+    base = BuildingModel.load(FIXTURE_DIR / "garage-route.json")
+    wall = base.walls[0]
+    unknown = Provenance(
+        source_kind="synthetic",
+        source_id="fixture:unknown",
+        derivation="inferred",
+        scope_paths=("thikness_m",),
+    )
+    with pytest.raises(ContractError, match="scope path 'thikness_m'"):
+        replace(base, walls=(replace(wall, provenance=(*wall.provenance, unknown)), *base.walls[1:]))
+
+    nested = Provenance(
+        source_kind="synthetic",
+        source_id="fixture:mounting",
+        derivation="inferred",
+        scope_paths=("attributes.mounting",),
+    )
+    mounted = replace(
+        wall,
+        attributes={**wall.attributes, "mounting": "flush"},
+        provenance=(*wall.provenance, nested),
+    )
+    replace(base, walls=(mounted, *base.walls[1:]))
+    assert provenance_applies_to(nested, ("attributes.mounting",))
+    assert provenance_applies_to(nested, ("attributes",))
+    assert not provenance_applies_to(nested, ("thickness_m",))
+    with pytest.raises(ContractError, match="scope path 'attributes.mounting'"):
+        replace(base, walls=(replace(wall, provenance=(*wall.provenance, nested)), *base.walls[1:]))
+
+    empty_document = base.to_dict()
+    empty_document["walls"][0]["provenance"][0]["scope_paths"] = []
+    assert list(_schema_validator().iter_errors(empty_document))
+    with pytest.raises(ContractError):
+        BuildingModel.from_dict(empty_document)
 
 
 def test_duplicate_entity_ids_are_rejected() -> None:

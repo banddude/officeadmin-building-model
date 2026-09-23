@@ -111,6 +111,28 @@ def validate_model(model: BuildingModel) -> None:
             raise ContractError(f"duplicate entity id {entity.id!r}")
         by_id[entity.id] = entity
 
+    def scope_exists(owner: Any, path: str) -> bool:
+        current = owner
+        for segment in path.split("."):
+            if is_dataclass(current) and not isinstance(current, type):
+                if segment not in {item.name for item in fields(current)}:
+                    return False
+                current = getattr(current, segment)
+            elif isinstance(current, Mapping) and segment in current:
+                current = current[segment]
+            else:
+                return False
+        return True
+
+    for owner in (model, *all_entities):
+        for record in owner.provenance:
+            for path in record.scope_paths or ():
+                if not scope_exists(owner, path):
+                    owner_id = model.model_id if owner is model else owner.id
+                    raise ContractError(
+                        f"{owner_id}.provenance scope path {path!r} does not name a field"
+                    )
+
     levels = {item.id: item for item in model.levels}
     spaces = {item.id: item for item in model.spaces}
     ports = {item.id: item for item in model.ports}
@@ -198,6 +220,9 @@ def _encode(value: Any) -> Any:
             # which keeps the golden known-answer hashes meaningful instead of
             # forcing a wholesale regeneration that would hide real drift.
             encoded.pop("derivation", None)
+        if isinstance(value, Provenance) and value.scope_paths is None:
+            # Legacy records remain byte-identical; absence means entity-wide.
+            encoded.pop("scope_paths", None)
         return encoded
     if isinstance(value, tuple):
         return [_encode(item) for item in value]

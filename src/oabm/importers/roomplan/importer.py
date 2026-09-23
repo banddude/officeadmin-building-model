@@ -1182,8 +1182,8 @@ def _assumed_dimension_provenance(
             "defaulted by the importer"
         ),
         confidence=confidence,
+        scope_paths=(dimension,),
         attributes={
-            "assumed_dimension": dimension,
             "assumed_value_m": value,
             "roomplan_collection": collection,
         },

@@ -248,7 +248,7 @@ def test_a_dimension_the_scan_never_reported_is_not_graded_as_measured() -> None
         assumed = [
             record
             for record in wall.provenance
-            if record.attributes.get("assumed_dimension") == "thickness_m"
+            if record.scope_paths == ("thickness_m",)
         ]
         assert len(assumed) == 1, wall.id
         assert assumed[0].derivation == DERIVATION_INFERRED
@@ -259,7 +259,7 @@ def test_a_dimension_the_scan_never_reported_is_not_graded_as_measured() -> None
         others = [
             record
             for record in wall.provenance
-            if record.attributes.get("assumed_dimension") is None
+            if record.scope_paths is None
         ]
         assert others, wall.id
         assert all(record.derivation == DERIVATION_OBSERVED for record in others)
@@ -285,7 +285,7 @@ def test_a_dimension_the_scan_did_report_is_left_alone() -> None:
         assert not [
             record
             for record in wall.provenance
-            if record.attributes.get("assumed_dimension")
+            if record.scope_paths is not None
         ]
 
 
@@ -361,13 +361,13 @@ def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
         unscoped = [
             record.derivation
             for record in wall.provenance
-            if record.attributes.get("assumed_dimension") is None
+            if record.scope_paths is None
         ]
         assert unscoped == [DERIVATION_OBSERVED], wall.id
         assert [
             record.derivation
             for record in wall.provenance
-            if record.attributes.get("assumed_dimension") == "thickness_m"
+            if record.scope_paths == ("thickness_m",)
         ] == [DERIVATION_INFERRED], wall.id
     assert classify(room) == DERIVATION_OBSERVED
 

@@ -831,6 +831,23 @@
             "null"
           ]
         },
+        "scope_paths": {
+          "description": "Canonical claim paths qualified by this record. Omitted/null means entity-wide; an explicit empty scope is invalid.",
+          "oneOf": [
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "source_element_id": {
           "type": [
             "string",

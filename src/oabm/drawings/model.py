@@ -67,6 +67,7 @@ class SourceProvenance:
     page: int | None
     method: str | None
     confidence: float
+    derivation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -992,6 +992,7 @@ def _source_reference(entity: Entity) -> SourceReference:
             page=item.page,
             method=item.method,
             confidence=item.confidence,
+            derivation=item.derivation,
         )
         for item in entity.provenance
     )

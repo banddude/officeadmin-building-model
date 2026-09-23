@@ -69,6 +69,8 @@ class QuantityItem:
     assembly_key: str | None = None
 
     def to_dict(self) -> dict[str, object]:
+        derivations = {item.derivation for item in self.provenance}
+        placement_sources = {item.source_kind for item in self.provenance}
         return {
             "category": self.category,
             "item_type": self.item_type,
@@ -77,6 +79,15 @@ class QuantityItem:
             "variant": {key: value for key, value in self.variant},
             "source_entity_ids": list(self.source_entity_ids),
             "provenance": [asdict(item) for item in self.provenance],
+            "design_status": (
+                "inferred" if "inferred" in derivations else
+                "user" if "user" in derivations else
+                "observed" if derivations == {"observed"} else "unknown"
+            ),
+            "placement_status": (
+                "inferred" if "placement-engine" in placement_sources else
+                "user" if "user-placement" in placement_sources else None
+            ),
             "confidence": self.confidence,
             "assembly_key": self.assembly_key,
         }

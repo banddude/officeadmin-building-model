@@ -359,14 +359,20 @@ def _clearance_conflicts(
     model: BuildingModel, wall_id: str, space: Polygon3D, position: Point3,
     tangent: tuple[float, float], normal: tuple[float, float], depth: float, width: float,
 ) -> list[str]:
-    samples = [
-        (position.x + normal[0] * distance + tangent[0] * lateral,
-         position.y + normal[1] * distance + tangent[1] * lateral)
-        for distance in (0.2, depth)
-        for lateral in (-width / 2, 0.0, width / 2)
-    ]
+    def clearance_point(distance: float, lateral: float) -> tuple[float, float]:
+        return (
+            position.x + normal[0] * distance + tangent[0] * lateral,
+            position.y + normal[1] * distance + tangent[1] * lateral,
+        )
+
+    corners = (
+        clearance_point(0.1, -width / 2), clearance_point(0.1, width / 2),
+        clearance_point(depth, width / 2), clearance_point(depth, -width / 2),
+    )
+    boundary = tuple((point.x, point.y) for point in space.points)
     conflicts: list[str] = []
-    if any(not _inside_xy(x, y, space) for x, y in samples):
+    if (any(not _inside_xy(x, y, space) for x, y in corners)
+            or _polygons_edges_intersect(corners, boundary)):
         conflicts.append("working_clearance_outside_space")
     for opening in model.openings:
         if opening.host_id != wall_id:
@@ -378,25 +384,68 @@ def _clearance_conflicts(
     for obstacle in model.obstacles:
         if obstacle.obstacle_type.lower() == "soft":
             continue
-        if any(_geometry_contains_xy(obstacle.geometry, x, y,
-                                     obstacle.clearance_m) for x, y in samples):
+        if _geometry_intersects_clearance(obstacle.geometry, corners,
+                                          obstacle.clearance_m):
             conflicts.append(f"obstacle:{obstacle.id}")
     for constraint in model.route_constraints:
         if constraint.hard and constraint.constraint_type.lower().replace("_", "-") in {
             "keep-out", "keepout", "no-go", "nogo", "forbidden",
-        } and any(_geometry_contains_xy(constraint.geometry, x, y,
-                                        constraint.clearance_m) for x, y in samples):
+        } and _geometry_intersects_clearance(constraint.geometry, corners,
+                                              constraint.clearance_m):
             conflicts.append(f"keep_out:{constraint.id}")
     return conflicts
 
 
-def _geometry_contains_xy(geometry: Box3D | Polygon3D | Polyline3D,
-                          x: float, y: float, clearance: float) -> bool:
+def _geometry_intersects_clearance(
+    geometry: Box3D | Polygon3D | Polyline3D,
+    corners: tuple[tuple[float, float], ...], clearance: float,
+) -> bool:
     if isinstance(geometry, Box3D):
-        # A radius enclosing the rotated box is conservative for clearance.
+        # This disk encloses even a rotated box, so known conflicts cannot be
+        # missed because a corner falls between a finite set of sample points.
         radius = math.hypot(geometry.size.x, geometry.size.y) / 2 + clearance
-        return math.hypot(x - geometry.pose.position.x, y - geometry.pose.position.y) <= radius
+        x, y = geometry.pose.position.x, geometry.pose.position.y
+        return (_inside_polygon_xy(x, y, corners)
+                or any(_point_segment_distance(x, y, *a, *b) <= radius
+                       for a, b in zip(corners, (*corners[1:], corners[0]))))
     if isinstance(geometry, Polygon3D):
-        return _inside_xy(x, y, geometry, tolerance=clearance)
-    return any(_point_segment_distance(x, y, a.x, a.y, b.x, b.y) <= clearance
-               for a, b in zip(geometry.points, geometry.points[1:]))
+        outline = tuple((point.x, point.y) for point in geometry.points)
+        return (any(_inside_polygon_xy(x, y, corners) for x, y in outline)
+                or any(_inside_xy(x, y, geometry, tolerance=clearance) for x, y in corners)
+                or _polygons_edges_intersect(corners, outline))
+    outline = tuple((point.x, point.y) for point in geometry.points)
+    return (any(_inside_polygon_xy(x, y, corners) for x, y in outline)
+            or _polygons_edges_intersect(corners, outline, closed_second=False)
+            or any(_point_segment_distance(x, y, *a, *b) <= clearance
+                   for x, y in corners for a, b in zip(outline, outline[1:])))
+
+
+def _inside_polygon_xy(x: float, y: float, points: tuple[tuple[float, float], ...]) -> bool:
+    inside = False
+    for (ax, ay), (bx, by) in zip(points, (*points[1:], points[0])):
+        if (ay > y) != (by > y) and x < (bx - ax) * (y - ay) / (by - ay) + ax:
+            inside = not inside
+    return inside
+
+
+def _polygons_edges_intersect(
+    first: tuple[tuple[float, float], ...],
+    second: tuple[tuple[float, float], ...], *, closed_second: bool = True,
+) -> bool:
+    first_edges = tuple(zip(first, (*first[1:], first[0])))
+    second_edges = tuple(zip(second, (*second[1:], second[0]))) if closed_second else tuple(zip(second, second[1:]))
+    return any(_segments_intersect(a, b, c, d)
+               for a, b in first_edges for c, d in second_edges)
+
+
+def _segments_intersect(
+    a: tuple[float, float], b: tuple[float, float],
+    c: tuple[float, float], d: tuple[float, float],
+) -> bool:
+    def cross(p: tuple[float, float], q: tuple[float, float], r: tuple[float, float]) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    ab_c, ab_d = cross(a, b, c), cross(a, b, d)
+    cd_a, cd_b = cross(c, d, a), cross(c, d, b)
+    return ((ab_c > 1e-9 and ab_d < -1e-9 or ab_c < -1e-9 and ab_d > 1e-9)
+            and (cd_a > 1e-9 and cd_b < -1e-9 or cd_a < -1e-9 and cd_b > 1e-9))

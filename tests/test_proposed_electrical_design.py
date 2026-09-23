@@ -208,6 +208,15 @@ def test_missing_geometry_and_known_clearance_conflicts_do_not_create_panel() ->
     assert any("obstacle:obstacle:electrical-clearance" in item.reasons
                for item in proposal.alternatives)
     assert blocked.electrical_equipment == ()
+    narrow = Obstacle(
+        id="obstacle:narrow-middle",
+        geometry=Box3D(pose=Pose(position=Point3(x=1.5, y=0.55, z=1)),
+                       size=Size3(x=0.1, y=0.1, z=1)),
+    )
+    narrow_proposal = _proposal(replace(model, obstacles=(narrow,)))
+    middle = [candidate for candidate in narrow_proposal.alternatives
+              if candidate.wall_id == "wall:electrical" and candidate.position.x == 1.5]
+    assert middle and all(not candidate.valid for candidate in middle)
 
 
 def test_conflicting_user_decision_id_is_rejected() -> None:

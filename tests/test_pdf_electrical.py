@@ -1,6 +1,7 @@
 import json
 import math
 import re
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
@@ -134,6 +135,429 @@ def _write_synthetic_pdf(
 
     with path.open("wb") as handle:
         writer.write(handle)
+
+
+def _write_generated_lighting_pdf(
+    path: Path,
+    *,
+    mode: str = "full",
+    page_rotation: int = 0,
+) -> None:
+    if mode not in {"full", "room_only", "tagless_only", "unreadable_only"}:
+        raise AssertionError(f"unsupported lighting fixture mode {mode}")
+    if page_rotation not in {0, 90, 180, 270}:
+        raise AssertionError("page_rotation must be a quarter turn")
+
+    displayed_width = 1200.0
+    displayed_height = 700.0
+    if page_rotation in {90, 270}:
+        source_width = displayed_height
+        source_height = displayed_width
+    else:
+        source_width = displayed_width
+        source_height = displayed_height
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=source_width, height=source_height)
+    if page_rotation:
+        page[NameObject("/Rotate")] = NumberObject(page_rotation)
+
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref}),
+        }
+    )
+
+    def raw_point(x: float, y: float) -> tuple[float, float]:
+        if page_rotation == 0:
+            return x, y
+        if page_rotation == 90:
+            return source_width - y, x
+        if page_rotation == 180:
+            return source_width - x, source_height - y
+        return y, source_height - x
+
+    commands: list[str] = []
+
+    def add_text(x: float, y: float, text: str, *, size: float = 8.0) -> None:
+        raw_x, raw_y = raw_point(x, y)
+        escaped = (
+            text.replace("\\", "\\\\")
+            .replace("(", "\\(")
+            .replace(")", "\\)")
+        )
+        commands.append(
+            f"BT /F1 {size:.3f} Tf 1 0 0 1 "
+            f"{raw_x:.3f} {raw_y:.3f} Tm ({escaped}) Tj ET"
+        )
+
+    def add_polygon(
+        x: float,
+        y: float,
+        points: tuple[tuple[float, float], ...],
+        *,
+        scale: float = 1.0,
+        quarter_turn: int = 0,
+        mirrored: bool = False,
+    ) -> None:
+        displayed_points: list[tuple[float, float]] = []
+        for local_x, local_y in points:
+            local_x *= scale
+            local_y *= scale
+            if mirrored:
+                local_x = -local_x
+            rotation = quarter_turn % 4
+            if rotation == 1:
+                local_x, local_y = -local_y, local_x
+            elif rotation == 2:
+                local_x, local_y = -local_x, -local_y
+            elif rotation == 3:
+                local_x, local_y = local_y, -local_x
+            displayed_points.append((x + local_x, y + local_y))
+        raw_points = [raw_point(px, py) for px, py in displayed_points]
+        commands.append(
+            " ".join(
+                [
+                    f"{raw_points[0][0]:.3f} {raw_points[0][1]:.3f} m",
+                    *(
+                        f"{raw_x:.3f} {raw_y:.3f} l"
+                        for raw_x, raw_y in raw_points[1:]
+                    ),
+                    "h S",
+                ]
+            )
+        )
+
+    fixture_shape = (
+        (-7.0, -5.0),
+        (6.0, -5.0),
+        (6.0, 1.0),
+        (1.0, 1.0),
+        (1.0, 6.0),
+        (-7.0, 6.0),
+    )
+    f2_shape = (
+        (0.0, -7.0),
+        (7.0, 0.0),
+        (0.0, 7.0),
+        (-4.0, 2.0),
+        (-7.0, 0.0),
+        (-4.0, -2.0),
+    )
+    switch_shape = (
+        (-5.0, -5.0),
+        (5.0, -5.0),
+        (0.0, 5.0),
+    )
+
+    # Distinct lighting legend: tag is the semantic identity. A, A1 and B
+    # deliberately use the exact same prototype shape.
+    add_text(760.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0)
+    for tag, y, shape in (
+        ("A", 615.0, fixture_shape),
+        ("A1", 585.0, fixture_shape),
+        ("B", 555.0, fixture_shape),
+        ("F2", 525.0, f2_shape),
+    ):
+        add_polygon(770.0, y, shape)
+        add_text(792.0, y, tag, size=8.0)
+
+    # Source-only fixture schedule. No expected-answer sidecar is created.
+    add_text(620.0, 465.0, "LIGHTING FIXTURE SCHEDULE", size=11.0)
+    for x, label in (
+        (620.0, "TYPE"),
+        (675.0, "DESCRIPTION"),
+        (790.0, "LAMP"),
+        (850.0, "WATTS"),
+        (905.0, "MOUNTING"),
+        (1000.0, "MANUFACTURER"),
+    ):
+        add_text(x, 445.0, label, size=7.0)
+    schedule_rows = (
+        ("A", "2X4 LED", "LED", "32W", "RECESSED", "ACME"),
+        ("A1", "DOWNLIGHT", "LED", "12W", "RECESSED", "ACME"),
+        ("B", "LINEAR LED", "LED", "24W", "SURFACE", "BETA"),
+        ("F2", "WALL LIGHT", "LED", "18W", "WALL", "GAMMA"),
+    )
+    for row_index, row in enumerate(schedule_rows):
+        y = 420.0 - row_index * 25.0
+        for x, value in zip(
+            (620.0, 675.0, 790.0, 850.0, 905.0, 1000.0),
+            row,
+        ):
+            add_text(x, y, value, size=7.0)
+
+    if mode == "full":
+        # Scale / rotation / mirror variants, including two A instances and
+        # A/B sharing the same prototype geometry.
+        for x, y, tag, shape, scale, rotation, mirrored in (
+            (120.0, 560.0, "A", fixture_shape, 1.0, 0, False),
+            (280.0, 525.0, "A1", fixture_shape, 0.7, 1, False),
+            (120.0, 455.0, "B", fixture_shape, 1.3, 2, True),
+            (300.0, 410.0, "F2", f2_shape, 1.1, 3, True),
+            (470.0, 550.0, "A", fixture_shape, 0.9, 3, False),
+        ):
+            add_polygon(
+                x,
+                y,
+                shape,
+                scale=scale,
+                quarter_turn=rotation,
+                mirrored=mirrored,
+            )
+            add_text(x + 18.0, y, tag, size=8.0)
+        # Adjacent non-type text must not replace the readable fixture tag.
+        add_text(155.0, 560.0, "R101", size=7.0)
+
+        # One matching fixture has no tag, and another has two conflicting
+        # readable tags. Neither is allowed to become a luminaire.
+        add_polygon(300.0, 220.0, fixture_shape)
+        add_polygon(500.0, 220.0, fixture_shape)
+        add_text(518.0, 218.0, "A", size=8.0)
+        add_text(518.0, 224.0, "B", size=8.0)
+
+        # Legible switching codes. Classification comes from the exact code,
+        # never from the triangle shape.
+        for x, code in (
+            (100.0, "S"),
+            (220.0, "S3"),
+            (340.0, "SD"),
+            (460.0, "OS"),
+        ):
+            add_polygon(x, 310.0, switch_shape)
+            add_text(x + 16.0, 310.0, code, size=8.0)
+
+        # A room-name lookalike is schedule-known text but has no small fixture
+        # glyph. The surrounding room box is deliberately too large to be a glyph.
+        room_points = (
+            (-90.0, -40.0),
+            (90.0, -40.0),
+            (90.0, 40.0),
+            (-90.0, 40.0),
+        )
+        add_polygon(190.0, 110.0, room_points)
+        add_text(180.0, 110.0, "A1", size=10.0)
+
+    elif mode == "room_only":
+        room_points = (
+            (-90.0, -40.0),
+            (90.0, -40.0),
+            (90.0, 40.0),
+            (-90.0, 40.0),
+        )
+        add_polygon(220.0, 260.0, room_points)
+        add_text(210.0, 260.0, "A", size=11.0)
+
+    elif mode == "tagless_only":
+        add_polygon(220.0, 300.0, fixture_shape)
+
+    elif mode == "unreadable_only":
+        add_polygon(220.0, 300.0, fixture_shape)
+        add_text(238.0, 300.0, "?", size=8.0)
+
+    content = DecodedStreamObject()
+    content.set_data(("\n".join(commands) + "\n").encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+@pytest.mark.parametrize("page_rotation", (0, 90, 270))
+def test_generated_lighting_sheet_reads_fixture_tags_schedule_and_switching(
+    tmp_path: Path,
+    page_rotation: int,
+) -> None:
+    pdf_path = tmp_path / f"generated-lighting-{page_rotation}.pdf"
+    _write_generated_lighting_pdf(
+        pdf_path,
+        mode="full",
+        page_rotation=page_rotation,
+    )
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id=f"fixture:generated-lighting:{page_rotation}",
+    )
+    repeated = extract_pdf(
+        pdf_path,
+        source_id=f"fixture:generated-lighting:{page_rotation}",
+    )
+    assert extracted == repeated
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    luminaires = [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    assert len(luminaires) == 5
+    assert Counter(device.name for device in luminaires) == Counter(
+        {"A": 2, "A1": 1, "B": 1, "F2": 1}
+    )
+
+    by_tag: dict[str, list] = {}
+    for device in luminaires:
+        assert device.name is not None
+        by_tag.setdefault(device.name, []).append(device)
+        lane = device.attributes["pdf_electrical"]
+        assert lane["fixture_tag"] == device.name
+        assert lane["lighting_recognition"]["tag_is_primary_type_evidence"] is True
+        assert lane["lighting_recognition"]["shape_score"] is not None
+        assert (
+            lane["lighting_recognition"]["shape_score"]
+            >= pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+        )
+        schedule = lane["fixture_schedule"]
+        assert schedule["tag"] == device.name
+        assert schedule["lamp"] == "LED"
+        assert schedule["wattage_w"] > 0.0
+        methods = {item.method for item in device.provenance}
+        assert {
+            "pdf-lighting-fixture-geometry",
+            "pdf-lighting-fixture-tag",
+            "pdf-lighting-legend-tag",
+            "pdf-lighting-fixture-schedule",
+        } <= methods
+
+    # A and B intentionally use the same legend symbol. The readable letter
+    # tag, not shape, determines fixture type.
+    assert (
+        by_tag["A"][0]
+        .attributes["pdf_electrical"]["lighting_recognition"]["legend"][
+            "prototype_geometry_key"
+        ]
+        != by_tag["B"][0]
+        .attributes["pdf_electrical"]["lighting_recognition"]["legend"][
+            "prototype_geometry_key"
+        ]
+    )
+    assert (
+        by_tag["A"][0]
+        .attributes["pdf_electrical"]["lighting_recognition"]["shape_signature"]
+        == by_tag["B"][0]
+        .attributes["pdf_electrical"]["lighting_recognition"]["shape_signature"]
+    )
+
+    switches = [
+        device
+        for device in model.electrical_devices
+        if device.attributes["pdf_electrical"].get("switch_type") is not None
+    ]
+    assert {
+        device.attributes["pdf_electrical"]["switch_type"]
+        for device in switches
+    } == {"single_pole", "three_way", "dimmer", "occupancy_sensor"}
+    assert {
+        device.attributes["pdf_electrical"]["switch_code"]
+        for device in switches
+    } == {"S", "S3", "SD", "OS"}
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    reason_codes = {
+        item.get("reason_code")
+        for item in unresolved
+        if item.get("kind") == "lighting_fixture"
+    }
+    assert "lighting_fixture_tag_missing" in reason_codes
+    assert "lighting_fixture_tag_ambiguous" in reason_codes
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["legend_type"] == "lighting"
+    assert lighting["recognized_fixture_count"] == 5
+    assert lighting["recognized_switch_count"] == 4
+    assert lighting["fixture_tags"] == ["A", "A1", "B", "F2"]
+    assert lighting["legend_regions"][0]["method"] == "lighting-letter-tag-legend"
+    assert lighting["fixture_schedules"][0]["row_count"] == 4
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_reason"),
+    (
+        ("room_only", None),
+        ("tagless_only", "lighting_fixture_tag_missing"),
+        ("unreadable_only", "lighting_fixture_tag_unreadable_or_unknown"),
+    ),
+)
+def test_generated_lighting_negatives_fail_closed(
+    tmp_path: Path,
+    mode: str,
+    expected_reason: str | None,
+) -> None:
+    pdf_path = tmp_path / f"generated-lighting-negative-{mode}.pdf"
+    _write_generated_lighting_pdf(pdf_path, mode=mode)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id=f"fixture:generated-lighting-negative:{mode}",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    lighting_reasons = {
+        item.get("reason_code")
+        for item in unresolved
+        if item.get("kind") == "lighting_fixture"
+    }
+    if expected_reason is None:
+        assert not lighting_reasons
+    else:
+        assert expected_reason in lighting_reasons
+
+
+def test_lighting_fixture_ids_are_stable_across_extraction_order(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "generated-lighting-stable-id.pdf"
+    _write_generated_lighting_pdf(pdf_path, mode="full")
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:generated-lighting-stable-id",
+    )
+    reordered = PdfElectricalDocument(
+        source_id=extracted.source_id,
+        page_count=extracted.page_count,
+        texts=tuple(reversed(extracted.texts)),
+        symbols=tuple(reversed(extracted.symbols)),
+        vectors=tuple(reversed(extracted.vectors)),
+        page_provenance=extracted.page_provenance,
+    )
+
+    first = ElectricalPdfImporter().import_document(extracted)
+    second = ElectricalPdfImporter().import_document(reordered)
+    first_luminaires = sorted(
+        device.id
+        for device in first.electrical_devices
+        if device.device_type == "luminaire"
+    )
+    second_luminaires = sorted(
+        device.id
+        for device in second.electrical_devices
+        if device.device_type == "luminaire"
+    )
+    assert first_luminaires == second_luminaires
+    assert first.to_json() == second.to_json()
 
 
 def test_geometry_only_power_sheet_matches_drawn_glyphs_to_its_own_legend() -> None:

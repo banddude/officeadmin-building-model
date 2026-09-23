@@ -1163,6 +1163,30 @@ def _circuit_probe_model(
     )
 
 
+def test_panel_prose_cannot_materialize_panelboards_from_source_pdf(tmp_path: Path) -> None:
+    """Only compact source labels or labels with ratings identify equipment."""
+    labels = (
+        "PANEL LP",
+        "PANEL DP 120/208V 3PH",
+        "PANEL AS SHOWN",
+        "PANEL TO",
+        "PANEL LOCATED AT WALL",
+        "PANEL LOCATIONS ARE INDICATED",
+        "PANEL DESIGNS ARE TYPICAL",
+        "PANEL CEILINGS ARE HIGH",
+        "PANEL ZZ IN ROOM",
+    )
+    body = b"".join(
+        f"BT /F1 8 Tf 1 0 0 1 70 {550 - 25 * index} Tm ({label}) Tj ET\n".encode()
+        for index, label in enumerate(labels)
+    )
+    model = _circuit_probe_model(
+        tmp_path / "panel-labels-versus-prose.pdf", body,
+        "fixture:issue72-panel-labels-versus-prose", schedule_cells=False,
+    )
+    assert sorted(e.name for e in model.electrical_equipment) == ["DP", "LP"]
+
+
 def test_device_tag_sharing_a_panel_name_prefix_creates_no_circuit(
     tmp_path: Path,
 ) -> None:

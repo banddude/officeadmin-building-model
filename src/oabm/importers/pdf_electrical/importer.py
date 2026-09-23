@@ -977,6 +977,18 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
 
 
 _PANEL_RE = re.compile(r"\b(?:PANEL|PNL)\s+(?P<tag>[A-Z][A-Z0-9_.-]*)\b", re.IGNORECASE)
+# A prose mention such as "panel located ..." is not equipment identity.
+# Only a standalone label or a label followed by explicit electrical ratings
+# can materialize a panelboard from text. Circuit callouts are handled below.
+_PANEL_EQUIPMENT_RE = re.compile(
+    r"\s*(?:PANEL|PNL)\s+(?P<tag>[A-Z][A-Z0-9_.-]*)"
+    r"(?:\s+\d+(?:/\d+)?\s*V)?(?:\s+[123]\s*PH)?(?:\s+\d+\s*A)?\s*",
+    re.IGNORECASE,
+)
+_PANEL_PROSE_TAGS = frozenset({
+    "AS", "AT", "BY", "CEILINGS", "DESIGNS", "FOR", "IN", "LOCATED",
+    "LOCATIONS", "OF", "ON", "SCHEDULE", "SHOWN", "THE", "TO", "WITH",
+})
 _EQUIPMENT_TEXT_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"\b(?:SWBD|SWGR|SWITCHBOARD|SWITCHGEAR)\s+(?P<tag>[A-Z][A-Z0-9_.-]*)\b", re.IGNORECASE),
@@ -1355,8 +1367,8 @@ def _text_entity_hits(text: str) -> list[tuple[str, str, str, float]]:
         # recognition before materializing canonical equipment or devices.
         return []
     hits: list[tuple[str, str, str, float]] = []
-    panel = _PANEL_RE.search(text)
-    if panel:
+    panel = _PANEL_EQUIPMENT_RE.fullmatch(text)
+    if panel and _normalize_tag(panel.group("tag")) not in _PANEL_PROSE_TAGS:
         hits.append(("equipment", "panelboard", _normalize_tag(panel.group("tag")), 0.97))
     for pattern, canonical_type in _EQUIPMENT_TEXT_RULES:
         for match in pattern.finditer(text):

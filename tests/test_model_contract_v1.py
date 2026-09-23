@@ -129,3 +129,96 @@ def test_wrong_schema_version_is_rejected() -> None:
     document["schema_version"] = "2.0.0"
     with pytest.raises(UnsupportedSchemaVersion):
         BuildingModel.from_dict(document)
+
+
+def test_issue_84_electrical_physical_fixture_is_first_class() -> None:
+    model = BuildingModel.load(FIXTURE_DIR / "electrical-physical.json")
+    assert [box.id for box in model.electrical_boxes] == ["box:evse"]
+    assert model.electrical_boxes[0].occupant_ids == ("device:evse",)
+    assert model.electrical_boxes[0].listed_volume_m3 == pytest.approx(0.00035)
+    assert [selection.id for selection in model.raceway_selections] == [
+        "raceway-selection:panel-evse"
+    ]
+    selection = model.raceway_selections[0]
+    assert (selection.start_segment_index, selection.end_segment_index_exclusive) == (0, 3)
+    assert selection.catalog_id == "synthetic:emt-v1"
+    assert selection.catalog_item_id == "emt-21mm"
+    assert selection.trade_size == "synthetic-21-mm"
+
+
+def test_issue_84_empty_additive_collections_preserve_legacy_serialization_shape() -> None:
+    model = BuildingModel.load(FIXTURE_DIR / "garage-route.json")
+    document = model.to_dict()
+    assert "electrical_boxes" not in document
+    assert "raceway_selections" not in document
+
+
+def test_issue_84_unresolved_reason_is_required_and_survives_round_trip() -> None:
+    document = json.loads((FIXTURE_DIR / "garage-route.json").read_text(encoding="utf-8"))
+    document["electrical_boxes"] = [
+        {
+            "id": "box:evse-unresolved",
+            "box_type": "device-box",
+            "resolution_status": "unresolved",
+            "occupant_ids": ["device:evse"],
+            "unresolved_reason": "missing-device-host",
+        }
+    ]
+    document["raceway_selections"] = [
+        {
+            "id": "raceway-selection:unresolved",
+            "route_id": "route:panel-evse",
+            "start_segment_index": 0,
+            "end_segment_index_exclusive": 3,
+            "basis": "conductor-fill",
+            "resolution_status": "unresolved",
+            "product_kind": "raceway",
+            "product_type": "emt",
+            "unresolved_reason": "no-catalog-item-fits",
+        }
+    ]
+    model = BuildingModel.from_dict(document)
+    assert model.electrical_boxes[0].unresolved_reason == "missing-device-host"
+    assert model.raceway_selections[0].unresolved_reason == "no-catalog-item-fits"
+    assert BuildingModel.from_json(model.to_json()).to_dict() == model.to_dict()
+
+    document["electrical_boxes"][0].pop("unresolved_reason")
+    with pytest.raises(ContractError, match="unresolved_reason is required"):
+        BuildingModel.from_dict(document)
+
+
+def test_issue_84_box_occupants_cannot_belong_to_two_boxes() -> None:
+    model = BuildingModel.load(FIXTURE_DIR / "electrical-physical.json")
+    duplicate = replace(model.electrical_boxes[0], id="box:evse-second")
+    with pytest.raises(ContractError, match="cannot occupy both"):
+        replace(model, electrical_boxes=(*model.electrical_boxes, duplicate))
+
+
+def test_issue_84_raceway_selection_spans_must_partition_route() -> None:
+    model = BuildingModel.load(FIXTURE_DIR / "electrical-physical.json")
+    first = replace(
+        model.raceway_selections[0],
+        id="raceway-selection:first",
+        end_segment_index_exclusive=1,
+    )
+    second = replace(
+        model.raceway_selections[0],
+        id="raceway-selection:second",
+        start_segment_index=2,
+    )
+    with pytest.raises(ContractError, match="without gaps or overlaps"):
+        replace(model, raceway_selections=(first, second))
+
+
+def test_issue_84_resolved_selection_cannot_silently_override_route_diameter() -> None:
+    model = BuildingModel.load(FIXTURE_DIR / "electrical-physical.json")
+    conflicting = replace(model.raceway_selections[0], nominal_diameter_m=0.027)
+    with pytest.raises(ContractError, match="conflicts with .*nominal_diameter_m"):
+        replace(model, raceway_selections=(conflicting,))
+
+
+def test_issue_84_selection_span_cannot_extend_past_route_geometry() -> None:
+    model = BuildingModel.load(FIXTURE_DIR / "electrical-physical.json")
+    invalid = replace(model.raceway_selections[0], end_segment_index_exclusive=4)
+    with pytest.raises(ContractError, match="exceeds route segment count"):
+        replace(model, raceway_selections=(invalid,))

@@ -64,6 +64,20 @@ one canonical circuit. Their load ports and provenance are unioned
 deterministically, and conflicting scalar electrical evidence is preserved as
 explicit ambiguity instead of being selected by extraction order.
 
+For explicit homeruns, the arrowhead is recognized by its open, nondegenerate
+acute V shape, independent of its absolute point size. Any nonzero straight
+branch stroke may participate. The arrowhead and strokes use the configured
+topology snap radius for contact, so an extra fixed point allowance cannot
+change the circuit verdict at a separate boundary. A branch touching an
+unclaimed closed path fails as `branch_run_not_isolated`; a recognized device's
+own outline remains a lawful endpoint. A panel schedule heading makes that
+panel's schedule present even if no row parses. Rows below headings are assigned
+to one nearest heading on the page, without a fixed block height or width; an
+unparseable or absent circuit number in a present schedule cannot validate a
+claim. A direct device circuit tag has no leader to follow, so it uses the
+lane's configured annotation association radius and requires one unambiguous
+recognized device in range.
+
 A source glyph or named symbol is materialized only when recognition yields one
 clear classification and a stable identity anchor. For drawn vector glyphs, that
 classification can come from a unique match against the sheet's own legend and

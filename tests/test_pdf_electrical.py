@@ -1101,10 +1101,10 @@ def _write_circuit_probe_pdf(
             rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(\d+ RECEPTACLE LOAD\) Tj",
             body,
         ):
-            left = float(match.group(1)) - 5
+            left = float(match.group(1)) - 10
             bottom = float(match.group(2)) - 5
             row_positions.append((float(match.group(1)), float(match.group(2))))
-            cells.append(f"{left:g} {bottom:g} 145 10 re S\n".encode())
+            cells.append(f"{left:g} {bottom:g} 160 10 re S\n".encode())
         heading = re.search(
             rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(PANEL [A-Z0-9_.-]+ SCHEDULE\) Tj",
             body,
@@ -1317,6 +1317,18 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         ("aligned-but-separated", b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"),
         ("aligned-before-row", b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (99 DETAIL NOTE) Tj ET\n"),
         ("aligned-near-row", b"BT /F1 8 Tf 1 0 0 1 600 528 Tm (99 DETAIL NOTE) Tj ET\n"),
+        (
+            "boxed-note-with-page-border",
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"595 115 145 10 re S\n"
+            b"5 5 780 600 re S\n",
+        ),
+        (
+            "full-column-box-with-page-border",
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"590 115 160 10 re S\n"
+            b"5 5 780 600 re S\n",
+        ),
     ):
         model = _circuit_probe_model(
             tmp_path / f"schedule-note-{label}.pdf",

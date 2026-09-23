@@ -1188,7 +1188,8 @@ def _panel_schedule_circuits(
             and any(
                 frame.page == row.page
                 and frame.element_id != cell.element_id
-                and frame_left < left < right < frame_right
+                and frame_left == left
+                and frame_right == right
                 and frame_bottom < bottom < top < frame_top
                 and frame_left < heading.x_pt < frame_right
                 and frame_bottom < heading.y_pt < frame_top

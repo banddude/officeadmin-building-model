@@ -73,14 +73,16 @@ unclaimed closed path fails as `branch_run_not_isolated`; a recognized device's
 own outline remains a lawful endpoint. A panel schedule heading makes that
 panel's schedule present even if no row parses. A numbered row requires an
 unambiguous, closed table cell below the heading, inside a separate closed
-schedule frame that also contains the heading. The cell must contain both the
-row's text origin and the heading's circuit-number column. If multiple numbered
-texts occupy the cell, it validates none of them. An unruled numeric note, an
-isolated boxed note, or a row with ambiguous table ownership cannot validate a
-circuit. This avoids a fixed block height or width. An unparseable or absent
-circuit number in a present schedule cannot validate a claim. A direct device
-circuit tag has no leader to follow, so it uses the lane's configured annotation
-association radius and requires one unambiguous recognized device in range.
+schedule frame that also contains the heading. Cell and frame must share their
+left and right table edges, so a page border cannot serve as a schedule frame.
+The cell must contain both the row's text origin and the heading's circuit-number
+column. If multiple numbered texts occupy the cell, it validates none of them.
+An unruled numeric note, an isolated boxed note, or a row with ambiguous table
+ownership cannot validate a circuit. This avoids a fixed block height or width.
+An unparseable or absent circuit number in a present schedule cannot validate a
+claim. A direct device circuit tag has no leader to follow, so it uses the lane's
+configured annotation association radius and requires one unambiguous recognized
+device in range.
 
 A source glyph or named symbol is materialized only when recognition yields one
 clear classification and a stable identity anchor. For drawn vector glyphs, that

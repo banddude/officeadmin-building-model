@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from oabm.model import (
+    DERIVATION_INFERRED,
     BuildingModel,
     Ceiling,
     ElectricalDevice,
@@ -554,6 +555,7 @@ def _resolve_entity(
         provenance = provenance + (
             Provenance(
                 source_kind="pdf-convergence",
+                derivation=DERIVATION_INFERRED,
                 source_id=convergence_source_id,
                 source_element_id=entity.id,
                 page=(
@@ -615,6 +617,7 @@ def _translate_port(
     provenance = port.provenance + (
         Provenance(
             source_kind="pdf-convergence",
+            derivation=DERIVATION_INFERRED,
             source_id=convergence_source_id,
             source_element_id=port.id,
             page=(
@@ -852,6 +855,7 @@ def converge_pdf_models(
     )
     convergence_provenance = Provenance(
         source_kind="pdf-convergence",
+        derivation=DERIVATION_INFERRED,
         source_id=convergence_source_id,
         method="canonical architectural/electrical PDF spatial convergence",
         confidence=convergence_confidence,

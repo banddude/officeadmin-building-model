@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from oabm.model import (
+    DERIVATION_INFERRED,
     Box3D,
     BuildingModel,
     Point3,
@@ -216,6 +217,10 @@ def route_between_ports(
             source_element_id=f"{start_port_id}->{end_port_id}",
             method=_ALGORITHM,
             confidence=1.0,
+            # A routed path is a proposal, never an observation. No source
+            # shows this centerline; we computed it. It stays inferred until
+            # something in the source actually shows the run.
+            derivation=DERIVATION_INFERRED,
             attributes={"route_type": route_type},
         ),
     )

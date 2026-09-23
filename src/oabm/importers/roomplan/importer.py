@@ -8,6 +8,8 @@ from statistics import median
 from typing import Any, Mapping, Sequence
 
 from oabm.model import (
+    DERIVATION_INFERRED,
+    DERIVATION_OBSERVED,
     Box3D,
     BuildingModel,
     CoordinateSystem,
@@ -191,6 +193,27 @@ def import_captured_room(
         )
         attributes["roomplan"]["surface_thickness_m"] = thickness_m
         attributes["roomplan"]["surface_thickness_inferred"] = source_thickness <= _EPS
+        wall_provenance = (
+            _provenance(
+                provenance_source_id,
+                source_element_id,
+                "walls",
+                story,
+                confidence,
+                confidence_label,
+            ),
+        )
+        if source_thickness <= _EPS:
+            wall_provenance += (
+                _assumed_dimension_provenance(
+                    provenance_source_id,
+                    source_element_id,
+                    "walls",
+                    "thickness_m",
+                    thickness_m,
+                    confidence,
+                ),
+            )
         wall = Wall(
             id=entity_id,
             level_id=level_ids[story],
@@ -198,16 +221,7 @@ def import_captured_room(
             thickness_m=thickness_m,
             height_m=height_m,
             confidence=confidence,
-            provenance=(
-                _provenance(
-                    provenance_source_id,
-                    source_element_id,
-                    "walls",
-                    story,
-                    confidence,
-                    confidence_label,
-                ),
-            ),
+            provenance=wall_provenance,
             attributes=attributes,
         )
         walls.append(wall)
@@ -258,22 +272,34 @@ def import_captured_room(
         )
         attributes["roomplan"]["surface_thickness_m"] = thickness_m
         attributes["roomplan"]["surface_thickness_inferred"] = source_thickness <= _EPS
+        slab_provenance = (
+            _provenance(
+                provenance_source_id,
+                source_element_id,
+                "floors",
+                story,
+                confidence,
+                confidence_label,
+            ),
+        )
+        if source_thickness <= _EPS:
+            slab_provenance += (
+                _assumed_dimension_provenance(
+                    provenance_source_id,
+                    source_element_id,
+                    "floors",
+                    "thickness_m",
+                    thickness_m,
+                    confidence,
+                ),
+            )
         slab = Slab(
             id=entity_id,
             level_id=level_ids[story],
             footprint=footprint,
             thickness_m=thickness_m,
             confidence=confidence,
-            provenance=(
-                _provenance(
-                    provenance_source_id,
-                    source_element_id,
-                    "floors",
-                    story,
-                    confidence,
-                    confidence_label,
-                ),
-            ),
+            provenance=slab_provenance,
             attributes=attributes,
         )
         slabs.append(slab)
@@ -416,6 +442,7 @@ def import_captured_room(
                 provenance=(
                     Provenance(
                         source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
                         source_id=provenance_source_id,
                         source_element_id=f"story:{story}",
                         method="CapturedRoom story grouping",
@@ -450,6 +477,7 @@ def import_captured_room(
                 provenance=(
                     Provenance(
                         source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
                         source_id=provenance_source_id,
                         source_element_id=room_identifier,
                         method="CapturedRoom floor footprint",
@@ -666,6 +694,7 @@ def import_captured_room(
         provenance=(
             Provenance(
                 source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
                 source_id=provenance_source_id,
                 source_element_id=room_identifier,
                 method="CapturedRoom JSON import",
@@ -1087,6 +1116,7 @@ def _provenance(
 ) -> Provenance:
     return Provenance(
         source_kind="roomplan",
+            derivation=DERIVATION_OBSERVED,
         source_id=source_id,
         source_element_id=source_element_id,
         method="CapturedRoom JSON import",
@@ -1095,6 +1125,46 @@ def _provenance(
             "roomplan_collection": collection,
             "roomplan_story": story,
             "roomplan_confidence": confidence_label,
+        },
+    )
+
+
+def _assumed_dimension_provenance(
+    source_id: str,
+    source_element_id: str,
+    collection: str,
+    dimension: str,
+    value: float,
+    confidence: float,
+) -> Provenance:
+    """Record that one named dimension is this importer's default, not a measurement.
+
+    RoomPlan reports surfaces, not construction assemblies: a captured wall has
+    a measured position and extent but no physical thickness.  Canonical v1
+    requires a positive thickness, so the importer supplies one -- and says so
+    here, in ``derivation``, which is the authoritative location for the fact.
+
+    The claim is deliberately scoped to the single dimension it covers.  A
+    consumer deriving a wall face area from the measured length and height is
+    entitled to call that a measurement; one that multiplies this thickness in
+    is not.  A record that tainted the whole entity could not tell those two
+    apart and would report a measured area as a guess.
+    """
+
+    return Provenance(
+        source_kind="roomplan",
+        derivation=DERIVATION_INFERRED,
+        source_id=source_id,
+        source_element_id=source_element_id,
+        method=(
+            f"{collection} surface reported no depth; canonical {dimension} "
+            "defaulted by the importer"
+        ),
+        confidence=confidence,
+        attributes={
+            "assumed_dimension": dimension,
+            "assumed_value_m": value,
+            "roomplan_collection": collection,
         },
     )
 

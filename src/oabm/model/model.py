@@ -190,7 +190,15 @@ def validate_model(model: BuildingModel) -> None:
 
 def _encode(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
-        return {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        encoded = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, Provenance) and value.derivation is None:
+            # An unset derivation states nothing, so omit it rather than
+            # writing an explicit null. Adding the field then leaves the
+            # serialization of every record that predates it byte-identical,
+            # which keeps the golden known-answer hashes meaningful instead of
+            # forcing a wholesale regeneration that would hide real drift.
+            encoded.pop("derivation", None)
+        return encoded
     if isinstance(value, tuple):
         return [_encode(item) for item in value]
     if isinstance(value, list):

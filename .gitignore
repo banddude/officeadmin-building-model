@@ -11,3 +11,6 @@ build/
 .env.*
 !.env.example
 *.ifc~
+
+# Agent worktrees and local session state
+.claude/

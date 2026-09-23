@@ -7,7 +7,7 @@ import types
 import uuid
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Mapping, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, Mapping, Sequence, TypeVar, Union, get_args, get_origin, get_type_hints
 
 SCHEMA_VERSION = "1.0.0"
 ID_NAMESPACE = uuid.UUID("7ec97126-df4d-5bf7-b1b8-6c1f0b1265de")
@@ -207,6 +207,42 @@ class CoordinateSystem:
             _finite(self.true_north_radians, "true_north_radians")
 
 
+#: How an element came to exist, as distinct from where its evidence came from.
+#:
+#: ``source_kind`` says which input produced a record. It cannot say whether we
+#: *saw* the thing or *synthesized* it: a port invented so a circuit has an
+#: endpoint still carries the importer's own ``source_kind``. A consumer reading
+#: only ``source_kind`` would grade that synthesized port as observed, which is
+#: exactly the claim a 3D visual must never make.
+DERIVATION_OBSERVED = "observed"
+DERIVATION_USER = "user"
+DERIVATION_INFERRED = "inferred"
+DERIVATION_CLASSES: frozenset[str] = frozenset(
+    {DERIVATION_OBSERVED, DERIVATION_USER, DERIVATION_INFERRED}
+)
+
+
+def is_observed(provenance: Sequence["Provenance"]) -> bool:
+    """True only when every record states it was observed from a source.
+
+    Fails closed: an unset ``derivation`` is not a claim of observation, and a
+    mixed set is not either. A renderer must not present anything this returns
+    ``False`` for as if it were seen in the source.
+
+    ``derivation`` is the single authoritative location for this fact.  Do not
+    determine it by reading an entity's ``attributes``.  Lane attributes such
+    as ``inferred_for_circuit_semantics`` are diagnostics, not the source of
+    truth: ``attributes`` is free-form, so where a fact lives has no single
+    answer, and a consumer that guesses the wrong nesting level finds nothing.
+    Absent reads as "not inferred", which renders as observed -- the failure is
+    silent and biased toward the dangerous direction.  Two lanes shipped that
+    exact bug before this field existed.
+    """
+    return bool(provenance) and all(
+        record.derivation == DERIVATION_OBSERVED for record in provenance
+    )
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Provenance:
     source_kind: str
@@ -215,6 +251,7 @@ class Provenance:
     page: int | None = None
     method: str | None = None
     confidence: float = 1.0
+    derivation: str | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -222,6 +259,11 @@ class Provenance:
             raise ContractError("Provenance.source_kind is required")
         if not self.source_id:
             raise ContractError("Provenance.source_id is required")
+        if self.derivation is not None and self.derivation not in DERIVATION_CLASSES:
+            raise ContractError(
+                "Provenance.derivation must be one of "
+                f"{sorted(DERIVATION_CLASSES)!r}, got {self.derivation!r}"
+            )
         if self.page is not None:
             if isinstance(self.page, bool) or not isinstance(self.page, int) or self.page < 1:
                 raise ContractError("Provenance.page is a 1-based integer")

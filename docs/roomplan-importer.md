@@ -31,6 +31,8 @@ No XY projection is used. Sloped polygons, nonzero elevations, object poses, wal
 
 RoomPlan surfaces report dimensions but do not necessarily describe physical wall or slab thickness. Canonical v1 requires positive thickness for `Wall` and `Slab`. When the source depth is zero, the importer uses a small configurable surface thickness and marks that value as inferred in source attributes. It does not pretend that the inferred surface depth is a measured construction thickness.
 
+It also attaches a second `Provenance` record to that wall or slab, with `derivation=inferred` and `attributes["assumed_dimension"] = "thickness_m"`. `derivation` is the authoritative location for this fact; the source attributes above are a diagnostic, not the contract. The record is scoped by name to the one dimension the importer supplied, which is what lets a consumer tell apart the claims that rest on it from the claims that do not. A wall face area derived from the measured centerline and height is a measurement; the volume that multiplies the assumed thickness in is an inference. A record that tainted the whole entity could not distinguish them and would report a measured area as a guess. See `docs/quantities.md`.
+
 ## Source fidelity
 
 Canonical v1 has an intentional JSON-compatible `attributes` escape hatch for source-specific metadata. The importer retains native identifiers, categories, confidence labels, stories, dimensions, complete 4x4 transforms, local polygon corners, completed edges, exact curve metadata, source attributes, and unknown source fields there. Provenance records identify the RoomPlan source and native element ID.

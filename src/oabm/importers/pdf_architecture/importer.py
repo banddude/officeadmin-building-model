@@ -16,6 +16,7 @@ from statistics import median
 from typing import Iterable
 
 from oabm.model import (
+    DERIVATION_INFERRED,
     DERIVATION_OBSERVED,
     BuildingModel,
     Ceiling,
@@ -36,6 +37,11 @@ from oabm.model import (
 )
 
 from .extract import _is_wall_source_layer, extract_pdf
+from .layered_rooms import (
+    LayeredRoomRegion,
+    find_layered_room_regions,
+    has_multiple_wall_regions,
+)
 from .types import (
     ImportOptions,
     LevelOverride,
@@ -2015,6 +2021,63 @@ def _polygon_from_bbox(
 def _point3(source: tuple[float, float], transform: _Transform2D, z: float) -> Point3:
     x, y = transform.apply(source)
     return Point3(x=x, y=y, z=z)
+
+
+def _layered_region_space(
+    region: LayeredRoomRegion,
+    room: _RoomLabel,
+    page: PdfPageObservation,
+    transform: _Transform2D,
+    scale: _Scale,
+    level: Level,
+    level_info: _LevelInfo,
+    source_id: str,
+) -> Space:
+    confidence = min(room.confidence, scale.confidence, transform.confidence, 0.64)
+    identity = f"{source_id}|level:{level_info.anchor}|room:{room.anchor}"
+    return Space(
+        id=stable_id("space", identity),
+        name=room.name,
+        level_id=level.id,
+        footprint=Polygon3D(points=tuple(
+            _point3(point, transform, level.elevation_m) for point in region.polygon_pt
+        )),
+        height_m=None,
+        usage=room.usage,
+        confidence=confidence,
+        provenance=(
+            Provenance(
+                source_kind="architectural_pdf",
+                derivation=DERIVATION_INFERRED,
+                source_id=source_id,
+                source_element_id=room.observation.element_id,
+                page=page.page_number,
+                method="room interior bounded by visible CAD walls and supported opening closures",
+                confidence=confidence,
+                attributes={
+                    "source_wall_elements": list(region.source_wall_ids),
+                    "source_opening_elements": list(region.source_opening_ids),
+                    "opening_closure_count": region.closure_count,
+                    "raster_resolution_pt": 1.0,
+                    "height_status": "unresolved",
+                    "wall_thickness_status": "unresolved",
+                },
+            ),
+            _provenance(
+                source_id,
+                page.page_number,
+                method="room label observed inside closed CAD wall region",
+                confidence=room.confidence,
+                source_element_id=room.observation.element_id,
+            )[0],
+        ),
+        attributes={"pdf_architecture": {
+            "identity_anchor": room.anchor,
+            "recognition": "layered_wall_opening_region",
+            "geometry_derivation": "inferred_from_observed_vectors",
+            "label_source_element_id": room.observation.element_id,
+        }},
+    )
 
 
 def _shell_entities(
@@ -4163,6 +4226,52 @@ def import_observations(
             if ceiling:
                 ceilings.append(ceiling)
 
+        layered_room_count = 0
+        if not page.hidden_wall_source_present:
+            if has_multiple_wall_regions(page, scale.meters_per_point):
+                ambiguities.append({
+                    "page": page.page_number,
+                    "code": "multiple_layered_drawing_regions_unresolved",
+                    "detail": (
+                        "multiple separated wall drawings share this sheet; "
+                        "their distinct level and registration frames are not yet established"
+                    ),
+                })
+            unique_rooms = tuple(
+                room for room in rooms
+                if sum(other.anchor == room.anchor for other in rooms) == 1
+                and stable_id(
+                    "space",
+                    f"{document.source_id}|level:{level_info.anchor}|room:{room.anchor}",
+                ) not in used_space_ids
+            )
+            regions = find_layered_room_regions(
+                page,
+                scale.meters_per_point,
+                tuple((room.anchor, _room_label_center_pt(room)) for room in unique_rooms),
+            )
+            rooms_by_anchor = {room.anchor: room for room in unique_rooms}
+            for region in regions:
+                room = rooms_by_anchor[region.anchor]
+                space = _layered_region_space(
+                    region, room, page, transform, scale, level, level_info,
+                    document.source_id,
+                )
+                if space.id in used_space_ids:
+                    continue
+                spaces.append(space)
+                used_space_ids.add(space.id)
+                layered_room_count += 1
+                ambiguities.append({
+                    "page": page.page_number,
+                    "code": "layered_room_3d_extent_unresolved",
+                    "detail": (
+                        f"room {room.anchor!r} has an inferred 2D interior from visible "
+                        "wall and opening vectors; wall thickness and height remain unresolved"
+                    ),
+                    "room_anchor": room.anchor,
+                })
+
         consumed_vector_line_ids = {
             source_element_id
             for shell in shells
@@ -4322,6 +4431,8 @@ def import_observations(
         page_record["resolved_wall_count"] = len(page_walls)
         if ordinary_vector_shells:
             page_record["ordinary_vector_enclosure_count"] = len(ordinary_vector_shells)
+        if layered_room_count:
+            page_record["layered_wall_room_count"] = layered_room_count
         if geometric_spaces:
             page_record["geometric_wall_loop_count"] = len(geometric_spaces)
         if geometric_diagnostics:

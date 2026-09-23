@@ -1334,6 +1334,47 @@ def test_collinear_run_with_a_drafting_gap_is_not_read_as_a_loop(
         ], f"a {gap} pt gap was misread as enclosed area"
 
 
+def test_overprinted_duplicate_strokes_do_not_read_as_an_enclosure(
+    tmp_path: Path,
+) -> None:
+    """The same edge drawn twice encloses nothing.
+
+    Exported CAD routinely paints a line more than once, sometimes offset by a
+    fraction of a point. Those are parallel edges between the same two nodes,
+    and parallel edges bound zero area, so they must not be mistaken for a
+    loop.
+
+    Two things make that work: each member contributes its own midpoint as a
+    node, so coincident strokes collapse onto one edge while two genuinely
+    different paths between the same ends keep distinct midpoints; and an edge
+    already drawn is not counted a second time.
+    """
+    for label, second in (
+        ("exact", "140 400 m 220 400 l S\n"),
+        ("offset-1pt", "140 401 m 220 401 l S\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"duplicate-stroke-{label}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 55 650 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 800 650 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 800 625 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 130 404 Tm (EVSE-1) Tj ET\n"
+            b"135 395 10 10 re S\n"
+            b"140 400 m 220 400 l S\n"
+            + second.encode()
+            + b"214 396 m 220 400 l 214 404 l S\n"
+            b"BT /F1 9 Tf 1 0 0 1 228 402 Tm (LP-1) Tj ET\n",
+            f"fixture:issue72-duplicate-stroke-{label}",
+        )
+
+        assert model.circuits, f"{label} duplicate stroke was read as an enclosure"
+        assert not [
+            row
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+            if row.get("reason_code") == "branch_run_not_isolated"
+        ], f"{label} duplicate stroke wrongly rejected"
+
+
 def test_branch_run_absorbed_into_a_wall_network_fails_closed(
     tmp_path: Path,
 ) -> None:

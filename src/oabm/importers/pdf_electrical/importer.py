@@ -6283,8 +6283,17 @@ class ElectricalPdfImporter:
                     member_grid.setdefault(key, []).append(index)
 
             # Contact points per member, found only against local candidates.
+            def midpoint(vector: PdfVectorPathObservation) -> tuple[float, float]:
+                points = vector.points_pt
+                middle = points[len(points) // 2]
+                return (float(middle[0]), float(middle[1]))
+
+            # Each member contributes its own midpoint as a node. Two strokes
+            # painted over each other share that midpoint and collapse to one
+            # edge, while two genuinely different paths between the same pair
+            # of ends keep distinct midpoints and still form a real loop.
             contacts: dict[int, list[tuple[float, float]]] = {
-                index: [vector.points_pt[0], vector.points_pt[-1]]
+                index: [vector.points_pt[0], midpoint(vector), vector.points_pt[-1]]
                 for index, vector in enumerate(component)
             }
             for index, vector in enumerate(component):
@@ -6355,6 +6364,11 @@ class ElectricalPdfImporter:
                     key = parent[key]
                 return key
 
+            # A cycle needs DISTINCT edges. Two vectors drawing the same edge
+            # are parallel edges in a multigraph, and parallel edges enclose no
+            # area, so they must not read as a loop. Overprinted and duplicated
+            # strokes are ordinary in exported CAD.
+            drawn: set[tuple[int, int]] = set()
             for index, vector in enumerate(component):
                 start_point = vector.points_pt[0]
                 seen: dict[int, tuple[float, float]] = {}
@@ -6368,6 +6382,12 @@ class ElectricalPdfImporter:
                 )
                 # Each span between consecutive contacts is one edge.
                 for (left, _lp), (right, _rp) in zip(ordered, ordered[1:]):
+                    if left == right:
+                        continue
+                    edge = (min(left, right), max(left, right))
+                    if edge in drawn:
+                        continue
+                    drawn.add(edge)
                     left_root, right_root = find(left), find(right)
                     if left_root == right_root:
                         return vector

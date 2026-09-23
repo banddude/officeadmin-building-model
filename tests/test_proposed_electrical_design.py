@@ -131,8 +131,12 @@ def test_proposal_design_recompute_and_provenance() -> None:
                for item in before.items if item.category in {"route_length", "conductor_length"})
     assert all(item.to_dict()["placement_status"] == "inferred"
                for item in before.items if item.category == "route_length")
-    references = {item.canonical_id: item for item in generate_drawing_set(designed).source_index}
+    drawings = generate_drawing_set(designed)
+    references = {item.canonical_id: item for item in drawings.source_index}
     assert references[equipment.id].provenance[0].derivation == "inferred"
+    assert any(item["canonical_id"] == equipment.id
+               and item["provenance"][0]["derivation"] == "inferred"
+               for item in drawings.to_dict()["source_index"])
     ifc = to_ifc(designed)
     assert "PlacementStatus" in ifc.to_string()
     assert "DesignStatus" in ifc.to_string()

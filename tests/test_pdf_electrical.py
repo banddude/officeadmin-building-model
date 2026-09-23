@@ -526,6 +526,53 @@ def test_generated_lighting_negatives_fail_closed(
         assert expected_reason in lighting_reasons
 
 
+def test_generated_lighting_sheet_public_before_after_control(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pdf_path = tmp_path / "generated-lighting-before-after.pdf"
+    _write_generated_lighting_pdf(pdf_path, mode="full")
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:generated-lighting-before-after",
+    )
+
+    after = ElectricalPdfImporter().import_document(extracted)
+
+    def lighting_disabled(*_args, **_kwargs):
+        return ({}, set(), set(), set(), [], {})
+
+    monkeypatch.setattr(
+        pdf_electrical_importer,
+        "_recognize_lighting",
+        lighting_disabled,
+    )
+    before = ElectricalPdfImporter().import_document(extracted)
+
+    before_counts = (
+        sum(
+            device.device_type == "luminaire"
+            for device in before.electrical_devices
+        ),
+        len(
+            before.attributes["pdf_electrical"]["unresolved_observations"]
+        ),
+    )
+    after_counts = (
+        sum(
+            device.device_type == "luminaire"
+            for device in after.electrical_devices
+        ),
+        len(
+            after.attributes["pdf_electrical"]["unresolved_observations"]
+        ),
+    )
+
+    # Public generated-source control only. These are not private-pilot counts.
+    assert before_counts == (0, 16)
+    assert after_counts == (5, 2)
+
+
 def test_lighting_fixture_ids_are_stable_across_extraction_order(
     tmp_path: Path,
 ) -> None:

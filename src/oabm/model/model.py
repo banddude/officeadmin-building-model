@@ -11,8 +11,8 @@ from .common import (
     UnsupportedSchemaVersion, _distance, _finite, _validate_id, _validate_json_value,
 )
 from .entities import (
-    Ceiling, Circuit, Conductor, ElectricalDevice, ElectricalEquipment, Level,
-    Obstacle, Opening, Port, Route, RouteConstraint, RouteFitting, Slab, Space, Wall,
+    Ceiling, Circuit, Conductor, ElectricalBox, ElectricalDevice, ElectricalEquipment, Level,
+    Obstacle, Opening, Port, RacewaySelection, Route, RouteConstraint, RouteFitting, Slab, Space, Wall,
 )
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -29,10 +29,12 @@ class BuildingModel:
     openings: tuple[Opening, ...] = ()
     electrical_equipment: tuple[ElectricalEquipment, ...] = ()
     electrical_devices: tuple[ElectricalDevice, ...] = ()
+    electrical_boxes: tuple[ElectricalBox, ...] = ()
     ports: tuple[Port, ...] = ()
     obstacles: tuple[Obstacle, ...] = ()
     route_constraints: tuple[RouteConstraint, ...] = ()
     routes: tuple[Route, ...] = ()
+    raceway_selections: tuple[RacewaySelection, ...] = ()
     route_fittings: tuple[RouteFitting, ...] = ()
     circuits: tuple[Circuit, ...] = ()
     conductors: tuple[Conductor, ...] = ()
@@ -91,10 +93,12 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Entity, ...], ...]:
         model.openings,
         model.electrical_equipment,
         model.electrical_devices,
+        model.electrical_boxes,
         model.ports,
         model.obstacles,
         model.route_constraints,
         model.routes,
+        model.raceway_selections,
         model.route_fittings,
         model.circuits,
         model.conductors,
@@ -113,6 +117,7 @@ def validate_model(model: BuildingModel) -> None:
 
     levels = {item.id: item for item in model.levels}
     spaces = {item.id: item for item in model.spaces}
+    devices = {item.id: item for item in model.electrical_devices}
     ports = {item.id: item for item in model.ports}
     routes = {item.id: item for item in model.routes}
     fittings = {item.id: item for item in model.route_fittings}
@@ -133,6 +138,22 @@ def validate_model(model: BuildingModel) -> None:
         require(item.level_id, levels, f"{item.id}.level_id")
         require(item.space_id, spaces, f"{item.id}.space_id")
         require(item.host_id, by_id, f"{item.id}.host_id")
+
+    occupant_owner: dict[str, str] = {}
+    for box in model.electrical_boxes:
+        require(box.level_id, levels, f"{box.id}.level_id")
+        require(box.space_id, spaces, f"{box.id}.space_id")
+        require(box.host_id, by_id, f"{box.id}.host_id")
+        if box.host_id == box.id:
+            raise ContractError(f"{box.id} cannot host itself")
+        for occupant_id in box.occupant_ids:
+            require(occupant_id, devices, f"{box.id}.occupant_ids")
+            prior = occupant_owner.get(occupant_id)
+            if prior is not None:
+                raise ContractError(
+                    f"electrical device {occupant_id!r} cannot occupy both {prior!r} and {box.id!r}"
+                )
+            occupant_owner[occupant_id] = box.id
 
     for item in (*model.obstacles, *model.route_constraints):
         require(item.level_id, levels, f"{item.id}.level_id")
@@ -175,6 +196,44 @@ def validate_model(model: BuildingModel) -> None:
                 f"{fitting.id} must appear in {fitting.route_id}.fitting_ids to preserve fitting order"
             )
 
+    selections_by_route: dict[str, list[RacewaySelection]] = {}
+    for selection in model.raceway_selections:
+        require(selection.route_id, routes, f"{selection.id}.route_id")
+        route = routes[selection.route_id]
+        segment_count = len(route.centerline.points) - 1
+        if selection.end_segment_index_exclusive > segment_count:
+            raise ContractError(
+                f"{selection.id}.end_segment_index_exclusive exceeds route segment count {segment_count}"
+            )
+        selections_by_route.setdefault(selection.route_id, []).append(selection)
+        if (
+            selection.resolution_status == "resolved"
+            and selection.nominal_diameter_m is not None
+            and route.nominal_diameter_m is not None
+            and abs(selection.nominal_diameter_m - route.nominal_diameter_m) > 1e-9
+        ):
+            raise ContractError(
+                f"{selection.id}.nominal_diameter_m conflicts with {route.id}.nominal_diameter_m"
+            )
+
+    for route_id, selections in selections_by_route.items():
+        route = routes[route_id]
+        ordered = sorted(
+            selections,
+            key=lambda item: (item.start_segment_index, item.end_segment_index_exclusive, item.id),
+        )
+        expected_start = 0
+        for selection in ordered:
+            if selection.start_segment_index != expected_start:
+                raise ContractError(
+                    f"{route_id}.raceway_selections must partition route segments without gaps or overlaps"
+                )
+            expected_start = selection.end_segment_index_exclusive
+        if expected_start != len(route.centerline.points) - 1:
+            raise ContractError(
+                f"{route_id}.raceway_selections must cover every route segment"
+            )
+
     for circuit in model.circuits:
         require(circuit.source_port_id, ports, f"{circuit.id}.source_port_id")
         for port_id in circuit.load_port_ids:
@@ -191,6 +250,13 @@ def validate_model(model: BuildingModel) -> None:
 def _encode(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
         encoded = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, BuildingModel):
+            # These additive v1 collections are omitted when empty so models and
+            # golden fixtures that predate issue #84 retain byte-stable JSON.
+            if not value.electrical_boxes:
+                encoded.pop("electrical_boxes", None)
+            if not value.raceway_selections:
+                encoded.pop("raceway_selections", None)
         if isinstance(value, Provenance) and value.derivation is None:
             # An unset derivation states nothing, so omit it rather than
             # writing an explicit null. Adding the field then leaves the

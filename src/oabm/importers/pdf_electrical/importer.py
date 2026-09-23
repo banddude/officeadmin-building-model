@@ -5343,9 +5343,21 @@ def _recognize_lighting(
                         "legible switching code is not uniquely associated with one "
                         "nearby glyph"
                     ),
+                    "candidate_geometry_keys": [
+                        cluster.geometry_key for cluster in nearby[:4]
+                    ],
+                    "source_element_ids": sorted(
+                        {
+                            element_id
+                            for cluster in nearby
+                            for element_id in cluster.source_element_ids
+                        }
+                    ),
                 }
             )
             claimed_text_ids.add(observation.element_id)
+            for cluster in nearby:
+                claimed_vector_ids.update(cluster.source_element_ids)
             continue
 
         cluster = nearby[0]

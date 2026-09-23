@@ -4833,7 +4833,7 @@ def _lighting_schedule_attributes(row: _LightingScheduleRow) -> dict[str, Any]:
     attributes: dict[str, Any] = dict(row.fields)
     wattage = row.fields.get("wattage")
     if wattage:
-        match = re.search(r"(?<!\\d)(\\d+(?:\\.\\d+)?)\\s*(?:W|WATT|WATTS)?\\b", wattage, re.I)
+        match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*(?:W|WATT|WATTS)?\b", wattage, re.I)
         if match:
             attributes["wattage_w"] = float(match.group(1))
     attributes["source_page"] = row.page

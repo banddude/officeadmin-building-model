@@ -79,6 +79,9 @@ cells must share edges. Header, rows, and frame share their left and right table
 edges. The shortest unambiguous same-column frame owns the table, so a page
 border or broader notes-column frame cannot extend it. A detached boxed note
 cannot become a row merely because a tall column outline encloses both texts.
+Texts labeled as note rows (for example, `99 DETAIL NOTE`) are not load
+descriptions, and a separate notes heading inside the header cell makes its
+ownership ambiguous. Ordinary load descriptions and `SPARE` rows remain valid.
 The cell must contain both the row's text origin and the heading's circuit-number
 column. If multiple numbered texts occupy the cell, it validates none of them.
 An unruled numeric note, an isolated boxed note, or a row with ambiguous table

@@ -1045,6 +1045,8 @@ _HOMERUN_TAG_RE = re.compile(r"(?<![A-Z0-9_.-])(?P<panel>[A-Z][A-Z0-9_.]*?)-(?P<
 _TRAILING_CIRCUIT_LIST_RE = re.compile(r"\s*,")
 _PANEL_SCHEDULE_HEADING_RE = re.compile(r"\bPANEL\s+(?P<panel>[A-Z][A-Z0-9_.-]*)\s+SCHEDULE\b", re.IGNORECASE)
 _PANEL_SCHEDULE_ROW_RE = re.compile(r"^\s*(?P<circuit>\d+)\s+\S", re.IGNORECASE)
+_PANEL_SCHEDULE_NOTE_ROW_RE = re.compile(r"^\s*\d+\s+(?:(?:DETAIL|GENERAL)\s+)?NOTES?\b", re.IGNORECASE)
+_NOTES_HEADING_RE = re.compile(r"^\s*(?:(?:DETAIL|GENERAL)\s+)?NOTES?\b", re.IGNORECASE)
 _POLES_RE = re.compile(r"\b(?P<poles>[1234])\s*P\b", re.IGNORECASE)
 _PHASE_RE = re.compile(r"\b(?P<phase>[123])\s*PH\b", re.IGNORECASE)
 _VOLTAGE_RE = re.compile(
@@ -1183,7 +1185,10 @@ def _panel_schedule_circuits(
                     and text.element_id != heading.element_id
                     and header_left < text.x_pt < header_right
                     and header_bottom < text.y_pt < header_top
-                    and _PANEL_SCHEDULE_ROW_RE.match(text.text)
+                    and (
+                        _PANEL_SCHEDULE_ROW_RE.match(text.text)
+                        or _NOTES_HEADING_RE.match(text.text)
+                    )
                     for text in texts
                 )
             ]
@@ -1212,6 +1217,7 @@ def _panel_schedule_circuits(
                     if text.page == heading.page
                     and left < text.x_pt < right
                     and cell_bottom < text.y_pt < edge
+                    and not _PANEL_SCHEDULE_NOTE_ROW_RE.match(text.text)
                     if (match := _PANEL_SCHEDULE_ROW_RE.match(text.text)) is not None
                 ]
                 if len(in_cell) == 1:

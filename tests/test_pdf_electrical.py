@@ -1357,6 +1357,22 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
             for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
         ), label
 
+    spare = _circuit_probe_model(
+        tmp_path / "ruled-spare-row.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 SPARE) Tj ET\n"
+        b"590 530 160 30 re S\n"
+        b"590 520 160 10 re S\n"
+        b"590 520 160 40 re S\n",
+        "fixture:issue72-ruled-spare-row",
+        schedule_cells=False,
+    )
+    assert [circuit.circuit_number for circuit in spare.circuits] == ["1"]
+
     valid = _circuit_probe_model(
         tmp_path / "schedule-cell-real-circuit.pdf",
         body.replace(b"(LP-99)", b"(LP-1)"),
@@ -1426,6 +1442,35 @@ def test_moving_a_complete_ruled_schedule_does_not_change_its_circuit(
             f"fixture:issue72-translated-ruled-schedule-{y}",
         )
         assert [circuit.circuit_number for circuit in model.circuits] == ["1"], y
+
+
+def test_ruled_note_block_is_not_a_panel_schedule_load_row(tmp_path: Path) -> None:
+    """A note label stays a note even inside a schedule-shaped outline."""
+    for label, extra in (
+        ("bare", b""),
+        ("general-notes", b"BT /F1 8 Tf 1 0 0 1 600 300 Tm (GENERAL NOTES) Tj ET\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"ruled-note-block-{label}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"590 125 160 435 re S\n"
+            b"590 115 160 10 re S\n"
+            b"590 100 160 460 re S\n"
+            + extra,
+            f"fixture:issue72-ruled-note-block-{label}",
+            schedule_cells=False,
+        )
+        assert model.circuits == (), label
+        assert any(
+            row.get("source_text") == "LP-99"
+            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        ), label
 
 
 def test_unruled_numeric_text_cannot_validate_a_present_schedule(tmp_path: Path) -> None:

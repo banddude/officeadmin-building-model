@@ -17,6 +17,7 @@ from oabm.ifc import (
     round_trip,
     to_ifc,
 )
+import oabm.ifc.adapter
 from oabm.model import BuildingModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -164,7 +165,10 @@ def test_explicit_canonical_port_connectivity_is_ifc_native_and_round_trips() ->
 
     ifc = to_ifc(model)
     connections = ifc.by_type("IfcRelConnectsPorts")
-    assert len(connections) == 2
+    # One IfcRelConnectsPorts per logical connection. IFC4 bounds ConnectedTo
+    # and ConnectedFrom at one each, so writing a reciprocal pair would consume
+    # both role slots on both ports and leave no room for a route segment.
+    assert len(connections) == 1
     connected_guids = {
         connections[0].RelatingPort.GlobalId,
         connections[0].RelatedPort.GlobalId,
@@ -204,10 +208,12 @@ def test_unexpected_native_connectivity_export_failure_is_not_swallowed(
 ) -> None:
     model = _connected_port_model()
 
-    def fail_connect_port(*args: object, **kwargs: object) -> None:
-        raise RuntimeError("synthetic connect_port failure")
+    def fail_create_port_connection(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("synthetic port connection failure")
 
-    monkeypatch.setattr(ifcopenshell.api.system, "connect_port", fail_connect_port)
+    monkeypatch.setattr(
+        oabm.ifc.adapter, "_create_port_connection", fail_create_port_connection
+    )
 
     with pytest.raises(
         IfcAdapterError,

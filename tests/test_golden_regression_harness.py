@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+from oabm.ifc import round_trip, to_ifc
 from oabm.model import BuildingModel, Point3, Polyline3D, stable_id
 from oabm.qa import (
     GoldenFixtureError,
@@ -286,3 +287,68 @@ def test_digest_changes_when_a_valid_model_changes() -> None:
     changed = replace(model, routes=(changed_route,), route_fittings=(changed_fitting, model.route_fittings[1]))
 
     assert validate_lane_model(changed) != canonical_digest(model)
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_VALID_CASES))
+def test_every_golden_case_survives_the_ifc_export_path(name: str) -> None:
+    """Assert the golden suite through to_ifc, not only as canonical JSON.
+
+    The suite used to validate every fixture as a document and never export
+    one. That let panel-to-evse -- a case whose stated purpose is port
+    connectivity -- round trip through IFC with connected_port_ids silently
+    emptied, because nothing in the suite ever called the adapter.
+    """
+
+    model = load_golden_model(_case(name))
+
+    assert round_trip(model).to_dict() == model.to_dict()
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_VALID_CASES))
+def test_every_golden_case_exports_valid_ifc4(name: str) -> None:
+    """EXPRESS where-rules, not just attribute typing.
+
+    ifcopenshell.validate without express_rules=True reports nothing for a
+    product that carries geometry with no ObjectPlacement.
+    """
+
+    import ifcopenshell.validate
+
+    ifc = to_ifc(load_golden_model(_case(name)))
+    logger = ifcopenshell.validate.json_logger()
+    ifcopenshell.validate.validate(ifc, logger, express_rules=True)
+
+    assert logger.statements == []
+
+
+def test_connectivity_golden_case_keeps_its_connectivity_through_ifc() -> None:
+    """panel-to-evse declares both a port-to-port peer link and a route between
+    the same two ports. Both must survive the export together."""
+
+    model = load_golden_model(_case("panel-to-evse"))
+    start, end = model.ports
+    assert start.connected_port_ids == (end.id,)
+    assert model.routes[0].start_port_id == start.id
+
+    exported = round_trip(model)
+    recovered = {port.id: port.connected_port_ids for port in exported.ports}
+
+    assert recovered[start.id] == (end.id,)
+    assert recovered[end.id] == (start.id,)
+
+
+def test_no_port_exceeds_the_ifc4_connection_slots() -> None:
+    """Forward invariant guard, not a regression reproduction.
+
+    IFC4 bounds IfcPort.ConnectedTo and IfcPort.ConnectedFrom at SET [0:1]
+    each. No current fixture breaches it, so this test does not fail on any
+    version shipped so far; it exists to stop a future change from writing a
+    second relationship into either role slot, which the schema forbids and
+    ifcopenshell.validate does not check.
+    """
+
+    for name in sorted(EXPECTED_VALID_CASES):
+        ifc = to_ifc(load_golden_model(_case(name)))
+        for port in ifc.by_type("IfcPort"):
+            assert len(port.ConnectedTo or ()) <= 1, name
+            assert len(port.ConnectedFrom or ()) <= 1, name

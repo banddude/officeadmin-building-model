@@ -292,40 +292,21 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             f"IFC ports support one connected peer: {fanout_ports!r}"
         )
 
+    # Port connections are collected and materialized once, at the end. IFC4
+    # bounds IfcPort.ConnectedTo and IfcPort.ConnectedFrom at SET [0:1] each, so
+    # a port supports two IfcRelConnectsPorts in distinct roles. Writing them in
+    # one pass lets a canonical peer link and a route-segment link share a port.
+    port_links: list[tuple[str, Any, str, Any]] = []
     linked: set[tuple[str, str]] = set()
     for port in model.ports:
         for other_id in port.connected_port_ids:
             pair = tuple(sorted((port.id, other_id)))
             if pair in linked:
                 continue
-            try:
-                ifcopenshell.api.system.connect_port(
-                    ifc,
-                    port1=canonical_ports[port.id],
-                    port2=canonical_ports[other_id],
-                    direction="NOTDEFINED",
-                )
-            except Exception as exc:
-                raise IfcAdapterError(
-                    "failed to materialize canonical port connection "
-                    f"{port.id!r} <-> {other_id!r}"
-                ) from exc
+            port_links.append(
+                (port.id, canonical_ports[port.id], other_id, canonical_ports[other_id])
+            )
             linked.add(pair)
-
-    expected_connections = {
-        port.id: set(port.connected_port_ids) for port in model.ports
-    }
-    native_connections = _native_port_connections(ifc, canonical_ports)
-    if native_connections != expected_connections:
-        mismatched = sorted(
-            port_id
-            for port_id, expected in expected_connections.items()
-            if native_connections.get(port_id, set()) != expected
-        )
-        raise IfcAdapterError(
-            "canonical port connectivity cannot be represented natively without loss "
-            f"for ports {mismatched!r}"
-        )
 
     fitting_ifc: dict[str, Any] = {}
     fitting_ports: dict[str, tuple[Any, Any]] = {}
@@ -438,8 +419,8 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             )
 
         if segment_ports:
-            _connect(ifc, canonical_ports[route.start_port_id], segment_ports[0][0])
-            _connect(ifc, segment_ports[-1][1], canonical_ports[route.end_port_id])
+            _connect(port_links, canonical_ports[route.start_port_id], segment_ports[0][0])
+            _connect(port_links, segment_ports[-1][1], canonical_ports[route.end_port_id])
             boundary_fittings = _fittings_by_boundary(points, route_fittings)
             for boundary in range(len(segment_ports) - 1):
                 left = segment_ports[boundary][1]
@@ -448,9 +429,9 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
                 previous = left
                 for fitting in chain:
                     ports = fitting_ports[fitting.id]
-                    _connect(ifc, previous, ports[0])
+                    _connect(port_links, previous, ports[0])
                     previous = ports[1]
-                _connect(ifc, previous, right)
+                _connect(port_links, previous, right)
 
         level_id = _route_level_id(model, route)
         if level_id and level_id in storeys:
@@ -536,6 +517,25 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             GlobalId=canonical_id_to_ifc_guid(f"{canonical_id}#services-building"),
             RelatingSystem=system,
             RelatedBuildings=[building],
+        )
+
+    _materialize_port_connections(ifc, port_links)
+
+    # Verify canonical port connectivity LAST, once every native connection has
+    # been written. Anything that drops a link must surface here, not silently.
+    expected_connections = {
+        port.id: set(port.connected_port_ids) for port in model.ports
+    }
+    native_connections = _native_port_connections(ifc, canonical_ports)
+    if native_connections != expected_connections:
+        mismatched = sorted(
+            port_id
+            for port_id, expected in expected_connections.items()
+            if native_connections.get(port_id, set()) != expected
+        )
+        raise IfcAdapterError(
+            "canonical port connectivity cannot be represented natively without loss "
+            f"for ports {mismatched!r}"
         )
 
     if destination is not None:
@@ -1000,10 +1000,105 @@ def _add_adapter_port(
     return port
 
 
-def _connect(ifc: ifcopenshell.file, first: Any, second: Any) -> None:
-    ifcopenshell.api.system.connect_port(
-        ifc, port1=first, port2=second, direction="NOTDEFINED"
+def _connect(
+    port_links: list[tuple[str, Any, str, Any]], first: Any, second: Any
+) -> None:
+    port_links.append((first.Name, first, second.Name, second))
+
+
+def _create_port_connection(
+    ifc: ifcopenshell.file, relating: Any, related: Any, stable_key: str
+) -> Any:
+    """Write one IfcRelConnectsPorts directly.
+
+    ``ifcopenshell.api.system.connect_port`` is deliberately not used: it purges
+    any existing connection on either port first, and for a NOTDEFINED direction
+    it writes two reciprocal relationships for a single logical connection,
+    saturating both of the schema's two role slots on both ports.
+    """
+
+    return ifc.create_entity(
+        "IfcRelConnectsPorts",
+        GlobalId=canonical_id_to_ifc_guid(stable_key),
+        RelatingPort=relating,
+        RelatedPort=related,
     )
+
+
+def _materialize_port_connections(
+    ifc: ifcopenshell.file, port_links: list[tuple[str, Any, str, Any]]
+) -> None:
+    """Write every collected port connection as a single IfcRelConnectsPorts.
+
+    IFC4 bounds ``IfcPort.ConnectedTo`` (as RelatingPort) and
+    ``IfcPort.ConnectedFrom`` (as RelatedPort) at SET [0:1] each, so a port may
+    take part in at most two connections and only in distinct roles. A graph
+    whose vertices all have degree <= 2 is a disjoint union of paths and cycles,
+    and walking each one end to end orients every edge so that no port exceeds
+    one outgoing and one incoming relationship.
+    """
+
+    entities: dict[str, Any] = {}
+    labels: dict[str, str] = {}
+    adjacency: dict[str, set[str]] = {}
+    for first_key, first, second_key, second in port_links:
+        left, right = first.GlobalId, second.GlobalId
+        if left == right:
+            continue
+        entities.setdefault(left, first)
+        entities.setdefault(right, second)
+        labels.setdefault(left, first_key)
+        labels.setdefault(right, second_key)
+        adjacency.setdefault(left, set()).add(right)
+        adjacency.setdefault(right, set()).add(left)
+
+    overloaded = sorted(
+        labels[guid] for guid, peers in adjacency.items() if len(peers) > 2
+    )
+    if overloaded:
+        raise IfcAdapterError(
+            "canonical port connectivity cannot be represented natively without loss; "
+            "IFC4 IfcPort bounds ConnectedTo and ConnectedFrom at one relationship "
+            f"each, so a port supports at most two connections: {overloaded!r}"
+        )
+
+    walked: set[tuple[str, str]] = set()
+    oriented: list[tuple[str, str]] = []
+
+    def walk(start: str) -> None:
+        current = start
+        while True:
+            following = None
+            for peer in sorted(adjacency[current]):
+                if tuple(sorted((current, peer))) not in walked:
+                    following = peer
+                    break
+            if following is None:
+                return
+            walked.add(tuple(sorted((current, following))))
+            oriented.append((current, following))
+            current = following
+
+    # Paths first, so their endpoints anchor the orientation; cycles then.
+    for guid in sorted(adjacency):
+        if len(adjacency[guid]) == 1:
+            walk(guid)
+    for guid in sorted(adjacency):
+        walk(guid)
+
+    for relating, related in oriented:
+        try:
+            _create_port_connection(
+                ifc,
+                entities[relating],
+                entities[related],
+                f"portlink:{relating}:{related}",
+            )
+        except Exception as exc:
+            raise IfcAdapterError(
+                "failed to materialize canonical port connection "
+                f"{labels[relating]!r} <-> {labels[related]!r}"
+            ) from exc
 
 
 def _direction(start: Point3, end: Point3) -> Vector3:

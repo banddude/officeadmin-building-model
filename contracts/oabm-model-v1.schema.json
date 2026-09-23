@@ -1269,6 +1269,445 @@
         "height_m"
       ],
       "type": "object"
+    },
+    "ElectricalBox": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          }
+        },
+        "box_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolution_status": {
+          "type": "string",
+          "enum": [
+            "resolved",
+            "unresolved"
+          ]
+        },
+        "occupant_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+          }
+        },
+        "gang_count": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "space_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pose": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Pose"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Size3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "listed_volume_m3": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "mounting": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unresolved_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "box_type",
+        "resolution_status"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "resolution_status": {
+                "const": "resolved"
+              }
+            },
+            "required": [
+              "resolution_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "pose",
+              "size"
+            ],
+            "properties": {
+              "pose": {
+                "$ref": "#/$defs/Pose"
+              },
+              "size": {
+                "$ref": "#/$defs/Size3"
+              },
+              "unresolved_reason": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "resolution_status": {
+                "const": "unresolved"
+              }
+            },
+            "required": [
+              "resolution_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "unresolved_reason"
+            ],
+            "properties": {
+              "unresolved_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "RacewaySelection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          }
+        },
+        "route_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "start_segment_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_segment_index_exclusive": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "basis": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolution_status": {
+          "type": "string",
+          "enum": [
+            "resolved",
+            "unresolved"
+          ]
+        },
+        "product_kind": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "raceway",
+                "cable_assembly"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "product_type": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "catalog_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "catalog_item_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trade_size": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nominal_diameter_m": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "unresolved_reason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "route_id",
+        "start_segment_index",
+        "end_segment_index_exclusive",
+        "basis",
+        "resolution_status"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "resolution_status": {
+                "const": "resolved"
+              }
+            },
+            "required": [
+              "resolution_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "product_kind",
+              "product_type",
+              "catalog_id",
+              "catalog_item_id"
+            ],
+            "properties": {
+              "product_kind": {
+                "type": "string",
+                "enum": [
+                  "raceway",
+                  "cable_assembly"
+                ]
+              },
+              "product_type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "catalog_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "catalog_item_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "unresolved_reason": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "resolution_status": {
+                "const": "resolved"
+              },
+              "product_kind": {
+                "const": "raceway"
+              }
+            },
+            "required": [
+              "resolution_status",
+              "product_kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "trade_size",
+              "nominal_diameter_m"
+            ],
+            "properties": {
+              "trade_size": {
+                "type": "string",
+                "minLength": 1
+              },
+              "nominal_diameter_m": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "resolution_status": {
+                "const": "unresolved"
+              }
+            },
+            "required": [
+              "resolution_status"
+            ]
+          },
+          "then": {
+            "required": [
+              "unresolved_reason"
+            ],
+            "properties": {
+              "unresolved_reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$id": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.schema.json",
@@ -1390,6 +1829,18 @@
         "$ref": "#/$defs/Wall"
       },
       "type": "array"
+    },
+    "electrical_boxes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ElectricalBox"
+      }
+    },
+    "raceway_selections": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RacewaySelection"
+      }
     }
   },
   "required": [

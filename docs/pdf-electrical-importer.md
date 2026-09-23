@@ -71,26 +71,18 @@ topology snap radius for contact, so an extra fixed point allowance cannot
 change the circuit verdict at a separate boundary. A branch touching an
 unclaimed closed path fails as `branch_run_not_isolated`; a recognized device's
 own outline remains a lawful endpoint. A panel schedule heading makes that
-panel's schedule present even if no row parses. A numbered row requires an
-unambiguous, closed table cell below the heading, inside a separate closed
-schedule frame that also contains the heading. A ruled header cell must contain
-the heading and share a horizontal edge with the first row cell; successive row
-cells must share edges. Header, rows, and frame share their left and right table
-edges. The header must also label both the circuit-number and load-description
-columns (`CKT`/`CIRCUIT` and `LOAD`/`DESCRIPTION`/`SERVES`); a numbered note
-under a heading alone is not sufficient table evidence. The shortest
-unambiguous same-column frame owns the table, so a page
-border or broader notes-column frame cannot extend it. A detached boxed note
-cannot become a row merely because a tall column outline encloses both texts.
-Texts labeled as note rows (for example, `99 DETAIL NOTE`) are not load
-descriptions, and a separate notes heading inside the header cell makes its
-ownership ambiguous. Ordinary load descriptions and `SPARE` rows remain valid.
-The cell must contain both the row's text origin and the heading's circuit-number
-column. If multiple numbered texts occupy the cell, it validates none of them.
-An unruled numeric note, an isolated boxed note, or a row with ambiguous table
-ownership cannot validate a circuit. This avoids a fixed block height or width.
-An unparseable or absent circuit number in a present schedule cannot validate a
-claim. A direct device circuit tag has no leader to follow, so it uses the lane's
+panel's schedule present even if no row parses. A schedule validates circuits
+only when the source draws a bounded two-column table: a title cell containing
+the heading, separate circuit-number and load-description header cells, a
+continuous vertical divider, and paired number/description row cells sharing
+the header's column edges. Circuit numbers must be alone in their left cells.
+The shortest unambiguous frame owns the rows. A single-column heading or notes
+box remains present but has status `structure_not_confirmed`, validates no
+circuits, and emits `schedule found, structure not confirmed` in diagnostics.
+This conservative rule reduces automatic recall for minimally ruled or
+single-column schedules; a later human-confirmed-region workflow can recover
+those sources without making unsupported circuit claims. A direct device
+circuit tag has no leader to follow, so it uses the lane's
 configured annotation association radius and requires one unambiguous recognized
 device in range.
 

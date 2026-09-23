@@ -1044,11 +1044,10 @@ _CIRCUIT_RE = re.compile(r"\b(?:CKT|CIRCUIT)\s*#?\s*(?P<number>[A-Z0-9.-]+)\b", 
 _HOMERUN_TAG_RE = re.compile(r"(?<![A-Z0-9_.-])(?P<panel>[A-Z][A-Z0-9_.]*?)-(?P<circuits>\d+(?:\s*,\s*\d+)*)\b", re.IGNORECASE)
 _TRAILING_CIRCUIT_LIST_RE = re.compile(r"\s*,")
 _PANEL_SCHEDULE_HEADING_RE = re.compile(r"\bPANEL\s+(?P<panel>[A-Z][A-Z0-9_.-]*)\s+SCHEDULE\b", re.IGNORECASE)
-_PANEL_SCHEDULE_ROW_RE = re.compile(r"^\s*(?P<circuit>\d+)\s+\S", re.IGNORECASE)
-_PANEL_SCHEDULE_NOTE_ROW_RE = re.compile(r"^\s*\d+\s+(?:(?:DETAIL|GENERAL)\s+)?NOTES?\b", re.IGNORECASE)
+_PANEL_SCHEDULE_NUMBER_RE = re.compile(r"^\s*(?P<circuit>\d+)\s*$")
 _NOTES_HEADING_RE = re.compile(r"^\s*(?:(?:DETAIL|GENERAL)\s+)?NOTES?\b", re.IGNORECASE)
-_SCHEDULE_CIRCUIT_COLUMN_RE = re.compile(r"\b(?:CKT|CIRCUITS?)\b", re.IGNORECASE)
-_SCHEDULE_LOAD_COLUMN_RE = re.compile(r"\b(?:LOAD|DESCRIPTION|SERVES)\b", re.IGNORECASE)
+_SCHEDULE_CIRCUIT_COLUMN_RE = re.compile(r"^\s*(?:CKT|CIRCUITS?)\s*$", re.IGNORECASE)
+_SCHEDULE_LOAD_COLUMN_RE = re.compile(r"^\s*(?:LOAD|DESCRIPTION|SERVES)\s*$", re.IGNORECASE)
 _POLES_RE = re.compile(r"\b(?P<poles>[1234])\s*P\b", re.IGNORECASE)
 _PHASE_RE = re.compile(r"\b(?P<phase>[123])\s*PH\b", re.IGNORECASE)
 _VOLTAGE_RE = re.compile(
@@ -1074,6 +1073,7 @@ def _parse_explicit_circuit_tag(
     *,
     recognized_panels: set[str],
     schedule_circuits: Mapping[str, set[int]],
+    confirmed_schedules: set[str],
 ) -> tuple[str | None, tuple[int, ...], str | None]:
     match = _HOMERUN_TAG_RE.search(text)
     if match is None:
@@ -1094,6 +1094,8 @@ def _parse_explicit_circuit_tag(
     if panel_tag not in recognized_panels:
         return panel_tag, numbers, "panel_id_not_recognized"
     scheduled = schedule_circuits.get(panel_tag)
+    if scheduled is not None and panel_tag not in confirmed_schedules:
+        return panel_tag, numbers, "schedule_structure_not_confirmed"
     if scheduled is not None and any(number not in scheduled for number in numbers):
         return panel_tag, numbers, "circuit_outside_panel_schedule"
     return panel_tag, numbers, None
@@ -1134,9 +1136,10 @@ def _panel_schedule_circuits(
     vectors: Sequence[PdfVectorPathObservation],
     *,
     recognized_panels: set[str],
-) -> tuple[dict[str, set[int]], set[str]]:
+) -> tuple[dict[str, set[int]], set[str], set[str]]:
     schedules: dict[str, set[int]] = {}
     consumed_ids: set[str] = set()
+    confirmed: set[str] = set()
     headings: list[tuple[PdfTextObservation, str]] = []
     for heading in texts:
         match = _PANEL_SCHEDULE_HEADING_RE.search(heading.text)
@@ -1152,9 +1155,8 @@ def _panel_schedule_circuits(
         # not silently behave like an absent schedule.
         schedules.setdefault(panel_tag, set())
 
-    # A schedule needs a ruled header cell and a connected stack of row cells
-    # inside one frame. Neither a numbered text nor an enclosing notes-column
-    # outline connects a detached box to the source-drawn schedule grid.
+    # Only a two-column source grid can validate rows. A single-column notes
+    # box can carry the same words and numbers, so it stays present/unconfirmed.
     rectangles: list[tuple[PdfVectorPathObservation, float, float, float, float]] = []
     for vector in vectors:
         if not vector.closed or len(vector.points_pt) != 4:
@@ -1174,72 +1176,71 @@ def _panel_schedule_circuits(
         for frame, left, bottom, right, top in rectangles:
             if not (frame.page == heading.page and left < heading.x_pt < right and bottom < heading.y_pt < top):
                 continue
-            header_cells = [
-                (header, header_bottom)
-                for header, header_left, header_bottom, header_right, header_top in rectangles
-                if header.page == heading.page
-                and header.element_id != frame.element_id
-                and header_left == left
-                and header_right == right
-                and bottom < header_bottom < heading.y_pt < header_top <= top
-                and any(
-                    text.page == heading.page
-                    and header_left < text.x_pt < header_right
-                    and header_bottom < text.y_pt < heading.y_pt
-                    and _SCHEDULE_CIRCUIT_COLUMN_RE.search(text.text)
-                    for text in texts
-                )
-                and any(
-                    text.page == heading.page
-                    and header_left < text.x_pt < header_right
-                    and header_bottom < text.y_pt < heading.y_pt
-                    and _SCHEDULE_LOAD_COLUMN_RE.search(text.text)
-                    for text in texts
-                )
-                and not any(
-                    text.page == heading.page
-                    and text.element_id != heading.element_id
-                    and header_left < text.x_pt < header_right
-                    and header_bottom < text.y_pt < header_top
-                    and (
-                        _PANEL_SCHEDULE_ROW_RE.match(text.text)
-                        or _NOTES_HEADING_RE.match(text.text)
-                    )
-                    for text in texts
-                )
+            titles = [
+                (cell, cell_bottom)
+                for cell, x0, cell_bottom, x1, cell_top in rectangles
+                if cell.page == heading.page and cell.element_id != frame.element_id
+                and (x0, x1, cell_top) == (left, right, top)
+                and cell_bottom < heading.y_pt < cell_top
+                and not any(t.page == heading.page and t.element_id != heading.element_id
+                            and x0 < t.x_pt < x1 and cell_bottom < t.y_pt < cell_top
+                            for t in texts)
             ]
-            if len(header_cells) != 1:
+            if len(titles) != 1:
                 continue
-            edge = header_cells[0][1]
+            title_bottom = titles[0][1]
+            dividers = {
+                line.points_pt[0][0]
+                for line in vectors
+                if line.page == heading.page and not line.closed and len(line.points_pt) == 2
+                and line.points_pt[0][0] == line.points_pt[1][0]
+                and {line.points_pt[0][1], line.points_pt[1][1]} == {bottom, title_bottom}
+                and left < line.points_pt[0][0] < right
+            }
+            if len(dividers) != 1:
+                continue
+            divider = next(iter(dividers))
+
+            def cell_text(x0: float, y0: float, x1: float, y1: float) -> list[PdfTextObservation]:
+                return [t for t in texts if t.page == heading.page
+                        and x0 < t.x_pt < x1 and y0 < t.y_pt < y1]
+
+            headers = [
+                (a, b, y0)
+                for a, ax0, y0, ax1, y1 in rectangles
+                for b, bx0, by0, bx1, by1 in rectangles
+                if a.page == heading.page and b.page == heading.page
+                and (ax0, ax1, bx0, bx1) == (left, divider, divider, right)
+                and (y0, y1) == (by0, by1) and y1 == title_bottom and y0 > bottom
+                and len(cell_text(ax0, y0, ax1, y1)) == 1
+                and len(cell_text(bx0, y0, bx1, y1)) == 1
+                and _SCHEDULE_CIRCUIT_COLUMN_RE.fullmatch(cell_text(ax0, y0, ax1, y1)[0].text)
+                and _SCHEDULE_LOAD_COLUMN_RE.fullmatch(cell_text(bx0, y0, bx1, y1)[0].text)
+            ]
+            if len(headers) != 1:
+                continue
+            edge = headers[0][2]
             parsed_rows: list[tuple[PdfTextObservation, int]] = []
             while True:
-                touching = [
-                    (cell, cell_bottom, cell_top)
-                    for cell, cell_left, cell_bottom, cell_right, cell_top in rectangles
-                    if cell.page == heading.page
-                    and cell.element_id != frame.element_id
-                    and cell.element_id != header_cells[0][0].element_id
-                    and cell_left == left
-                    and cell_right == right
-                    and bottom <= cell_bottom < cell_top == edge
-                ]
+                touching = [(a, b, y0)
+                    for a, ax0, y0, ax1, y1 in rectangles
+                    for b, bx0, by0, bx1, by1 in rectangles
+                    if a.page == heading.page and b.page == heading.page
+                    and (ax0, ax1, bx0, bx1) == (left, divider, divider, right)
+                    and (y0, y1) == (by0, by1) and y1 == edge
+                    and bottom <= y0 < edge]
                 if len(touching) != 1:
-                    # A gap, overlap, or competing cell ends the ruled table.
                     break
-                cell, cell_bottom, _cell_top = touching[0]
-                in_cell = [
-                    (text, match)
-                    for text in texts
-                    if text.page == heading.page
-                    and left < text.x_pt < right
-                    and cell_bottom < text.y_pt < edge
-                    and not _PANEL_SCHEDULE_NOTE_ROW_RE.match(text.text)
-                    if (match := _PANEL_SCHEDULE_ROW_RE.match(text.text)) is not None
-                ]
-                if len(in_cell) == 1:
-                    row, match = in_cell[0]
-                    parsed_rows.append((row, int(match.group("circuit"))))
-                edge = cell_bottom
+                row_bottom = touching[0][2]
+                numbers = cell_text(left, row_bottom, divider, edge)
+                loads = cell_text(divider, row_bottom, right, edge)
+                if len(numbers) != 1 or len(loads) != 1 or not loads[0].text.strip():
+                    break
+                match = _PANEL_SCHEDULE_NUMBER_RE.fullmatch(numbers[0].text)
+                if match is None:
+                    break
+                parsed_rows.append((numbers[0], int(match.group("circuit"))))
+                edge = row_bottom
             if parsed_rows:
                 candidate_tables.append((top - bottom, tuple(parsed_rows)))
 
@@ -1250,10 +1251,11 @@ def _panel_schedule_circuits(
         if len(owned) != 1:
             # Two equally tight source tables cannot uniquely own the rows.
             continue
+        confirmed.add(panel_tag)
         for row, circuit in owned[0]:
             schedules[panel_tag].add(circuit)
             consumed_ids.add(row.element_id)
-    return schedules, consumed_ids
+    return schedules, consumed_ids, confirmed
 
 
 def _homerun_arrowhead_apex(
@@ -6114,7 +6116,7 @@ class ElectricalPdfImporter:
             for entity in equipment
             if entity.equipment_type == "panelboard" and entity.name
         }
-        schedule_circuits, schedule_text_ids = _panel_schedule_circuits(
+        schedule_circuits, schedule_text_ids, confirmed_schedules = _panel_schedule_circuits(
             texts,
             vectors,
             recognized_panels=set(recognized_panels),
@@ -6153,7 +6155,7 @@ class ElectricalPdfImporter:
                     "source_text": observation.text,
                     "panel_tag": panel_tag,
                     "circuit_numbers": list(numbers),
-                    "schedule_validated": panel_tag in schedule_circuits,
+                    "schedule_validated": panel_tag in confirmed_schedules,
                     **(
                         {"branch_vector_element_ids": list(branch_vector_ids)}
                         if branch_vector_ids
@@ -6220,7 +6222,7 @@ class ElectricalPdfImporter:
                         "circuit_number": circuit_number,
                         "circuit_numbers": list(numbers),
                         "load_ids": [entity.id for entity in load_entities],
-                        "schedule_validated": panel_tag in schedule_circuits,
+                        "schedule_validated": panel_tag in confirmed_schedules,
                         "confidence": confidence,
                         "status": "resolved",
                         **(
@@ -6704,6 +6706,7 @@ class ElectricalPdfImporter:
                         observation.text,
                         recognized_panels=set(recognized_panels),
                         schedule_circuits=schedule_circuits,
+                        confirmed_schedules=confirmed_schedules,
                     ),
                 )
                 for observation in nearby_annotations
@@ -6787,7 +6790,11 @@ class ElectricalPdfImporter:
                         "circuit_numbers": list(numbers),
                         "status": "unresolved",
                         "reason_code": reason_code,
-                        "reason": "homerun annotation failed closed",
+                        "reason": (
+                            "schedule found, structure not confirmed"
+                            if reason_code == "schedule_structure_not_confirmed"
+                            else "homerun annotation failed closed"
+                        ),
                     }
                 )
                 continue
@@ -6844,6 +6851,7 @@ class ElectricalPdfImporter:
                 observation.text,
                 recognized_panels=set(recognized_panels),
                 schedule_circuits=schedule_circuits,
+                confirmed_schedules=confirmed_schedules,
             )
             # A direct tag has no leader to trace. Use the same configurable
             # local annotation association radius as the homerun pass, rather
@@ -6884,7 +6892,11 @@ class ElectricalPdfImporter:
                                 else "ambiguous_device_association"
                             )
                         ),
-                        "reason": "direct circuit tag failed closed",
+                        "reason": (
+                            "schedule found, structure not confirmed"
+                            if reason_code == "schedule_structure_not_confirmed"
+                            else "direct circuit tag failed closed"
+                        ),
                     }
                 )
                 continue
@@ -7588,6 +7600,21 @@ class ElectricalPdfImporter:
                         else {}
                     ),
                     "legend_recognition": legend_recognition,
+                    "panel_schedules": {
+                        panel: {
+                            "status": (
+                                "validated" if panel in confirmed_schedules
+                                else "structure_not_confirmed"
+                            ),
+                            "circuits": sorted(schedule_circuits[panel]),
+                            **(
+                                {}
+                                if panel in confirmed_schedules
+                                else {"reason": "schedule found, structure not confirmed"}
+                            ),
+                        }
+                        for panel in sorted(schedule_circuits)
+                    },
                     "best_effort_page_transforms": (
                         {
                             str(page): transforms[page].to_attributes()

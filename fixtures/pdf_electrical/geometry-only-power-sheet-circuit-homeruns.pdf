@@ -1,24 +1,39 @@
-%PDF-1.4
+%PDF-1.3
 %‚„œ”
 1 0 obj
 <<
-/Producer (pypdf)
+/Type /Catalog
+/Pages 2 0 R
 >>
 endobj
 2 0 obj
 <<
 /Type /Pages
 /Count 1
-/Kids [ 5 0 R ]
+/Kids [ 3 0 R ]
 >>
 endobj
 3 0 obj
 <<
-/Type /Catalog
-/Pages 2 0 R
+/Type /Page
+/Resources <<
+/Font <<
+/F1 4 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 792 612 ]
+/Contents 7 0 R
+/Parent 2 0 R
 >>
 endobj
 4 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+5 0 obj
 <<
 /Length 1570
 >>
@@ -71,41 +86,96 @@ BT /F1 8 Tf 1 0 0 1 445 141 Tm (LP-99) Tj ET
 
 endstream
 endobj
-5 0 obj
-<<
-/Type /Page
-/Resources <<
-/Font <<
-/F1 6 0 R
->>
->>
-/MediaBox [ 0.0 0.0 792 612 ]
-/Contents 4 0 R
-/Parent 2 0 R
->>
-endobj
 6 0 obj
 <<
-/Type /Font
-/Subtype /Type1
-/BaseFont /Helvetica
+/Producer (pypdf)
 >>
 endobj
+7 0 obj
+<<
+/Length 2018
+>>
+stream
+BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET
+BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET
+175 445 10 10 re S
+BT /F1 8 Tf 1 0 0 1 260 462 Tm (EVSE-2) Tj ET
+265 445 10 10 re S
+BT /F1 8 Tf 1 0 0 1 350 462 Tm (EVSE-3) Tj ET
+355 445 10 10 re S
+BT /F1 8 Tf 1 0 0 1 210 342 Tm (EVSE-4) Tj ET
+215 325 10 10 re S
+180 450 m 360 450 l S
+270 450 m 270 480 l 420 480 l S
+414 476 m 420 480 l 414 484 l S
+BT /F1 9 Tf 1 0 0 1 425 478 Tm (LP-1,3,5) Tj ET
+BT /F1 9 Tf 1 0 0 1 230 330 Tm (LP-7) Tj ET
+BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET
+BT /F1 8 Tf 1 0 0 1 600 530 Tm (CKT) Tj ET
+BT /F1 8 Tf 1 0 0 1 640 530 Tm (LOAD) Tj ET
+BT /F1 8 Tf 1 0 0 1 600 515 Tm (1) Tj ET
+BT /F1 8 Tf 1 0 0 1 640 515 Tm (RECEPTACLE LOAD) Tj ET
+BT /F1 8 Tf 1 0 0 1 600 495 Tm (3) Tj ET
+BT /F1 8 Tf 1 0 0 1 640 495 Tm (RECEPTACLE LOAD) Tj ET
+BT /F1 8 Tf 1 0 0 1 600 475 Tm (5) Tj ET
+BT /F1 8 Tf 1 0 0 1 640 475 Tm (RECEPTACLE LOAD) Tj ET
+BT /F1 8 Tf 1 0 0 1 600 455 Tm (7) Tj ET
+BT /F1 8 Tf 1 0 0 1 640 455 Tm (RECEPTACLE LOAD) Tj ET
+BT /F1 8 Tf 1 0 0 1 600 435 Tm (9) Tj ET
+BT /F1 8 Tf 1 0 0 1 640 435 Tm (RECEPTACLE LOAD) Tj ET
+BT /F1 8 Tf 1 0 0 1 600 415 Tm (11) Tj ET
+BT /F1 8 Tf 1 0 0 1 640 415 Tm (RECEPTACLE LOAD) Tj ET
+120 220 m 280 220 l S
+220 216 m 126 220 l 120 224 l S
+280 216 m 274 220 l 280 224 l S
+BT /F1 8 Tf 1 0 0 1 185 228 Tm (12'-0\") Tj ET
+BT /F1 8 Tf 1 0 0 1 180 150 Tm (EVSE-5) Tj ET
+175 138 10 10 re S
+180 143 m 260 143 l S
+254 139 m 260 143 l 254 147 l S
+BT /F1 8 Tf 1 0 0 1 265 141 Tm (ZZ-2) Tj ET
+BT /F1 8 Tf 1 0 0 1 360 150 Tm (EVSE-6) Tj ET
+355 138 10 10 re S
+360 143 m 440 143 l S
+434 136 m 440 143 l 434 147 l S
+BT /F1 8 Tf 1 0 0 1 445 141 Tm (LP-99) Tj ET
+
+590 535 160 15 re S
+590 520 40 15 re S
+630 520 120 15 re S
+590 500 40 20 re S
+630 500 120 20 re S
+590 480 40 20 re S
+630 480 120 20 re S
+590 460 40 20 re S
+630 460 120 20 re S
+590 440 40 20 re S
+630 440 120 20 re S
+590 420 40 20 re S
+630 420 120 20 re S
+590 400 40 20 re S
+630 400 120 20 re S
+630 400 m 630 535 l S
+590 400 160 150 re S
+
+endstream
+endobj
 xref
-0 7
+0 8
 0000000000 65535 f 
 0000000015 00000 n 
-0000000054 00000 n 
-0000000113 00000 n 
-0000000162 00000 n 
-0000001784 00000 n 
-0000001916 00000 n 
+0000000064 00000 n 
+0000000123 00000 n 
+0000000255 00000 n 
+0000000325 00000 n 
+0000001947 00000 n 
+0000001986 00000 n 
 trailer
 <<
-/Size 7
-/Root 3 0 R
-/Info 1 0 R
+/Size 8
+/Root 1 0 R
+/Info 6 0 R
 >>
 startxref
-1986
+4056
 %%EOF

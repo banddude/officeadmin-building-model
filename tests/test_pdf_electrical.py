@@ -1073,7 +1073,8 @@ def test_homeruns_circuit_tags_and_panel_schedule_resolve_fail_closed() -> None:
 
 
 def _write_circuit_probe_pdf(
-    path: Path, body: bytes, *, schedule_cells: bool = True
+    path: Path, body: bytes, *, schedule_cells: bool = True,
+    schedule_divider: bool = True,
 ) -> None:
     """Write a one-page power sheet with explicit synthetic schedule cells.
 
@@ -1092,16 +1093,23 @@ def _write_circuit_probe_pdf(
     page[NameObject("/Resources")] = DictionaryObject(
         {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
     )
-    # Source-PDF schedule rows are drawn in cells within a table frame. Tests
-    # that insert a numbered note deliberately do not draw a cell around it.
+    # Source-PDF schedule rows have separate number and description cells and
+    # an explicit divider. Numbered notes do not get this source structure.
     cells = []
     row_positions = []
     if schedule_cells:
         for match in re.finditer(
-            rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(\d+ RECEPTACLE LOAD\) Tj",
+            rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \((\d+) (RECEPTACLE LOAD|SPARE)\) Tj ET",
             body,
         ):
-            row_positions.append((float(match.group(1)), float(match.group(2))))
+            x, y = float(match.group(1)), float(match.group(2))
+            row_positions.append((x, y))
+            body = body.replace(
+                match.group(0),
+                f"1 0 0 1 {x:g} {y:g} Tm ({match.group(3).decode()}) Tj ET\n"
+                f"BT /F1 8 Tf 1 0 0 1 {x + 40:g} {y:g} Tm "
+                f"({match.group(4).decode()}) Tj ET".encode(),
+            )
         heading = re.search(
             rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(PANEL [A-Z0-9_.-]+ SCHEDULE\) Tj",
             body,
@@ -1109,24 +1117,29 @@ def _write_circuit_probe_pdf(
         if heading is not None and row_positions:
             row_positions.sort(key=lambda position: -position[1])
             frame_left = min(float(heading.group(1)), *(x for x, _y in row_positions)) - 10
+            divider = frame_left + 40
             frame_right = max(x for x, _y in row_positions) + 150
             frame_top = float(heading.group(2)) + 10
             row_tops = [y + 5 for _x, y in row_positions]
             row_bottoms = row_tops[1:] + [row_positions[-1][1] - 5]
             frame_bottom = row_bottoms[-1]
             cells.append(
-                f"BT /F1 8 Tf 1 0 0 1 {float(heading.group(1)):g} "
-                f"{float(heading.group(2)) - 10:g} Tm (CKT LOAD) Tj ET\n".encode()
+                f"BT /F1 8 Tf 1 0 0 1 {frame_left + 10:g} "
+                f"{row_tops[0] + 5:g} Tm (CKT) Tj ET\n"
+                f"BT /F1 8 Tf 1 0 0 1 {divider + 10:g} "
+                f"{row_tops[0] + 5:g} Tm (LOAD) Tj ET\n".encode()
             )
             cells.append(
-                f"{frame_left:g} {row_tops[0]:g} "
-                f"{frame_right - frame_left:g} {frame_top - row_tops[0]:g} re S\n".encode()
+                f"{frame_left:g} {row_tops[0] + 10:g} "
+                f"{frame_right - frame_left:g} {frame_top - row_tops[0] - 10:g} re S\n".encode()
             )
+            for x0, x1 in ((frame_left, divider), (divider, frame_right)):
+                cells.append(f"{x0:g} {row_tops[0]:g} {x1-x0:g} 10 re S\n".encode())
             for row_top, row_bottom in zip(row_tops, row_bottoms):
-                cells.append(
-                    f"{frame_left:g} {row_bottom:g} "
-                    f"{frame_right - frame_left:g} {row_top - row_bottom:g} re S\n".encode()
-                )
+                for x0, x1 in ((frame_left, divider), (divider, frame_right)):
+                    cells.append(f"{x0:g} {row_bottom:g} {x1-x0:g} {row_top-row_bottom:g} re S\n".encode())
+            if schedule_divider:
+                cells.append(f"{divider:g} {frame_bottom:g} m {divider:g} {row_tops[0]+10:g} l S\n".encode())
             cells.append(
                 f"{frame_left:g} {frame_bottom:g} "
                 f"{frame_right - frame_left:g} {frame_top - frame_bottom:g} re S\n".encode()
@@ -1139,9 +1152,11 @@ def _write_circuit_probe_pdf(
 
 
 def _circuit_probe_model(
-    path: Path, body: bytes, source_id: str, *, schedule_cells: bool = True
+    path: Path, body: bytes, source_id: str, *, schedule_cells: bool = True,
+    schedule_divider: bool = True,
 ):
-    _write_circuit_probe_pdf(path, body, schedule_cells=schedule_cells)
+    _write_circuit_probe_pdf(path, body, schedule_cells=schedule_cells,
+                             schedule_divider=schedule_divider)
     assert not path.with_suffix(".expected.json").exists()
     return ElectricalPdfImporter().import_document(
         extract_pdf(path, source_id=source_id)
@@ -1308,7 +1323,9 @@ def test_schedule_row_position_cannot_validate_an_absent_circuit(tmp_path: Path)
         assert model.circuits == (), f"LP-99 resolved when schedule row moved {delta} pt"
         assert any(
             row.get("source_text") == "LP-99"
-            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            and row.get("reason_code") in {
+                "circuit_outside_panel_schedule", "schedule_structure_not_confirmed"
+            }
             for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
         )
 
@@ -1357,7 +1374,9 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         assert model.circuits == (), label
         assert any(
             row.get("source_text") == "LP-99"
-            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            and row.get("reason_code") in {
+                "circuit_outside_panel_schedule", "schedule_structure_not_confirmed"
+            }
             for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
         ), label
 
@@ -1368,13 +1387,8 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         b"175 445 10 10 re S\n"
         b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
         b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
-        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 SPARE) Tj ET\n"
-        b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (CKT LOAD) Tj ET\n"
-        b"590 530 160 30 re S\n"
-        b"590 520 160 10 re S\n"
-        b"590 520 160 40 re S\n",
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 SPARE) Tj ET\n",
         "fixture:issue72-ruled-spare-row",
-        schedule_cells=False,
     )
     assert [circuit.circuit_number for circuit in spare.circuits] == ["1"]
 
@@ -1415,7 +1429,7 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
     assert standalone.circuits == ()
     assert any(
         row.get("source_text") == "LP-99"
-        and row.get("reason_code") == "circuit_outside_panel_schedule"
+        and row.get("reason_code") == "schedule_structure_not_confirmed"
         for row in standalone.attributes["pdf_electrical"]["unresolved_circuits"]
     )
     standalone_valid = _circuit_probe_model(
@@ -1430,7 +1444,9 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         "fixture:issue72-standalone-notes-frame-valid",
         schedule_cells=False,
     )
-    assert [circuit.circuit_number for circuit in standalone_valid.circuits] == ["1"]
+    assert standalone_valid.circuits == ()
+    assert any(row.get("reason") == "schedule found, structure not confirmed"
+               for row in standalone_valid.attributes["pdf_electrical"]["unresolved_circuits"])
 
 
 def test_moving_a_complete_ruled_schedule_does_not_change_its_circuit(
@@ -1478,7 +1494,7 @@ def test_ruled_note_block_is_not_a_panel_schedule_load_row(tmp_path: Path) -> No
         assert model.circuits == (), label
         assert any(
             row.get("source_text") == "LP-99"
-            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            and row.get("reason_code") == "schedule_structure_not_confirmed"
             for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
         ), label
 
@@ -1506,9 +1522,56 @@ def test_unruled_numeric_text_cannot_validate_a_present_schedule(tmp_path: Path)
         assert model.circuits == (), label
         assert any(
             row.get("source_text") == "LP-1"
-            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            and row.get("reason_code") == "schedule_structure_not_confirmed"
             for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
         ), label
+
+
+def test_single_column_circuit_load_notes_is_present_but_unconfirmed(tmp_path: Path) -> None:
+    """A tall notes box cannot certify LP-99 without separate source columns."""
+    model = _circuit_probe_model(
+        tmp_path / "single-column-circuit-load-notes.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 535 Tm (CIRCUIT LOAD NOTES) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 KEYNOTE) Tj ET\n"
+        b"590 125 160 435 re S\n590 115 160 10 re S\n590 100 160 460 re S\n",
+        "fixture:issue72-single-column-circuit-load-notes",
+        schedule_cells=False,
+    )
+    assert model.circuits == ()
+    assert model.attributes["pdf_electrical"]["panel_schedules"]["LP"] == {
+        "status": "structure_not_confirmed", "circuits": [],
+        "reason": "schedule found, structure not confirmed",
+    }
+    assert any(
+        row.get("source_text") == "LP-99"
+        and row.get("reason_code") == "schedule_structure_not_confirmed"
+        and row.get("reason") == "schedule found, structure not confirmed"
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+
+def test_separate_column_boxes_without_source_divider_do_not_validate(tmp_path: Path) -> None:
+    body = (
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    model = _circuit_probe_model(
+        tmp_path / "no-source-divider.pdf", body, "fixture:issue72-no-divider",
+        schedule_divider=False,
+    )
+    assert model.circuits == ()
+    assert model.attributes["pdf_electrical"]["panel_schedules"]["LP"]["status"] == "structure_not_confirmed"
+    assert any(row.get("reason_code") == "schedule_structure_not_confirmed"
+               for row in model.attributes["pdf_electrical"]["unresolved_circuits"])
 
 
 def test_unparsed_present_schedule_does_not_become_absent(tmp_path: Path) -> None:
@@ -1525,7 +1588,7 @@ def test_unparsed_present_schedule_does_not_become_absent(tmp_path: Path) -> Non
     assert model.circuits == ()
     assert any(
         row.get("source_text") == "LP-1"
-        and row.get("reason_code") == "circuit_outside_panel_schedule"
+        and row.get("reason_code") == "schedule_structure_not_confirmed"
         for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
     )
 

@@ -310,6 +310,187 @@ def _write_layered_wall_source(
         writer.write(handle)
 
 
+def _write_layered_room_source(
+    source: Path,
+    *,
+    opening_evidence: bool = True,
+    second_label: bool = False,
+    hidden_wall: bool = False,
+    sheet_frame: bool = False,
+    two_plans: bool = False,
+    second_plan_x: int = 700,
+    second_level_note: bool = False,
+) -> None:
+    """One source-PDF room with a drawn opening and no pre-extracted answer."""
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=1200 if two_plans else 612, height=792)
+    font = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    }))
+    wall_ref = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/OCG"),
+        NameObject("/Name"): TextStringObject("A-WALL"),
+    }))
+    door_ref = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/OCG"),
+        NameObject("/Name"): TextStringObject("A-DR.WND"),
+    }))
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+        NameObject("/Properties"): DictionaryObject({
+            NameObject("/WALL"): wall_ref,
+            NameObject("/DOOR"): door_ref,
+        }),
+    })
+    config = DictionaryObject({NameObject("/BaseState"): NameObject("/ON")})
+    if hidden_wall:
+        config[NameObject("/OFF")] = ArrayObject([wall_ref])
+    writer._root_object[NameObject("/OCProperties")] = DictionaryObject({
+        NameObject("/OCGs"): ArrayObject([wall_ref, door_ref]),
+        NameObject("/D"): config,
+    })
+    x0, x1, y0, y1 = (20, 592, 20, 772) if sheet_frame else (100, 300, 200, 400)
+    opening_low, opening_high = (350, 395) if sheet_frame else (270, 315)
+    commands = [
+        "BT /F1 12 Tf 1 0 0 1 20 740 Tm (A210 FLOOR PLAN) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 20 720 Tm (SCALE: 1/4\" = 1'-0\") Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 20 700 Tm (LEVEL: GROUND) Tj ET",
+        f"BT /F1 10 Tf 1 0 0 1 {160 if not sheet_frame else 220} 300 Tm (ROOM: OFFICE) Tj ET",
+    ]
+    if second_label:
+        commands.append("BT /F1 10 Tf 1 0 0 1 160 280 Tm (ROOM: STORAGE) Tj ET")
+    commands.extend((
+        "/OC /WALL BDC",
+        f"{x0} {y0} m {x1} {y0} l S",
+        f"{x0} {y1} m {x1} {y1} l S",
+        f"{x0} {y0} m {x0} {y1} l S",
+        f"{x1} {y0} m {x1} {opening_low} l S",
+        f"{x1} {opening_high} m {x1} {y1} l S",
+        "EMC",
+    ))
+    if opening_evidence:
+        commands.extend((
+            "/OC /DOOR BDC",
+            f"{x1} {opening_low} m {x1 - 20} {opening_low} l S",
+            f"{x1 - 20} {opening_low} m {x1 - 20} {opening_high} l S",
+            f"{x1 - 20} {opening_high} m {x1} {opening_high} l S",
+            "EMC",
+        ))
+    if two_plans:
+        x2 = second_plan_x
+        if second_level_note:
+            commands.append(
+                f"BT /F1 10 Tf 1 0 0 1 {x2} 700 Tm (LEVEL: SECOND) Tj ET"
+            )
+        commands.extend((
+            f"BT /F1 10 Tf 1 0 0 1 {x2 + 60} 300 Tm (ROOM: STORAGE) Tj ET",
+            "/OC /WALL BDC",
+            f"{x2} 200 m {x2 + 200} 200 l S",
+            f"{x2} 400 m {x2 + 200} 400 l S",
+            f"{x2} 200 m {x2} 400 l S",
+            f"{x2 + 200} 200 m {x2 + 200} 270 l S",
+            f"{x2 + 200} 315 m {x2 + 200} 400 l S",
+            "EMC",
+            "/OC /DOOR BDC",
+            f"{x2 + 200} 270 m {x2 + 180} 270 l S",
+            f"{x2 + 180} 270 m {x2 + 180} 315 l S",
+            f"{x2 + 180} 315 m {x2 + 200} 315 l S",
+            "EMC",
+        ))
+    stream = DecodedStreamObject()
+    stream.set_data(("\n".join(commands) + "\n").encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with source.open("wb") as handle:
+        writer.write(handle)
+
+
+def test_visible_layered_wall_and_door_source_yields_one_inferred_room(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-layered-room.pdf"
+    _write_layered_room_source(source)
+    assert not source.with_suffix(".expected.json").exists()
+    extracted = extract_pdf(source, source_id="fixture:layered-room")
+    assert sum("A-WALL" in line.source_layers for line in extracted.pages[0].lines) == 5
+    assert sum("A-DR.WND" in line.source_layers for line in extracted.pages[0].lines) == 3
+    model = import_observations(
+        extracted,
+        options=ImportOptions(scale_overrides=(ScaleOverride(1, 0.016933333333),)),
+    )
+    assert len(model.spaces) == 1
+    space = model.spaces[0]
+    assert space.name == "OFFICE"
+    assert space.height_m is None
+    assert space.provenance[0].derivation == "inferred"
+    assert space.attributes["pdf_architecture"]["recognition"] == "layered_wall_opening_region"
+    assert len(space.provenance[0].attributes["source_opening_elements"]) >= 2
+    assert model.walls == ()
+    validate_model(model)
+    assert import_observations(extracted, options=ImportOptions(
+        scale_overrides=(ScaleOverride(1, 0.016933333333),),
+    )).to_dict() == model.to_dict()
+
+
+@pytest.mark.parametrize("opening_evidence,second_label,hidden_wall", [
+    (False, False, False),
+    (True, True, False),
+    (True, False, True),
+])
+def test_layered_room_with_missing_or_ambiguous_source_stays_unresolved(
+    tmp_path: Path, opening_evidence: bool, second_label: bool, hidden_wall: bool,
+) -> None:
+    source = tmp_path / "synthetic-unresolved-layered-room.pdf"
+    _write_layered_room_source(
+        source,
+        opening_evidence=opening_evidence,
+        second_label=second_label,
+        hidden_wall=hidden_wall,
+    )
+    assert not source.with_suffix(".expected.json").exists()
+    model = import_observations(
+        extract_pdf(source, source_id="fixture:unresolved-layered-room"),
+        options=ImportOptions(scale_overrides=(ScaleOverride(1, 0.016933333333),)),
+    )
+    assert model.spaces == ()
+    validate_model(model)
+
+
+def test_layered_page_frame_is_not_a_room(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-layered-page-frame.pdf"
+    _write_layered_room_source(source, sheet_frame=True)
+    assert not source.with_suffix(".expected.json").exists()
+    model = import_observations(
+        extract_pdf(source, source_id="fixture:layered-page-frame"),
+        options=ImportOptions(scale_overrides=(ScaleOverride(1, 0.016933333333),)),
+    )
+    assert model.spaces == ()
+    validate_model(model)
+
+
+@pytest.mark.parametrize("second_plan_x,second_level_note", [
+    (550, False),  # the gap is smaller than the old five-metre threshold
+    (350, True),  # distinct levels still fail closed with a very small gap
+])
+def test_two_separate_plan_regions_require_distinct_level_frames(
+    tmp_path: Path, second_plan_x: int, second_level_note: bool,
+) -> None:
+    source = tmp_path / "synthetic-two-plan-regions.pdf"
+    _write_layered_room_source(
+        source,
+        two_plans=True,
+        second_plan_x=second_plan_x,
+        second_level_note=second_level_note,
+    )
+    assert not source.with_suffix(".expected.json").exists()
+    model = import_observations(
+        extract_pdf(source, source_id="fixture:two-plan-regions"),
+        options=ImportOptions(scale_overrides=(ScaleOverride(1, 0.016933333333),)),
+    )
+    assert model.spaces == ()
+    assert "multiple_layered_drawing_regions_unresolved" in _ambiguity_codes(model)
+    validate_model(model)
+
+
 def test_source_pdf_wall_layers_support_partial_walls_without_false_rooms(tmp_path: Path) -> None:
     source = tmp_path / "synthetic-layered-walls.pdf"
     _write_layered_wall_source(source)

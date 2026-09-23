@@ -7,6 +7,7 @@ identity, registration, provenance, and cross-page conflict handling.
 from __future__ import annotations
 
 import math
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 
@@ -33,13 +34,25 @@ def _is_opening_layer(layer: str) -> bool:
 
 def has_multiple_wall_regions(page: PdfPageObservation, meters_per_point: float) -> bool:
     """Withhold a shared level/frame when two large drawings are separated on a sheet."""
+    level_names: set[str] = set()
+    for observation in page.texts:
+        text = " ".join(observation.text.upper().split())
+        for match in re.finditer(
+            r"\b(?:LEVEL|FLOOR)\s*[:#-]?\s*(GROUND|FIRST|SECOND|THIRD|FOURTH|LOWER|UPPER|[0-9]+)\b"
+            r"|\b(GROUND|FIRST|SECOND|THIRD|FOURTH|LOWER|UPPER)\s+FLOOR\s+PLAN\b",
+            text,
+        ):
+            level_names.add(match.group(1) or match.group(2))
+    if len(level_names) > 1:
+        return True
+
     walls = tuple(
         line for line in page.lines
         if any(_is_wall_source_layer(layer) for layer in line.source_layers)
     )
     if len(walls) < 8:
         return False
-    minimum_gap = max(250.0, 5.0 / meters_per_point)
+    minimum_gap = max(30.0, 1.0 / meters_per_point)
     minimum_side = max(4, math.ceil(len(walls) * 0.2))
     for axis in (0, 1):
         spans = sorted(

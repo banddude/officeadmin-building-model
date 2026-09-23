@@ -318,6 +318,8 @@ def _write_layered_room_source(
     hidden_wall: bool = False,
     sheet_frame: bool = False,
     two_plans: bool = False,
+    second_plan_x: int = 700,
+    second_level_note: bool = False,
 ) -> None:
     """One source-PDF room with a drawn opening and no pre-extracted answer."""
     writer = PdfWriter()
@@ -377,19 +379,24 @@ def _write_layered_room_source(
             "EMC",
         ))
     if two_plans:
+        x2 = second_plan_x
+        if second_level_note:
+            commands.append(
+                f"BT /F1 10 Tf 1 0 0 1 {x2} 700 Tm (LEVEL: SECOND) Tj ET"
+            )
         commands.extend((
-            "BT /F1 10 Tf 1 0 0 1 760 300 Tm (ROOM: STORAGE) Tj ET",
+            f"BT /F1 10 Tf 1 0 0 1 {x2 + 60} 300 Tm (ROOM: STORAGE) Tj ET",
             "/OC /WALL BDC",
-            "700 200 m 900 200 l S",
-            "700 400 m 900 400 l S",
-            "700 200 m 700 400 l S",
-            "900 200 m 900 270 l S",
-            "900 315 m 900 400 l S",
+            f"{x2} 200 m {x2 + 200} 200 l S",
+            f"{x2} 400 m {x2 + 200} 400 l S",
+            f"{x2} 200 m {x2} 400 l S",
+            f"{x2 + 200} 200 m {x2 + 200} 270 l S",
+            f"{x2 + 200} 315 m {x2 + 200} 400 l S",
             "EMC",
             "/OC /DOOR BDC",
-            "900 270 m 880 270 l S",
-            "880 270 m 880 315 l S",
-            "880 315 m 900 315 l S",
+            f"{x2 + 200} 270 m {x2 + 180} 270 l S",
+            f"{x2 + 180} 270 m {x2 + 180} 315 l S",
+            f"{x2 + 180} 315 m {x2 + 200} 315 l S",
             "EMC",
         ))
     stream = DecodedStreamObject()
@@ -460,9 +467,20 @@ def test_layered_page_frame_is_not_a_room(tmp_path: Path) -> None:
     validate_model(model)
 
 
-def test_two_separate_plan_regions_require_distinct_level_frames(tmp_path: Path) -> None:
+@pytest.mark.parametrize("second_plan_x,second_level_note", [
+    (550, False),  # the gap is smaller than the old five-metre threshold
+    (350, True),  # distinct levels still fail closed with a very small gap
+])
+def test_two_separate_plan_regions_require_distinct_level_frames(
+    tmp_path: Path, second_plan_x: int, second_level_note: bool,
+) -> None:
     source = tmp_path / "synthetic-two-plan-regions.pdf"
-    _write_layered_room_source(source, two_plans=True)
+    _write_layered_room_source(
+        source,
+        two_plans=True,
+        second_plan_x=second_plan_x,
+        second_level_note=second_level_note,
+    )
     assert not source.with_suffix(".expected.json").exists()
     model = import_observations(
         extract_pdf(source, source_id="fixture:two-plan-regions"),

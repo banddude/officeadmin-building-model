@@ -35,7 +35,7 @@ from oabm.model import (
     stable_id,
 )
 
-from .extract import extract_pdf
+from .extract import _is_wall_source_layer, extract_pdf
 from .types import (
     ImportOptions,
     LevelOverride,
@@ -3444,11 +3444,21 @@ def _geometric_wall_loop_entities(
     explicit_wall_lines = tuple(
         line
         for line in page.lines
-        if any(
-            layer.rsplit("|", 1)[-1].upper().lstrip("_") in {"A-WALL", "AE-WALL"}
-            for layer in line.source_layers
-        )
+        if any(_is_wall_source_layer(layer) for layer in line.source_layers)
     )
+    if page.hidden_wall_source_present and len(explicit_wall_lines) < 4:
+        diagnostics.update({
+            "wall_source_layer_filter": "hidden_wall_layer_unresolved",
+            "explicit_wall_source_segment_count": len(explicit_wall_lines),
+            "closed_loop_pair_count": 0,
+            "partial_pair_count": 0,
+        })
+        ambiguities.append({
+            "page": page.page_number,
+            "code": "hidden_wall_layer_unresolved",
+            "detail": "hidden wall-layer geometry was excluded; visible wall evidence is insufficient",
+        })
+        return (), (), diagnostics
     pair_page = replace(page, lines=explicit_wall_lines) if len(explicit_wall_lines) >= 4 else page
     pairs = _geometric_wall_face_pairs(
         pair_page,
@@ -3457,7 +3467,7 @@ def _geometric_wall_loop_entities(
         excluded_element_ids=excluded_element_ids,
         diagnostics=diagnostics,
     )
-    if pair_page is not page and not pairs:
+    if pair_page is not page and not pairs and not page.hidden_wall_source_present:
         diagnostics = {}
         pair_page = page
         pairs = _geometric_wall_face_pairs(

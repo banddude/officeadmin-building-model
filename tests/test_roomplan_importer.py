@@ -635,23 +635,30 @@ def _assert_envelope_fixture_file_is_synthetic(
 
     Every byte a reviewer could not see in a diff is refused in both JSON files
     and the Python source file containing the trusted envelope constants:
-    carriage returns, a byte-order mark, any non-ASCII byte (a zero-width
-    character renders as nothing), tabs, and trailing whitespace. The
+    only LF and printable ASCII are allowed, with no trailing whitespace. The
     construction below reproduces the synthetic fixture faithfully, so a
     channel planted in `captured-room-3d.json` would flow into the envelope
     fixture and still pass the byte comparison. Checking the synthetic file for
     them narrows its trust boundary to what a reviewer CAN see: its JSON values
     and visible formatting.
 
-    Each path must be a regular file, so the bytes checked are the bytes Git
-    stores at that path rather than the target of a symlink. JSON keys must be
-    unique at every depth, so the parser cannot discard a visible first value.
+    Each path and every ancestor must have ordinary file/directory types, so
+    a symlink cannot redirect a protected path to bytes stored elsewhere in
+    the Git tree. JSON keys must be unique at every depth, so the parser cannot
+    discard a visible first value.
     The remaining semantic trust roots are the synthetic values and the two
     envelope constants; a reviewer must judge those values themselves.
     """
     source_path = source_path or Path(__file__)
     files = []
     for path in (bundle_path, synthetic_path, source_path):
+        assert path.is_absolute() and ".." not in path.parts, (
+            f"{path}: protected path must be absolute and free of parent traversal"
+        )
+        for parent in path.parents:
+            assert stat.S_ISDIR(parent.lstat().st_mode), (
+                f"{parent}: protected path ancestor must be a directory, not a symlink or special file"
+            )
         assert stat.S_ISREG(path.lstat().st_mode), (
             f"{path.name}: must be a regular file, not a symlink or special file"
         )
@@ -668,6 +675,11 @@ def _assert_envelope_fixture_file_is_synthetic(
         assert b"\t" not in raw, (
             f"{path.name}: contains a tab; a tab-or-spaces choice per line is a "
             "channel of one bit per line"
+        )
+        hidden = next((byte for byte in raw if byte != 10 and not 32 <= byte <= 126), None)
+        assert hidden is None, (
+            f"{path.name}: contains a non-printable byte 0x{hidden:02x}; "
+            "only LF and printable ASCII are allowed"
         )
         trailing = next(
             (n for n, line in enumerate(raw.split(b"\n"), 1) if line != line.rstrip(b" ")),
@@ -723,6 +735,26 @@ def test_the_fixture_guard_rejects_symlinks_to_approved_bytes(tmp_path: Path) ->
         _assert_envelope_fixture_file_is_synthetic(bundle, synthetic)
 
 
+@pytest.mark.parametrize("protected", ["bundle", "synthetic", "source"])
+def test_the_fixture_guard_rejects_symlinked_parent_directories(
+    tmp_path: Path, protected: str
+) -> None:
+    """A regular child through a symlinked directory has no blob at that Git path."""
+    sources = [BUNDLE_FIXTURE, FIXTURE, Path(__file__)]
+    actual = tmp_path / "approved"
+    actual.mkdir()
+    link = tmp_path / "protected"
+    link.symlink_to(actual.name, target_is_directory=True)
+    paths = list(sources)
+    selected = {"bundle": 0, "synthetic": 1, "source": 2}[protected]
+    (actual / sources[selected].name).write_bytes(sources[selected].read_bytes())
+    paths[selected] = link / sources[selected].name
+    assert stat.S_ISREG(paths[selected].lstat().st_mode)
+    assert link.is_symlink()
+    with pytest.raises(AssertionError, match="ancestor must be a directory"):
+        _assert_envelope_fixture_file_is_synthetic(*paths)
+
+
 def test_the_fixture_guard_checks_its_trusted_source_bytes(tmp_path: Path) -> None:
     """Mixed source line endings preserve Python semantics but can carry bits."""
     raw = Path(__file__).read_bytes()
@@ -734,6 +766,18 @@ def test_the_fixture_guard_checks_its_trusted_source_bytes(tmp_path: Path) -> No
     assert source.read_text(encoding="utf-8") == Path(__file__).read_text(encoding="utf-8")
     compile(mutated, str(source), "exec")
     with pytest.raises(AssertionError, match="test_roomplan_importer.py: contains a carriage return"):
+        _assert_envelope_fixture_file_is_synthetic(BUNDLE_FIXTURE, FIXTURE, source)
+
+
+def test_the_fixture_guard_rejects_form_feed_in_trusted_source(tmp_path: Path) -> None:
+    """Python accepts invisible form-feed before a trust-root assignment."""
+    raw = Path(__file__).read_bytes()
+    mutated = raw.replace(b"_ENVELOPE_CORE_MODEL = ", b"\x0c_ENVELOPE_CORE_MODEL = ", 1)
+    assert mutated != raw
+    compile(mutated, str(tmp_path / "source.py"), "exec")
+    source = tmp_path / Path(__file__).name
+    source.write_bytes(mutated)
+    with pytest.raises(AssertionError, match="contains a non-printable byte 0x0c"):
         _assert_envelope_fixture_file_is_synthetic(BUNDLE_FIXTURE, FIXTURE, source)
 
 

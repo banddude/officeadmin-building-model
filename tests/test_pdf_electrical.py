@@ -1,5 +1,6 @@
 import json
 import math
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -1071,8 +1072,10 @@ def test_homeruns_circuit_tags_and_panel_schedule_resolve_fail_closed() -> None:
     assert not errors, "\\n".join(error.message for error in errors)
 
 
-def _write_circuit_probe_pdf(path: Path, body: bytes) -> None:
-    """Write a one-page power sheet whose content stream is exactly ``body``.
+def _write_circuit_probe_pdf(
+    path: Path, body: bytes, *, schedule_cells: bool = True
+) -> None:
+    """Write a one-page power sheet with explicit synthetic schedule cells.
 
     Source PDF only, per #60: the test reads it back through ``extract_pdf``
     and no paired ``.expected.json`` is ever written.
@@ -1089,15 +1092,43 @@ def _write_circuit_probe_pdf(path: Path, body: bytes) -> None:
     page[NameObject("/Resources")] = DictionaryObject(
         {NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})}
     )
+    # Source-PDF schedule rows are drawn in cells within a table frame. Tests
+    # that insert a numbered note deliberately do not draw a cell around it.
+    cells = []
+    row_positions = []
+    if schedule_cells:
+        for match in re.finditer(
+            rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(\d+ RECEPTACLE LOAD\) Tj",
+            body,
+        ):
+            left = float(match.group(1)) - 5
+            bottom = float(match.group(2)) - 5
+            row_positions.append((float(match.group(1)), float(match.group(2))))
+            cells.append(f"{left:g} {bottom:g} 145 10 re S\n".encode())
+        heading = re.search(
+            rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(PANEL [A-Z0-9_.-]+ SCHEDULE\) Tj",
+            body,
+        )
+        if heading is not None and row_positions:
+            frame_left = min(float(heading.group(1)), *(x for x, _y in row_positions)) - 10
+            frame_bottom = min(y for _x, y in row_positions) - 15
+            frame_right = max(x for x, _y in row_positions) + 150
+            frame_top = float(heading.group(2)) + 10
+            cells.append(
+                f"{frame_left:g} {frame_bottom:g} "
+                f"{frame_right - frame_left:g} {frame_top - frame_bottom:g} re S\n".encode()
+            )
     content = DecodedStreamObject()
-    content.set_data(body)
+    content.set_data(body + b"".join(cells))
     page[NameObject("/Contents")] = writer._add_object(content)
     with path.open("wb") as handle:
         writer.write(handle)
 
 
-def _circuit_probe_model(path: Path, body: bytes, source_id: str):
-    _write_circuit_probe_pdf(path, body)
+def _circuit_probe_model(
+    path: Path, body: bytes, source_id: str, *, schedule_cells: bool = True
+):
+    _write_circuit_probe_pdf(path, body, schedule_cells=schedule_cells)
     assert not path.with_suffix(".expected.json").exists()
     return ElectricalPdfImporter().import_document(
         extract_pdf(path, source_id=source_id)
@@ -1284,6 +1315,8 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         ("unrelated-99", b"BT /F1 8 Tf 1 0 0 1 60 120 Tm (99 DETAIL NOTE) Tj ET\n"),
         ("unrelated-42", b"BT /F1 8 Tf 1 0 0 1 60 120 Tm (42 DETAIL NOTE) Tj ET\n"),
         ("aligned-but-separated", b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"),
+        ("aligned-before-row", b"BT /F1 8 Tf 1 0 0 1 600 540 Tm (99 DETAIL NOTE) Tj ET\n"),
+        ("aligned-near-row", b"BT /F1 8 Tf 1 0 0 1 600 528 Tm (99 DETAIL NOTE) Tj ET\n"),
     ):
         model = _circuit_probe_model(
             tmp_path / f"schedule-note-{label}.pdf",
@@ -1293,6 +1326,54 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         assert model.circuits == (), label
         assert any(
             row.get("source_text") == "LP-99"
+            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        ), label
+
+    valid = _circuit_probe_model(
+        tmp_path / "schedule-cell-real-circuit.pdf",
+        body.replace(b"(LP-99)", b"(LP-1)"),
+        "fixture:issue72-schedule-cell-real-circuit",
+    )
+    assert [circuit.circuit_number for circuit in valid.circuits] == ["1"]
+
+    distant_row = _circuit_probe_model(
+        tmp_path / "distant-cell-plus-numbered-note.pdf",
+        body.replace(b"600 525 Tm (1 RECEPTACLE LOAD)", b"600 250 Tm (1 RECEPTACLE LOAD)")
+        + b"BT /F1 8 Tf 1 0 0 1 600 10 Tm (99 DETAIL NOTE) Tj ET\n",
+        "fixture:issue72-distant-cell-plus-numbered-note",
+    )
+    assert distant_row.circuits == ()
+    assert any(
+        row.get("source_text") == "LP-99"
+        and row.get("reason_code") == "circuit_outside_panel_schedule"
+        for row in distant_row.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+
+def test_unruled_numeric_text_cannot_validate_a_present_schedule(tmp_path: Path) -> None:
+    """A heading plus a number or isolated box do not prove table ownership."""
+    body = (
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 525 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    for label, extra in (
+        ("unruled", b""),
+        ("isolated-box", b"595 520 145 10 re S\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"{label}-schedule-number.pdf",
+            body + extra,
+            f"fixture:issue72-{label}-schedule-number",
+            schedule_cells=False,
+        )
+        assert model.circuits == (), label
+        assert any(
+            row.get("source_text") == "LP-1"
             and row.get("reason_code") == "circuit_outside_panel_schedule"
             for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
         ), label

@@ -1127,6 +1127,7 @@ def _is_explicit_circuit_annotation(
 
 def _panel_schedule_circuits(
     texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
     *,
     recognized_panels: set[str],
 ) -> tuple[dict[str, set[int]], set[str]]:
@@ -1147,62 +1148,68 @@ def _panel_schedule_circuits(
         # not silently behave like an absent schedule.
         schedules.setdefault(panel_tag, set())
 
+    # A closed row cell inside a separate schedule frame is source evidence
+    # of table ownership. Numbering, position, or a boxed detail note alone
+    # cannot establish that ownership.
+    row_cells: list[tuple[PdfVectorPathObservation, float, float, float, float]] = []
+    for vector in vectors:
+        if not vector.closed or len(vector.points_pt) != 4:
+            continue
+        xs = {point[0] for point in vector.points_pt}
+        ys = {point[1] for point in vector.points_pt}
+        if len(xs) != 2 or len(ys) != 2:
+            continue
+        if set(vector.points_pt) != {(x, y) for x in xs for y in ys}:
+            continue
+        row_cells.append((vector, min(xs), min(ys), max(xs), max(ys)))
+
     heading_ids = {heading.element_id for heading, _tag in headings}
-    column_rows: dict[str, list[tuple[PdfTextObservation, int, str]]] = {}
+    claimed_cells: dict[str, list[tuple[PdfTextObservation, int, str]]] = {}
     for row in texts:
         if row.element_id in heading_ids:
             continue
         row_match = _PANEL_SCHEDULE_ROW_RE.match(row.text)
         if row_match is None:
             continue
-        # A row needs positive evidence of the schedule's circuit-number
-        # column. The text origin is the only column geometry retained by the
-        # extractor, so require alignment with the heading's origin within one
-        # source font em. Vertical proximity alone can claim unrelated numbered
-        # notes elsewhere on a sheet as valid panel circuits. Keep the
-        # vertical extent open: a fixed block height can silently make a real
-        # schedule disappear and waive validation of an invalid circuit.
         candidates = [
             (
-                _distance_pt(row.x_pt, row.y_pt, heading.x_pt, heading.y_pt),
                 heading.element_id,
                 panel_tag,
+                cell.element_id,
             )
             for heading, panel_tag in headings
-            if row.page == heading.page
+            for cell, left, bottom, right, top in row_cells
+            if row.page == heading.page == cell.page
             and row.y_pt < heading.y_pt
-            and abs(row.x_pt - heading.x_pt)
-            <= max(row.font_size_pt or 0.0, heading.font_size_pt or 0.0)
+            and top < heading.y_pt
+            and left < heading.x_pt < right
+            and left < row.x_pt < right
+            and bottom < row.y_pt < top
+            and any(
+                frame.page == row.page
+                and frame.element_id != cell.element_id
+                and frame_left < left < right < frame_right
+                and frame_bottom < bottom < top < frame_top
+                and frame_left < heading.x_pt < frame_right
+                and frame_bottom < heading.y_pt < frame_top
+                for frame, frame_left, frame_bottom, frame_right, frame_top in row_cells
+            )
         ]
-        if not candidates:
+        if len(candidates) != 1:
+            # Overlapping cells or multiple candidate headings cannot prove
+            # one owning table, even if one happens to be geometrically closer.
             continue
-        candidates.sort()
-        if len(candidates) > 1 and candidates[0][0] == candidates[1][0]:
-            # Equidistant between two schedules: which panel owns this row is
-            # genuinely ambiguous, so claim it for neither.
-            continue
-        column_rows.setdefault(candidates[0][1], []).append(
-            (row, int(row_match.group("circuit")), candidates[0][2])
+        claimed_cells.setdefault(candidates[0][2], []).append(
+            (row, int(row_match.group("circuit")), candidates[0][1])
         )
 
-    for heading, _panel_tag in headings:
-        rows = sorted(
-            column_rows.get(heading.element_id, ()),
-            key=lambda item: (-item[0].y_pt, item[0].element_id),
-        )
-        if not rows:
+    for rows in claimed_cells.values():
+        if len(rows) != 1:
+            # Two numbered texts in one box are not an unambiguous row.
             continue
-        # The first aligned row establishes the schedule's own line spacing.
-        # Later rows must form a continuous column. A distant numbered note,
-        # even if horizontally aligned, cannot join a separated table block.
-        max_gap = heading.y_pt - rows[0][0].y_pt
-        previous_y = heading.y_pt
-        for row, circuit, panel_tag in rows:
-            if previous_y - row.y_pt > max_gap:
-                break
-            schedules[panel_tag].add(circuit)
-            consumed_ids.add(row.element_id)
-            previous_y = row.y_pt
+        row, circuit, panel_tag = rows[0]
+        schedules[panel_tag].add(circuit)
+        consumed_ids.add(row.element_id)
     return schedules, consumed_ids
 
 
@@ -6066,6 +6073,7 @@ class ElectricalPdfImporter:
         }
         schedule_circuits, schedule_text_ids = _panel_schedule_circuits(
             texts,
+            vectors,
             recognized_panels=set(recognized_panels),
         )
 

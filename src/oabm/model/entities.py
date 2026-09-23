@@ -131,6 +131,64 @@ class ElectricalDevice(Entity):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ElectricalBox(Entity):
+    box_type: str
+    resolution_status: str
+    occupant_ids: tuple[str, ...] = ()
+    gang_count: int | None = None
+    level_id: str | None = None
+    space_id: str | None = None
+    host_id: str | None = None
+    pose: Pose | None = None
+    size: Size3 | None = None
+    listed_volume_m3: float | None = None
+    mounting: str | None = None
+    unresolved_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        super(ElectricalBox, self).__post_init__()
+        if not self.box_type:
+            raise ContractError(f"{self.id}.box_type is required")
+        if self.resolution_status not in {"resolved", "unresolved"}:
+            raise ContractError(
+                f"{self.id}.resolution_status must be 'resolved' or 'unresolved'"
+            )
+        if len(self.occupant_ids) != len(set(self.occupant_ids)):
+            raise ContractError(f"{self.id}.occupant_ids cannot contain duplicates")
+        for occupant_id in self.occupant_ids:
+            _validate_id(occupant_id, f"{self.id}.occupant_ids")
+        if self.gang_count is not None:
+            if isinstance(self.gang_count, bool) or not isinstance(self.gang_count, int) or self.gang_count < 1:
+                raise ContractError(f"{self.id}.gang_count must be an integer >= 1")
+            if len(self.occupant_ids) > self.gang_count:
+                raise ContractError(
+                    f"{self.id}.gang_count cannot be smaller than occupant count"
+                )
+        for label, value in (
+            ("level_id", self.level_id),
+            ("space_id", self.space_id),
+            ("host_id", self.host_id),
+        ):
+            if value is not None:
+                _validate_id(value, f"{self.id}.{label}")
+        if self.listed_volume_m3 is not None:
+            _positive(self.listed_volume_m3, f"{self.id}.listed_volume_m3")
+        if self.mounting is not None and not self.mounting.strip():
+            raise ContractError(f"{self.id}.mounting cannot be empty")
+        if self.resolution_status == "resolved":
+            if self.pose is None or self.size is None:
+                raise ContractError(f"{self.id} resolved box requires pose and size")
+            if self.unresolved_reason is not None:
+                raise ContractError(
+                    f"{self.id}.unresolved_reason must be null when resolution_status is resolved"
+                )
+        elif self.unresolved_reason is None or not self.unresolved_reason.strip():
+            raise ContractError(
+                f"{self.id}.unresolved_reason is required when resolution_status is unresolved"
+            )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Port(Entity):
     owner_id: str
     domain: str
@@ -225,6 +283,84 @@ class Route(Entity):
             _positive(self.nominal_diameter_m, f"{self.id}.nominal_diameter_m")
         for fitting_id in self.fitting_ids:
             _validate_id(fitting_id, f"{self.id}.fitting_ids")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RacewaySelection(Entity):
+    route_id: str
+    start_segment_index: int
+    end_segment_index_exclusive: int
+    basis: str
+    resolution_status: str
+    product_kind: str | None = None
+    product_type: str | None = None
+    catalog_id: str | None = None
+    catalog_item_id: str | None = None
+    trade_size: str | None = None
+    nominal_diameter_m: float | None = None
+    unresolved_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        super(RacewaySelection, self).__post_init__()
+        _validate_id(self.route_id, f"{self.id}.route_id")
+        for label, value in (
+            ("start_segment_index", self.start_segment_index),
+            ("end_segment_index_exclusive", self.end_segment_index_exclusive),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ContractError(f"{self.id}.{label} must be an integer")
+        if self.start_segment_index < 0:
+            raise ContractError(f"{self.id}.start_segment_index must be >= 0")
+        if self.end_segment_index_exclusive <= self.start_segment_index:
+            raise ContractError(
+                f"{self.id}.end_segment_index_exclusive must be greater than start_segment_index"
+            )
+        if not self.basis.strip():
+            raise ContractError(f"{self.id}.basis is required")
+        if self.resolution_status not in {"resolved", "unresolved"}:
+            raise ContractError(
+                f"{self.id}.resolution_status must be 'resolved' or 'unresolved'"
+            )
+        if self.product_kind is not None and self.product_kind not in {"raceway", "cable_assembly"}:
+            raise ContractError(
+                f"{self.id}.product_kind must be 'raceway' or 'cable_assembly'"
+            )
+        for label, value in (
+            ("product_type", self.product_type),
+            ("catalog_id", self.catalog_id),
+            ("catalog_item_id", self.catalog_item_id),
+            ("trade_size", self.trade_size),
+        ):
+            if value is not None and not value.strip():
+                raise ContractError(f"{self.id}.{label} cannot be empty")
+        if (self.catalog_id is None) != (self.catalog_item_id is None):
+            raise ContractError(
+                f"{self.id}.catalog_id and catalog_item_id must be provided together"
+            )
+        if self.nominal_diameter_m is not None:
+            _positive(self.nominal_diameter_m, f"{self.id}.nominal_diameter_m")
+        if self.resolution_status == "resolved":
+            if self.unresolved_reason is not None:
+                raise ContractError(
+                    f"{self.id}.unresolved_reason must be null when resolution_status is resolved"
+                )
+            if self.product_kind is None or self.product_type is None:
+                raise ContractError(
+                    f"{self.id} resolved selection requires product_kind and product_type"
+                )
+            if self.catalog_id is None or self.catalog_item_id is None:
+                raise ContractError(
+                    f"{self.id} resolved selection requires catalog_id and catalog_item_id"
+                )
+            if self.product_kind == "raceway":
+                if self.trade_size is None or self.nominal_diameter_m is None:
+                    raise ContractError(
+                        f"{self.id} resolved raceway requires trade_size and nominal_diameter_m"
+                    )
+        elif self.unresolved_reason is None or not self.unresolved_reason.strip():
+            raise ContractError(
+                f"{self.id}.unresolved_reason is required when resolution_status is unresolved"
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

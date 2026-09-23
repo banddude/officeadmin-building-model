@@ -1216,6 +1216,115 @@ def test_homerun_reaching_a_device_without_an_annotation_reports_no_panel_token(
     assert any(row.get("reason_code") == "no_panel_token" for row in misses)
 
 
+def test_unclaimed_closed_path_touching_branch_fails_closed(tmp_path: Path) -> None:
+    """A device's own outline is lawful; a separate crossing enclosure is not."""
+    base = (
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"180 450 m 300 450 l S\n"
+        b"294 446 m 300 450 l 294 454 l S\n"
+        b"BT /F1 9 Tf 1 0 0 1 305 452 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n"
+    )
+    clean = _circuit_probe_model(
+        tmp_path / "device-outline-only.pdf", base, "fixture:issue72-device-outline-only"
+    )
+    assert [circuit.circuit_number for circuit in clean.circuits] == ["1"]
+
+    crossing = _circuit_probe_model(
+        tmp_path / "unclaimed-closed-crossing.pdf",
+        base + b"235 430 30 40 re S\n",
+        "fixture:issue72-unclaimed-closed-crossing",
+    )
+    assert crossing.circuits == ()
+    assert crossing.ports == ()
+    assert any(
+        row.get("reason_code") == "branch_run_not_isolated"
+        and row.get("cycle_element_id")
+        for row in crossing.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+
+def test_schedule_row_position_cannot_validate_an_absent_circuit(tmp_path: Path) -> None:
+    """Moving the same schedule row cannot turn LP-99 into a valid circuit."""
+    for delta in (239, 240, 241, 242):
+        row_y = 550 - delta
+        model = _circuit_probe_model(
+            tmp_path / f"schedule-row-delta-{delta}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-99) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            + f"BT /F1 8 Tf 1 0 0 1 600 {row_y} Tm (1 RECEPTACLE LOAD) Tj ET\n".encode(),
+            f"fixture:issue72-schedule-row-delta-{delta}",
+        )
+        assert model.circuits == (), f"LP-99 resolved when schedule row moved {delta} pt"
+        assert any(
+            row.get("source_text") == "LP-99"
+            and row.get("reason_code") == "circuit_outside_panel_schedule"
+            for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+        )
+
+
+def test_unparsed_present_schedule_does_not_become_absent(tmp_path: Path) -> None:
+    """A visible schedule with no parseable rows cannot waive validation."""
+    model = _circuit_probe_model(
+        tmp_path / "schedule-heading-without-rows.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n",
+        "fixture:issue72-schedule-heading-without-rows",
+    )
+    assert model.circuits == ()
+    assert any(
+        row.get("source_text") == "LP-1"
+        and row.get("reason_code") == "circuit_outside_panel_schedule"
+        for row in model.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+
+
+def test_arrow_and_branch_scale_do_not_set_hard_cutoffs(tmp_path: Path) -> None:
+    """V shape and positive branch length matter, not a fixed point size."""
+    for name, end_x, arrow in (
+        ("short-branch", 183.9, b"178 448 m 183.9 450 l 178 452 l S\n"),
+        ("small-arrow-base", 300.0, b"294 448.05 m 300 450 l 294 451.95 l S\n"),
+        ("large-arrow-legs", 300.0, b"286 448 m 300 450 l 286 452 l S\n"),
+    ):
+        model = _circuit_probe_model(
+            tmp_path / f"scaled-{name}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            + f"180 450 m {end_x} 450 l S\n".encode()
+            + arrow
+            + f"BT /F1 9 Tf 1 0 0 1 {end_x + 5} 452 Tm (LP-1) Tj ET\n".encode()
+            + b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+            f"fixture:issue72-scaled-{name}",
+        )
+        assert [circuit.circuit_number for circuit in model.circuits] == ["1"], name
+
+
+def test_direct_tag_beyond_old_fixed_radius_can_resolve(tmp_path: Path) -> None:
+    """A corroborated direct tag uses the lane's annotation association rule."""
+    model = _circuit_probe_model(
+        tmp_path / "direct-tag-dx-43.pdf",
+        b"BT /F1 10 Tf 1 0 0 1 70 540 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+        b"175 445 10 10 re S\n"
+        b"BT /F1 9 Tf 1 0 0 1 213 451 Tm (LP-1) Tj ET\n"
+        b"BT /F1 10 Tf 1 0 0 1 600 540 Tm (PANEL LP SCHEDULE) Tj ET\n"
+        b"BT /F1 8 Tf 1 0 0 1 600 515 Tm (1 RECEPTACLE LOAD) Tj ET\n",
+        "fixture:issue72-direct-tag-dx-43",
+    )
+    assert [circuit.circuit_number for circuit in model.circuits] == ["1"]
+
+
 def test_lawful_tee_serving_two_devices_still_resolves(tmp_path: Path) -> None:
     """Branch wiring tees. That must not be mistaken for architecture.
 

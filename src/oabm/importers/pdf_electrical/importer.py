@@ -1142,6 +1142,10 @@ def _panel_schedule_circuits(
             continue
         consumed_ids.add(heading.element_id)
         headings.append((heading, panel_tag))
+        # A visible schedule heading is evidence of a schedule even when no
+        # row can be parsed. An empty parsed set must reject circuit claims,
+        # not silently behave like an absent schedule.
+        schedules.setdefault(panel_tag, set())
 
     heading_ids = {heading.element_id for heading, _tag in headings}
     for row in texts:
@@ -1150,10 +1154,9 @@ def _panel_schedule_circuits(
         row_match = _PANEL_SCHEDULE_ROW_RE.match(row.text)
         if row_match is None:
             continue
-        # A row belongs to ONE schedule: the nearest heading whose block covers
-        # it. Letting every heading in range claim it lets an adjacent panel's
-        # schedule validate a circuit the named panel does not have, which is
-        # precisely the out-of-schedule parse #72 says to reject.
+        # A row belongs to ONE schedule: the nearest heading above it on the
+        # page. A fixed block width or height can silently make a real schedule
+        # disappear and turn an invalid circuit into an accepted one.
         candidates = [
             (
                 _distance_pt(row.x_pt, row.y_pt, heading.x_pt, heading.y_pt),
@@ -1162,8 +1165,7 @@ def _panel_schedule_circuits(
             )
             for heading, panel_tag in headings
             if row.page == heading.page
-            and abs(row.x_pt - heading.x_pt) <= 180.0
-            and heading.y_pt - 240.0 <= row.y_pt < heading.y_pt
+            and row.y_pt < heading.y_pt
         ]
         if not candidates:
             continue
@@ -1185,13 +1187,13 @@ def _homerun_arrowhead_apex(
     if len(vector.points_pt) != 3:
         return None
     first, apex, last = vector.points_pt
-    if (
-        _distance_pt(first[0], first[1], apex[0], apex[1]) <= 14.0
-        and _distance_pt(last[0], last[1], apex[0], apex[1]) <= 14.0
-        and _distance_pt(first[0], first[1], last[0], last[1]) >= 4.0
-    ):
-        return apex
-    return None
+    left = (first[0] - apex[0], first[1] - apex[1])
+    right = (last[0] - apex[0], last[1] - apex[1])
+    cross = left[0] * right[1] - left[1] * right[0]
+    dot = left[0] * right[0] + left[1] * right[1]
+    # An open, nondegenerate V with an acute tip is an arrowhead regardless of
+    # its absolute size on the sheet. Length cutoffs rejected lawful arrows.
+    return apex if not vector.closed and cross != 0.0 and dot > 0.0 else None
 
 
 def _component_has_homerun_arrowhead(
@@ -1358,6 +1360,49 @@ def _paths_touch(
         _point_path_distance_pt(endpoint, first) <= tolerance_pt
         for endpoint in second_endpoints
     )
+
+
+def _paths_cross_or_touch(
+    first: PdfVectorPathObservation,
+    second: PdfVectorPathObservation,
+    *,
+    tolerance_pt: float,
+) -> bool:
+    """Include mid-segment crossings, which endpoint-only contact misses."""
+    if first.page != second.page:
+        return False
+
+    def side(
+        start: tuple[float, float],
+        end: tuple[float, float],
+        point: tuple[float, float],
+    ) -> float:
+        return (
+            (end[0] - start[0]) * (point[1] - start[1])
+            - (end[1] - start[1]) * (point[0] - start[0])
+        )
+
+    for a, b in _vector_segments(first):
+        for c, d in _vector_segments(second):
+            if (
+                max(a[0], b[0]) + tolerance_pt < min(c[0], d[0])
+                or max(c[0], d[0]) + tolerance_pt < min(a[0], b[0])
+                or max(a[1], b[1]) + tolerance_pt < min(c[1], d[1])
+                or max(c[1], d[1]) + tolerance_pt < min(a[1], b[1])
+            ):
+                continue
+            if any(
+                _point_segment_distance_pt(point, start, end) <= tolerance_pt
+                for point, start, end in ((a, c, d), (b, c, d), (c, a, b), (d, a, b))
+            ):
+                return True
+
+            if (
+                side(a, b, c) * side(a, b, d) < 0
+                and side(c, d, a) * side(c, d, b) < 0
+            ):
+                return True
+    return False
 
 
 def _simple_rectangle_marker(
@@ -6146,10 +6191,7 @@ class ElectricalPdfImporter:
             and not _vector_contains_bezier(vector)
             and vector.element_id not in vector_symbol_ids
             and vector.element_id not in glyph_vector_ids
-            and sum(
-                _distance_pt(first[0], first[1], second[0], second[1])
-                for first, second in _vector_segments(vector)
-            ) >= 4.0
+            and any(first != second for first, second in _vector_segments(vector))
         ]
 
         # Spatial index so neighbour lookup is local instead of all-pairs. Cells
@@ -6227,6 +6269,33 @@ class ElectricalPdfImporter:
                         )
             found.discard(index)
             return found
+
+        # Closed paths are not branch members, but an unclaimed outline that
+        # touches a branch is positive evidence that it entered architecture.
+        # Keep recognized symbol outlines out of this index: a branch may
+        # legitimately terminate at its device's own closed mark.
+        unclaimed_closed = [
+            vector for vector in vectors
+            if vector.closed
+            and vector.element_id not in vector_symbol_ids
+        ]
+        closed_grid: dict[tuple[int, int, int], list[int]] = {}
+        for index, vector in enumerate(unclaimed_closed):
+            for cell_x, cell_y in circuit_cells(vector):
+                closed_grid.setdefault((vector.page, cell_x, cell_y), []).append(index)
+
+        def touching_unclaimed_closed(
+            component: Sequence[PdfVectorPathObservation],
+        ) -> PdfVectorPathObservation | None:
+            for branch in component:
+                for index in sorted(
+                    circuit_neighbors_of_path(branch, closed_grid, circuit_cells(branch)),
+                    key=lambda item: unclaimed_closed[item].element_id,
+                ):
+                    closed = unclaimed_closed[index]
+                    if _paths_cross_or_touch(branch, closed, tolerance_pt=snap_tolerance_pt):
+                        return closed
+            return None
 
         # Assemble components by growing outward from each homerun arrowhead.
         # The arrowhead is the signature of a homerun, so this both bounds the
@@ -6408,7 +6477,7 @@ class ElectricalPdfImporter:
                 and _paths_touch(
                     arrowhead,
                     circuit_vectors[index],
-                    tolerance_pt=snap_tolerance_pt + 2.0,
+                    tolerance_pt=snap_tolerance_pt,
                 )
             ]
             if not seeds:
@@ -6519,7 +6588,7 @@ class ElectricalPdfImporter:
                     }
                 )
                 continue
-            enclosing = component_encloses_area(component)
+            enclosing = touching_unclaimed_closed(component) or component_encloses_area(component)
             if enclosing is not None:
                 unresolved_circuits.append(
                     {
@@ -6700,6 +6769,9 @@ class ElectricalPdfImporter:
                 recognized_panels=set(recognized_panels),
                 schedule_circuits=schedule_circuits,
             )
+            # A direct tag has no leader to trace. Use the same configurable
+            # local annotation association radius as the homerun pass, rather
+            # than a second hard-coded cutoff with different boundary behavior.
             nearby_devices = [
                 entity
                 for entity in devices
@@ -6709,7 +6781,7 @@ class ElectricalPdfImporter:
                     observation.y_pt,
                     entity_source_positions[entity.id][1],
                     entity_source_positions[entity.id][2],
-                ) <= 42.0
+                ) <= self.topology_annotation_radius_pt
             ]
             if len(nearby_devices) == 1 and entity_identity_text_owner.get(
                 observation.element_id

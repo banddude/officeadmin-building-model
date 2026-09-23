@@ -1,0 +1,403 @@
+{
+  "attributes": {
+    "fixture": "synthetic public-safe input for the conductor derivation lane; contains no conductors and no expected output"
+  },
+  "ceilings": [],
+  "circuits": [
+    {
+      "attributes": {},
+      "circuit_number": "2",
+      "confidence": 1.0,
+      "id": "circuit:lp1-2",
+      "load_port_ids": [
+        "port:receptacle-feed"
+      ],
+      "load_va": null,
+      "name": "LP-1,2",
+      "phase": "1ph",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "route_ids": [
+        "route:panel-receptacle"
+      ],
+      "source_port_id": "port:panel-feed",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "4",
+      "confidence": 1.0,
+      "id": "circuit:lp1-4",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": null,
+      "name": "LP-1,4",
+      "phase": "1ph",
+      "poles": 2,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-feed",
+      "voltage_v": 240.0
+    }
+  ],
+  "conductors": [],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "receptacle",
+      "host_id": null,
+      "id": "device:receptacle",
+      "level_id": "level:ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 6.0,
+          "y": 0.0,
+          "z": 0.4
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "rated_voltage_v": null,
+      "size": null,
+      "space_id": null,
+      "system": null
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "evse",
+      "host_id": null,
+      "id": "device:evse",
+      "level_id": "level:ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 6.0,
+          "y": 2.0,
+          "z": 1.2
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "rated_voltage_v": null,
+      "size": null,
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "equipment:panel-lp1",
+      "level_id": "level:ground",
+      "name": "LP-1",
+      "pose": {
+        "position": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "rated_voltage_v": null,
+      "size": null,
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "levels": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "elevation_m": 0.0,
+      "height_m": null,
+      "id": "level:ground",
+      "name": "Ground",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ]
+    }
+  ],
+  "model_id": "model:conductor-derivation-two-circuit",
+  "name": "Conductor derivation input fixture",
+  "obstacles": [],
+  "openings": [],
+  "ports": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 1.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "domain": "electrical",
+      "id": "port:panel-feed",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equipment:panel-lp1",
+      "pose": {
+        "position": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": -1.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "domain": "electrical",
+      "id": "port:receptacle-feed",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:receptacle",
+      "pose": {
+        "position": {
+          "x": 6.0,
+          "y": 0.0,
+          "z": 0.4
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "role": "feed"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": -1.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "domain": "electrical",
+      "id": "port:evse-feed",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:evse",
+      "pose": {
+        "position": {
+          "x": 6.0,
+          "y": 2.0,
+          "z": 1.2
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "role": "feed"
+    }
+  ],
+  "provenance": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "method": "hand-authored-public-safe-fixture",
+      "page": null,
+      "source_element_id": null,
+      "source_id": "conductor-derivation-two-circuit",
+      "source_kind": "synthetic-fixture"
+    }
+  ],
+  "route_constraints": [],
+  "route_fittings": [],
+  "routes": [
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 1.5
+          },
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 2.5
+          },
+          {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 2.5
+          },
+          {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 0.4
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:receptacle-feed",
+      "fitting_ids": [],
+      "id": "route:panel-receptacle",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored-public-safe-fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "conductor-derivation-two-circuit",
+          "source_kind": "synthetic-fixture"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:panel-feed"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "slabs": [],
+  "spaces": [],
+  "walls": []
+}

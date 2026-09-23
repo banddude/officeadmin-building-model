@@ -1163,6 +1163,42 @@ def _panel_schedule_circuits(
             continue
         row_cells.append((vector, min(xs), min(ys), max(xs), max(ys)))
 
+    # A page border or notes-column outline can enclose both a real schedule
+    # and a boxed note. Associate the heading with its smallest unambiguous
+    # same-column frame, then follow only the row cells immediately below it.
+    # A large blank stretch cannot be inferred to be part of a schedule.
+    owned_frames: dict[str, str] = {}
+    for heading, _panel_tag in headings:
+        frames = [
+            (frame, left, bottom, right, top)
+            for frame, left, bottom, right, top in row_cells
+            if frame.page == heading.page
+            and left < heading.x_pt < right
+            and bottom < heading.y_pt < top
+            and any(
+                cell.page == heading.page
+                and cell.element_id != frame.element_id
+                and cell_left == left
+                and cell_right == right
+                and bottom < cell_bottom < cell_top < top
+                and any(
+                    row.page == heading.page
+                    and row.element_id != heading.element_id
+                    and _PANEL_SCHEDULE_ROW_RE.match(row.text)
+                    and cell_left < row.x_pt < cell_right
+                    and cell_bottom < row.y_pt < cell_top
+                    for row in texts
+                )
+                for cell, cell_left, cell_bottom, cell_right, cell_top in row_cells
+            )
+        ]
+        if not frames:
+            continue
+        shortest = min(top - bottom for _frame, _left, bottom, _right, top in frames)
+        closest = [frame for frame, _left, bottom, _right, top in frames if top - bottom == shortest]
+        if len(closest) == 1:
+            owned_frames[heading.element_id] = closest[0].element_id
+
     heading_ids = {heading.element_id for heading, _tag in headings}
     claimed_cells: dict[str, list[tuple[PdfTextObservation, int, str]]] = {}
     for row in texts:
@@ -1179,6 +1215,7 @@ def _panel_schedule_circuits(
             )
             for heading, panel_tag in headings
             for cell, left, bottom, right, top in row_cells
+            if heading.element_id in owned_frames
             if row.page == heading.page == cell.page
             and row.y_pt < heading.y_pt
             and top < heading.y_pt
@@ -1187,6 +1224,7 @@ def _panel_schedule_circuits(
             and bottom < row.y_pt < top
             and any(
                 frame.page == row.page
+                and frame.element_id == owned_frames[heading.element_id]
                 and frame.element_id != cell.element_id
                 and frame_left == left
                 and frame_right == right
@@ -1203,6 +1241,41 @@ def _panel_schedule_circuits(
         claimed_cells.setdefault(candidates[0][2], []).append(
             (row, int(row_match.group("circuit")), candidates[0][1])
         )
+
+    # Numbered cells must form the sequence directly under their heading.
+    # This prevents a distant boxed note in the same full-width column from
+    # becoming a schedule row, even when no compact schedule frame is drawn.
+    for heading, panel_tag in headings:
+        frame_id = owned_frames.get(heading.element_id)
+        if frame_id is None:
+            continue
+        frame = next(item for item in row_cells if item[0].element_id == frame_id)
+        _, frame_left, frame_bottom, frame_right, frame_top = frame
+        cells = sorted(
+            (
+                (cell, bottom, top)
+                for cell, left, bottom, right, top in row_cells
+                if cell.page == heading.page
+                and cell.element_id != frame_id
+                and left == frame_left
+                and right == frame_right
+                and frame_bottom < bottom < top < frame_top
+                and top < heading.y_pt
+                and cell.element_id in claimed_cells
+                and any(tag == panel_tag for _row, _number, tag in claimed_cells[cell.element_id])
+            ),
+            key=lambda item: -item[2],
+        )
+        previous_bottom = heading.y_pt
+        previous_height = None
+        for index, (cell, bottom, top) in enumerate(cells):
+            height = top - bottom
+            if previous_bottom - top > 2 * (previous_height or height):
+                for rejected, _bottom, _top in cells[index:]:
+                    claimed_cells.pop(rejected.element_id, None)
+                break
+            previous_bottom = bottom
+            previous_height = height
 
     for rows in claimed_cells.values():
         if len(rows) != 1:

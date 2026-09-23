@@ -75,6 +75,11 @@ panel's schedule present even if no row parses. A numbered row requires an
 unambiguous, closed table cell below the heading, inside a separate closed
 schedule frame that also contains the heading. Cell and frame must share their
 left and right table edges, so a page border cannot serve as a schedule frame.
+The heading's shortest unambiguous same-column frame owns the table; broader
+page or notes-column frames do not extend it. Numbered row cells must continue
+directly below the heading without a blank vertical gap larger than two row
+cell heights. A distant boxed note cannot become a row merely because a tall
+column outline encloses both texts.
 The cell must contain both the row's text origin and the heading's circuit-number
 column. If multiple numbered texts occupy the cell, it validates none of them.
 An unruled numeric note, an isolated boxed note, or a row with ambiguous table

@@ -1329,6 +1329,12 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
             b"590 115 160 10 re S\n"
             b"5 5 780 600 re S\n",
         ),
+        (
+            "full-column-box-with-notes-frame",
+            b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+            b"590 115 160 10 re S\n"
+            b"590 100 160 460 re S\n",
+        ),
     ):
         model = _circuit_probe_model(
             tmp_path / f"schedule-note-{label}.pdf",
@@ -1361,6 +1367,36 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         and row.get("reason_code") == "circuit_outside_panel_schedule"
         for row in distant_row.attributes["pdf_electrical"]["unresolved_circuits"]
     )
+
+    # A tall same-width notes frame is not schedule ownership by itself,
+    # even when it contains the heading and a boxed numbered note.
+    standalone = _circuit_probe_model(
+        tmp_path / "standalone-notes-frame.pdf",
+        body
+        + b"590 520 160 10 re S\n"
+        + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+        + b"590 115 160 10 re S\n"
+        + b"590 100 160 460 re S\n",
+        "fixture:issue72-standalone-notes-frame",
+        schedule_cells=False,
+    )
+    assert standalone.circuits == ()
+    assert any(
+        row.get("source_text") == "LP-99"
+        and row.get("reason_code") == "circuit_outside_panel_schedule"
+        for row in standalone.attributes["pdf_electrical"]["unresolved_circuits"]
+    )
+    standalone_valid = _circuit_probe_model(
+        tmp_path / "standalone-notes-frame-valid.pdf",
+        body.replace(b"(LP-99)", b"(LP-1)")
+        + b"590 520 160 10 re S\n"
+        + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
+        + b"590 115 160 10 re S\n"
+        + b"590 100 160 460 re S\n",
+        "fixture:issue72-standalone-notes-frame-valid",
+        schedule_cells=False,
+    )
+    assert [circuit.circuit_number for circuit in standalone_valid.circuits] == ["1"]
 
 
 def test_unruled_numeric_text_cannot_validate_a_present_schedule(tmp_path: Path) -> None:

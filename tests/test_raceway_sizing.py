@@ -16,9 +16,12 @@ same reason, matching the conductor lane's "synthetic-known-answer" convention.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from oabm.model import (
     DERIVATION_INFERRED,
@@ -67,6 +70,8 @@ from oabm.raceways import (
     apply_raceway_sizing,
     size_raceways,
 )
+
+ROOT = Path(__file__).resolve().parents[1]
 
 MODEL_ID = "model:raceway-test"
 ROUTE_ID = "route:panel-load"
@@ -759,3 +764,22 @@ def test_a_model_with_no_routes_yields_no_verdicts():
     routes, warnings = size_raceways(model, _options())
     assert routes == ()
     assert warnings == ()
+
+
+def test_a_sized_model_still_satisfies_the_canonical_json_schema():
+    """The verdict must survive serialization against the published contract.
+
+    ``Route`` sets ``additionalProperties: False``, so a lane that invented a
+    new top-level route field would fail here rather than at integration time.
+    """
+
+    model = _model(*(_conductor(name) for name in "abcde"))
+    updated = apply_raceway_sizing(model, size_raceways(model, _options()))
+
+    schema = json.loads((ROOT / "contracts" / "oabm-model-v1.schema.json").read_text())
+    document = json.loads(json.dumps(updated.to_dict()))
+    Draft202012Validator(schema).validate(document)
+
+    route = document["routes"][0]
+    assert route["attributes"][RACEWAY_ATTRIBUTE_KEY]["designation"] == "T2"
+    assert route["attributes"][RACEWAY_ATTRIBUTE_KEY]["as_built"] is False

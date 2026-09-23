@@ -1148,10 +1148,10 @@ def _panel_schedule_circuits(
         # not silently behave like an absent schedule.
         schedules.setdefault(panel_tag, set())
 
-    # A closed row cell inside a separate schedule frame is source evidence
-    # of table ownership. Numbering, position, or a boxed detail note alone
-    # cannot establish that ownership.
-    row_cells: list[tuple[PdfVectorPathObservation, float, float, float, float]] = []
+    # A schedule needs a ruled header cell and a connected stack of row cells
+    # inside one frame. Neither a numbered text nor an enclosing notes-column
+    # outline connects a detached box to the source-drawn schedule grid.
+    rectangles: list[tuple[PdfVectorPathObservation, float, float, float, float]] = []
     for vector in vectors:
         if not vector.closed or len(vector.points_pt) != 4:
             continue
@@ -1161,129 +1161,76 @@ def _panel_schedule_circuits(
             continue
         if set(vector.points_pt) != {(x, y) for x in xs for y in ys}:
             continue
-        row_cells.append((vector, min(xs), min(ys), max(xs), max(ys)))
+        rectangles.append((vector, min(xs), min(ys), max(xs), max(ys)))
 
-    # A page border or notes-column outline can enclose both a real schedule
-    # and a boxed note. Associate the heading with its smallest unambiguous
-    # same-column frame, then follow only the row cells immediately below it.
-    # A large blank stretch cannot be inferred to be part of a schedule.
-    owned_frames: dict[str, str] = {}
-    for heading, _panel_tag in headings:
-        frames = [
-            (frame, left, bottom, right, top)
-            for frame, left, bottom, right, top in row_cells
-            if frame.page == heading.page
-            and left < heading.x_pt < right
-            and bottom < heading.y_pt < top
-            and any(
-                cell.page == heading.page
-                and cell.element_id != frame.element_id
-                and cell_left == left
-                and cell_right == right
-                and bottom < cell_bottom < cell_top < top
-                and any(
-                    row.page == heading.page
-                    and row.element_id != heading.element_id
-                    and _PANEL_SCHEDULE_ROW_RE.match(row.text)
-                    and cell_left < row.x_pt < cell_right
-                    and cell_bottom < row.y_pt < cell_top
-                    for row in texts
-                )
-                for cell, cell_left, cell_bottom, cell_right, cell_top in row_cells
-            )
-        ]
-        if not frames:
-            continue
-        shortest = min(top - bottom for _frame, _left, bottom, _right, top in frames)
-        closest = [frame for frame, _left, bottom, _right, top in frames if top - bottom == shortest]
-        if len(closest) == 1:
-            owned_frames[heading.element_id] = closest[0].element_id
-
-    heading_ids = {heading.element_id for heading, _tag in headings}
-    claimed_cells: dict[str, list[tuple[PdfTextObservation, int, str]]] = {}
-    for row in texts:
-        if row.element_id in heading_ids:
-            continue
-        row_match = _PANEL_SCHEDULE_ROW_RE.match(row.text)
-        if row_match is None:
-            continue
-        candidates = [
-            (
-                heading.element_id,
-                panel_tag,
-                cell.element_id,
-            )
-            for heading, panel_tag in headings
-            for cell, left, bottom, right, top in row_cells
-            if heading.element_id in owned_frames
-            if row.page == heading.page == cell.page
-            and row.y_pt < heading.y_pt
-            and top < heading.y_pt
-            and left < heading.x_pt < right
-            and left < row.x_pt < right
-            and bottom < row.y_pt < top
-            and any(
-                frame.page == row.page
-                and frame.element_id == owned_frames[heading.element_id]
-                and frame.element_id != cell.element_id
-                and frame_left == left
-                and frame_right == right
-                and frame_bottom < bottom < top < frame_top
-                and frame_left < heading.x_pt < frame_right
-                and frame_bottom < heading.y_pt < frame_top
-                for frame, frame_left, frame_bottom, frame_right, frame_top in row_cells
-            )
-        ]
-        if len(candidates) != 1:
-            # Overlapping cells or multiple candidate headings cannot prove
-            # one owning table, even if one happens to be geometrically closer.
-            continue
-        claimed_cells.setdefault(candidates[0][2], []).append(
-            (row, int(row_match.group("circuit")), candidates[0][1])
-        )
-
-    # Numbered cells must form the sequence directly under their heading.
-    # This prevents a distant boxed note in the same full-width column from
-    # becoming a schedule row, even when no compact schedule frame is drawn.
     for heading, panel_tag in headings:
-        frame_id = owned_frames.get(heading.element_id)
-        if frame_id is None:
-            continue
-        frame = next(item for item in row_cells if item[0].element_id == frame_id)
-        _, frame_left, frame_bottom, frame_right, frame_top = frame
-        cells = sorted(
-            (
-                (cell, bottom, top)
-                for cell, left, bottom, right, top in row_cells
-                if cell.page == heading.page
-                and cell.element_id != frame_id
-                and left == frame_left
-                and right == frame_right
-                and frame_bottom < bottom < top < frame_top
-                and top < heading.y_pt
-                and cell.element_id in claimed_cells
-                and any(tag == panel_tag for _row, _number, tag in claimed_cells[cell.element_id])
-            ),
-            key=lambda item: -item[2],
-        )
-        previous_bottom = heading.y_pt
-        previous_height = None
-        for index, (cell, bottom, top) in enumerate(cells):
-            height = top - bottom
-            if previous_bottom - top > 2 * (previous_height or height):
-                for rejected, _bottom, _top in cells[index:]:
-                    claimed_cells.pop(rejected.element_id, None)
-                break
-            previous_bottom = bottom
-            previous_height = height
+        candidate_tables: list[
+            tuple[float, tuple[tuple[PdfTextObservation, int], ...]]
+        ] = []
+        for frame, left, bottom, right, top in rectangles:
+            if not (frame.page == heading.page and left < heading.x_pt < right and bottom < heading.y_pt < top):
+                continue
+            header_cells = [
+                (header, header_bottom)
+                for header, header_left, header_bottom, header_right, header_top in rectangles
+                if header.page == heading.page
+                and header.element_id != frame.element_id
+                and header_left == left
+                and header_right == right
+                and bottom < header_bottom < heading.y_pt < header_top <= top
+                and not any(
+                    text.page == heading.page
+                    and text.element_id != heading.element_id
+                    and header_left < text.x_pt < header_right
+                    and header_bottom < text.y_pt < header_top
+                    and _PANEL_SCHEDULE_ROW_RE.match(text.text)
+                    for text in texts
+                )
+            ]
+            if len(header_cells) != 1:
+                continue
+            edge = header_cells[0][1]
+            parsed_rows: list[tuple[PdfTextObservation, int]] = []
+            while True:
+                touching = [
+                    (cell, cell_bottom, cell_top)
+                    for cell, cell_left, cell_bottom, cell_right, cell_top in rectangles
+                    if cell.page == heading.page
+                    and cell.element_id != frame.element_id
+                    and cell.element_id != header_cells[0][0].element_id
+                    and cell_left == left
+                    and cell_right == right
+                    and bottom <= cell_bottom < cell_top == edge
+                ]
+                if len(touching) != 1:
+                    # A gap, overlap, or competing cell ends the ruled table.
+                    break
+                cell, cell_bottom, _cell_top = touching[0]
+                in_cell = [
+                    (text, match)
+                    for text in texts
+                    if text.page == heading.page
+                    and left < text.x_pt < right
+                    and cell_bottom < text.y_pt < edge
+                    if (match := _PANEL_SCHEDULE_ROW_RE.match(text.text)) is not None
+                ]
+                if len(in_cell) == 1:
+                    row, match = in_cell[0]
+                    parsed_rows.append((row, int(match.group("circuit"))))
+                edge = cell_bottom
+            if parsed_rows:
+                candidate_tables.append((top - bottom, tuple(parsed_rows)))
 
-    for rows in claimed_cells.values():
-        if len(rows) != 1:
-            # Two numbered texts in one box are not an unambiguous row.
+        if not candidate_tables:
             continue
-        row, circuit, panel_tag = rows[0]
-        schedules[panel_tag].add(circuit)
-        consumed_ids.add(row.element_id)
+        shortest = min(height for height, _rows in candidate_tables)
+        owned = [rows for height, rows in candidate_tables if height == shortest]
+        if len(owned) != 1:
+            # Two equally tight source tables cannot uniquely own the rows.
+            continue
+        for row, circuit in owned[0]:
+            schedules[panel_tag].add(circuit)
+            consumed_ids.add(row.element_id)
     return schedules, consumed_ids
 
 

@@ -1101,19 +1101,28 @@ def _write_circuit_probe_pdf(
             rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(\d+ RECEPTACLE LOAD\) Tj",
             body,
         ):
-            left = float(match.group(1)) - 10
-            bottom = float(match.group(2)) - 5
             row_positions.append((float(match.group(1)), float(match.group(2))))
-            cells.append(f"{left:g} {bottom:g} 160 10 re S\n".encode())
         heading = re.search(
             rb"1 0 0 1 ([\d.]+) ([\d.]+) Tm \(PANEL [A-Z0-9_.-]+ SCHEDULE\) Tj",
             body,
         )
         if heading is not None and row_positions:
+            row_positions.sort(key=lambda position: -position[1])
             frame_left = min(float(heading.group(1)), *(x for x, _y in row_positions)) - 10
-            frame_bottom = min(y for _x, y in row_positions) - 15
             frame_right = max(x for x, _y in row_positions) + 150
             frame_top = float(heading.group(2)) + 10
+            row_tops = [y + 5 for _x, y in row_positions]
+            row_bottoms = row_tops[1:] + [row_positions[-1][1] - 5]
+            frame_bottom = row_bottoms[-1]
+            cells.append(
+                f"{frame_left:g} {row_tops[0]:g} "
+                f"{frame_right - frame_left:g} {frame_top - row_tops[0]:g} re S\n".encode()
+            )
+            for row_top, row_bottom in zip(row_tops, row_bottoms):
+                cells.append(
+                    f"{frame_left:g} {row_bottom:g} "
+                    f"{frame_right - frame_left:g} {row_top - row_bottom:g} re S\n".encode()
+                )
             cells.append(
                 f"{frame_left:g} {frame_bottom:g} "
                 f"{frame_right - frame_left:g} {frame_top - frame_bottom:g} re S\n".encode()
@@ -1373,6 +1382,7 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
     standalone = _circuit_probe_model(
         tmp_path / "standalone-notes-frame.pdf",
         body
+        + b"590 530 160 30 re S\n"
         + b"590 520 160 10 re S\n"
         + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
         + b"590 115 160 10 re S\n"
@@ -1389,6 +1399,7 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
     standalone_valid = _circuit_probe_model(
         tmp_path / "standalone-notes-frame-valid.pdf",
         body.replace(b"(LP-99)", b"(LP-1)")
+        + b"590 530 160 30 re S\n"
         + b"590 520 160 10 re S\n"
         + b"BT /F1 8 Tf 1 0 0 1 600 120 Tm (99 DETAIL NOTE) Tj ET\n"
         + b"590 115 160 10 re S\n"
@@ -1397,6 +1408,24 @@ def test_unrelated_numbered_note_cannot_validate_a_panel_circuit(tmp_path: Path)
         schedule_cells=False,
     )
     assert [circuit.circuit_number for circuit in standalone_valid.circuits] == ["1"]
+
+
+def test_moving_a_complete_ruled_schedule_does_not_change_its_circuit(
+    tmp_path: Path,
+) -> None:
+    """Source-drawn grid edges, not a point-distance cutoff, own the row."""
+    for y in (525, 524, 250):
+        model = _circuit_probe_model(
+            tmp_path / f"translated-ruled-schedule-{y}.pdf",
+            b"BT /F1 10 Tf 1 0 0 1 70 560 Tm (PANEL LP 120/208V 3PH) Tj ET\n"
+            b"BT /F1 8 Tf 1 0 0 1 170 462 Tm (EVSE-1) Tj ET\n"
+            b"175 445 10 10 re S\n"
+            b"BT /F1 9 Tf 1 0 0 1 192 451 Tm (LP-1) Tj ET\n"
+            b"BT /F1 10 Tf 1 0 0 1 600 550 Tm (PANEL LP SCHEDULE) Tj ET\n"
+            + f"BT /F1 8 Tf 1 0 0 1 600 {y} Tm (1 RECEPTACLE LOAD) Tj ET\n".encode(),
+            f"fixture:issue72-translated-ruled-schedule-{y}",
+        )
+        assert [circuit.circuit_number for circuit in model.circuits] == ["1"], y
 
 
 def test_unruled_numeric_text_cannot_validate_a_present_schedule(tmp_path: Path) -> None:

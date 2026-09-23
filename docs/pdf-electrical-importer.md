@@ -17,6 +17,15 @@ It does not create architectural walls, rooms, levels, routes, quantities, IFC,
 or drawing views. Final level, space, and physical host attachment belongs to the
 PDF convergence gate.
 
+Text-led panelboard identity requires a compact `PANEL <tag>` label, optionally
+followed by explicit voltage, phase, or ampere ratings. A prose mention of a
+panel does not materialize equipment, and common sentence words after `PANEL`
+cannot become panel IDs. A bare alphabetic tag must be a recognized panel
+designation (such as `LP` or `MDP`); numbered tags or short tags with explicit
+ratings are also accepted. An annotation alone cannot establish a panelboard
+from its free-form subject or contents. A source without a reliable panel label remains
+unresolved; circuit text or proximity does not supply the missing identity.
+
 ## Spatial semantics before convergence
 
 The canonical v1 model permits only one coordinate frame per document, so the

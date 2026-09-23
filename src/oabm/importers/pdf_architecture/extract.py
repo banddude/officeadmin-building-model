@@ -13,6 +13,9 @@ from statistics import median
 from typing import Iterable
 
 import pdfplumber
+from pdfminer.pdfinterp import PDFPageInterpreter
+from pdfminer.pdftypes import PDFObjRef, resolve1
+from pdfplumber.page import PDFPageAggregatorWithMarkedContent, Page
 
 from .types import (
     PdfDocumentObservation,
@@ -30,6 +33,10 @@ def _token(value: object) -> str:
 def _element_id(kind: str, page_number: int, signature: str) -> str:
     digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:20]
     return f"p{page_number}:{kind}:{digest}"
+
+
+def _is_wall_source_layer(layer: str) -> bool:
+    return layer.rsplit("|", 1)[-1].upper().lstrip("_") in {"A-WALL", "AE-WALL"}
 
 
 def _native_id(obj: dict[str, object], kind: str) -> str | None:
@@ -149,8 +156,7 @@ def _dash_present(value: object) -> bool:
 
 
 def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple[PdfLineObservation, ...]:
-    seen: set[tuple[float, float, float, float]] = set()
-    result: list[PdfLineObservation] = []
+    evidence: dict[tuple[float, float, float, float], tuple[dict[str, object], set[str]]] = {}
     for obj in lines:
         a = (round(float(obj["x0"]), 4), round(float(obj["y0"]), 4))
         b = (round(float(obj["x1"]), 4), round(float(obj["y1"]), 4))
@@ -158,9 +164,16 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
             continue
         start, end = sorted((a, b))
         signature_tuple = (start[0], start[1], end[0], end[1])
-        if signature_tuple in seen:
+        layer = obj.get("_oabm_source_layer")
+        if signature_tuple in evidence:
+            if isinstance(layer, str) and layer:
+                evidence[signature_tuple][1].add(layer)
             continue
-        seen.add(signature_tuple)
+        evidence[signature_tuple] = (obj, {layer} if isinstance(layer, str) and layer else set())
+    result: list[PdfLineObservation] = []
+    for signature_tuple, (obj, source_layers) in evidence.items():
+        start = (signature_tuple[0], signature_tuple[1])
+        end = (signature_tuple[2], signature_tuple[3])
         signature = "|".join(f"{value:.4f}" for value in signature_tuple)
         primitive_family = str(obj.get("_oabm_primitive_family") or "line")
         result.append(
@@ -172,6 +185,7 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
                 primitive_family=primitive_family,
                 dashed=bool(obj.get("_oabm_dashed", False)),
                 filled=bool(obj.get("_oabm_filled", False)),
+                source_layers=tuple(sorted(source_layers)),
             )
         )
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
@@ -231,11 +245,120 @@ def _curve_polyline_segments(
                 "_oabm_primitive_family": primitive_family,
                 "_oabm_dashed": dashed,
                 "_oabm_filled": filled,
+                "_oabm_source_layer": curve.get("_oabm_source_layer"),
             }
             if isinstance(curve.get("mcid"), int):
                 segment["mcid"] = curve["mcid"]
             segments.append(segment)
     return tuple(segments)
+
+
+def _reference_ids(value: object) -> set[int]:
+    members = resolve1(value)
+    if not isinstance(members, (tuple, list)):
+        return set()
+    return {item.objid for item in members if isinstance(item, PDFObjRef)}
+
+
+def _optional_group_state(document: object, group: object) -> bool:
+    """Resolve the PDF default view state; unknown configured states fail closed."""
+
+    catalog = resolve1(document.catalog)  # type: ignore[attr-defined]
+    optional = resolve1(catalog.get("OCProperties", {})) if isinstance(catalog, dict) else {}
+    if not isinstance(optional, dict):
+        return False
+    config = resolve1(optional.get("D", {}))
+    if not isinstance(config, dict):
+        return False
+    base = getattr(config.get("BaseState"), "name", "ON")
+    if base not in {"ON", "OFF", "Unchanged"}:
+        return False
+    group_id = group.objid if isinstance(group, PDFObjRef) else None
+    if group_id is None:
+        return base == "ON" and not config.get("ON") and not config.get("OFF")
+    on_ids = _reference_ids(config.get("ON", []))
+    off_ids = _reference_ids(config.get("OFF", []))
+    if group_id in on_ids and group_id in off_ids:
+        return False
+    if group_id in off_ids:
+        return False
+    if group_id in on_ids:
+        return True
+    return base == "ON"
+
+
+class _LayerAggregator(PDFPageAggregatorWithMarkedContent):
+    """Keep optional-content group names attached to PDF source primitives."""
+
+    def __init__(self, *args: object, layer_states: dict[str, tuple[str | None, bool]], **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.layer_states = layer_states
+        self.layer_stack: list[tuple[str | None, bool]] = []
+
+    def begin_tag(self, tag: object, props: object = None) -> None:
+        parent = self.layer_stack[-1] if self.layer_stack else (None, True)
+        layer = parent
+        if getattr(tag, "name", None) == "OC":
+            configured = self.layer_states.get(getattr(props, "name", None))
+            layer = (configured[0], parent[1] and configured[1]) if configured else (None, False)
+        self.layer_stack.append(layer)
+        super().begin_tag(tag, props)
+
+    def end_tag(self) -> None:
+        if self.layer_stack:
+            self.layer_stack.pop()
+        super().end_tag()
+
+    def tag_cur_item(self) -> None:
+        super().tag_cur_item()
+        if self.cur_item._objs:
+            name, visible = self.layer_stack[-1] if self.layer_stack else (None, True)
+            self.cur_item._objs[-1]._oabm_source_layer = name
+            self.cur_item._objs[-1]._oabm_hidden = not visible
+
+
+class _LayerPage(Page):
+    @property
+    def layout(self):  # type: ignore[override]
+        if not hasattr(self, "_layout"):
+            resources = resolve1(self.page_obj.resources)
+            properties = resolve1(resources.get("Properties", {}))
+            layer_states: dict[str, tuple[str | None, bool]] = {}
+            if isinstance(properties, dict):
+                for key, value in properties.items():
+                    group = resolve1(value)
+                    if not isinstance(group, dict):
+                        continue
+                    name = group.get("Name")
+                    if isinstance(name, bytes):
+                        label = name.decode("utf-8", "replace")
+                    elif isinstance(name, str):
+                        label = name
+                    else:
+                        label = None
+                    is_group = getattr(group.get("Type"), "name", None) == "OCG"
+                    layer_states[str(key)] = (
+                        label,
+                        is_group and _optional_group_state(self.pdf.doc, value),
+                    )
+            device = _LayerAggregator(
+                self.pdf.rsrcmgr,
+                pageno=self.page_number,
+                laparams=self.pdf.laparams,
+                layer_states=layer_states,
+            )
+            PDFPageInterpreter(self.pdf.rsrcmgr, device).process_page(self.page_obj)
+            self._layout = device.get_result()
+        return self._layout
+
+    def process_object(self, obj):  # type: ignore[override]
+        result = super().process_object(obj)
+        layer = getattr(obj, "_oabm_source_layer", None)
+        if isinstance(layer, str) and layer:
+            result["_oabm_source_layer"] = layer
+        if getattr(obj, "_oabm_hidden", False):
+            result["_oabm_hidden"] = True
+        return result
 
 
 def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumentObservation:
@@ -246,7 +369,15 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
 
     pages: list[PdfPageObservation] = []
     with pdfplumber.open(pdf_path) as document:
-        for index, page in enumerate(document.pages, start=1):
+        for index, original_page in enumerate(document.pages, start=1):
+            layered_page = _LayerPage(document, original_page.page_obj, index, original_page.initial_doctop)
+            hidden_wall_source_present = any(
+                item.get("_oabm_hidden", False)
+                and isinstance(item.get("_oabm_source_layer"), str)
+                and _is_wall_source_layer(item["_oabm_source_layer"])
+                for item in (*layered_page.lines, *layered_page.curves, *layered_page.rects)
+            )
+            page = layered_page.filter(lambda item: not item.get("_oabm_hidden", False))
             pages.append(
                 PdfPageObservation(
                     page_number=index,
@@ -261,6 +392,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                                     "_oabm_primitive_family": "line",
                                     "_oabm_dashed": _dash_present(line.get("dash")),
                                     "_oabm_filled": bool(line.get("fill", False)),
+                                    "_oabm_source_layer": line.get("_oabm_source_layer"),
                                 }
                                 for line in page.lines
                             ),
@@ -269,6 +401,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                         index,
                     ),
                     rects=_unique_rects(page.rects, index),
+                    hidden_wall_source_present=hidden_wall_source_present,
                 )
             )
     return PdfDocumentObservation(

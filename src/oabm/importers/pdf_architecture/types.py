@@ -44,6 +44,7 @@ class PdfLineObservation:
     primitive_family: str = "line"
     dashed: bool = False
     filled: bool = False
+    source_layers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _point2(self.start_pt, "start_pt")
@@ -88,6 +89,7 @@ class PdfPageObservation:
     texts: tuple[PdfTextObservation, ...] = ()
     lines: tuple[PdfLineObservation, ...] = ()
     rects: tuple[PdfRectObservation, ...] = ()
+    hidden_wall_source_present: bool = False
 
 
 @dataclass(frozen=True, slots=True)

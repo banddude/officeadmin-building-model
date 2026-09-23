@@ -5,6 +5,7 @@ import json
 import math
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -621,8 +622,66 @@ def _unique_json_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def _git_bytes(repo_root: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
+def _assert_superproject_blob(repo_root: Path, path: Path, raw: bytes) -> None:
+    """Protected bytes must be ordinary files in this repository's Git tree."""
+    try:
+        relative = path.relative_to(repo_root)
+    except ValueError:
+        # Mutation tests use standalone temporary files. The real three trust
+        # roots are under ROOT and must always pass the Git object checks.
+        return
+    assert relative.parts, f"{path}: protected file cannot be the repository root"
+    for parent in reversed(relative.parents):
+        if parent == Path("."):
+            continue
+        entry = _git_bytes(repo_root, "ls-tree", "-z", "HEAD", "--", parent.as_posix())
+        assert entry.startswith(b"040000 tree ") and entry.endswith(
+            b"\t" + parent.as_posix().encode() + b"\0"
+        ), f"{parent}: protected path ancestor must be a normal superproject tree"
+        exact_index_entry = next(
+            (
+                entry
+                for entry in _git_bytes(
+                    repo_root, "ls-files", "-s", "-z", "--", parent.as_posix()
+                ).split(b"\0")
+                if entry.endswith(b"\t" + parent.as_posix().encode())
+            ),
+            b"",
+        )
+        assert not exact_index_entry, (
+            f"{parent}: protected path ancestor cannot be an indexed symlink or gitlink"
+        )
+    name = relative.as_posix()
+    tree_entry = _git_bytes(repo_root, "ls-tree", "-z", "HEAD", "--", name)
+    index_entry = _git_bytes(repo_root, "ls-files", "-s", "-z", "--", name)
+    assert tree_entry.startswith(b"100644 blob ") and tree_entry.endswith(
+        b"\t" + name.encode() + b"\0"
+    ), f"{name}: protected file must be a normal superproject blob in HEAD"
+    assert index_entry.startswith(b"100644 ") and index_entry.endswith(
+        b"\t" + name.encode() + b"\0"
+    ), f"{name}: protected file must be a normal superproject blob in the index"
+    tree_oid = tree_entry.split(b"\t", 1)[0].split()[-1].decode()
+    index_oid = index_entry.split(b"\t", 1)[0].split()[1].decode()
+    assert tree_oid == index_oid, f"{name}: index blob differs from HEAD"
+    assert raw == _git_bytes(repo_root, "cat-file", "blob", tree_oid), (
+        f"{name}: worktree bytes differ from the reviewed superproject blob"
+    )
+
+
 def _assert_envelope_fixture_file_is_synthetic(
-    bundle_path: Path, synthetic_path: Path, source_path: Path | None = None
+    bundle_path: Path,
+    synthetic_path: Path,
+    source_path: Path | None = None,
+    *,
+    repo_root: Path = ROOT,
 ) -> None:
     """Raise unless the fixture's BYTES ON DISK are exactly its documented construction.
 
@@ -642,9 +701,10 @@ def _assert_envelope_fixture_file_is_synthetic(
     them narrows its trust boundary to what a reviewer CAN see: its JSON values
     and visible formatting.
 
-    Each path and every ancestor must have ordinary file/directory types, so
-    a symlink cannot redirect a protected path to bytes stored elsewhere in
-    the Git tree. JSON keys must be unique at every depth, so the parser cannot
+    Each path and every ancestor must have ordinary file/directory types and
+    normal superproject blob/tree objects, so a symlink or initialized gitlink
+    cannot redirect a protected path to bytes stored outside the reviewed Git
+    tree. JSON keys must be unique at every depth, so the parser cannot
     discard a visible first value.
     The remaining semantic trust roots are the synthetic values and the two
     envelope constants; a reviewer must judge those values themselves.
@@ -664,6 +724,7 @@ def _assert_envelope_fixture_file_is_synthetic(
         )
         files.append((path, path.read_bytes()))
     for path, raw in files:
+        _assert_superproject_blob(repo_root, path, raw)
         assert b"\r" not in raw, (
             f"{path.name}: contains a carriage return; line endings are translated "
             "before any text comparison sees them, so they can carry data unseen"
@@ -753,6 +814,47 @@ def test_the_fixture_guard_rejects_symlinked_parent_directories(
     assert link.is_symlink()
     with pytest.raises(AssertionError, match="ancestor must be a directory"):
         _assert_envelope_fixture_file_is_synthetic(*paths)
+
+
+def test_the_fixture_guard_rejects_an_initialized_gitlink_ancestor(tmp_path: Path) -> None:
+    """An ordinary directory on disk may still be a gitlink in the PR tree."""
+    submodule = tmp_path / "source-repo"
+    submodule.mkdir()
+    _git_bytes(submodule, "init", "-q")
+    (submodule / "approved.txt").write_text("synthetic only\n", encoding="ascii")
+    _git_bytes(submodule, "add", ".")
+    _git_bytes(submodule, "-c", "user.name=Fixture Test", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "synthetic")
+    submodule_oid = _git_bytes(submodule, "rev-parse", "HEAD").decode().strip()
+
+    superproject = tmp_path / "superproject"
+    fixture_dir = superproject / "fixtures" / "roomplan"
+    test_dir = superproject / "tests"
+    fixture_dir.mkdir(parents=True)
+    test_dir.mkdir()
+    bundle = fixture_dir / BUNDLE_FIXTURE.name
+    synthetic = fixture_dir / FIXTURE.name
+    source = test_dir / Path(__file__).name
+    for target, original in (
+        (bundle, BUNDLE_FIXTURE),
+        (synthetic, FIXTURE),
+        (source, Path(__file__)),
+    ):
+        target.write_bytes(original.read_bytes())
+    _git_bytes(superproject, "init", "-q")
+    _git_bytes(superproject, "add", ".")
+    _git_bytes(superproject, "-c", "user.name=Fixture Test", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "ordinary files")
+    _git_bytes(superproject, "rm", "-r", "--cached", "fixtures/roomplan")
+    _git_bytes(superproject, "update-index", "--add", "--cacheinfo", f"160000,{submodule_oid},fixtures/roomplan")
+    _git_bytes(superproject, "-c", "user.name=Fixture Test", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "gitlink ancestor")
+
+    assert fixture_dir.is_dir() and bundle.is_file() and synthetic.is_file()
+    assert _git_bytes(superproject, "ls-tree", "HEAD", "--", "fixtures/roomplan").startswith(
+        b"160000 commit "
+    )
+    with pytest.raises(AssertionError, match="ancestor must be a normal superproject tree"):
+        _assert_envelope_fixture_file_is_synthetic(
+            bundle, synthetic, source, repo_root=superproject
+        )
 
 
 def test_the_fixture_guard_checks_its_trusted_source_bytes(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ has an endpoint still carries the importer's own `source_kind`.
 from __future__ import annotations
 
 import ast
+import json
 import math
 from dataclasses import replace
 from pathlib import Path
@@ -19,7 +20,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from oabm.importers.pdf_architecture.importer import import_architectural_pdf
 from oabm.importers.pdf_electrical import ElectricalPdfImporter, extract_pdf
-from oabm.importers.roomplan import load_captured_room
+from oabm.importers.roomplan import import_captured_room, load_captured_room
 from oabm.model import (
     DERIVATION_CLASSES,
     DERIVATION_INFERRED,
@@ -210,6 +211,84 @@ def test_recognized_devices_are_observed_but_synthesized_ports_are_not(
         )
 
 
+def test_a_dimension_the_scan_never_reported_is_not_graded_as_measured() -> None:
+    """A supplied thickness must not read as a measurement.
+
+    RoomPlan returns surfaces, not solids. Every wall in the source states a
+    depth of zero, so the thickness on the canonical wall is a default this
+    importer chose. Grading that wall `observed` is the same overstatement
+    this field exists to prevent -- the motivating case was a synthesized Port
+    grading as source-observed, and an invented thickness is worse, because a
+    port is obviously synthetic while a wall looks like a measurement.
+
+    It also matters downstream: a consumer computing wall VOLUME multiplies
+    this number in, and would otherwise report that volume as measured.
+
+    The importer already knew: it writes `surface_thickness_inferred` into its
+    attributes bag. But `derivation` is the authoritative location and
+    attribute sniffing is prohibited, so a consumer obeying that rule got the
+    wrong answer while one breaking it got the right one. That inversion is
+    what this pins shut.
+    """
+    source = json.loads(
+        Path("fixtures/roomplan/captured-room-3d.json").read_text(encoding="utf-8")
+    )
+    # The premise: the scan reports no thickness for any wall.
+    assert all(wall["dimensions"][2] == 0 for wall in source["walls"])
+
+    model = load_captured_room(
+        Path("fixtures/roomplan/captured-room-3d.json"),
+        source_id="fixture:assumed-thickness",
+    )
+    assert model.walls
+
+    for wall in model.walls:
+        assert not is_observed(wall.provenance), wall.id
+
+        assumed = [
+            record
+            for record in wall.provenance
+            if record.attributes.get("assumed_dimension") == "thickness_m"
+        ]
+        assert len(assumed) == 1, wall.id
+        assert assumed[0].derivation == DERIVATION_INFERRED
+
+        # Scoped to the one dimension it covers. What the scan DID measure --
+        # the wall's position and extent -- stays observed, so a consumer can
+        # still call a face area from length and height a measurement.
+        others = [
+            record
+            for record in wall.provenance
+            if record.attributes.get("assumed_dimension") is None
+        ]
+        assert others, wall.id
+        assert all(record.derivation == DERIVATION_OBSERVED for record in others)
+
+
+def test_a_dimension_the_scan_did_report_is_left_alone() -> None:
+    """The guard must not fire on a source that states a real thickness.
+
+    Without this, marking every wall inferred would pass the test above while
+    destroying the distinction it exists to draw.
+    """
+    source = json.loads(
+        Path("fixtures/roomplan/captured-room-3d.json").read_text(encoding="utf-8")
+    )
+    for wall in source["walls"]:
+        wall["dimensions"][2] = 0.15
+
+    model = import_captured_room(source, source_id="fixture:stated-thickness")
+    assert model.walls
+    for wall in model.walls:
+        assert wall.thickness_m == pytest.approx(0.15)
+        assert is_observed(wall.provenance), wall.id
+        assert not [
+            record
+            for record in wall.provenance
+            if record.attributes.get("assumed_dimension")
+        ]
+
+
 def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
     """Every required producer states its class, readable from provenance alone.
 
@@ -250,7 +329,7 @@ def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
         assert classify(port) == DERIVATION_INFERRED, port.id
     assert classify(elec) == DERIVATION_OBSERVED
 
-    # --- architecture and roomplan: real input, so observed
+    # --- architecture: real input, so observed
     arch = import_architectural_pdf(
         Path("fixtures/pdf_architecture/v1/cad-export-geometry-plus-text.pdf"),
         source_id="fixture:classification-arch",
@@ -261,14 +340,35 @@ def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
         assert classify(entity) == DERIVATION_OBSERVED, entity.id
     assert classify(arch) == DERIVATION_OBSERVED
 
+    # --- roomplan: observed in what it saw, inferred in what it had to supply
     room = load_captured_room(
         Path("fixtures/roomplan/captured-room-3d.json"),
         source_id="fixture:classification-room",
     )
-    room_entities = (*room.levels, *room.spaces, *room.walls)
-    assert room_entities
-    for entity in room_entities:
+    assert room.levels and room.spaces and room.walls
+    for entity in (*room.levels, *room.spaces):
         assert classify(entity) == DERIVATION_OBSERVED, entity.id
+
+    # A RoomPlan wall is a surface: its position and extent are measured, but
+    # the source reports no thickness at all, so the importer supplies one and
+    # records that it did.  Folded to a single class the entity is therefore
+    # NOT wholly observed, and claiming otherwise is the exact overstatement
+    # this field exists to prevent.  The per-claim distinction -- measured face
+    # area, inferred volume -- is the quantities lane's job and is pinned in
+    # tests/test_quantities.py.
+    for wall in (*room.walls, *room.slabs):
+        assert classify(wall) == DERIVATION_INFERRED, wall.id
+        unscoped = [
+            record.derivation
+            for record in wall.provenance
+            if record.attributes.get("assumed_dimension") is None
+        ]
+        assert unscoped == [DERIVATION_OBSERVED], wall.id
+        assert [
+            record.derivation
+            for record in wall.provenance
+            if record.attributes.get("assumed_dimension") == "thickness_m"
+        ] == [DERIVATION_INFERRED], wall.id
     assert classify(room) == DERIVATION_OBSERVED
 
     # --- router: a computed centerline is never observed

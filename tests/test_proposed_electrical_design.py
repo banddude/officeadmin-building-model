@@ -19,7 +19,8 @@ from oabm.model import (
 from oabm.quantities import extract_quantities
 from oabm.routing import (
     PlacementError, apply_equipment_proposal, design_proposed_circuits,
-    propose_equipment_placement, set_user_equipment_placement,
+    propose_architectural_electrical_design, propose_equipment_placement,
+    set_user_equipment_placement,
 )
 
 
@@ -84,7 +85,7 @@ def test_source_pdf_without_panel_keeps_observed_circuits_empty(tmp_path: Path) 
         NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)}),
     })
     content = DecodedStreamObject()
-    content.set_data(b"BT /F1 10 Tf 1 0 0 1 70 500 Tm (DUPLEX OUTLET R1) Tj ET\n")
+    content.set_data(b"BT /F1 10 Tf 1 0 0 1 70 500 Tm (EVSE-1) Tj ET\n")
     page[NameObject("/Contents")] = writer._add_object(content)
     path = tmp_path / "architectural-devices-no-panel.pdf"
     with path.open("wb") as handle:
@@ -93,6 +94,7 @@ def test_source_pdf_without_panel_keeps_observed_circuits_empty(tmp_path: Path) 
     imported = ElectricalPdfImporter().import_document(
         extract_pdf(path, source_id="fixture:architectural-devices-no-panel")
     )
+    assert [device.name for device in imported.electrical_devices] == ["EVSE-1"]
     assert imported.electrical_equipment == ()
     assert imported.circuits == ()
     assert imported.ports == ()
@@ -127,7 +129,7 @@ def test_proposal_design_recompute_and_provenance() -> None:
     before = extract_quantities(designed)
     route_before = sum(item.quantity for item in before.items if item.category == "route_length")
     assert route_before > 0
-    assert all(item.to_dict()["design_status"] == "inferred"
+    assert all(item.to_dict()["design_status"] == "system-designed"
                for item in before.items if item.category in {"route_length", "conductor_length"})
     assert all(item.to_dict()["placement_status"] == "inferred"
                for item in before.items if item.category == "route_length")
@@ -178,15 +180,62 @@ def test_user_groups_replace_design_and_conflicts_fail_closed() -> None:
     assert len(replaced.circuits) == 2
     assert all(item.provenance[0].derivation == "user" for item in replaced.circuits)
     assert all(item.attributes["design"]["source_observed"] is False for item in replaced.circuits)
-    assert extract_quantities(replaced).items
+    user_takeoff = extract_quantities(replaced)
+    assert user_takeoff.items
+    assert all(item.to_dict()["design_status"] == "user-directed"
+               and item.to_dict()["geometry_status"] == "inferred"
+               for item in user_takeoff.items
+               if item.category in {"route_length", "conductor_length"})
     with pytest.raises(PlacementError, match="exactly once"):
         design_proposed_circuits(
             first, equipment_id=equipment_id, device_ids=device_ids,
             user_groups=((device_ids[0], device_ids[0]), (device_ids[2],)),
             user_input_id="decision:bad-duplicate",
         )
+    assert replaced == design_proposed_circuits(
+        replaced, equipment_id=equipment_id, device_ids=device_ids,
+        user_groups=((device_ids[0], device_ids[1]), (device_ids[2],)),
+        user_input_id="decision:split-circuits",
+    )
+    with pytest.raises(PlacementError, match="conflicting circuit groups"):
+        design_proposed_circuits(
+            replaced, equipment_id=equipment_id, device_ids=device_ids,
+            user_groups=((device_ids[0],), (device_ids[1], device_ids[2])),
+            user_input_id="decision:split-circuits",
+        )
+    second_override = design_proposed_circuits(
+        replaced, equipment_id=equipment_id, device_ids=device_ids,
+        user_groups=((device_ids[0],), (device_ids[1], device_ids[2])),
+        user_input_id="decision:second-groups",
+    )
+    with pytest.raises(PlacementError, match="historical user_input_id"):
+        design_proposed_circuits(
+            second_override, equipment_id=equipment_id, device_ids=device_ids,
+            user_groups=((device_ids[0], device_ids[1]), (device_ids[2],)),
+            user_input_id="decision:split-circuits",
+        )
     with pytest.raises(PlacementError, match="already exists"):
         apply_equipment_proposal(placed, proposal)
+
+
+def test_architectural_entry_point_designs_without_manual_panel_hint() -> None:
+    model = _model()
+    designed, proposals = propose_architectural_electrical_design(model)
+    assert len(proposals) == 1
+    assert len(designed.electrical_equipment) == 1
+    assert designed.electrical_equipment[0].name is None
+    assert designed.electrical_equipment[0].provenance[0].derivation == "inferred"
+    assert len(designed.circuits) == 1
+    assert all(circuit.provenance[0].derivation == "inferred"
+               for circuit in designed.circuits)
+    assert extract_quantities(designed).items
+    assert designed.to_json() == propose_architectural_electrical_design(
+        replace(model, spaces=tuple(reversed(model.spaces)),
+                walls=tuple(reversed(model.walls)),
+                electrical_devices=tuple(reversed(model.electrical_devices))),
+    )[0].to_json()
+    with pytest.raises(PlacementError, match="existing panelboard"):
+        propose_architectural_electrical_design(designed)
 
 
 def test_missing_geometry_and_known_clearance_conflicts_do_not_create_panel() -> None:
@@ -236,6 +285,25 @@ def test_conflicting_user_decision_id_is_rejected() -> None:
     with pytest.raises(PlacementError, match="conflicting"):
         set_user_equipment_placement(
             accepted, equipment_id=equipment.id, position=Point3(x=0.75, y=0, z=1.5),
+            user_input_id="decision:one", wall_id=equipment.host_id,
+            space_id=equipment.space_id, direction=Vector3(x=0, y=1, z=0),
+        )
+    with pytest.raises(PlacementError, match="conflicting"):
+        set_user_equipment_placement(
+            accepted, equipment_id=equipment.id, position=equipment.pose.position,
+            user_input_id="decision:one", wall_id=equipment.host_id,
+            space_id=equipment.space_id, direction=Vector3(x=0, y=-1, z=0),
+        )
+    other_x = 0.75 if equipment.pose.position.x == 2.25 else 2.25
+    moved = set_user_equipment_placement(
+        accepted, equipment_id=equipment.id,
+        position=Point3(x=other_x, y=0, z=1.5),
+        user_input_id="decision:two", wall_id=equipment.host_id,
+        space_id=equipment.space_id, direction=Vector3(x=0, y=1, z=0),
+    )
+    with pytest.raises(PlacementError, match="historical user_input_id"):
+        set_user_equipment_placement(
+            moved, equipment_id=equipment.id, position=Point3(x=1.5, y=0, z=1.5),
             user_input_id="decision:one", wall_id=equipment.host_id,
             space_id=equipment.space_id, direction=Vector3(x=0, y=1, z=0),
         )

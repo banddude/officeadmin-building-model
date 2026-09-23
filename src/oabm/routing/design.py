@@ -9,7 +9,10 @@ from oabm.model import (
     Port, Provenance, Vector3, stable_id,
 )
 
-from .placement import PlacementError
+from .placement import (
+    EquipmentPlacementProposal, PlacementError, apply_equipment_proposal,
+    propose_equipment_placement,
+)
 from .router import route_between_ports
 
 
@@ -47,6 +50,58 @@ class CircuitDesignRules:
             "insulated_conductor_count": self.insulated_conductor_count,
             "include_ground": self.include_ground,
         }
+
+
+def propose_architectural_electrical_design(
+    model: BuildingModel, *, rules: CircuitDesignRules | None = None,
+) -> tuple[BuildingModel, tuple[EquipmentPlacementProposal, ...]]:
+    """Design one provisional panel per populated level without caller hints.
+
+    This is the entry point for an architectural set that contains devices but
+    no observed panel or circuiting. It refuses mixed observed circuitry and
+    requires registered level/space/wall geometry before proposing anything.
+    """
+
+    if any(item.equipment_type == "panelboard" for item in model.electrical_equipment):
+        raise PlacementError("an existing panelboard needs explicit reconciliation")
+    if model.circuits:
+        raise PlacementError("existing circuits need explicit reconciliation")
+    if any(device.level_id is None for device in model.electrical_devices):
+        raise PlacementError("devices need registered canonical levels")
+    result = model
+    proposals: list[EquipmentPlacementProposal] = []
+    for level_id in sorted({device.level_id for device in model.electrical_devices}):
+        device_ids = tuple(sorted(
+            device.id for device in model.electrical_devices if device.level_id == level_id
+        ))
+        proposal = propose_equipment_placement(
+            result, identity_key=f"{level_id}:provisional-panelboard",
+            equipment_type="panelboard", name=None, level_id=level_id,
+            served_device_ids=device_ids,
+        )
+        result = apply_equipment_proposal(result, proposal)
+        equipment_id = stable_id("equipment", f"{model.model_id}:proposal:{proposal.identity_key}")
+        result = design_proposed_circuits(
+            result, equipment_id=equipment_id, device_ids=device_ids, rules=rules,
+        )
+        proposals.append(proposal)
+    if not proposals:
+        raise PlacementError("no registered electrical devices to design")
+    return _sorted_entities(result), tuple(proposals)
+
+
+def _sorted_entities(model: BuildingModel) -> BuildingModel:
+    """Give equivalent reordered canonical inputs the same derived serialization."""
+
+    collections = (
+        "levels", "spaces", "walls", "slabs", "ceilings", "openings",
+        "electrical_equipment", "electrical_devices", "ports", "obstacles",
+        "route_constraints", "routes", "route_fittings", "circuits", "conductors",
+    )
+    return replace(model, **{
+        name: tuple(sorted(getattr(model, name), key=lambda item: item.id))
+        for name in collections
+    })
 
 
 def design_proposed_circuits(
@@ -93,6 +148,29 @@ def design_proposed_circuits(
     prior = tuple(item for item in model.circuits if (
         item.attributes.get("design", {}).get("equipment_id") == equipment_id
     ))
+    decision_history = model.attributes.get("design_decision_history", [])
+    if not isinstance(decision_history, list):
+        raise PlacementError("design decision history must be a list")
+    if user_input_id is not None and any(
+        isinstance(item, dict) and item.get("user_input_id") == user_input_id
+        for item in decision_history
+    ):
+        raise PlacementError("historical user_input_id cannot be reused for circuit groups")
+    reused_decisions = tuple(item for item in prior if (
+        user_input_id is not None
+        and item.attributes.get("design", {}).get("user_input_id") == user_input_id
+    ))
+    if reused_decisions:
+        prior_groups = tuple(
+            tuple(item.attributes["design"]["device_ids"])
+            for item in sorted(reused_decisions, key=lambda circuit: int(circuit.circuit_number or 0))
+        )
+        if (len(reused_decisions) == len(prior)
+                and prior_groups == groups
+                and all(item.attributes["design"]["rules"] == rules.to_dict()
+                        for item in reused_decisions)):
+            return model
+        raise PlacementError("one user_input_id cannot describe conflicting circuit groups")
     prior_ids = {item.id for item in prior}
     prior_route_ids = {route_id for item in prior for route_id in item.route_ids}
     if any(
@@ -106,8 +184,21 @@ def design_proposed_circuits(
         )
     ) for item in model.circuits):
         raise PlacementError("a selected device already belongs to another circuit")
+    for item in prior:
+        old_decision = item.attributes.get("design", {}).get("user_input_id")
+        if old_decision and not any(
+            isinstance(row, dict) and row.get("user_input_id") == old_decision
+            for row in decision_history
+        ):
+            decision_history = [*decision_history, {
+                "user_input_id": old_decision,
+                "equipment_id": equipment_id,
+                "device_ids": item.attributes["design"]["device_ids"],
+                "rules": item.attributes["design"]["rules"],
+            }]
     base = replace(
         model,
+        attributes={**model.attributes, "design_decision_history": decision_history},
         circuits=tuple(item for item in model.circuits if item.id not in prior_ids),
         conductors=tuple(item for item in model.conductors if item.circuit_id not in prior_ids),
         routes=tuple(item for item in model.routes if item.id not in prior_route_ids),
@@ -179,6 +270,7 @@ def design_proposed_circuits(
         design_attributes = {
             "status": "designed", "origin": origin, "equipment_id": equipment_id,
             "rules": rules.to_dict(), "source_observed": False,
+            "device_ids": list(group), "user_input_id": user_input_id,
         }
         circuit = Circuit(
             id=circuit_id, source_port_id=source_port.id,

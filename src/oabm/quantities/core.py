@@ -70,7 +70,7 @@ class QuantityItem:
 
     def to_dict(self) -> dict[str, object]:
         derivations = {item.derivation for item in self.provenance}
-        placement_sources = {item.source_kind for item in self.provenance}
+        source_kinds = {item.source_kind for item in self.provenance}
         return {
             "category": self.category,
             "item_type": self.item_type,
@@ -80,13 +80,18 @@ class QuantityItem:
             "source_entity_ids": list(self.source_entity_ids),
             "provenance": [asdict(item) for item in self.provenance],
             "design_status": (
+                "user-directed" if "user-override" in source_kinds else
+                "system-designed" if "system-design" in source_kinds else
                 "inferred" if "inferred" in derivations else
                 "user" if "user" in derivations else
                 "observed" if derivations == {"observed"} else "unknown"
             ),
+            "geometry_status": (
+                "inferred" if "router" in source_kinds else None
+            ),
             "placement_status": (
-                "inferred" if "placement-engine" in placement_sources else
-                "user" if "user-placement" in placement_sources else None
+                "inferred" if "placement-engine" in source_kinds else
+                "user" if "user-placement" in source_kinds else None
             ),
             "confidence": self.confidence,
             "assembly_key": self.assembly_key,

@@ -210,9 +210,13 @@ def set_user_equipment_placement(
     if equipment is None or "placement" not in equipment.attributes:
         raise PlacementError("equipment_id must identify a proposed equipment placement")
     prior = equipment.attributes["placement"]
+    if any(item.get("user_input_id") == user_input_id for item in prior.get("history", [])):
+        raise PlacementError("historical user_input_id cannot be reused for a new placement")
     if prior.get("user_input_id") == user_input_id:
+        directions = tuple(port.direction for port in model.ports if port.owner_id == equipment_id)
         if (position == equipment.pose.position and wall_id == equipment.host_id
-                and space_id == equipment.space_id):
+                and space_id == equipment.space_id
+                and directions and all(item == direction for item in directions)):
             return model
         raise PlacementError("one user_input_id cannot describe conflicting placements")
     if any(item.id != equipment_id and item.attributes.get("placement", {}).get("user_input_id") == user_input_id

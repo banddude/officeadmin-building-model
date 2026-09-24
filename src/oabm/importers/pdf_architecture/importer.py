@@ -676,12 +676,16 @@ _BARE_LEVEL_RE = re.compile(
     re.IGNORECASE,
 )
 # A floor designation counts only as a drawing/level title, never inside a note:
-# "SECOND FLOOR PLAN" or "EXISTING SECOND FLOOR POWER PLAN", not
-# "SEE SECOND FLOOR FRAMING FOR BLOCKING".
+# "SECOND FLOOR PLAN", "EXISTING SECOND FLOOR POWER PLAN" or a title with a
+# short qualifier such as "SECOND FLOOR PLAN - UNIT A", ": AREA A" or
+# "(NORTH)", but not "SEE SECOND FLOOR FRAMING FOR BLOCKING" or
+# "SECOND FLOOR PLAN - SEE SHEET A5 FOR DETAILS".
+_TITLE_QUALIFIER_WORDS = r"[A-Z0-9#.&/'-]{1,12}(?:\s+[A-Z0-9#.&/'-]{1,12}){0,2}"
 _FLOOR_TITLE_RE = re.compile(
     r"^(?:(?:EXISTING|PROPOSED|NEW|DEMOLITION|DEMO|PARTIAL|OVERALL|ENLARGED|\(E\)|\(N\))\s+)*"
     r"(GROUND|FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|LOWER|MAIN|UPPER|BASEMENT|\d{1,2}(?:ST|ND|RD|TH))"
-    r"\s+FLOOR(?:\s*[-:]?\s*(?:[A-Z/&.]+\s+){0,4}PLAN)?$",
+    r"\s+FLOOR(?:\s*[-:]?\s*(?:[A-Z/&.]+\s+){0,4}PLAN)?"
+    rf"(?:\s*[-\u2013\u2014:,]\s*{_TITLE_QUALIFIER_WORDS}|\s*\(\s*{_TITLE_QUALIFIER_WORDS}\s*\))?$",
     re.IGNORECASE,
 )
 

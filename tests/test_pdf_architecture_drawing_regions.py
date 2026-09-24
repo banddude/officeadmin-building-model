@@ -64,7 +64,42 @@ def _write_sheet(
     layered: bool = True,
     sheet_frame: bool = True,
 ) -> Path:
+    return _write_set(
+        path,
+        (drawings,),
+        sheet_texts=sheet_texts,
+        layered=layered,
+        sheet_frame=sheet_frame,
+    )
+
+
+def _write_set(
+    path: Path,
+    sheets: tuple[tuple[Drawing, ...], ...],
+    *,
+    sheet_texts: tuple[str, ...] = ("SCALE: 1/4\" = 1'-0\"",),
+    layered: bool = True,
+    sheet_frame: bool = True,
+) -> Path:
+    """Write one synthetic sheet per entry of ``sheets``."""
+
     writer = PdfWriter()
+    for drawings in sheets:
+        _add_sheet(writer, drawings, sheet_texts=sheet_texts, layered=layered, sheet_frame=sheet_frame)
+    with path.open("wb") as handle:
+        writer.write(handle)
+    assert not path.with_suffix(".expected.json").exists()
+    return path
+
+
+def _add_sheet(
+    writer: PdfWriter,
+    drawings: tuple[Drawing, ...],
+    *,
+    sheet_texts: tuple[str, ...],
+    layered: bool,
+    sheet_frame: bool,
+) -> None:
     page = writer.add_blank_page(width=PAGE_W, height=PAGE_H)
     font = writer._add_object(DictionaryObject({
         NameObject("/Type"): NameObject("/Font"),
@@ -115,10 +150,6 @@ def _write_sheet(
     stream = DecodedStreamObject()
     stream.set_data(("\n".join(commands) + "\n").encode())
     page[NameObject("/Contents")] = writer._add_object(stream)
-    with path.open("wb") as handle:
-        writer.write(handle)
-    assert not path.with_suffix(".expected.json").exists()
-    return path
 
 
 def _import(path: Path, options: ImportOptions | None = None) -> BuildingModel:
@@ -518,7 +549,16 @@ def test_scale_override_can_target_one_region(tmp_path: Path) -> None:
     ("1st FLOOR", "1st Floor"),
     ("LEVEL: 2", "2"),
     ("LEVEL 3 FLOOR PLAN", "3 Floor"),
+    ("SECOND FLOOR PLAN - UNIT A", "Second Floor"),
+    ("SECOND FLOOR PLAN - UNIT 3", "Second Floor"),
+    ("SECOND FLOOR PLAN: AREA A", "Second Floor"),
+    ("SECOND FLOOR PLAN (NORTH)", "Second Floor"),
+    ("THIRD FLOOR - UNIT A", "Third Floor"),
+    ("EXISTING SECOND FLOOR PLAN \u2013 WEST WING", "Second Floor"),
     ("SEE SECOND FLOOR FRAMING FOR BLOCKING", None),
+    ("SECOND FLOOR FRAMING FOR BLOCKING", None),
+    ("SECOND FLOOR PLAN - SEE SHEET A5 FOR DETAILS", None),
+    ("THIRD FLOOR BATH - SEE NOTE 3", None),
     ("TAPED TO LEVEL 4 FINISH", None),
     ("PROVIDE GFCI AT THIRD FLOOR BATH", None),
 ])
@@ -531,3 +571,41 @@ def test_level_names_come_only_from_level_or_drawing_title_text(text: str, expec
     )
     names = [name for name, _ in _level_name_candidates(page)]
     assert names == ([expected] if expected else [])
+
+
+def test_single_drawing_title_with_a_qualifier_keeps_its_level(tmp_path: Path) -> None:
+    titled = replace(SECOND, title="SECOND FLOOR PLAN - UNIT A")
+    model = _import(_write_sheet(tmp_path / "suffixed.pdf", (titled,)))
+
+    [region] = _regions(model)
+    assert region["status"] == "resolved"
+    [level] = model.levels
+    assert level.name == "Second Floor"
+    assert level.elevation_m == pytest.approx(3.048)
+    assert _entities_on(model, level.id) == (1, 4)
+
+
+def test_two_sheet_set_with_qualified_floor_titles_keeps_both_floors(tmp_path: Path) -> None:
+    second = replace(SECOND, title="SECOND FLOOR PLAN - UNIT A")
+    third = Drawing(LEFT, room="ROOM: DEN", title="THIRD FLOOR PLAN - UNIT A", notes=("ELEVATION: 20'-0\"",))
+    path = _write_set(tmp_path / "two-sheets.pdf", ((second,), (third,)))
+    hint = RegistrationHint(
+        page_number=2,
+        source_a_pt=LEFT,
+        source_b_pt=(LEFT[0] + ROOM_W, LEFT[1]),
+        model_a_m=(LEFT[0] * QUARTER_INCH_MPP, LEFT[1] * QUARTER_INCH_MPP),
+        model_b_m=((LEFT[0] + ROOM_W) * QUARTER_INCH_MPP, LEFT[1] * QUARTER_INCH_MPP),
+    )
+    model = _import(path, ImportOptions(registrations=(hint,)))
+
+    assert sorted(level.name for level in model.levels) == ["Second Floor", "Third Floor"]
+    for level in model.levels:
+        assert _entities_on(model, level.id) == (1, 4)
+    elevations = {level.name: level.elevation_m for level in model.levels}
+    assert elevations["Second Floor"] == pytest.approx(3.048)
+    assert elevations["Third Floor"] == pytest.approx(6.096)
+    assert [page["status"] for page in model.attributes["pdf_architecture"]["pages"]] == [
+        "geometry_imported",
+        "geometry_imported",
+    ]
+    assert "level_elevation_conflict" not in _codes(model)

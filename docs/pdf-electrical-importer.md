@@ -174,7 +174,9 @@ with its paired glyph and records that source label with the canonical device
 type. The built-in legend vocabulary includes duplex and quad receptacles, data
 and combination outlets, power and data junction boxes, access-control devices,
 and CATV outlets. Field matching is translation-, uniform-scale-, quarter-turn-,
-and axis-mirror-invariant. Prototype and candidate strokes are normalized to
+and axis-mirror-invariant, with principal-axis rotation normalization covering
+arbitrary printed angles (the same machinery the lighting path uses for skewed
+wings). Prototype and candidate strokes are normalized to
 their glyph bounds, resampled at fixed geometric density, and compared with a
 symmetric chamfer plus Hausdorff distance so CAD block segmentation does not
 need to match the legend's graphics operators. A match is accepted when its
@@ -296,6 +298,16 @@ fixture-type evidence. Geometry is supporting evidence only: the same symbol may
 legitimately appear under multiple fixture tags, so the importer never chooses a
 fixture type from shape alone.
 
+Legend rows are read as table structure rather than as distance from the
+heading. The heading anchors the table over its own column, whose labels
+define the row grid; a further printed column belongs to the same legend when
+at least two of its rows continue that grid, however far from the heading it
+sits, so a two-column legend with the heading over column 1 still resolves
+column 2. A lone tag-shaped label far from the heading on no legend row is not
+table structure and never joins the legend. Every resolved legend label and
+row description is claimed as legend evidence, so legend rows no longer leak
+into the field-code pass or inflate `unresolved_switch_count`.
+
 An explicit lighting/fixture schedule heading plus a tag/type column and at
 least one descriptive column establishes a fixture schedule. Readable rows are
 associated by tag and can carry description, lamp, wattage, mounting,
@@ -312,11 +324,26 @@ tag's own lighting-legend prototype on the same sheet with the adjacent glyph
 clearing the glyph match minimum (`_GLYPH_MATCH_SCORE_MIN`) against it. The tag
 narrows the candidates to one fixture type, so this is the power-device margin
 rule for a single candidate type; the lower absolute floor only marks shapes
-that are certainly not the prototype and never confirms one. Scale,
-quarter-turn rotation, mirroring, and CAD stroke variation therefore use the
+that are certainly not the prototype and never confirms one. Scale, mirroring,
+arbitrary in-plane rotation, and CAD stroke variation therefore use the
 same normalized geometry machinery as power-device matching without making
-shape the semantic classifier. Repeated instances may share a fixture tag but
+shape the semantic classifier: beyond mirroring and quarter turns, both clouds
+of a comparison are re-expressed in a principal-axis frame (centroid and
+root-mean-square radius, then axis alignment), which recognizes fixtures
+printed at non-orthogonal angles in skewed wings. The tag remains the only
+type evidence. Repeated instances may share a fixture tag but
 retain separate stable source-geometry identities.
+
+Chamfer scoring alone leaves round and polygonal shapes dangerously close: a
+12x12 square beside an `A` tag scores about 0.567 against a circle legend row,
+just over the match minimum. A shape-class guard therefore compares the
+boundary's extreme centroid-distance ratio (round glyphs such as circles and
+octagons stay near 1.0-1.08; squares and triangles reach 1.41 and beyond) and
+lets a round-versus-polygonal disagreement confirm only at the strong-score
+bar. Thinner cross-class scores fail closed as
+`lighting_fixture_symbol_mismatch` with the guard recorded beside the raw
+score. Same-class pairs keep the ordinary match minimum, so an octagon next to
+a circle legend row still confirms.
 
 A fixture schedule enriches a confirmed fixture; it never proves one. A
 schedule-known letter beside small geometry is exactly what a room name or

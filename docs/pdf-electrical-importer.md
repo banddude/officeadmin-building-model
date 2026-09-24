@@ -49,7 +49,11 @@ page-local coordinates from collapsing onto one another while still allowing
 per-page recognition to proceed. When explicit `PdfPageTransform` values are
 supplied they must still cover every page and target one canonical `frame_id`.
 Architectural convergence can replace best-effort placement once sheet
-registration is known. `level_id`, `space_id`, and `host_id` remain null until
+registration is known. Transforms proposed by sheet registration (#104, see
+`pdf-convergence.md`) carry a `registration` record; the importer keeps it in
+every device's `page_transform` attributes and adds one `inferred` model
+provenance entry per page, so the placement is visibly a proposal while the
+source positions stay observed. `level_id`, `space_id`, and `host_id` remain null until
 real canonical hosts are identified.
 
 PDF extraction normalizes page `/Rotate` values of 0, 90, 180, and 270 degrees

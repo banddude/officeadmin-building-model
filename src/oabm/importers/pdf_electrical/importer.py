@@ -1677,6 +1677,10 @@ _FIELD_STATUS_MEANINGS: Mapping[str, str] = {
 # legends. A fixture's readable type tag is the semantic evidence; geometry
 # only confirms that the tag is attached to a fixture instance.
 _LIGHTING_TAG_RE = re.compile(r"^[A-Z]{1,2}(?:-?\d{1,2})?$", re.IGNORECASE)
+# The tag narrows the candidates to one fixture type, so the power-device
+# margin rule reduces to its match minimum. The absolute floor only marks
+# where a shape is certainly not the prototype; it never confirms one.
+_LIGHTING_GLYPH_CONFIRM_SCORE = _GLYPH_MATCH_SCORE_MIN
 _LIGHTING_TAG_CLUSTER_RADIUS_PT = 42.0
 _LIGHTING_TAG_ASSOCIATION_MARGIN_PT = 6.0
 _LIGHTING_LEGEND_VERTICAL_SPAN_PT = 190.0
@@ -4829,6 +4833,20 @@ def _lighting_shape_support(
     return entry, score
 
 
+def _is_lighting_shaped(
+    cluster: _VectorCluster,
+    entries: Sequence[_LightingLegendEntry],
+) -> bool:
+    """Whether the sheet's own lighting legend says this glyph is a fixture.
+
+    Lighting claims only such geometry. Anything else it rejects stays
+    available to the power-device path instead of vanishing into a lighting
+    diagnostic.
+    """
+    _entry, score = _lighting_shape_support(cluster, entries)
+    return score is not None and score >= _LIGHTING_GLYPH_CONFIRM_SCORE
+
+
 def _lighting_schedule_attributes(row: _LightingScheduleRow) -> dict[str, Any]:
     attributes: dict[str, Any] = dict(row.fields)
     wattage = row.fields.get("wattage")
@@ -4906,6 +4924,7 @@ def _recognize_lighting(
     ]
     assignments: dict[tuple[int, str], list[tuple[PdfTextObservation, str]]] = {}
     ambiguous_cluster_keys: set[tuple[int, str]] = set()
+    diagnosed_cluster_keys: set[tuple[int, str]] = set()
 
     for observation in texts:
         if observation.element_id in claimed_text_ids:
@@ -4977,7 +4996,11 @@ def _recognize_lighting(
             claimed_text_ids.add(observation.element_id)
             for cluster in nearby:
                 ambiguous_cluster_keys.add((cluster.page, cluster.geometry_key))
-                claimed_vector_ids.update(cluster.source_element_ids)
+                if _is_lighting_shaped(
+                    cluster,
+                    legend_entries_by_page.get(cluster.page, ()),
+                ):
+                    claimed_vector_ids.update(cluster.source_element_ids)
             continue
         cluster = nearby[0]
         assignments.setdefault(
@@ -5014,7 +5037,12 @@ def _recognize_lighting(
                     ),
                 }
             )
-            claimed_vector_ids.update(cluster.source_element_ids)
+            diagnosed_cluster_keys.add(key)
+            if _is_lighting_shaped(
+                cluster,
+                legend_entries_by_page.get(cluster.page, ()),
+            ):
+                claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.update(
                 observation.element_id for observation, _tag in claims
             )
@@ -5039,16 +5067,43 @@ def _recognize_lighting(
                 observation.element_id,
             ),
         )
+        page_legend_entries = legend_entries_by_page.get(cluster.page, ())
         legend_entry, shape_score = _lighting_shape_support(
             cluster,
-            legend_entries_by_page.get(cluster.page, ()),
+            page_legend_entries,
             tag=tag,
         )
         schedule_row = schedules.get((cluster.page, tag))
 
-        if legend_entry is not None and (
-            shape_score is None or shape_score < _GLYPH_MATCH_ABSOLUTE_FLOOR
+        # A schedule enriches a confirmed fixture but never proves one: a
+        # schedule-known letter beside arbitrary small geometry is exactly what
+        # a room name or grid label looks like. Only the tag's own lighting-
+        # legend prototype, matched at the glyph match minimum, confirms that
+        # the adjacent geometry is that fixture.
+        if (
+            legend_entry is None
+            or shape_score is None
+            or shape_score < _LIGHTING_GLYPH_CONFIRM_SCORE
         ):
+            if legend_entry is None:
+                miss: dict[str, Any] = {
+                    "reason_code": "lighting_fixture_symbol_unconfirmed",
+                    "reason": (
+                        "readable fixture tag is known only from a fixture "
+                        "schedule; no tag-specific lighting-legend prototype on "
+                        "this sheet confirms the adjacent geometry is a fixture"
+                    ),
+                }
+            else:
+                miss = {
+                    "reason_code": "lighting_fixture_symbol_mismatch",
+                    "reason": (
+                        "readable fixture tag is present but adjacent geometry does "
+                        "not match that tag's lighting-legend prototype"
+                    ),
+                    "shape_score": shape_score,
+                    "match_minimum": _LIGHTING_GLYPH_CONFIRM_SCORE,
+                }
             unresolved.append(
                 {
                     "kind": "lighting_fixture",
@@ -5058,24 +5113,16 @@ def _recognize_lighting(
                     "fixture_tag": tag,
                     "source_element_ids": list(cluster.source_element_ids),
                     "status": "unresolved_classification",
-                    "reason_code": "lighting_fixture_symbol_mismatch",
-                    "reason": (
-                        "readable fixture tag is present but adjacent geometry does "
-                        "not match that tag's lighting-legend prototype"
-                    ),
-                    "shape_score": shape_score,
-                    "absolute_floor": _GLYPH_MATCH_ABSOLUTE_FLOOR,
+                    **miss,
                 }
             )
-            claimed_vector_ids.update(cluster.source_element_ids)
+            diagnosed_cluster_keys.add(key)
+            if _is_lighting_shaped(cluster, page_legend_entries):
+                claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.add(tag_observation.element_id)
             continue
 
-        confidence = (
-            min(0.99, max(0.60, float(shape_score)))
-            if shape_score is not None
-            else 0.86
-        )
+        confidence = min(0.99, max(0.60, float(shape_score)))
         recognition: dict[str, Any] = {
             "method": "lighting-fixture-letter-tag",
             "legend_type": "lighting",
@@ -5085,14 +5132,13 @@ def _recognize_lighting(
             "shape_signature": cluster.shape_signature,
             "shape_score": shape_score,
             "tag_is_primary_type_evidence": True,
-        }
-        if legend_entry is not None:
-            recognition["legend"] = {
+            "legend": {
                 "page": legend_entry.page,
                 "tag_source_element_id": legend_entry.label.element_id,
                 "heading_element_id": legend_entry.heading.element_id,
                 "prototype_geometry_key": legend_entry.prototype.geometry_key,
-            }
+            },
+        }
         if schedule_row is not None:
             recognition["fixture_schedule"] = _lighting_schedule_attributes(
                 schedule_row
@@ -5159,23 +5205,20 @@ def _recognize_lighting(
             ),
             method="pdf-lighting-fixture-tag",
         )
-        if legend_entry is not None:
-            candidate.provenance.append(
-                _provenance(
-                    document,
-                    element_id=legend_entry.label.element_id,
-                    page=legend_entry.page,
-                    method="pdf-lighting-legend-tag",
-                    confidence=legend_entry.confidence,
-                    attributes={
-                        "source_text": legend_entry.label.text,
-                        "fixture_tag": tag,
-                        "prototype_geometry_key": (
-                            legend_entry.prototype.geometry_key
-                        ),
-                    },
-                )
+        candidate.provenance.append(
+            _provenance(
+                document,
+                element_id=legend_entry.label.element_id,
+                page=legend_entry.page,
+                method="pdf-lighting-legend-tag",
+                confidence=legend_entry.confidence,
+                attributes={
+                    "source_text": legend_entry.label.text,
+                    "fixture_tag": tag,
+                    "prototype_geometry_key": legend_entry.prototype.geometry_key,
+                },
             )
+        )
         if schedule_row is not None:
             schedule_attributes = _lighting_schedule_attributes(schedule_row)
             for source_element_id in schedule_row.source_element_ids:
@@ -5200,7 +5243,11 @@ def _recognize_lighting(
     # Exact switching codes are handled below and therefore are not fixture misses.
     for cluster in field_clusters:
         key = (cluster.page, cluster.geometry_key)
-        if key in ambiguous_cluster_keys or set(cluster.source_element_ids) & claimed_vector_ids:
+        if (
+            key in ambiguous_cluster_keys
+            or key in diagnosed_cluster_keys
+            or set(cluster.source_element_ids) & claimed_vector_ids
+        ):
             continue
         nearby_switch_code = any(
             observation.page == cluster.page

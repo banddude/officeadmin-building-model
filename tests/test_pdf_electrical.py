@@ -414,7 +414,7 @@ def test_generated_lighting_sheet_reads_fixture_tags_schedule_and_switching(
         assert lane["lighting_recognition"]["shape_score"] is not None
         assert (
             lane["lighting_recognition"]["shape_score"]
-            >= pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+            >= pdf_electrical_importer._LIGHTING_GLYPH_CONFIRM_SCORE
         )
         schedule = lane["fixture_schedule"]
         assert schedule["tag"] == device.name
@@ -605,6 +605,247 @@ def test_lighting_fixture_ids_are_stable_across_extraction_order(
     )
     assert first_luminaires == second_luminaires
     assert first.to_json() == second.to_json()
+
+
+def _write_lighting_room_label_probe_pdf(
+    path: Path,
+    *,
+    probe_shape: str,
+    lighting_legend: bool,
+) -> None:
+    """PR #101 review probe: a schedule-known room label beside small geometry.
+
+    The schedule defines only ``A | DOWNLIGHT``. A large room outline is
+    labelled ``A`` and a small closed probe shape sits about 20 pt from that
+    label, inside the fixture-tag association radius. With ``lighting_legend``
+    the sheet also carries a tag-specific lighting legend, one genuine ``A``
+    fixture, and a circle beside a ``B`` tag that only loosely resembles B's
+    legend prototype.
+    """
+    probe_shapes = {
+        "triangle": ((-5.0, -5.0), (5.0, -5.0), (0.0, 5.0)),
+        "fixture": (
+            (-7.0, -5.0),
+            (6.0, -5.0),
+            (6.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 6.0),
+            (-7.0, 6.0),
+        ),
+    }
+    fixture_shape = probe_shapes["fixture"]
+    b_shape = (
+        (0.0, -7.0),
+        (7.0, 0.0),
+        (0.0, 7.0),
+        (-4.0, 2.0),
+        (-7.0, 0.0),
+        (-4.0, -2.0),
+    )
+    circle = tuple(
+        (
+            round(6.0 * math.cos(2.0 * math.pi * index / 24.0), 3),
+            round(6.0 * math.sin(2.0 * math.pi * index / 24.0), 3),
+        )
+        for index in range(24)
+    )
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=1200.0, height=700.0)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): writer._add_object(font)}
+            ),
+        }
+    )
+    commands: list[str] = []
+
+    def add_text(x: float, y: float, text: str, *, size: float = 8.0) -> None:
+        commands.append(
+            f"BT /F1 {size:.3f} Tf 1 0 0 1 {x:.3f} {y:.3f} Tm ({text}) Tj ET"
+        )
+
+    def add_polygon(
+        x: float,
+        y: float,
+        points: tuple[tuple[float, float], ...],
+    ) -> None:
+        commands.append(
+            " ".join(
+                [
+                    f"{x + points[0][0]:.3f} {y + points[0][1]:.3f} m",
+                    *(f"{x + px:.3f} {y + py:.3f} l" for px, py in points[1:]),
+                    "h S",
+                ]
+            )
+        )
+
+    add_text(620.0, 465.0, "LIGHTING FIXTURE SCHEDULE", size=11.0)
+    add_text(620.0, 445.0, "TYPE", size=7.0)
+    add_text(675.0, 445.0, "DESCRIPTION", size=7.0)
+    add_text(620.0, 420.0, "A", size=7.0)
+    add_text(675.0, 420.0, "DOWNLIGHT", size=7.0)
+
+    add_polygon(
+        220.0,
+        260.0,
+        ((-90.0, -40.0), (90.0, -40.0), (90.0, 40.0), (-90.0, 40.0)),
+    )
+    add_text(210.0, 260.0, "A", size=11.0)
+    add_polygon(230.0, 260.0, probe_shapes[probe_shape])
+
+    if lighting_legend:
+        add_text(760.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0)
+        add_polygon(770.0, 615.0, fixture_shape)
+        add_text(792.0, 615.0, "A", size=8.0)
+        add_polygon(770.0, 585.0, b_shape)
+        add_text(792.0, 585.0, "B", size=8.0)
+
+        add_polygon(470.0, 550.0, fixture_shape)
+        add_text(488.0, 550.0, "A", size=8.0)
+
+        add_polygon(700.0, 250.0, circle)
+        add_text(718.0, 250.0, "B", size=8.0)
+
+    content = DecodedStreamObject()
+    content.set_data(("\n".join(commands) + "\n").encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+@pytest.mark.parametrize("probe_shape", ("triangle", "fixture"))
+def test_schedule_known_room_label_with_nearby_geometry_is_not_a_luminaire(
+    tmp_path: Path,
+    probe_shape: str,
+) -> None:
+    # PR #101 blocker: a fixture schedule enriches a confirmed fixture but
+    # never proves one. Without a tag-specific lighting-legend prototype, a
+    # schedule-known letter beside small geometry stays unresolved, whether
+    # the geometry is an unrelated triangle or happens to look fixture-like.
+    pdf_path = tmp_path / f"lighting-room-label-probe-{probe_shape}.pdf"
+    _write_lighting_room_label_probe_pdf(
+        pdf_path,
+        probe_shape=probe_shape,
+        lighting_legend=False,
+    )
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id=f"fixture:lighting-room-label-probe:{probe_shape}",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_fixture_count"] == 0
+    assert lighting["fixture_schedules"][0]["row_count"] == 1
+
+    misses = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "lighting_fixture"
+    ]
+    assert [(item["reason_code"], item["fixture_tag"]) for item in misses] == [
+        ("lighting_fixture_symbol_unconfirmed", "A")
+    ]
+
+    # Rejected geometry is diagnosed, not consumed: it stays available to
+    # the power-device path.
+    probe_vector_ids = {
+        vector.element_id
+        for vector in extracted.vectors
+        if max(x for x, _y in vector.points_pt)
+        - min(x for x, _y in vector.points_pt)
+        < 20.0
+    }
+    assert len(probe_vector_ids) == 1
+    assert misses[0]["source_element_ids"] == sorted(probe_vector_ids)
+    _, _, claimed_vector_ids, _, _, _ = pdf_electrical_importer._recognize_lighting(
+        extracted,
+        texts=extracted.texts,
+        vectors=extracted.vectors,
+    )
+    assert not probe_vector_ids & claimed_vector_ids
+
+
+def test_legend_confirmed_luminaire_is_kept_beside_room_label_probe(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "lighting-room-label-probe-with-legend.pdf"
+    _write_lighting_room_label_probe_pdf(
+        pdf_path,
+        probe_shape="triangle",
+        lighting_legend=True,
+    )
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:lighting-room-label-probe:with-legend",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    luminaires = [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    assert len(luminaires) == 1
+    (fixture,) = luminaires
+    assert fixture.name == "A"
+    lane = fixture.attributes["pdf_electrical"]
+    assert lane["fixture_schedule"]["description"] == "DOWNLIGHT"
+    recognition = lane["lighting_recognition"]
+    assert recognition["shape_score"] == 1.0
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    tag_text = texts_by_id[recognition["tag_source_element_id"]]
+    assert (tag_text.x_pt, tag_text.y_pt) == pytest.approx((488.0, 550.0), abs=1.0)
+    assert {
+        "pdf-lighting-fixture-geometry",
+        "pdf-lighting-fixture-tag",
+        "pdf-lighting-legend-tag",
+        "pdf-lighting-fixture-schedule",
+    } <= {item.method for item in fixture.provenance}
+
+    misses = {
+        item["fixture_tag"]: item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "lighting_fixture"
+    }
+    assert sorted(misses) == ["A", "B"]
+    assert {item["reason_code"] for item in misses.values()} == {
+        "lighting_fixture_symbol_mismatch"
+    }
+    # The room label's triangle is nowhere near A's prototype. The circle
+    # beside B clears the absolute floor but not the match minimum, so a
+    # loose resemblance does not confirm a fixture either.
+    assert misses["A"]["shape_score"] < pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+    assert (
+        pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+        <= misses["B"]["shape_score"]
+        < pdf_electrical_importer._LIGHTING_GLYPH_CONFIRM_SCORE
+    )
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
 
 
 def test_geometry_only_power_sheet_matches_drawn_glyphs_to_its_own_legend() -> None:

@@ -285,9 +285,9 @@ artifact.
 ### Lighting legends, fixture schedules, and letter tags
 
 Lighting recognition is a separate path from the power-device symbol legend. An
-explicit heading such as \`LIGHTING FIXTURE LEGEND\` establishes a lighting
+explicit heading such as `LIGHTING FIXTURE LEGEND` establishes a lighting
 legend only when at least two readable letter-tag rows can be associated with
-small glyph prototypes. Tags such as \`A\`, \`A1\`, \`B\`, and \`F2\` are the
+small glyph prototypes. Tags such as `A`, `A1`, `B`, and `F2` are the
 fixture-type evidence. Geometry is supporting evidence only: the same symbol may
 legitimately appear under multiple fixture tags, so the importer never chooses a
 fixture type from shape alone.
@@ -296,40 +296,57 @@ An explicit lighting/fixture schedule heading plus a tag/type column and at
 least one descriptive column establishes a fixture schedule. Readable rows are
 associated by tag and can carry description, lamp, wattage, mounting,
 manufacturer, and model/catalog text. Parsed wattage also exposes
-\`wattage_w\` when numeric. Conflicting duplicate schedule rows fail closed.
+`wattage_w` when numeric. Conflicting duplicate schedule rows fail closed.
 Recognized luminaires carry the schedule row under
-\`attributes.pdf_electrical.fixture_schedule\` and preserve independent
+`attributes.pdf_electrical.fixture_schedule` and preserve independent
 provenance for field geometry, the printed field tag, the lighting legend tag,
 and schedule cells.
 
 Field association is one-to-one and local. A schedule/legend-known tag must be
-uniquely adjacent to a small glyph; when a tag-specific legend prototype exists,
-the adjacent glyph must clear the existing absolute normalized-shape floor.
-Scale, quarter-turn rotation, mirroring, and CAD stroke variation therefore use
-the same normalized geometry machinery as power-device matching without making
+uniquely adjacent to a small glyph, and a luminaire additionally requires that
+tag's own lighting-legend prototype on the same sheet with the adjacent glyph
+clearing the glyph match minimum (`_GLYPH_MATCH_SCORE_MIN`) against it. The tag
+narrows the candidates to one fixture type, so this is the power-device margin
+rule for a single candidate type; the lower absolute floor only marks shapes
+that are certainly not the prototype and never confirms one. Scale,
+quarter-turn rotation, mirroring, and CAD stroke variation therefore use the
+same normalized geometry machinery as power-device matching without making
 shape the semantic classifier. Repeated instances may share a fixture tag but
 retain separate stable source-geometry identities.
 
+A fixture schedule enriches a confirmed fixture; it never proves one. A
+schedule-known letter beside small geometry is exactly what a room name or
+grid label looks like, so a tag with no tag-specific legend prototype on the
+sheet stays unresolved with `lighting_fixture_symbol_unconfirmed`, whatever
+the adjacent geometry looks like. A tag whose adjacent glyph falls below the
+match minimum for that tag's prototype stays unresolved with
+`lighting_fixture_symbol_mismatch` and its shape score. Lighting claims field
+geometry only when the sheet's lighting legend confirms it is lighting-shaped;
+geometry it rejects stays available to the power-device path.
+
 Fixture-like geometry with no readable tag remains unresolved with
-\`lighting_fixture_tag_missing\` (or
-\`lighting_fixture_tag_unreadable_or_unknown\` when short unreadable text is
+`lighting_fixture_tag_missing` (or
+`lighting_fixture_tag_unreadable_or_unknown` when short unreadable text is
 adjacent). Competing tags or non-unique tag-to-glyph association also remain
 unresolved with explicit reason codes. A bare schedule-known letter elsewhere
 on the sheet, including a room-name lookalike, does not create a luminaire
 because it has no qualifying adjacent glyph.
 
-On a confirmed lighting page, exact legible codes \`S\`, \`S3\`, \`SD\`, and
-\`OS\` may classify switching as single-pole, three-way, dimmer, or occupancy
+On a confirmed lighting page, exact legible codes `S`, `S3`, `SD`, and
+`OS` may classify switching as single-pole, three-way, dimmer, or occupancy
 sensor respectively, but only when the code has one unambiguous adjacent glyph.
 Ambiguous switching stays unresolved. Fixture tags always take precedence if a
 schedule actually defines one of those strings as a fixture type.
 
 The Slice 16 acceptance tests generate public-safe PDFs at runtime and pass the
-generated source through \`extract_pdf()\`; there is no pre-extracted JSON and
-no paired \`.expected.json\` answer key. The generated sheet covers same-shape
+generated source through `extract_pdf()`; there is no pre-extracted JSON and
+no paired `.expected.json` answer key. The generated sheet covers same-shape
 different-tag fixtures, scale/rotation/mirroring, adjacent distractor text,
 fixture schedules, switching, a room-name lookalike, a tagless fixture, and
-ambiguous/unreadable tags.
+ambiguous/unreadable tags. A separate generated probe puts a schedule-known
+room label beside unrelated small closed geometry inside the association
+radius: without a lighting legend it yields zero luminaires, and with one the
+genuine legend-confirmed fixture beside it is still recognized.
 
 ### Notes-column legend tables and field status
 

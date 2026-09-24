@@ -80,7 +80,7 @@ A level name is taken only from level/drawing-title text, never from a note that
 - `frame` (only when `resolved`): target `frame_id`, `basis` (`project_origin`, `explicit_registration`, or `sheet_geometry_fallback`), method, confidence, scale, rotation, and translation from sheet points into the canonical frame;
 - `confidence`: the lowest of level, scale, and frame confidence, and `entity_counts`.
 
-Page records list their `drawing_region_ids` and the `drawing_region_detection` evidence summary. Ambiguities raised while resolving a region of a split sheet carry its `drawing_region_id`. Electrical registration (#104) consumes resolved regions only.
+Page records list their `drawing_region_ids` and the `drawing_region_detection` evidence summary. `sheet_wall_evidence`, `region_wall_evidence`, and `printed_sheet_scale` expose the same read-only source evidence for electrical sheet registration (#104); `use_wall_layers=False` compares a layered sheet with a flattened one on paired wall faces. Ambiguities raised while resolving a region of a split sheet carry its `drawing_region_id`. Electrical registration (#104) consumes resolved regions only.
 
 ## Levels and 3D values
 

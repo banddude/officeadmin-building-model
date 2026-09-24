@@ -107,10 +107,13 @@ class ScaleOverride:
     meters_per_point: float
     confidence: float = 1.0
     note: str = "explicit scale override"
+    region_point_pt: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.page_number < 1:
             raise ValueError("page_number is 1-based")
+        if self.region_point_pt is not None:
+            _point2(self.region_point_pt, "region_point_pt")
         if not math.isfinite(self.meters_per_point) or self.meters_per_point <= 0:
             raise ValueError("meters_per_point must be > 0")
         if not 0 <= self.confidence <= 1:
@@ -128,10 +131,13 @@ class RegistrationHint:
     model_b_m: tuple[float, float]
     confidence: float = 1.0
     note: str = "two-point control registration"
+    region_point_pt: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.page_number < 1:
             raise ValueError("page_number is 1-based")
+        if self.region_point_pt is not None:
+            _point2(self.region_point_pt, "region_point_pt")
         for label, value in (
             ("source_a_pt", self.source_a_pt),
             ("source_b_pt", self.source_b_pt),
@@ -153,10 +159,13 @@ class LevelOverride:
     height_m: float | None = None
     confidence: float = 1.0
     note: str = "explicit level override"
+    region_point_pt: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
         if self.page_number < 1:
             raise ValueError("page_number is 1-based")
+        if self.region_point_pt is not None:
+            _point2(self.region_point_pt, "region_point_pt")
         if not math.isfinite(self.elevation_m):
             raise ValueError("elevation_m must be finite")
         if self.height_m is not None and (not math.isfinite(self.height_m) or self.height_m <= 0):

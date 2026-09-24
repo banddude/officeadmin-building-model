@@ -467,12 +467,15 @@ def test_layered_page_frame_is_not_a_room(tmp_path: Path) -> None:
     validate_model(model)
 
 
-@pytest.mark.parametrize("second_plan_x,second_level_note", [
-    (550, False),  # the gap is smaller than the old five-metre threshold
-    (350, True),  # distinct levels still fail closed with a very small gap
+@pytest.mark.parametrize("second_plan_x,second_level_note,expected_code", [
+    # the gap is smaller than the old five-metre threshold
+    (550, False, "multiple_layered_drawing_regions_unresolved"),
+    # distinct levels still fail closed with a very small gap; since #103 a
+    # sheet naming two levels without separable drawings resolves no level at all
+    (350, True, "level_ambiguous"),
 ])
 def test_two_separate_plan_regions_require_distinct_level_frames(
-    tmp_path: Path, second_plan_x: int, second_level_note: bool,
+    tmp_path: Path, second_plan_x: int, second_level_note: bool, expected_code: str,
 ) -> None:
     source = tmp_path / "synthetic-two-plan-regions.pdf"
     _write_layered_room_source(
@@ -487,7 +490,7 @@ def test_two_separate_plan_regions_require_distinct_level_frames(
         options=ImportOptions(scale_overrides=(ScaleOverride(1, 0.016933333333),)),
     )
     assert model.spaces == ()
-    assert "multiple_layered_drawing_regions_unresolved" in _ambiguity_codes(model)
+    assert expected_code in _ambiguity_codes(model)
     validate_model(model)
 
 

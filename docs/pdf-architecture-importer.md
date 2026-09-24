@@ -53,6 +53,35 @@ A two-point registration controls scale, rotation, and translation. If its compu
 
 `ScaleOverride` is the explicit escape hatch for sheets that are not to scale or have unsupported/missing scale annotations.
 
+## Drawing regions (#103)
+
+Level and frame are resolved per **drawing region**, not per sheet. Before any level or geometry decision, each architectural sheet is checked for separately drawn plans:
+
+- Wall evidence locates the drawings: visible `A-WALL`/`AE-WALL` layer segments when the sheet has at least eight; otherwise, at a sheet scale that is unambiguous from text or a page-scoped `ScaleOverride`, paired wall faces and nested rectangle pairs whose insets are wall-thickness gaps. Title-block lines and long segments along the media edges are excluded, so a sheet border or title block never locates a drawing.
+- Evidence closer than 3 m (and at least 1 in of paper) joins one cluster. A cluster counts as a drawing only with enough segments, a 4 m span, 12 m of wall evidence, and at least a quarter of the largest cluster's wall length. Legend swatches and wall-type keys therefore cannot pose as a second plan.
+- A sheet with zero or one qualifying drawing stays **one sheet-scope region** and keeps the page-level behavior described below, including the sheet-geometry registration fallback.
+- A sheet with two or more drawings is split. Each region sees only the vectors inside its own extents plus a small margin, and only the text that lies uniquely nearest to it (title-block text and text between drawings stay sheet-level).
+
+For a split sheet, every region must resolve on its own evidence:
+
+- **Level:** a level name printed with that drawing (`LEVEL: 2`, `SECOND FLOOR PLAN`, `EXISTING THIRD FLOOR POWER PLAN`), or a `LevelOverride` whose `region_point_pt` lies inside the drawing. Sheet-level level text is never shared by several drawings. A page-scoped `LevelOverride` does not say which drawing it means and is not applied (`level_override_region_unresolved`).
+- **Scale:** a region-scoped or page-scoped `ScaleOverride`, a scale printed with the drawing, or, failing those, an unambiguous sheet-level scale note, which is recorded as inherited at slightly lower confidence. A region's own two-point registration also establishes its scale.
+- **Frame:** the first region anywhere in the set that emits geometry defines the project-local origin, as the first page does today. Every other region on a split sheet needs a `RegistrationHint` with `region_point_pt` inside it; the sheet-geometry fallback is not used on split sheets, because the drawing extents it anchors on are exactly what differ between floors. A page-scoped hint is not applied (`registration_hint_region_unresolved`).
+- Two drawings on one sheet that name the same level are **competing** and neither is promoted (`drawing_regions_share_level`). When their wall evidence is congruent under translation, `drawing_region_geometry_repeated` is added. Repeated geometry with distinct explicit levels (typical floors) is recorded in `repeated_geometry_region_ids` but does not block.
+
+A level name is taken only from level/drawing-title text, never from a note that mentions a floor. A drawing (or unsplit sheet) that names more than one distinct level is `level_ambiguous` and is not promoted, instead of taking the first name found.
+
+`BuildingModel.attributes["pdf_architecture"]["drawing_regions"]` lists one record per region, in page and position order:
+
+- `region_id` (stable: logical source, page, and rounded source extents; `...|sheet` for an unsplit sheet), `page`, `index`, `scope` (`sheet` or `region`), `source_bbox_pt`, and the wall `evidence` kind and segment count;
+- `status`: `resolved` (level, scale, and frame resolved and canonical geometry emitted), `no_supported_geometry`, or `unresolved`, with sorted `reason_codes` such as `level_unresolved`, `level_ambiguous`, `level_elevation_unresolved`, `scale_unresolved`, `scale_conflict`, `registration_unresolved`, `scale_registration_conflict`, `drawing_regions_share_level`, `drawing_region_geometry_repeated`, `drawing_regions_overlap`, and `architectural_geometry_unrecognized`;
+- `level`: canonical level ID, name, elevation, elevation method, and the source text element IDs for name and elevation;
+- `scale`: metres per point, method, source text, and source element ID;
+- `frame` (only when `resolved`): target `frame_id`, `basis` (`project_origin`, `explicit_registration`, or `sheet_geometry_fallback`), method, confidence, scale, rotation, and translation from sheet points into the canonical frame;
+- `confidence`: the lowest of level, scale, and frame confidence, and `entity_counts`.
+
+Page records list their `drawing_region_ids` and the `drawing_region_detection` evidence summary. Ambiguities raised while resolving a region of a split sheet carry its `drawing_region_id`. Electrical registration (#104) consumes resolved regions only.
+
 ## Levels and 3D values
 
 Level elevation and level-wide height evidence is reconciled across all architectural plan pages before geometry is materialized. Explicit source evidence upgrades an earlier local-datum/default assumption, and a later `LevelOverride` is authoritative over parsed or assumed values. Conflicting equally authoritative level evidence is retained as an ambiguity, lowers the retained level confidence, and the conflicting page is not materialized until an override resolves it. Conflict diagnostics retain the competing page, value, source text, and source element ID when available. Level provenance points at the page that actually supplies the selected elevation and, when different, the page that supplies the selected level height.
@@ -75,6 +104,8 @@ Typical ambiguity codes include:
 - `scale_registration_conflict` / `registration_unresolved`;
 - `architectural_geometry_unrecognized`;
 - `ordinary_vector_enclosure_unresolved` / `ordinary_vector_enclosure_ambiguous`;
+- `level_ambiguous` / `level_unresolved` / `level_override_region_unresolved`;
+- `drawing_regions_share_level` / `drawing_regions_overlap` and the hint codes `scale_override_region_unresolved` / `registration_hint_region_unresolved`;
 - `level_elevation_local_datum` / `level_elevation_unresolved`;
 - `level_elevation_reconciled` / `level_elevation_conflict`;
 - `level_height_reconciled` / `level_height_conflict` / `level_height_default_assumed`;
@@ -86,7 +117,7 @@ Typical ambiguity codes include:
 
 The ordinary-vector fallback is intentionally narrow: only complete axis-aligned four-line loops are considered. Near-page rectangular sheet frames are rejected before room or wall promotion, whether represented as rectangles, ordinary vectors, or paired wall faces; the page records `sheet_frame_enclosure_rejected`. A finish note containing the word `LEVEL` does not establish a building level: level names need an explicit level label or supported floor designation. Geometric wall-face recognition first removes dimension evidence (nearby dimension-pattern text or endpoint tick/arrow/extension geometry) and hatch evidence (short regular-pitch parallel fields or short strokes bounded by filled regions), then joins near-collinear fragments and applies deterministic parallelism, overlap, and scale-derived 2 in to 18 in spacing gates. Per-page `geometric_wall_pair_diagnostics` records source primitive-family counts, dashed/filled input counts, dimension/hatch rejection counts, joined-run counts, the wall-gap histogram, accepted pairs, and rejection counts for parallelism, overlap, gap range, minimum length, pairing ambiguity, and unsupported partial-wall evidence; no layer/color gate is claimed when that source evidence is unavailable. An unambiguous open pair is retained as a lower-confidence partial wall only when it spans at least 24 in at the resolved sheet scale and has a nonparallel candidate-face corner/junction at an endpoint; isolated or shorter pairs remain unresolved, and tied best-pair evidence remains fail-closed. If paired wall faces are unavailable, exactly one sufficiently large closed loop may support only a 2D Space around a unique room label; any supported inset wall-face side is treated as evidence of an incomplete pair and the single-loop fallback fails closed. Open or competing enclosures remain unresolved instead of being selected by extraction order.
 
-The visible-layer room path is independent of wall-face pairing. It uses explicit wall and opening layers only, closes a wall-face gap only when opening vectors touch both gap ends, and preserves the resulting polygon as an inferred 2D interior. A closed room does not prove the position or thickness of its 3D walls. It also does not register separate sheets; coordinates remain subject to the importer's ordinary registration checks. Distinct floor-level notes or two substantial separated wall drawings on one sheet withhold room promotion with `multiple_layered_drawing_regions_unresolved` until each drawing has its own supported level and registration frame.
+The visible-layer room path is independent of wall-face pairing. It uses explicit wall and opening layers only, closes a wall-face gap only when opening vectors touch both gap ends, and preserves the resulting polygon as an inferred 2D interior. A closed room does not prove the position or thickness of its 3D walls. It also does not register separate sheets; coordinates remain subject to the importer's ordinary registration checks. Distinct floor-level notes or two substantial separated wall drawings on one sheet withhold room promotion with `multiple_layered_drawing_regions_unresolved` until each drawing has its own supported level and registration frame. Sheets whose drawings are separated enough to split are resolved drawing by drawing instead (see Drawing regions); the guard remains for sheets that do not split.
 
 Text extraction also keeps source observations local: words sharing a text baseline are split when a large horizontal gap indicates separate plan annotations. This prevents a room label from being fused with an unrelated distant dimension or keynote while preserving stable text-observation IDs for unchanged local labels.
 

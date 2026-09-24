@@ -51,6 +51,7 @@ class DrawingRegionSplit:
     qualifying_cluster_count: int
     cluster_count: int
     single_region_bbox_pt: BBox | None
+    single_region_evidence: tuple[RegionEvidence, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,7 @@ class SourceDrawingRegion:
     evidence_element_ids: tuple[str, ...]
     page: PdfPageObservation
     signature: frozenset[tuple[int, int, int, int]]
+    evidence: tuple[RegionEvidence, ...] = ()
 
 
 def _bbox_distance(first: BBox, second: BBox) -> float:
@@ -243,6 +245,7 @@ def split_drawing_regions(
             qualifying_cluster_count=len(qualifying),
             cluster_count=len(clusters),
             single_region_bbox_pt=qualifying[0][0] if qualifying else None,
+            single_region_evidence=qualifying[0][1] if qualifying else (),
         )
 
     qualifying.sort(key=lambda item: (round(item[0][0], 3), -round(item[0][3], 3), item[0]))
@@ -299,6 +302,7 @@ def split_drawing_regions(
                 ),
                 page=sub_page,
                 signature=_signature(items, bbox),
+                evidence=items,
             )
         )
     return DrawingRegionSplit(

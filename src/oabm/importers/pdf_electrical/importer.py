@@ -201,10 +201,15 @@ class PdfPageTransform:
     tx_m: float = 0.0
     ty_m: float = 0.0
     z_m: float = 0.0
+    # Evidence for a transform proposed by sheet registration (#104). A caller
+    # supplying its own transform leaves this empty.
+    registration: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.frame_id:
             raise ElectricalPdfError("page transform frame_id is required")
+        if self.registration is not None and not isinstance(self.registration, Mapping):
+            raise ElectricalPdfError("page transform registration must be a mapping")
         values = (
             self.m11_m_per_pt,
             self.m12_m_per_pt,
@@ -230,8 +235,8 @@ class PdfPageTransform:
             z=self.z_m,
         )
 
-    def to_attributes(self) -> dict[str, float | str]:
-        return {
+    def to_attributes(self) -> dict[str, Any]:
+        attributes: dict[str, Any] = {
             "frame_id": self.frame_id,
             "m11_m_per_pt": self.m11_m_per_pt,
             "m12_m_per_pt": self.m12_m_per_pt,
@@ -241,6 +246,9 @@ class PdfPageTransform:
             "ty_m": self.ty_m,
             "z_m": self.z_m,
         }
+        if self.registration is not None:
+            attributes["registration"] = dict(self.registration)
+        return attributes
 
 
 @dataclass(frozen=True, slots=True)
@@ -9072,6 +9080,27 @@ class ElectricalPdfImporter:
                     },
                 )
             )
+        if has_explicit_registration:
+            for page in range(1, document.page_count + 1):
+                registration = transforms[page].registration
+                if registration is None:
+                    continue
+                # The page's positions are observed; the transform that places
+                # them in the building frame is a proposal from matched evidence.
+                model_provenance.append(
+                    Provenance(
+                        source_kind="pdf-electrical",
+                        source_id=document.source_id,
+                        page=page,
+                        method=str(registration.get("method", "sheet registration")),
+                        confidence=float(registration.get("confidence", 0.5)),
+                        derivation=DERIVATION_INFERRED,
+                        attributes={
+                            "registration_status": "registered-from-matched-evidence",
+                            "page_transform": transforms[page].to_attributes(),
+                        },
+                    )
+                )
         if not has_explicit_registration and document.page_count > 1:
             for page in range(1, document.page_count + 1):
                 model_provenance.append(

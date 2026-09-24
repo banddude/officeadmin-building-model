@@ -109,3 +109,94 @@ Regression tests prove:
 - input collection ordering does not affect canonical JSON;
 - unregistered electrical geometry is rejected;
 - equally plausible wall hosts remain explicit ambiguity.
+
+## Electrical sheet registration (#104)
+
+`register_electrical_sheets(architecture, architecture_source, electrical_source)`
+proposes each electrical page's transform into the canonical frame of one
+**resolved** architectural drawing region (#103). `architecture_source` must be
+the sheet observations that produced `architecture` (checked by content hash);
+`electrical_source` is the same vector/text/layer extraction applied to the
+electrical PDF. `register_electrical_pdf(...)` extracts both from paths. Neither
+model is modified.
+
+Evidence is deterministic and compared like with like:
+
+- **wall vectors**: visible `A-WALL`/`AE-WALL` segments (xref prefixes such as
+  `xref_Floor Plan|A-Wall` included) on both sheets when both have them,
+  otherwise paired wall faces on both sheets. Pairs made only of curve segments
+  (grid or keynote circles) are not wall evidence;
+- **grid bubbles**: a short label (`A`, `B`, `1`, `2.1`) enclosed by a drawn
+  ring. A label drawn twice on one sheet is dropped.
+
+Matching uses the ratio of the two printed scales and no rotation. Translation
+candidates come from same-orientation, same-length segment pairs; each candidate
+is verified by counting electrical segments whose endpoints both land on one
+architectural segment within `tolerance_m` (default 0.05 m), then refined.
+
+A page is `registered` only when all of these hold:
+
+- at least `min_inliers` (8) matched segments and `min_coverage` (30%) of the
+  page's wall evidence;
+- residual RMS within `max_residual_m` (0.05 m);
+- inliers spread at least `min_span_m` (3 m) and a quarter of the target's
+  extent in both axes;
+- no second translation with nearly as many valid matches;
+- no mirrored or rotated placement (mirror × four quarter turns) explains as
+  many electrical wall segments as the identity placement. Symmetric walls match
+  a flipped sheet almost as well as the true one, so this is checked before
+  accepting;
+- when at least two grid labels are shared, they land on their architectural
+  bubbles under the wall placement. One stray label is tolerated when at least
+  two others agree, for example a keynote tag that happens to share a grid
+  label;
+- when the electrical drawing prints one level name and the target level is
+  named, the names agree. "Second Floor", "2nd Floor" and "2" are the same;
+- every region that accepts the page gives the same level and the same canonical
+  placement.
+
+Grid labels register a page on their own when walls are absent or too weak and
+at least two shared labels agree. Grid labels that agree with the wall placement
+also resolve walls that are symmetric under a mirror or turn.
+
+Otherwise the page stays `registration_pending` with a stable reason:
+
+- `scale_unresolved`, `no_resolved_architectural_region`;
+- `missing_registration_evidence`, which also carries a bounded question for a
+  later #98 vision task (nothing is inferred);
+- `insufficient_matched_evidence`, `evidence_clustered`, `excessive_residual`,
+  `grid_labels_inconsistent`, `registration_methods_disagree`;
+- `competing_transforms`: repeated geometry inside one region;
+- `ambiguous_orientation`: a mirrored or turned placement explains exactly as
+  many wall segments and no grid labels settle it;
+- `level_name_mismatch`: the electrical drawing names a different level;
+- `competing_targets`: several regions or levels accept the page with different
+  placements. The choice is never made by page order;
+- `orientation_incompatible`: a mirrored or turned placement explains more wall
+  segments than the identity, or is the only one that matches. The matching
+  configuration is reported in `diagnostics`, never applied;
+- `scale_incompatible`: the walls match only at a scale other than the printed
+  ratio. This is a diagnostic only, never applied;
+- `multiple_drawing_regions_on_page`: one `PdfPageTransform` per page cannot
+  place two floor drawings.
+
+A registered page's `PdfPageTransform` composes electrical sheet point →
+architectural sheet point → canonical frame. It targets the model `frame_id`,
+sets `z_m` to the target level's elevation, and carries its `registration`
+record:
+
+- method and `derivation: inferred`;
+- target region, page, and level;
+- scale ratio and translation;
+- inlier count, coverage, span, and residual;
+- a sample of matched source element IDs;
+- confidence: the lower of the region's confidence and the method's (0.95 for
+  walls and grids together, 0.85 walls, 0.80 grids).
+
+The electrical importer records that registration as an `inferred` model
+provenance entry per page, while device source positions remain observed.
+
+`ElectricalSheetRegistration.page_transforms()` returns transforms only when
+**every** page is registered. Otherwise it returns `None`, the electrical import
+stays `registration_pending`, and `converge_pdf_models` refuses it. One page's
+transform is never offered for another page or a partial document.

@@ -38,6 +38,7 @@ from oabm.model import (
 )
 
 from .drawing_regions import (
+    DrawingRegionSplit,
     RegionEvidence,
     SourceDrawingRegion,
     signatures_repeat,
@@ -4237,6 +4238,8 @@ def _drawing_region_evidence(
     meters_per_point: float | None,
     options: ImportOptions,
     excluded_line_ids: set[str],
+    *,
+    use_wall_layers: bool = True,
 ) -> tuple[str, tuple[RegionEvidence, ...]]:
     """Wall evidence that says where building drawings sit on a sheet."""
 
@@ -4246,7 +4249,7 @@ def _drawing_region_evidence(
         and line.element_id not in excluded_line_ids
         and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
     )
-    if len(wall_lines) >= _REGION_MIN_WALL_LAYER_SEGMENTS:
+    if use_wall_layers and len(wall_lines) >= _REGION_MIN_WALL_LAYER_SEGMENTS:
         return "visible_wall_layer", tuple(
             RegionEvidence(line.start_pt, line.end_pt, (line.element_id,))
             for line in wall_lines
@@ -4269,10 +4272,13 @@ def _drawing_region_evidence(
             options,
             excluded_element_ids=set(excluded_line_ids),
         )
+        # Chords of drawn circles (grid bubbles, keynote tags) can pair up like
+        # wall faces; a pair built only from curve segments does not locate a wall.
         evidence.extend(
             RegionEvidence(pair.start_pt, pair.end_pt, pair.source_element_ids)
             for pair in pairs
             if not _is_sheet_border_segment(page, pair.start_pt, pair.end_pt)
+            and set(pair.primitive_families) != {"curve"}
         )
     return "paired_wall_faces", tuple(evidence)
 
@@ -4349,18 +4355,18 @@ def _assign_region_hints(
     return result
 
 
-def _sheet_drawing_regions(
-    source_id: str,
+def _split_sheet(
     page: PdfPageObservation,
+    meters_per_point: float | None,
     options: ImportOptions,
-    ambiguities: list[dict[str, object]],
-) -> _SheetRegions:
-    """Find the separately drawn plans on one architectural sheet."""
+    *,
+    use_wall_layers: bool = True,
+) -> tuple[str, tuple[RegionEvidence, ...], DrawingRegionSplit, float]:
+    """Wall evidence and its split into separately drawn plans for one sheet."""
 
-    meters_per_point = _region_detection_scale(page, options)
     title_boxes, title_line_ids = _title_block_exclusion(page)
     evidence_kind, evidence = _drawing_region_evidence(
-        page, meters_per_point, options, title_line_ids,
+        page, meters_per_point, options, title_line_ids, use_wall_layers=use_wall_layers,
     )
     if meters_per_point is not None:
         separation_pt = max(72.0, _REGION_SEPARATION_M / meters_per_point)
@@ -4387,6 +4393,117 @@ def _sheet_drawing_regions(
             if any(_inside(box, text.center_pt) for box in title_boxes)
         ),
     )
+    return evidence_kind, evidence, split, separation_pt
+
+
+@dataclass(frozen=True, slots=True)
+class SheetWallEvidence:
+    """Read-only wall evidence of one sheet, grouped by separately drawn plan.
+
+    Registration consumers (#104) match electrical sheets against this source
+    evidence. Coordinates are displayed sheet points, bottom-left origin.
+    """
+
+    page_number: int
+    meters_per_point: float | None
+    evidence_kind: str
+    drawings: tuple[tuple[tuple[float, float, float, float], tuple[RegionEvidence, ...]], ...]
+
+
+def drawing_level_names(page: PdfPageObservation) -> tuple[str, ...]:
+    """Distinct level names printed as level or drawing-title text on a sheet."""
+
+    return tuple(sorted({_anchor(name): name for name, _ in _level_name_candidates(page)}.values()))
+
+
+def printed_sheet_scale(page: PdfPageObservation) -> tuple[float, str, str] | None:
+    """The sheet's printed scale as (metres per point, text, element id), if unambiguous."""
+
+    candidates = _scale_candidates(page)
+    if not candidates:
+        return None
+    first = candidates[0][0]
+    if any(abs(value - first) / first > 1e-6 for value, _, _ in candidates[1:]):
+        return None
+    return candidates[0]
+
+
+def sheet_wall_evidence(
+    page: PdfPageObservation,
+    *,
+    meters_per_point: float | None = None,
+    options: ImportOptions | None = None,
+    use_wall_layers: bool = True,
+) -> SheetWallEvidence:
+    """Group a sheet's wall evidence by drawing, using the #103 region rules.
+
+    ``use_wall_layers=False`` ignores CAD layer names and uses paired wall faces,
+    so a layered sheet can be compared with a flattened one on equal terms.
+    """
+
+    options = options or ImportOptions()
+    if meters_per_point is None:
+        meters_per_point = _region_detection_scale(page, options)
+    evidence_kind, evidence, split, _ = _split_sheet(
+        page, meters_per_point, options, use_wall_layers=use_wall_layers,
+    )
+    drawings: tuple[tuple[tuple[float, float, float, float], tuple[RegionEvidence, ...]], ...]
+    if split.regions:
+        drawings = tuple((region.bbox_pt, region.evidence) for region in split.regions)
+    elif split.single_region_bbox_pt is not None:
+        drawings = ((split.single_region_bbox_pt, split.single_region_evidence),)
+    elif evidence:
+        drawings = ((
+            (
+                min(item.bbox_pt[0] for item in evidence),
+                min(item.bbox_pt[1] for item in evidence),
+                max(item.bbox_pt[2] for item in evidence),
+                max(item.bbox_pt[3] for item in evidence),
+            ),
+            evidence,
+        ),)
+    else:
+        drawings = ()
+    return SheetWallEvidence(
+        page_number=page.page_number,
+        meters_per_point=meters_per_point,
+        evidence_kind=evidence_kind,
+        drawings=drawings,
+    )
+
+
+def region_wall_evidence(
+    page: PdfPageObservation,
+    bbox_pt: tuple[float, float, float, float],
+    meters_per_point: float,
+    *,
+    options: ImportOptions | None = None,
+    use_wall_layers: bool = True,
+) -> tuple[str, tuple[RegionEvidence, ...]]:
+    """Wall evidence lying inside one resolved drawing region's source extents."""
+
+    options = options or ImportOptions()
+    _, title_line_ids = _title_block_exclusion(page)
+    kind, evidence = _drawing_region_evidence(
+        page, meters_per_point, options, title_line_ids, use_wall_layers=use_wall_layers,
+    )
+    x0, y0, x1, y1 = bbox_pt[0] - 1.0, bbox_pt[1] - 1.0, bbox_pt[2] + 1.0, bbox_pt[3] + 1.0
+    return kind, tuple(
+        item for item in evidence
+        if all(x0 <= x <= x1 and y0 <= y <= y1 for x, y in (item.start_pt, item.end_pt))
+    )
+
+
+def _sheet_drawing_regions(
+    source_id: str,
+    page: PdfPageObservation,
+    options: ImportOptions,
+    ambiguities: list[dict[str, object]],
+) -> _SheetRegions:
+    """Find the separately drawn plans on one architectural sheet."""
+
+    meters_per_point = _region_detection_scale(page, options)
+    evidence_kind, evidence, split, separation_pt = _split_sheet(page, meters_per_point, options)
     detection: dict[str, object] = {
         "evidence_kind": evidence_kind,
         "evidence_segment_count": len(evidence),

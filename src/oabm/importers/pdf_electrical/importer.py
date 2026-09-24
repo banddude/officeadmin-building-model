@@ -1694,6 +1694,12 @@ _LIGHTING_SWITCH_CODES: Mapping[str, tuple[str, str]] = {
     "SD": ("switch", "dimmer"),
     "OS": ("occupancy_sensor", "occupancy_sensor"),
 }
+# A switch-code legend row is a switch prototype only when its own description
+# names a switching device. S1/S2/S3 are also common strip-fixture type tags.
+_LIGHTING_SWITCH_DESCRIPTION_WORDS = frozenset(
+    {"SWITCH", "SWITCHES", "DIMMER", "OCCUPANCY", "VACANCY"}
+)
+_LIGHTING_LEGEND_DESCRIPTION_SPAN_PT = 220.0
 _LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
     "TYPE": "tag",
     "TAG": "tag",
@@ -4847,6 +4853,28 @@ def _is_lighting_shaped(
     return score is not None and score >= _LIGHTING_GLYPH_CONFIRM_SCORE
 
 
+def _lighting_legend_row_description(
+    entry: _LightingLegendEntry,
+    texts: Sequence[PdfTextObservation],
+) -> tuple[PdfTextObservation, ...]:
+    label = entry.label
+    return tuple(
+        sorted(
+            (
+                observation
+                for observation in texts
+                if observation.page == label.page
+                and observation.element_id != label.element_id
+                and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
+                and 0.0
+                < observation.x_pt - label.x_pt
+                <= _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+            ),
+            key=lambda item: (item.x_pt, item.element_id),
+        )
+    )
+
+
 def _lighting_schedule_attributes(row: _LightingScheduleRow) -> dict[str, Any]:
     attributes: dict[str, Any] = dict(row.fields)
     wattage = row.fields.get("wattage")
@@ -4909,10 +4937,59 @@ def _recognize_lighting(
     ]
     candidates: dict[str, _EntityCandidate] = {}
 
-    fixture_tags_by_page: dict[int, set[str]] = {}
+    schedule_tags_by_page: dict[int, set[str]] = {}
     for page, tag in schedules:
-        fixture_tags_by_page.setdefault(page, set()).add(tag)
+        schedule_tags_by_page.setdefault(page, set()).add(tag)
+
+    # A legend row labelled with an exact switching code is that code's switch
+    # prototype only when the row's own description names a switching device.
+    # A fixture schedule that defines the same string as a fixture type takes
+    # precedence. A switch-code row established as neither stays out of both
+    # roles instead of guessing between a strip-fixture tag and a switch.
+    fixture_entries_by_page: dict[int, tuple[_LightingLegendEntry, ...]] = {}
+    switch_entries_by_page: dict[int, tuple[_LightingLegendEntry, ...]] = {}
     for page, entries in legend_entries_by_page.items():
+        schedule_tags = schedule_tags_by_page.get(page, set())
+        fixture_entries: list[_LightingLegendEntry] = []
+        switch_entries: list[_LightingLegendEntry] = []
+        for entry in entries:
+            if entry.tag not in _LIGHTING_SWITCH_CODES or entry.tag in schedule_tags:
+                fixture_entries.append(entry)
+                continue
+            description = _lighting_legend_row_description(entry, texts)
+            claimed_text_ids.update(item.element_id for item in description)
+            words = {
+                word
+                for item in description
+                for word in _normalize_legend_alias(item.text).split()
+            }
+            if words & _LIGHTING_SWITCH_DESCRIPTION_WORDS:
+                switch_entries.append(entry)
+                continue
+            unresolved.append(
+                {
+                    "kind": "lighting_legend_tag",
+                    "page": entry.page,
+                    "source_element_id": entry.label.element_id,
+                    "source_text": entry.label.text,
+                    "legend_code": entry.tag,
+                    "description_text": [item.text for item in description],
+                    "status": "unresolved_lighting_legend",
+                    "reason_code": "lighting_legend_code_role_ambiguous",
+                    "reason": (
+                        "legend row label is a switching code, but neither a "
+                        "fixture schedule row nor the row's description "
+                        "establishes whether it is a fixture type or a switch"
+                    ),
+                }
+            )
+        fixture_entries_by_page[page] = tuple(fixture_entries)
+        switch_entries_by_page[page] = tuple(switch_entries)
+
+    fixture_tags_by_page: dict[int, set[str]] = {
+        page: set(tags) for page, tags in schedule_tags_by_page.items()
+    }
+    for page, entries in fixture_entries_by_page.items():
         fixture_tags_by_page.setdefault(page, set()).update(
             entry.tag for entry in entries
         )
@@ -5067,10 +5144,9 @@ def _recognize_lighting(
                 observation.element_id,
             ),
         )
-        page_legend_entries = legend_entries_by_page.get(cluster.page, ())
         legend_entry, shape_score = _lighting_shape_support(
             cluster,
-            page_legend_entries,
+            fixture_entries_by_page.get(cluster.page, ()),
             tag=tag,
         )
         schedule_row = schedules.get((cluster.page, tag))
@@ -5117,7 +5193,10 @@ def _recognize_lighting(
                 }
             )
             diagnosed_cluster_keys.add(key)
-            if _is_lighting_shaped(cluster, page_legend_entries):
+            if _is_lighting_shaped(
+                cluster,
+                legend_entries_by_page.get(cluster.page, ()),
+            ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.add(tag_observation.element_id)
             continue
@@ -5268,7 +5347,7 @@ def _recognize_lighting(
             continue
         entry, score = _lighting_shape_support(
             cluster,
-            legend_entries_by_page.get(cluster.page, ()),
+            fixture_entries_by_page.get(cluster.page, ()),
         )
         if entry is None or score is None or score < _GLYPH_MATCH_STRONG_SCORE:
             continue
@@ -5323,8 +5402,12 @@ def _recognize_lighting(
     )
     fixture_field_text_ids = set(claimed_text_ids)
 
-    # Switching is semantic only when the printed code is exact and uniquely
-    # attached to one small glyph on a confirmed lighting page.
+    # Switching is semantic only when the printed code is exact, uniquely
+    # attached to one small glyph on a confirmed lighting page, and that glyph
+    # matches the code's own lighting-legend prototype. The code table alone
+    # is not evidence: SD inside a circle is a smoke detector and S in a bubble
+    # is a grid line. Without that prototype the code stays an explicit,
+    # counted miss rather than a guessed switch.
     for observation in texts:
         if observation.page not in lighting_pages:
             continue
@@ -5404,12 +5487,66 @@ def _recognize_lighting(
             )
             claimed_text_ids.add(observation.element_id)
             for cluster in nearby:
-                claimed_vector_ids.update(cluster.source_element_ids)
+                if _is_lighting_shaped(
+                    cluster,
+                    legend_entries_by_page.get(cluster.page, ()),
+                ):
+                    claimed_vector_ids.update(cluster.source_element_ids)
             continue
 
         cluster = nearby[0]
         canonical_type, switch_type = switch_classification
-        confidence = 0.96
+        legend_entry, shape_score = _lighting_shape_support(
+            cluster,
+            switch_entries_by_page.get(cluster.page, ()),
+            tag=code,
+        )
+        if (
+            legend_entry is None
+            or shape_score is None
+            or shape_score < _LIGHTING_GLYPH_CONFIRM_SCORE
+        ):
+            if legend_entry is None:
+                miss = {
+                    "reason_code": "lighting_switch_symbol_unconfirmed",
+                    "reason": (
+                        "legible switching code has no code-specific "
+                        "lighting-legend prototype on this sheet; the code "
+                        "alone does not prove a switch"
+                    ),
+                }
+            else:
+                miss = {
+                    "reason_code": "lighting_switch_symbol_mismatch",
+                    "reason": (
+                        "legible switching code is present but adjacent geometry "
+                        "does not match that code's lighting-legend prototype"
+                    ),
+                    "shape_score": shape_score,
+                    "match_minimum": _LIGHTING_GLYPH_CONFIRM_SCORE,
+                }
+            unresolved.append(
+                {
+                    "kind": "lighting_switch",
+                    "page": observation.page,
+                    "source_element_id": observation.element_id,
+                    "source_text": observation.text,
+                    "switch_code": code,
+                    "candidate_switch_type": switch_type,
+                    "source_element_ids": list(cluster.source_element_ids),
+                    "status": "unresolved_classification",
+                    **miss,
+                }
+            )
+            claimed_text_ids.add(observation.element_id)
+            if _is_lighting_shaped(
+                cluster,
+                legend_entries_by_page.get(cluster.page, ()),
+            ):
+                claimed_vector_ids.update(cluster.source_element_ids)
+            continue
+
+        confidence = min(0.96, max(0.60, float(shape_score)))
         recognition = {
             "method": "lighting-switch-code",
             "switch_code": code,
@@ -5417,6 +5554,13 @@ def _recognize_lighting(
             "code_source_element_id": observation.element_id,
             "source_geometry_key": cluster.geometry_key,
             "shape_signature": cluster.shape_signature,
+            "shape_score": shape_score,
+            "legend": {
+                "page": legend_entry.page,
+                "code_source_element_id": legend_entry.label.element_id,
+                "heading_element_id": legend_entry.heading.element_id,
+                "prototype_geometry_key": legend_entry.prototype.geometry_key,
+            },
         }
         candidate = _EntityCandidate(
             key=f"p{cluster.page}:lighting-switch:{cluster.geometry_key}",
@@ -5472,11 +5616,31 @@ def _recognize_lighting(
             ),
             method="pdf-lighting-switch-code",
         )
+        candidate.provenance.append(
+            _provenance(
+                document,
+                element_id=legend_entry.label.element_id,
+                page=legend_entry.page,
+                method="pdf-lighting-legend-switch-code",
+                confidence=legend_entry.confidence,
+                attributes={
+                    "source_text": legend_entry.label.text,
+                    "switch_code": code,
+                    "prototype_geometry_key": legend_entry.prototype.geometry_key,
+                },
+            )
+        )
         candidates[candidate.key] = candidate
         matched_vector_ids.update(cluster.source_element_ids)
         claimed_vector_ids.update(cluster.source_element_ids)
         claimed_text_ids.add(observation.element_id)
 
+    # Misses are counted beside recognitions so any recall a stricter rule
+    # costs stays visible in the output instead of silently disappearing.
+    unresolved_by_reason: dict[str, int] = {}
+    for item in unresolved:
+        reason_code = str(item.get("reason_code"))
+        unresolved_by_reason[reason_code] = unresolved_by_reason.get(reason_code, 0) + 1
     recognition_summary = {
         "legend_type": "lighting",
         "legend_regions": legend_metadata,
@@ -5489,6 +5653,13 @@ def _recognize_lighting(
             candidate.canonical_type in {"switch", "occupancy_sensor"}
             for candidate in candidates.values()
         ),
+        "unresolved_fixture_count": sum(
+            item.get("kind") == "lighting_fixture" for item in unresolved
+        ),
+        "unresolved_switch_count": sum(
+            item.get("kind") == "lighting_switch" for item in unresolved
+        ),
+        "unresolved_by_reason": dict(sorted(unresolved_by_reason.items())),
         "fixture_tags": sorted(
             {
                 candidate.tag

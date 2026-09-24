@@ -142,6 +142,7 @@ def _write_generated_lighting_pdf(
     *,
     mode: str = "full",
     page_rotation: int = 0,
+    switch_legend: bool = True,
 ) -> None:
     if mode not in {"full", "room_only", "tagless_only", "unreadable_only"}:
         raise AssertionError(f"unsupported lighting fixture mode {mode}")
@@ -269,6 +270,19 @@ def _write_generated_lighting_pdf(
     ):
         add_polygon(770.0, y, shape)
         add_text(792.0, y, tag, size=8.0)
+    if switch_legend:
+        # Switching codes are confirmed by their own legend rows, exactly like
+        # fixture tags. All four deliberately share one triangle prototype, so
+        # the code, not the shape, determines the switch type.
+        for code, y, description in (
+            ("S", 615.0, "SINGLE POLE SWITCH"),
+            ("S3", 585.0, "3-WAY SWITCH"),
+            ("SD", 555.0, "DIMMER SWITCH"),
+            ("OS", 525.0, "OCCUPANCY SENSOR"),
+        ):
+            add_polygon(900.0, y, switch_shape)
+            add_text(922.0, y, code, size=8.0)
+            add_text(945.0, y, description, size=7.0)
 
     # Source-only fixture schedule. No expected-answer sidecar is created.
     add_text(620.0, 465.0, "LIGHTING FIXTURE SCHEDULE", size=11.0)
@@ -460,6 +474,13 @@ def test_generated_lighting_sheet_reads_fixture_tags_schedule_and_switching(
         device.attributes["pdf_electrical"]["switch_code"]
         for device in switches
     } == {"S", "S3", "SD", "OS"}
+    for device in switches:
+        recognition = device.attributes["pdf_electrical"]["lighting_recognition"]
+        assert recognition["shape_score"] == 1.0
+        assert recognition["legend"]["prototype_geometry_key"]
+        assert "pdf-lighting-legend-switch-code" in {
+            item.method for item in device.provenance
+        }
 
     unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
     reason_codes = {
@@ -474,6 +495,8 @@ def test_generated_lighting_sheet_reads_fixture_tags_schedule_and_switching(
     assert lighting["legend_type"] == "lighting"
     assert lighting["recognized_fixture_count"] == 5
     assert lighting["recognized_switch_count"] == 4
+    assert lighting["unresolved_fixture_count"] == 2
+    assert lighting["unresolved_switch_count"] == 0
     assert lighting["fixture_tags"] == ["A", "A1", "B", "F2"]
     assert lighting["legend_regions"][0]["method"] == "lighting-letter-tag-legend"
     assert lighting["fixture_schedules"][0]["row_count"] == 4
@@ -569,7 +592,7 @@ def test_generated_lighting_sheet_public_before_after_control(
     )
 
     # Public generated-source control only. These are not private-pilot counts.
-    assert before_counts == (0, 16)
+    assert before_counts == (0, 20)
     assert after_counts == (5, 2)
 
 
@@ -607,49 +630,48 @@ def test_lighting_fixture_ids_are_stable_across_extraction_order(
     assert first.to_json() == second.to_json()
 
 
-def _write_lighting_room_label_probe_pdf(
-    path: Path,
-    *,
-    probe_shape: str,
-    lighting_legend: bool,
-) -> None:
-    """PR #101 review probe: a schedule-known room label beside small geometry.
+_PROBE_FIXTURE_SHAPE = (
+    (-7.0, -5.0),
+    (6.0, -5.0),
+    (6.0, 1.0),
+    (1.0, 1.0),
+    (1.0, 6.0),
+    (-7.0, 6.0),
+)
+_PROBE_TRIANGLE = ((-5.0, -5.0), (5.0, -5.0), (0.0, 5.0))
 
-    The schedule defines only ``A | DOWNLIGHT``. A large room outline is
-    labelled ``A`` and a small closed probe shape sits about 20 pt from that
-    label, inside the fixture-tag association radius. With ``lighting_legend``
-    the sheet also carries a tag-specific lighting legend, one genuine ``A``
-    fixture, and a circle beside a ``B`` tag that only loosely resembles B's
-    legend prototype.
-    """
-    probe_shapes = {
-        "triangle": ((-5.0, -5.0), (5.0, -5.0), (0.0, 5.0)),
-        "fixture": (
-            (-7.0, -5.0),
-            (6.0, -5.0),
-            (6.0, 1.0),
-            (1.0, 1.0),
-            (1.0, 6.0),
-            (-7.0, 6.0),
-        ),
-    }
-    fixture_shape = probe_shapes["fixture"]
-    b_shape = (
-        (0.0, -7.0),
-        (7.0, 0.0),
-        (0.0, 7.0),
-        (-4.0, 2.0),
-        (-7.0, 0.0),
-        (-4.0, -2.0),
-    )
-    circle = tuple(
+
+def _probe_circle(radius: float) -> tuple[tuple[float, float], ...]:
+    return tuple(
         (
-            round(6.0 * math.cos(2.0 * math.pi * index / 24.0), 3),
-            round(6.0 * math.sin(2.0 * math.pi * index / 24.0), 3),
+            round(radius * math.cos(2.0 * math.pi * index / 24.0), 3),
+            round(radius * math.sin(2.0 * math.pi * index / 24.0), 3),
         )
         for index in range(24)
     )
 
+
+def _probe_text(x: float, y: float, text: str, *, size: float = 8.0) -> str:
+    return f"BT /F1 {size:.3f} Tf 1 0 0 1 {x:.3f} {y:.3f} Tm ({text}) Tj ET"
+
+
+def _probe_path(
+    x: float,
+    y: float,
+    points: tuple[tuple[float, float], ...],
+    *,
+    closed: bool = True,
+) -> str:
+    return " ".join(
+        [
+            f"{x + points[0][0]:.3f} {y + points[0][1]:.3f} m",
+            *(f"{x + px:.3f} {y + py:.3f} l" for px, py in points[1:]),
+            "h S" if closed else "S",
+        ]
+    )
+
+
+def _write_probe_pdf(path: Path, commands: list[str]) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=1200.0, height=700.0)
     font = DictionaryObject(
@@ -666,60 +688,103 @@ def _write_lighting_room_label_probe_pdf(
             ),
         }
     )
-    commands: list[str] = []
-
-    def add_text(x: float, y: float, text: str, *, size: float = 8.0) -> None:
-        commands.append(
-            f"BT /F1 {size:.3f} Tf 1 0 0 1 {x:.3f} {y:.3f} Tm ({text}) Tj ET"
-        )
-
-    def add_polygon(
-        x: float,
-        y: float,
-        points: tuple[tuple[float, float], ...],
-    ) -> None:
-        commands.append(
-            " ".join(
-                [
-                    f"{x + points[0][0]:.3f} {y + points[0][1]:.3f} m",
-                    *(f"{x + px:.3f} {y + py:.3f} l" for px, py in points[1:]),
-                    "h S",
-                ]
-            )
-        )
-
-    add_text(620.0, 465.0, "LIGHTING FIXTURE SCHEDULE", size=11.0)
-    add_text(620.0, 445.0, "TYPE", size=7.0)
-    add_text(675.0, 445.0, "DESCRIPTION", size=7.0)
-    add_text(620.0, 420.0, "A", size=7.0)
-    add_text(675.0, 420.0, "DOWNLIGHT", size=7.0)
-
-    add_polygon(
-        220.0,
-        260.0,
-        ((-90.0, -40.0), (90.0, -40.0), (90.0, 40.0), (-90.0, 40.0)),
-    )
-    add_text(210.0, 260.0, "A", size=11.0)
-    add_polygon(230.0, 260.0, probe_shapes[probe_shape])
-
-    if lighting_legend:
-        add_text(760.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0)
-        add_polygon(770.0, 615.0, fixture_shape)
-        add_text(792.0, 615.0, "A", size=8.0)
-        add_polygon(770.0, 585.0, b_shape)
-        add_text(792.0, 585.0, "B", size=8.0)
-
-        add_polygon(470.0, 550.0, fixture_shape)
-        add_text(488.0, 550.0, "A", size=8.0)
-
-        add_polygon(700.0, 250.0, circle)
-        add_text(718.0, 250.0, "B", size=8.0)
-
     content = DecodedStreamObject()
     content.set_data(("\n".join(commands) + "\n").encode("ascii"))
     page[NameObject("/Contents")] = writer._add_object(content)
     with path.open("wb") as handle:
         writer.write(handle)
+
+
+def _probe_schedule_commands() -> list[str]:
+    # A one-row fixture schedule makes the sheet a lighting sheet and puts A
+    # in the known-tag set; it never draws a fixture symbol.
+    return [
+        _probe_text(620.0, 465.0, "LIGHTING FIXTURE SCHEDULE", size=11.0),
+        _probe_text(620.0, 445.0, "TYPE", size=7.0),
+        _probe_text(675.0, 445.0, "DESCRIPTION", size=7.0),
+        _probe_text(620.0, 420.0, "A", size=7.0),
+        _probe_text(675.0, 420.0, "DOWNLIGHT", size=7.0),
+    ]
+
+
+def _write_lighting_room_label_probe_pdf(
+    path: Path,
+    *,
+    probe_shape: str,
+    lighting_legend: bool,
+) -> None:
+    """PR #101 review probe: a schedule-known room label beside small geometry.
+
+    The schedule defines only ``A | DOWNLIGHT``. A large room outline is
+    labelled ``A`` and a small closed probe shape sits about 20 pt from that
+    label, inside the fixture-tag association radius. With ``lighting_legend``
+    the sheet also carries a tag-specific lighting legend, one genuine ``A``
+    fixture, and a circle beside a ``B`` tag that only loosely resembles B's
+    legend prototype.
+    """
+    probe_shapes = {"triangle": _PROBE_TRIANGLE, "fixture": _PROBE_FIXTURE_SHAPE}
+    b_shape = (
+        (0.0, -7.0),
+        (7.0, 0.0),
+        (0.0, 7.0),
+        (-4.0, 2.0),
+        (-7.0, 0.0),
+        (-4.0, -2.0),
+    )
+    commands = _probe_schedule_commands()
+    commands += [
+        _probe_path(
+            220.0,
+            260.0,
+            ((-90.0, -40.0), (90.0, -40.0), (90.0, 40.0), (-90.0, 40.0)),
+        ),
+        _probe_text(210.0, 260.0, "A", size=11.0),
+        _probe_path(230.0, 260.0, probe_shapes[probe_shape]),
+    ]
+    if lighting_legend:
+        commands += [
+            _probe_text(760.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0),
+            _probe_path(770.0, 615.0, _PROBE_FIXTURE_SHAPE),
+            _probe_text(792.0, 615.0, "A"),
+            _probe_path(770.0, 585.0, b_shape),
+            _probe_text(792.0, 585.0, "B"),
+            _probe_path(470.0, 550.0, _PROBE_FIXTURE_SHAPE),
+            _probe_text(488.0, 550.0, "A"),
+            _probe_path(700.0, 250.0, _probe_circle(6.0)),
+            _probe_text(718.0, 250.0, "B"),
+        ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_switch_collision_probe_pdf(path: Path, *, switch_legend: bool) -> None:
+    """Switch-code collisions on a lighting sheet.
+
+    ``SD`` inside a circle is a smoke detector and ``S`` in a bubble at the end
+    of a long grid line is a column grid label. Both are legible switch codes
+    beside small closed geometry. With ``switch_legend`` the sheet also carries
+    code-specific switch prototypes and one genuine ``S`` switch.
+    """
+    commands = _probe_schedule_commands()
+    commands += [
+        _probe_path(300.0, 300.0, _probe_circle(8.0)),
+        _probe_text(294.0, 297.0, "SD", size=7.0),
+        _probe_path(500.0, 600.0, _probe_circle(8.0)),
+        _probe_text(497.0, 597.0, "S"),
+        _probe_path(500.0, 592.0, ((0.0, 0.0), (0.0, -440.0)), closed=False),
+    ]
+    if switch_legend:
+        commands += [
+            _probe_text(760.0, 655.0, "LIGHTING LEGEND", size=11.0),
+            _probe_path(900.0, 615.0, _PROBE_TRIANGLE),
+            _probe_text(922.0, 615.0, "S"),
+            _probe_text(945.0, 615.0, "SINGLE POLE SWITCH", size=7.0),
+            _probe_path(900.0, 585.0, _PROBE_TRIANGLE),
+            _probe_text(922.0, 585.0, "SD"),
+            _probe_text(945.0, 585.0, "DIMMER SWITCH", size=7.0),
+            _probe_path(100.0, 450.0, _PROBE_TRIANGLE),
+            _probe_text(116.0, 450.0, "S"),
+        ]
+    _write_probe_pdf(path, commands)
 
 
 @pytest.mark.parametrize("probe_shape", ("triangle", "fixture"))
@@ -846,6 +911,218 @@ def test_legend_confirmed_luminaire_is_kept_beside_room_label_probe(
         key=lambda error: list(error.path),
     )
     assert not errors, "\n".join(error.message for error in errors)
+
+
+def _write_switch_code_legend_role_probe_pdf(
+    path: Path,
+    *,
+    schedule_defines_s3: bool,
+) -> None:
+    """A lighting legend row labelled ``S3`` that describes a strip fixture.
+
+    ``S3`` is a three-way switch code and also a common strip-fixture type
+    tag. Only a schedule row or a switching description may settle its role.
+    A genuine ``S`` switch row and field instance sit beside it.
+    """
+    commands: list[str] = []
+    if schedule_defines_s3:
+        commands += [
+            _probe_text(620.0, 465.0, "LIGHTING FIXTURE SCHEDULE", size=11.0),
+            _probe_text(620.0, 445.0, "TYPE", size=7.0),
+            _probe_text(675.0, 445.0, "DESCRIPTION", size=7.0),
+            _probe_text(620.0, 420.0, "S3", size=7.0),
+            _probe_text(675.0, 420.0, "LED STRIP", size=7.0),
+        ]
+    commands += [
+        _probe_text(760.0, 655.0, "LIGHTING LEGEND", size=11.0),
+        _probe_path(900.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(922.0, 615.0, "S3"),
+        _probe_text(945.0, 615.0, "LED STRIP", size=7.0),
+        _probe_path(900.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(922.0, 585.0, "S"),
+        _probe_text(945.0, 585.0, "SINGLE POLE SWITCH", size=7.0),
+        _probe_path(100.0, 450.0, _PROBE_TRIANGLE),
+        _probe_text(116.0, 450.0, "S"),
+        _probe_path(300.0, 450.0, _PROBE_TRIANGLE),
+        _probe_text(316.0, 450.0, "S3"),
+    ]
+    _write_probe_pdf(path, commands)
+
+
+def _lighting_switches(model: BuildingModel) -> list:
+    return [
+        device
+        for device in model.electrical_devices
+        if device.attributes["pdf_electrical"].get("switch_type") is not None
+    ]
+
+
+def test_legend_less_switch_codes_are_counted_unresolved_not_guessed(
+    tmp_path: Path,
+) -> None:
+    # Stricter switching costs recall on sheets without a switch legend. The
+    # cost must stay visible: every legible code beside a glyph is a counted,
+    # explained miss, never a silent drop and never a guessed switch.
+    pdf_path = tmp_path / "generated-lighting-no-switch-legend.pdf"
+    _write_generated_lighting_pdf(pdf_path, mode="full", switch_legend=False)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:generated-lighting-no-switch-legend",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert not _lighting_switches(model)
+    assert (
+        sum(device.device_type == "luminaire" for device in model.electrical_devices)
+        == 5
+    )
+    misses = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "lighting_switch"
+    ]
+    assert sorted(
+        (item["switch_code"], item["candidate_switch_type"], item["reason_code"])
+        for item in misses
+    ) == [
+        ("OS", "occupancy_sensor", "lighting_switch_symbol_unconfirmed"),
+        ("S", "single_pole", "lighting_switch_symbol_unconfirmed"),
+        ("S3", "three_way", "lighting_switch_symbol_unconfirmed"),
+        ("SD", "dimmer", "lighting_switch_symbol_unconfirmed"),
+    ]
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_switch_count"] == 0
+    assert lighting["unresolved_switch_count"] == 4
+    assert lighting["unresolved_by_reason"]["lighting_switch_symbol_unconfirmed"] == 4
+
+
+@pytest.mark.parametrize("switch_legend", (False, True))
+def test_smoke_detector_and_grid_bubble_codes_are_not_switches(
+    tmp_path: Path,
+    switch_legend: bool,
+) -> None:
+    pdf_path = tmp_path / f"switch-collision-probe-{switch_legend}.pdf"
+    _write_switch_collision_probe_pdf(pdf_path, switch_legend=switch_legend)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id=f"fixture:switch-collision-probe:{switch_legend}",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    circle_centers = {
+        vector.element_id: (
+            round(sum(x for x, _y in vector.points_pt) / len(vector.points_pt)),
+            round(sum(y for _x, y in vector.points_pt) / len(vector.points_pt)),
+        )
+        for vector in extracted.vectors
+        if len(vector.points_pt) >= 24
+    }
+    misses = {
+        circle_centers[item["source_element_ids"][0]]: item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "lighting_switch"
+    }
+    assert sorted(misses) == [(300, 300), (500, 600)]
+    assert misses[(300, 300)]["switch_code"] == "SD"
+    assert misses[(500, 600)]["switch_code"] == "S"
+
+    switches = _lighting_switches(model)
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["unresolved_switch_count"] == 2
+    if not switch_legend:
+        assert not switches
+        assert {item["reason_code"] for item in misses.values()} == {
+            "lighting_switch_symbol_unconfirmed"
+        }
+        return
+
+    # True positive beside the collisions: the genuine S matches its legend
+    # prototype; the smoke detector and grid bubble circles do not.
+    assert len(switches) == 1
+    (switch,) = switches
+    lane = switch.attributes["pdf_electrical"]
+    assert (lane["switch_code"], lane["switch_type"]) == ("S", "single_pole")
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    code_text = texts_by_id[lane["lighting_recognition"]["code_source_element_id"]]
+    assert (code_text.x_pt, code_text.y_pt) == pytest.approx((116.0, 450.0), abs=1.0)
+    for item in misses.values():
+        assert item["reason_code"] == "lighting_switch_symbol_mismatch"
+        assert item["shape_score"] < pdf_electrical_importer._LIGHTING_GLYPH_CONFIRM_SCORE
+    assert lighting["recognized_switch_count"] == 1
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+@pytest.mark.parametrize("schedule_defines_s3", (False, True))
+def test_switch_code_legend_row_needs_a_switching_description(
+    tmp_path: Path,
+    schedule_defines_s3: bool,
+) -> None:
+    pdf_path = tmp_path / f"switch-code-legend-role-{schedule_defines_s3}.pdf"
+    _write_switch_code_legend_role_probe_pdf(
+        pdf_path,
+        schedule_defines_s3=schedule_defines_s3,
+    )
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id=f"fixture:switch-code-legend-role:{schedule_defines_s3}",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    # The described switch row still confirms the genuine S switch.
+    switches = _lighting_switches(model)
+    assert [
+        (
+            device.attributes["pdf_electrical"]["switch_code"],
+            device.attributes["pdf_electrical"]["switch_type"],
+        )
+        for device in switches
+    ] == [("S", "single_pole")]
+
+    luminaires = [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    if schedule_defines_s3:
+        # The schedule settles S3 as a fixture type; it is never a switch.
+        assert [device.name for device in luminaires] == ["S3"]
+        assert (
+            luminaires[0].attributes["pdf_electrical"]["fixture_schedule"]["description"]
+            == "LED STRIP"
+        )
+        assert not [
+            item
+            for item in unresolved
+            if item.get("reason_code") == "lighting_legend_code_role_ambiguous"
+        ]
+        return
+
+    # Without a schedule, the strip-fixture description does not make S3 a
+    # switch, and the switch code does not make it a fixture: both fail closed.
+    assert not luminaires
+    assert [
+        (item["legend_code"], item["description_text"])
+        for item in unresolved
+        if item.get("reason_code") == "lighting_legend_code_role_ambiguous"
+    ] == [("S3", ["LED STRIP"])]
+    assert [
+        item["switch_code"]
+        for item in unresolved
+        if item.get("reason_code") == "lighting_switch_symbol_unconfirmed"
+    ] == ["S3"]
 
 
 def test_geometry_only_power_sheet_matches_drawn_glyphs_to_its_own_legend() -> None:

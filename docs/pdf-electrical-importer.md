@@ -334,9 +334,27 @@ because it has no qualifying adjacent glyph.
 
 On a confirmed lighting page, exact legible codes `S`, `S3`, `SD`, and
 `OS` may classify switching as single-pole, three-way, dimmer, or occupancy
-sensor respectively, but only when the code has one unambiguous adjacent glyph.
-Ambiguous switching stays unresolved. Fixture tags always take precedence if a
-schedule actually defines one of those strings as a fixture type.
+sensor respectively. Like a fixture tag, the code alone is not evidence: `SD`
+inside a circle is a smoke detector and `S` in a bubble is a column grid label.
+A switch therefore needs one unambiguous adjacent glyph that clears the match
+minimum against that code's own lighting-legend prototype on the sheet. A
+lighting-legend row labelled with a switching code is that code's switch
+prototype only when the row's own description names a switching device
+(`SWITCH`, `DIMMER`, `OCCUPANCY`, or `VACANCY`), because `S1`/`S2`/`S3` are
+also common strip-fixture type tags. Fixture tags always take precedence if a
+schedule actually defines one of those strings as a fixture type. A
+switch-code legend row that neither a schedule row nor its description settles
+stays out of both roles as `lighting_legend_code_role_ambiguous`. A code with
+no prototype on the sheet
+stays unresolved as `lighting_switch_symbol_unconfirmed`, and a glyph below the
+match minimum stays `lighting_switch_symbol_mismatch`. Ambiguous switching
+stays unresolved.
+
+This costs recall on sheets that print switch codes without a switch legend,
+and the cost stays visible. `lighting_recognition` reports
+`unresolved_fixture_count`, `unresolved_switch_count`, and
+`unresolved_by_reason` beside the recognized counts, so every legible code
+that did not become a switch is counted and explained rather than dropped.
 
 The Slice 16 acceptance tests generate public-safe PDFs at runtime and pass the
 generated source through `extract_pdf()`; there is no pre-extracted JSON and
@@ -346,7 +364,12 @@ fixture schedules, switching, a room-name lookalike, a tagless fixture, and
 ambiguous/unreadable tags. A separate generated probe puts a schedule-known
 room label beside unrelated small closed geometry inside the association
 radius: without a lighting legend it yields zero luminaires, and with one the
-genuine legend-confirmed fixture beside it is still recognized.
+genuine legend-confirmed fixture beside it is still recognized. A switch probe
+puts a smoke-detector `SD` inside a circle and a grid-bubble `S` on a lighting
+sheet: both yield zero switches with or without a switch legend, and a genuine
+legend-confirmed `S` beside them is still recognized. A legend row `S3` that
+describes an LED strip never becomes a switch prototype: a schedule row makes
+it a fixture, and without one it stays ambiguous.
 
 ### Notes-column legend tables and field status
 

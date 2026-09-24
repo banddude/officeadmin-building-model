@@ -398,6 +398,25 @@ normalized `status_meaning`, with dedicated source provenance. Existing
 page-local legend ownership and the Slice 7 keynote/schedule false-positive
 guards remain unchanged.
 
+`status_meaning` is the conventional reading of the letter. The scope of work
+(#105) is read from the sheet's own status legend instead, because sets differ:
+one uses `R` for "existing to be removed", another for "existing to be removed
+and salvaged for relocation". A legend row is a marker letter immediately left
+of its meaning on the same baseline (`R  EXISTING TO BE RELOCATED`) or a single
+string (`R = EXISTING TO BE RELOCATED`). Every device records `scope_status`:
+
+- `new`, `relocated`, `existing_to_remain` or `removed` when its marker letter
+  has exactly one meaning in its own page's legend. The marker and legend
+  source element IDs are recorded with it;
+- `unresolved` otherwise, with `scope_reason`:
+  - `no_scope_marker`: an unmarked device is never assumed new;
+  - `scope_marker_undefined`: the page's legend does not define the letter;
+  - `scope_legend_conflict`: the page's legend gives the letter more than one
+    meaning.
+
+Legends are page-local, like symbol legends; a legend on another sheet is not
+inherited.
+
 Unresolved vector glyph clusters retain tuning evidence instead of only a
 generic failure string. Each unresolved cluster exposes the nearest and
 second-nearest canonical types and scores, the active threshold, a normalized

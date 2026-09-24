@@ -1700,6 +1700,7 @@ _LIGHTING_SWITCH_DESCRIPTION_WORDS = frozenset(
     {"SWITCH", "SWITCHES", "DIMMER", "OCCUPANCY", "VACANCY"}
 )
 _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT = 220.0
+_LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT = 18.0
 _LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
     "TYPE": "tag",
     "TAG": "tag",
@@ -4685,7 +4686,8 @@ def _detect_lighting_legend_entries(
                 for cluster in clusters
                 if cluster.page == heading.page
                 and (cluster.page, cluster.geometry_key) not in used_keys
-                and abs(cluster.center_pt[1] - label.y_pt) <= 18.0
+                and abs(cluster.center_pt[1] - label.y_pt)
+                <= _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT
                 and _distance_pt(
                     cluster.center_pt[0],
                     cluster.center_pt[1],
@@ -4855,21 +4857,48 @@ def _is_lighting_shaped(
 
 def _lighting_legend_row_description(
     entry: _LightingLegendEntry,
+    *,
     texts: Sequence[PdfTextObservation],
+    clusters: Sequence[_VectorCluster],
 ) -> tuple[PdfTextObservation, ...]:
+    """Text to the right of a legend label, up to the next legend entry.
+
+    A multi-column legend puts the next entry's glyph, label and description
+    in the same row band, so the window ends at the first other glyph or
+    tag-shaped label to the right. A row never borrows a neighbouring
+    column's description.
+    """
     label = entry.label
+    row_texts = [
+        observation
+        for observation in texts
+        if observation.page == label.page
+        and observation.element_id != label.element_id
+        and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
+        and observation.x_pt > label.x_pt
+    ]
+    end_x = min(
+        [
+            label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT,
+            *(
+                observation.x_pt
+                for observation in row_texts
+                if _normalize_lighting_tag(observation.text) is not None
+            ),
+            *(
+                cluster.bbox_pt[0]
+                for cluster in clusters
+                if cluster.page == label.page
+                and cluster.geometry_key != entry.prototype.geometry_key
+                and abs(cluster.center_pt[1] - label.y_pt)
+                <= _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT
+                and cluster.bbox_pt[0] > label.x_pt
+            ),
+        ]
+    )
     return tuple(
         sorted(
-            (
-                observation
-                for observation in texts
-                if observation.page == label.page
-                and observation.element_id != label.element_id
-                and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
-                and 0.0
-                < observation.x_pt - label.x_pt
-                <= _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
-            ),
+            (observation for observation in row_texts if observation.x_pt < end_x),
             key=lambda item: (item.x_pt, item.element_id),
         )
     )
@@ -4956,7 +4985,11 @@ def _recognize_lighting(
             if entry.tag not in _LIGHTING_SWITCH_CODES or entry.tag in schedule_tags:
                 fixture_entries.append(entry)
                 continue
-            description = _lighting_legend_row_description(entry, texts)
+            description = _lighting_legend_row_description(
+                entry,
+                texts=texts,
+                clusters=clusters,
+            )
             claimed_text_ids.update(item.element_id for item in description)
             words = {
                 word

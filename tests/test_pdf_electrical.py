@@ -949,6 +949,33 @@ def _write_switch_code_legend_role_probe_pdf(
     _write_probe_pdf(path, commands)
 
 
+def _write_two_column_switch_legend_probe_pdf(path: Path) -> None:
+    """PR #101 re-review probe: a two-column lighting legend.
+
+    Column 1 holds ``S3 LED STRIP`` and ``S SINGLE POLE SWITCH``. Column 2
+    shares their baselines with ``SD DIMMER SWITCH`` and ``OS OCCUPANCY
+    SENSOR``, so S3's own row band also carries column 2's switching words.
+    There is no fixture schedule. Every row uses the same triangle.
+    """
+    commands = [_probe_text(760.0, 655.0, "LIGHTING LEGEND", size=11.0)]
+    for glyph_x, rows in (
+        (700.0, (("S3", 615.0, "LED STRIP"), ("S", 585.0, "SINGLE POLE SWITCH"))),
+        (880.0, (("SD", 615.0, "DIMMER SWITCH"), ("OS", 585.0, "OCCUPANCY SENSOR"))),
+    ):
+        for code, y, description in rows:
+            commands += [
+                _probe_path(glyph_x, y, _PROBE_TRIANGLE),
+                _probe_text(glyph_x + 22.0, y, code),
+                _probe_text(glyph_x + 45.0, y, description, size=7.0),
+            ]
+    for x, code in ((100.0, "S3"), (200.0, "S3"), (300.0, "S"), (400.0, "SD"), (500.0, "OS")):
+        commands += [
+            _probe_path(x, 450.0, _PROBE_TRIANGLE),
+            _probe_text(x + 16.0, 450.0, code),
+        ]
+    _write_probe_pdf(path, commands)
+
+
 def _lighting_switches(model: BuildingModel) -> list:
     return [
         device
@@ -1123,6 +1150,52 @@ def test_switch_code_legend_row_needs_a_switching_description(
         for item in unresolved
         if item.get("reason_code") == "lighting_switch_symbol_unconfirmed"
     ] == ["S3"]
+
+
+def test_switch_legend_description_stops_at_the_next_legend_column(
+    tmp_path: Path,
+) -> None:
+    # PR #101 re-review blocker: S3's description window read column 2's
+    # DIMMER SWITCH on the same baseline, so two strip-fixture S3s became
+    # three-way switches with no diagnostic.
+    pdf_path = tmp_path / "two-column-switch-legend.pdf"
+    _write_two_column_switch_legend_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:two-column-switch-legend",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    # Genuine switch rows in both columns still confirm their field instances.
+    assert sorted(
+        (
+            device.attributes["pdf_electrical"]["switch_code"],
+            device.attributes["pdf_electrical"]["switch_type"],
+        )
+        for device in _lighting_switches(model)
+    ) == [("OS", "occupancy_sensor"), ("S", "single_pole"), ("SD", "dimmer")]
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert [
+        (item["legend_code"], item["description_text"])
+        for item in unresolved
+        if item.get("reason_code") == "lighting_legend_code_role_ambiguous"
+    ] == [("S3", ["LED STRIP"])]
+    assert [
+        item["switch_code"]
+        for item in unresolved
+        if item.get("reason_code") == "lighting_switch_symbol_unconfirmed"
+    ] == ["S3", "S3"]
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_switch_count"] == 3
+    assert lighting["unresolved_switch_count"] == 2
 
 
 def test_geometry_only_power_sheet_matches_drawn_glyphs_to_its_own_legend() -> None:

@@ -341,7 +341,10 @@ minimum against that code's own lighting-legend prototype on the sheet. A
 lighting-legend row labelled with a switching code is that code's switch
 prototype only when the row's own description names a switching device
 (`SWITCH`, `DIMMER`, `OCCUPANCY`, or `VACANCY`), because `S1`/`S2`/`S3` are
-also common strip-fixture type tags. Fixture tags always take precedence if a
+also common strip-fixture type tags. A row's description ends at the next
+legend entry in its row band (the first other glyph or tag-shaped label to
+the right), so a multi-column legend never lends one row its neighbouring
+column's description. Fixture tags always take precedence if a
 schedule actually defines one of those strings as a fixture type. A
 switch-code legend row that neither a schedule row nor its description settles
 stays out of both roles as `lighting_legend_code_role_ambiguous`. A code with
@@ -369,7 +372,8 @@ puts a smoke-detector `SD` inside a circle and a grid-bubble `S` on a lighting
 sheet: both yield zero switches with or without a switch legend, and a genuine
 legend-confirmed `S` beside them is still recognized. A legend row `S3` that
 describes an LED strip never becomes a switch prototype: a schedule row makes
-it a fixture, and without one it stays ambiguous.
+it a fixture, and without one it stays ambiguous, even when a neighbouring
+legend column's `DIMMER SWITCH` shares its baseline.
 
 ### Notes-column legend tables and field status
 

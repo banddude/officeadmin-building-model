@@ -377,6 +377,7 @@ class _EntityCandidate:
     provenance: list[Provenance] = field(default_factory=list)
     shape_recognition: dict[str, Any] | None = None
     annotation_recognition: dict[str, Any] | None = None
+    lighting_recognition: dict[str, Any] | None = None
 
     def merge_source(
         self,
@@ -469,6 +470,25 @@ class _LegendEntry:
     label: PdfTextObservation
     region: _LegendRegion
     label_source_element_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _LightingScheduleRow:
+    page: int
+    tag: str
+    fields: Mapping[str, str]
+    source_element_ids: tuple[str, ...]
+    source_texts: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _LightingLegendEntry:
+    page: int
+    tag: str
+    prototype: _VectorCluster
+    label: PdfTextObservation
+    heading: PdfTextObservation
+    confidence: float
 
 
 def _validate_source_observation(element_id: str, page: int, x_pt: float, y_pt: float) -> None:
@@ -1651,6 +1671,54 @@ _FIELD_STATUS_MEANINGS: Mapping[str, str] = {
     "E": "existing_to_remain",
     "N": "new",
     "R": "existing_to_be_removed",
+}
+
+# Lighting is intentionally a separate recognition path from power-device
+# legends. A fixture's readable type tag is the semantic evidence; geometry
+# only confirms that the tag is attached to a fixture instance.
+_LIGHTING_TAG_RE = re.compile(r"^[A-Z]{1,2}(?:-?\d{1,2})?$", re.IGNORECASE)
+# The tag narrows the candidates to one fixture type, so the power-device
+# margin rule reduces to its match minimum. The absolute floor only marks
+# where a shape is certainly not the prototype; it never confirms one.
+_LIGHTING_GLYPH_CONFIRM_SCORE = _GLYPH_MATCH_SCORE_MIN
+_LIGHTING_TAG_CLUSTER_RADIUS_PT = 42.0
+_LIGHTING_TAG_ASSOCIATION_MARGIN_PT = 6.0
+_LIGHTING_LEGEND_VERTICAL_SPAN_PT = 190.0
+_LIGHTING_SCHEDULE_VERTICAL_SPAN_PT = 300.0
+_LIGHTING_ROW_Y_TOLERANCE_PT = 5.0
+_LIGHTING_HEADER_Y_TOLERANCE_PT = 8.0
+_LIGHTING_HEADER_MAX_GAP_PT = 90.0
+_LIGHTING_SWITCH_CODES: Mapping[str, tuple[str, str]] = {
+    "S": ("switch", "single_pole"),
+    "S3": ("switch", "three_way"),
+    "SD": ("switch", "dimmer"),
+    "OS": ("occupancy_sensor", "occupancy_sensor"),
+}
+# A switch-code legend row is a switch prototype only when its own description
+# names a switching device. S1/S2/S3 are also common strip-fixture type tags.
+_LIGHTING_SWITCH_DESCRIPTION_WORDS = frozenset(
+    {"SWITCH", "SWITCHES", "DIMMER", "OCCUPANCY", "VACANCY"}
+)
+_LIGHTING_LEGEND_DESCRIPTION_SPAN_PT = 220.0
+_LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT = 18.0
+_LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
+    "TYPE": "tag",
+    "TAG": "tag",
+    "MARK": "tag",
+    "FIXTURE TYPE": "tag",
+    "DESCRIPTION": "description",
+    "DESC": "description",
+    "LAMP": "lamp",
+    "LAMPS": "lamp",
+    "WATTS": "wattage",
+    "WATTAGE": "wattage",
+    "W": "wattage",
+    "MOUNTING": "mounting",
+    "MOUNT": "mounting",
+    "MANUFACTURER": "manufacturer",
+    "MFR": "manufacturer",
+    "MODEL": "model",
+    "CATALOG": "model",
 }
 
 
@@ -4304,6 +4372,1346 @@ def _provenance(
 
 
 
+
+def _normalize_lighting_tag(value: str) -> str | None:
+    cleaned = re.sub(r"\s+", "", value.strip().upper())
+    if not cleaned or _LIGHTING_TAG_RE.fullmatch(cleaned) is None:
+        return None
+    return cleaned
+
+
+def _lighting_heading_kind(observation: PdfTextObservation) -> str | None:
+    normalized = _normalize_legend_alias(observation.text)
+    words = set(normalized.split())
+    has_lighting_cue = bool(
+        words
+        & {
+            "LIGHT",
+            "LIGHTING",
+            "FIXTURE",
+            "FIXTURES",
+            "LUMINAIRE",
+            "LUMINAIRES",
+        }
+    )
+    if not has_lighting_cue:
+        return None
+    if "SCHEDULE" in words:
+        return "fixture_schedule"
+    if "LEGEND" in words:
+        return "lighting_legend"
+    return None
+
+
+def _lighting_schedule_header_key(value: str) -> str | None:
+    normalized = _normalize_legend_alias(value)
+    return _LIGHTING_SCHEDULE_HEADER_ALIASES.get(normalized)
+
+
+def _detect_lighting_fixture_schedules(
+    texts: Sequence[PdfTextObservation],
+) -> tuple[
+    dict[tuple[int, str], _LightingScheduleRow],
+    set[str],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    headings = sorted(
+        (
+            observation
+            for observation in texts
+            if _lighting_heading_kind(observation) == "fixture_schedule"
+        ),
+        key=lambda item: (item.page, -item.y_pt, item.x_pt, item.element_id),
+    )
+    claimed_text_ids = {heading.element_id for heading in headings}
+    rows_by_key: dict[tuple[int, str], list[_LightingScheduleRow]] = {}
+    schedule_metadata: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+
+    for heading in headings:
+        header_candidates = [
+            observation
+            for observation in texts
+            if observation.page == heading.page
+            and observation.element_id != heading.element_id
+            and 0.0 < heading.y_pt - observation.y_pt <= _LIGHTING_HEADER_MAX_GAP_PT
+            and _lighting_schedule_header_key(observation.text) is not None
+        ]
+        header_groups: list[list[PdfTextObservation]] = []
+        for candidate in sorted(
+            header_candidates,
+            key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
+        ):
+            group = next(
+                (
+                    item
+                    for item in header_groups
+                    if abs(item[0].y_pt - candidate.y_pt)
+                    <= _LIGHTING_HEADER_Y_TOLERANCE_PT
+                ),
+                None,
+            )
+            if group is None:
+                group = []
+                header_groups.append(group)
+            group.append(candidate)
+
+        valid_header_groups = []
+        for group in header_groups:
+            keys = {
+                _lighting_schedule_header_key(observation.text)
+                for observation in group
+            }
+            if "tag" in keys and len(keys - {None, "tag"}) >= 1:
+                valid_header_groups.append(group)
+        if not valid_header_groups:
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture_schedule",
+                    "page": heading.page,
+                    "source_element_id": heading.element_id,
+                    "source_text": heading.text,
+                    "status": "unresolved_lighting_schedule",
+                    "reason_code": "lighting_schedule_header_not_confirmed",
+                    "reason": (
+                        "lighting fixture schedule heading is present but a tag/type "
+                        "column plus a descriptive column was not confirmed"
+                    ),
+                }
+            )
+            continue
+
+        header_group = min(
+            valid_header_groups,
+            key=lambda group: (
+                heading.y_pt - max(item.y_pt for item in group),
+                -len(group),
+                tuple(item.element_id for item in group),
+            ),
+        )
+        headers: dict[str, PdfTextObservation] = {}
+        for observation in sorted(
+            header_group,
+            key=lambda item: (item.x_pt, item.element_id),
+        ):
+            key = _lighting_schedule_header_key(observation.text)
+            if key is not None and key not in headers:
+                headers[key] = observation
+        claimed_text_ids.update(item.element_id for item in header_group)
+
+        tag_header = headers["tag"]
+        header_y = sum(item.y_pt for item in header_group) / len(header_group)
+        ordered_headers = sorted(headers.items(), key=lambda item: item[1].x_pt)
+        min_x = ordered_headers[0][1].x_pt - 24.0
+        max_x = ordered_headers[-1][1].x_pt + 160.0
+
+        tag_cells = [
+            observation
+            for observation in texts
+            if observation.page == heading.page
+            and observation.element_id not in claimed_text_ids
+            and 0.0 < header_y - observation.y_pt <= _LIGHTING_SCHEDULE_VERTICAL_SPAN_PT
+            and abs(observation.x_pt - tag_header.x_pt) <= 42.0
+            and min_x <= observation.x_pt <= max_x
+            and _normalize_lighting_tag(observation.text) is not None
+        ]
+        parsed_rows: list[_LightingScheduleRow] = []
+        for tag_cell in sorted(
+            tag_cells,
+            key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
+        ):
+            tag = _normalize_lighting_tag(tag_cell.text)
+            assert tag is not None
+            row_cells = [
+                observation
+                for observation in texts
+                if observation.page == heading.page
+                and min_x <= observation.x_pt <= max_x
+                and abs(observation.y_pt - tag_cell.y_pt)
+                <= _LIGHTING_ROW_Y_TOLERANCE_PT
+                and observation.element_id != heading.element_id
+            ]
+            if tag_cell not in row_cells:
+                row_cells.append(tag_cell)
+            fields: dict[str, str] = {"tag": tag}
+            source_ids: list[str] = []
+            source_texts: list[str] = []
+            for cell in sorted(row_cells, key=lambda item: (item.x_pt, item.element_id)):
+                nearest_key, nearest_header = min(
+                    ordered_headers,
+                    key=lambda item: abs(cell.x_pt - item[1].x_pt),
+                )
+                if nearest_key == "tag":
+                    cell_tag = _normalize_lighting_tag(cell.text)
+                    if cell_tag != tag:
+                        continue
+                    value = tag
+                else:
+                    value = " ".join(cell.text.split())
+                    if not value:
+                        continue
+                if nearest_key in fields and fields[nearest_key] != value:
+                    continue
+                fields[nearest_key] = value
+                source_ids.append(cell.element_id)
+                source_texts.append(cell.text)
+
+            if len(fields) <= 1:
+                continue
+            row = _LightingScheduleRow(
+                page=heading.page,
+                tag=tag,
+                fields=dict(sorted(fields.items())),
+                source_element_ids=tuple(sorted(set(source_ids))),
+                source_texts=tuple(source_texts),
+            )
+            parsed_rows.append(row)
+            claimed_text_ids.update(row.source_element_ids)
+
+        for row in parsed_rows:
+            rows_by_key.setdefault((row.page, row.tag), []).append(row)
+        schedule_metadata.append(
+            {
+                "page": heading.page,
+                "method": "lighting-fixture-schedule-text-columns",
+                "heading_element_id": heading.element_id,
+                "heading_text": heading.text,
+                "header_element_ids": sorted(
+                    item.element_id for item in header_group
+                ),
+                "columns": [
+                    {
+                        "field": key,
+                        "source_text": observation.text,
+                        "x_pt": observation.x_pt,
+                    }
+                    for key, observation in ordered_headers
+                ],
+                "row_count": len(parsed_rows),
+            }
+        )
+
+    resolved: dict[tuple[int, str], _LightingScheduleRow] = {}
+    for key, rows in sorted(rows_by_key.items()):
+        unique_payloads = {
+            tuple(sorted(row.fields.items()))
+            for row in rows
+        }
+        if len(unique_payloads) != 1:
+            page, tag = key
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture_schedule",
+                    "page": page,
+                    "source_element_id": min(
+                        source_id
+                        for row in rows
+                        for source_id in row.source_element_ids
+                    ),
+                    "fixture_tag": tag,
+                    "status": "unresolved_lighting_schedule",
+                    "reason_code": "lighting_schedule_tag_conflict",
+                    "reason": (
+                        "fixture schedule contains conflicting rows for the same tag"
+                    ),
+                    "candidate_rows": [
+                        dict(row.fields)
+                        for row in sorted(
+                            rows,
+                            key=lambda item: (
+                                item.page,
+                                item.source_element_ids,
+                            ),
+                        )
+                    ],
+                }
+            )
+            continue
+        resolved[key] = sorted(
+            rows,
+            key=lambda item: (item.source_element_ids, item.source_texts),
+        )[0]
+
+    return resolved, claimed_text_ids, unresolved, schedule_metadata
+
+
+def _detect_lighting_legend_entries(
+    *,
+    texts: Sequence[PdfTextObservation],
+    clusters: Sequence[_VectorCluster],
+    excluded_text_ids: set[str],
+) -> tuple[
+    dict[int, tuple[_LightingLegendEntry, ...]],
+    set[tuple[int, str]],
+    set[str],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    headings = sorted(
+        (
+            observation
+            for observation in texts
+            if _lighting_heading_kind(observation) == "lighting_legend"
+        ),
+        key=lambda item: (item.page, -item.y_pt, item.x_pt, item.element_id),
+    )
+    claimed_text_ids = {heading.element_id for heading in headings}
+    prototype_keys: set[tuple[int, str]] = set()
+    unresolved: list[dict[str, Any]] = []
+    region_metadata: list[dict[str, Any]] = []
+    entries_by_page: dict[int, list[_LightingLegendEntry]] = {}
+
+    for heading in headings:
+        candidate_labels = [
+            observation
+            for observation in texts
+            if observation.page == heading.page
+            and observation.element_id not in excluded_text_ids
+            and observation.element_id != heading.element_id
+            and 0.0 < heading.y_pt - observation.y_pt <= _LIGHTING_LEGEND_VERTICAL_SPAN_PT
+            and abs(observation.x_pt - heading.x_pt) <= 220.0
+            and _normalize_lighting_tag(observation.text) is not None
+        ]
+        local_entries: list[_LightingLegendEntry] = []
+        used_keys: set[tuple[int, str]] = set()
+        for label in sorted(
+            candidate_labels,
+            key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
+        ):
+            tag = _normalize_lighting_tag(label.text)
+            assert tag is not None
+            nearby = [
+                cluster
+                for cluster in clusters
+                if cluster.page == heading.page
+                and (cluster.page, cluster.geometry_key) not in used_keys
+                and abs(cluster.center_pt[1] - label.y_pt)
+                <= _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT
+                and _distance_pt(
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                    label.x_pt,
+                    label.y_pt,
+                )
+                <= _LIGHTING_TAG_CLUSTER_RADIUS_PT + 18.0
+            ]
+            nearby.sort(
+                key=lambda cluster: (
+                    _distance_pt(
+                        cluster.center_pt[0],
+                        cluster.center_pt[1],
+                        label.x_pt,
+                        label.y_pt,
+                    ),
+                    cluster.geometry_key,
+                )
+            )
+            if not nearby:
+                continue
+            if (
+                len(nearby) > 1
+                and _distance_pt(
+                    nearby[1].center_pt[0],
+                    nearby[1].center_pt[1],
+                    label.x_pt,
+                    label.y_pt,
+                )
+                - _distance_pt(
+                    nearby[0].center_pt[0],
+                    nearby[0].center_pt[1],
+                    label.x_pt,
+                    label.y_pt,
+                )
+                < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
+            ):
+                unresolved.append(
+                    {
+                        "kind": "lighting_legend_tag",
+                        "page": label.page,
+                        "source_element_id": label.element_id,
+                        "source_text": label.text,
+                        "fixture_tag": tag,
+                        "status": "unresolved_lighting_legend",
+                        "reason_code": "lighting_legend_tag_geometry_ambiguous",
+                        "reason": (
+                            "lighting legend tag is equally close to more than one "
+                            "glyph prototype"
+                        ),
+                    }
+                )
+                claimed_text_ids.add(label.element_id)
+                continue
+            cluster = nearby[0]
+            used_keys.add((cluster.page, cluster.geometry_key))
+            local_entries.append(
+                _LightingLegendEntry(
+                    page=heading.page,
+                    tag=tag,
+                    prototype=cluster,
+                    label=label,
+                    heading=heading,
+                    confidence=0.99,
+                )
+            )
+
+        # A heading plus one coincidental letter is too weak to establish a
+        # lighting legend. Two tagged rows make the path distinct from room
+        # labels and ordinary drafting notes.
+        if len(local_entries) < 2:
+            if candidate_labels:
+                unresolved.append(
+                    {
+                        "kind": "lighting_legend",
+                        "page": heading.page,
+                        "source_element_id": heading.element_id,
+                        "source_text": heading.text,
+                        "status": "unresolved_lighting_legend",
+                        "reason_code": "lighting_legend_structure_not_confirmed",
+                        "reason": (
+                            "lighting legend heading did not contain at least two "
+                            "unambiguous tag-to-glyph rows"
+                        ),
+                    }
+                )
+            continue
+
+        entries_by_page.setdefault(heading.page, []).extend(local_entries)
+        for entry in local_entries:
+            prototype_keys.add((entry.page, entry.prototype.geometry_key))
+            claimed_text_ids.add(entry.label.element_id)
+        region_metadata.append(
+            {
+                "page": heading.page,
+                "method": "lighting-letter-tag-legend",
+                "heading_element_id": heading.element_id,
+                "heading_text": heading.text,
+                "row_count": len(local_entries),
+                "tags": sorted({entry.tag for entry in local_entries}),
+            }
+        )
+
+    return (
+        {
+            page: tuple(
+                sorted(
+                    entries,
+                    key=lambda entry: (
+                        entry.tag,
+                        entry.label.element_id,
+                        entry.prototype.geometry_key,
+                    ),
+                )
+            )
+            for page, entries in sorted(entries_by_page.items())
+        },
+        prototype_keys,
+        claimed_text_ids,
+        unresolved,
+        region_metadata,
+    )
+
+
+def _lighting_shape_support(
+    cluster: _VectorCluster,
+    entries: Sequence[_LightingLegendEntry],
+    *,
+    tag: str | None = None,
+) -> tuple[_LightingLegendEntry | None, float | None]:
+    eligible = [
+        entry
+        for entry in entries
+        if tag is None or entry.tag == tag
+    ]
+    if not eligible:
+        return None, None
+    ranked = sorted(
+        (
+            (_cluster_match_score(cluster, entry.prototype), entry)
+            for entry in eligible
+        ),
+        key=lambda item: (
+            -item[0],
+            item[1].tag,
+            item[1].label.element_id,
+            item[1].prototype.geometry_key,
+        ),
+    )
+    score, entry = ranked[0]
+    return entry, score
+
+
+def _is_lighting_shaped(
+    cluster: _VectorCluster,
+    entries: Sequence[_LightingLegendEntry],
+) -> bool:
+    """Whether the sheet's own lighting legend says this glyph is a fixture.
+
+    Lighting claims only such geometry. Anything else it rejects stays
+    available to the power-device path instead of vanishing into a lighting
+    diagnostic.
+    """
+    _entry, score = _lighting_shape_support(cluster, entries)
+    return score is not None and score >= _LIGHTING_GLYPH_CONFIRM_SCORE
+
+
+def _lighting_legend_row_description(
+    entry: _LightingLegendEntry,
+    *,
+    texts: Sequence[PdfTextObservation],
+    clusters: Sequence[_VectorCluster],
+) -> tuple[PdfTextObservation, ...]:
+    """Text to the right of a legend label, up to the next legend entry.
+
+    A multi-column legend puts the next entry's glyph, label and description
+    in the same row band, so the window ends at the first other glyph or
+    tag-shaped label to the right. A row never borrows a neighbouring
+    column's description.
+    """
+    label = entry.label
+    row_texts = [
+        observation
+        for observation in texts
+        if observation.page == label.page
+        and observation.element_id != label.element_id
+        and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
+        and observation.x_pt > label.x_pt
+    ]
+    end_x = min(
+        [
+            label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT,
+            *(
+                observation.x_pt
+                for observation in row_texts
+                if _normalize_lighting_tag(observation.text) is not None
+            ),
+            *(
+                cluster.bbox_pt[0]
+                for cluster in clusters
+                if cluster.page == label.page
+                and cluster.geometry_key != entry.prototype.geometry_key
+                and abs(cluster.center_pt[1] - label.y_pt)
+                <= _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT
+                and cluster.bbox_pt[0] > label.x_pt
+            ),
+        ]
+    )
+    return tuple(
+        sorted(
+            (observation for observation in row_texts if observation.x_pt < end_x),
+            key=lambda item: (item.x_pt, item.element_id),
+        )
+    )
+
+
+def _lighting_schedule_attributes(row: _LightingScheduleRow) -> dict[str, Any]:
+    attributes: dict[str, Any] = dict(row.fields)
+    wattage = row.fields.get("wattage")
+    if wattage:
+        match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*(?:W|WATT|WATTS)?\b", wattage, re.I)
+        if match:
+            attributes["wattage_w"] = float(match.group(1))
+    attributes["source_page"] = row.page
+    attributes["source_element_ids"] = list(row.source_element_ids)
+    return attributes
+
+
+def _recognize_lighting(
+    document: PdfElectricalDocument,
+    *,
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[
+    dict[str, _EntityCandidate],
+    set[str],
+    set[str],
+    set[str],
+    list[dict[str, Any]],
+    dict[str, Any],
+]:
+    clusters = tuple(
+        cluster
+        for cluster in _cluster_small_vector_glyphs(vectors)
+        if _is_glyph_cluster(cluster)
+    )
+    (
+        schedules,
+        schedule_text_ids,
+        schedule_unresolved,
+        schedule_metadata,
+    ) = _detect_lighting_fixture_schedules(texts)
+    (
+        legend_entries_by_page,
+        prototype_keys,
+        legend_text_ids,
+        legend_unresolved,
+        legend_metadata,
+    ) = _detect_lighting_legend_entries(
+        texts=texts,
+        clusters=clusters,
+        excluded_text_ids=set(schedule_text_ids),
+    )
+
+    claimed_text_ids = set(schedule_text_ids) | set(legend_text_ids)
+    claimed_vector_ids = {
+        element_id
+        for cluster in clusters
+        if (cluster.page, cluster.geometry_key) in prototype_keys
+        for element_id in cluster.source_element_ids
+    }
+    matched_vector_ids: set[str] = set()
+    unresolved: list[dict[str, Any]] = [
+        *schedule_unresolved,
+        *legend_unresolved,
+    ]
+    candidates: dict[str, _EntityCandidate] = {}
+
+    schedule_tags_by_page: dict[int, set[str]] = {}
+    for page, tag in schedules:
+        schedule_tags_by_page.setdefault(page, set()).add(tag)
+
+    # A legend row labelled with an exact switching code is that code's switch
+    # prototype only when the row's own description names a switching device.
+    # A fixture schedule that defines the same string as a fixture type takes
+    # precedence. A switch-code row established as neither stays out of both
+    # roles instead of guessing between a strip-fixture tag and a switch.
+    fixture_entries_by_page: dict[int, tuple[_LightingLegendEntry, ...]] = {}
+    switch_entries_by_page: dict[int, tuple[_LightingLegendEntry, ...]] = {}
+    for page, entries in legend_entries_by_page.items():
+        schedule_tags = schedule_tags_by_page.get(page, set())
+        fixture_entries: list[_LightingLegendEntry] = []
+        switch_entries: list[_LightingLegendEntry] = []
+        for entry in entries:
+            if entry.tag not in _LIGHTING_SWITCH_CODES or entry.tag in schedule_tags:
+                fixture_entries.append(entry)
+                continue
+            description = _lighting_legend_row_description(
+                entry,
+                texts=texts,
+                clusters=clusters,
+            )
+            claimed_text_ids.update(item.element_id for item in description)
+            words = {
+                word
+                for item in description
+                for word in _normalize_legend_alias(item.text).split()
+            }
+            if words & _LIGHTING_SWITCH_DESCRIPTION_WORDS:
+                switch_entries.append(entry)
+                continue
+            unresolved.append(
+                {
+                    "kind": "lighting_legend_tag",
+                    "page": entry.page,
+                    "source_element_id": entry.label.element_id,
+                    "source_text": entry.label.text,
+                    "legend_code": entry.tag,
+                    "description_text": [item.text for item in description],
+                    "status": "unresolved_lighting_legend",
+                    "reason_code": "lighting_legend_code_role_ambiguous",
+                    "reason": (
+                        "legend row label is a switching code, but neither a "
+                        "fixture schedule row nor the row's description "
+                        "establishes whether it is a fixture type or a switch"
+                    ),
+                }
+            )
+        fixture_entries_by_page[page] = tuple(fixture_entries)
+        switch_entries_by_page[page] = tuple(switch_entries)
+
+    fixture_tags_by_page: dict[int, set[str]] = {
+        page: set(tags) for page, tags in schedule_tags_by_page.items()
+    }
+    for page, entries in fixture_entries_by_page.items():
+        fixture_tags_by_page.setdefault(page, set()).update(
+            entry.tag for entry in entries
+        )
+
+    field_clusters = [
+        cluster
+        for cluster in clusters
+        if (cluster.page, cluster.geometry_key) not in prototype_keys
+    ]
+    assignments: dict[tuple[int, str], list[tuple[PdfTextObservation, str]]] = {}
+    ambiguous_cluster_keys: set[tuple[int, str]] = set()
+    diagnosed_cluster_keys: set[tuple[int, str]] = set()
+
+    for observation in texts:
+        if observation.element_id in claimed_text_ids:
+            continue
+        tag = _normalize_lighting_tag(observation.text)
+        if tag is None or tag not in fixture_tags_by_page.get(observation.page, set()):
+            continue
+        nearby = [
+            cluster
+            for cluster in field_clusters
+            if cluster.page == observation.page
+            and _distance_pt(
+                cluster.center_pt[0],
+                cluster.center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            <= _LIGHTING_TAG_CLUSTER_RADIUS_PT
+        ]
+        nearby.sort(
+            key=lambda cluster: (
+                _distance_pt(
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                    observation.x_pt,
+                    observation.y_pt,
+                ),
+                cluster.geometry_key,
+            )
+        )
+        if not nearby:
+            # A bare schedule-known letter elsewhere on the plan is not enough:
+            # it may be a room name or other drafting label.
+            continue
+        if (
+            len(nearby) > 1
+            and _distance_pt(
+                nearby[1].center_pt[0],
+                nearby[1].center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            - _distance_pt(
+                nearby[0].center_pt[0],
+                nearby[0].center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
+        ):
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture",
+                    "page": observation.page,
+                    "source_element_id": observation.element_id,
+                    "source_text": observation.text,
+                    "fixture_tag": tag,
+                    "status": "unresolved_classification",
+                    "reason_code": "lighting_fixture_tag_association_ambiguous",
+                    "reason": (
+                        "readable fixture tag is not uniquely associated with one "
+                        "nearby glyph"
+                    ),
+                    "candidate_geometry_keys": [
+                        cluster.geometry_key for cluster in nearby[:4]
+                    ],
+                }
+            )
+            claimed_text_ids.add(observation.element_id)
+            for cluster in nearby:
+                ambiguous_cluster_keys.add((cluster.page, cluster.geometry_key))
+                if _is_lighting_shaped(
+                    cluster,
+                    legend_entries_by_page.get(cluster.page, ()),
+                ):
+                    claimed_vector_ids.update(cluster.source_element_ids)
+            continue
+        cluster = nearby[0]
+        assignments.setdefault(
+            (cluster.page, cluster.geometry_key),
+            [],
+        ).append((observation, tag))
+
+    for cluster in field_clusters:
+        key = (cluster.page, cluster.geometry_key)
+        if key in ambiguous_cluster_keys:
+            continue
+        claims = assignments.get(key, ())
+        distinct_tags = sorted({tag for _observation, tag in claims})
+        if len(distinct_tags) > 1:
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture",
+                    "page": cluster.page,
+                    "source_element_id": cluster.source_element_ids[0],
+                    "source_element_ids": list(cluster.source_element_ids),
+                    "position_pt": {
+                        "x": cluster.center_pt[0],
+                        "y": cluster.center_pt[1],
+                    },
+                    "status": "unresolved_classification",
+                    "reason_code": "lighting_fixture_tag_ambiguous",
+                    "reason": (
+                        "fixture glyph has more than one readable nearby fixture tag"
+                    ),
+                    "candidate_tags": distinct_tags,
+                    "tag_source_element_ids": sorted(
+                        observation.element_id
+                        for observation, _tag in claims
+                    ),
+                }
+            )
+            diagnosed_cluster_keys.add(key)
+            if _is_lighting_shaped(
+                cluster,
+                legend_entries_by_page.get(cluster.page, ()),
+            ):
+                claimed_vector_ids.update(cluster.source_element_ids)
+            claimed_text_ids.update(
+                observation.element_id for observation, _tag in claims
+            )
+            continue
+        if len(distinct_tags) != 1:
+            continue
+
+        tag = distinct_tags[0]
+        tag_observation = min(
+            (
+                observation
+                for observation, claim_tag in claims
+                if claim_tag == tag
+            ),
+            key=lambda observation: (
+                _distance_pt(
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                    observation.x_pt,
+                    observation.y_pt,
+                ),
+                observation.element_id,
+            ),
+        )
+        legend_entry, shape_score = _lighting_shape_support(
+            cluster,
+            fixture_entries_by_page.get(cluster.page, ()),
+            tag=tag,
+        )
+        schedule_row = schedules.get((cluster.page, tag))
+
+        # A schedule enriches a confirmed fixture but never proves one: a
+        # schedule-known letter beside arbitrary small geometry is exactly what
+        # a room name or grid label looks like. Only the tag's own lighting-
+        # legend prototype, matched at the glyph match minimum, confirms that
+        # the adjacent geometry is that fixture.
+        if (
+            legend_entry is None
+            or shape_score is None
+            or shape_score < _LIGHTING_GLYPH_CONFIRM_SCORE
+        ):
+            if legend_entry is None:
+                miss: dict[str, Any] = {
+                    "reason_code": "lighting_fixture_symbol_unconfirmed",
+                    "reason": (
+                        "readable fixture tag is known only from a fixture "
+                        "schedule; no tag-specific lighting-legend prototype on "
+                        "this sheet confirms the adjacent geometry is a fixture"
+                    ),
+                }
+            else:
+                miss = {
+                    "reason_code": "lighting_fixture_symbol_mismatch",
+                    "reason": (
+                        "readable fixture tag is present but adjacent geometry does "
+                        "not match that tag's lighting-legend prototype"
+                    ),
+                    "shape_score": shape_score,
+                    "match_minimum": _LIGHTING_GLYPH_CONFIRM_SCORE,
+                }
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture",
+                    "page": cluster.page,
+                    "source_element_id": tag_observation.element_id,
+                    "source_text": tag_observation.text,
+                    "fixture_tag": tag,
+                    "source_element_ids": list(cluster.source_element_ids),
+                    "status": "unresolved_classification",
+                    **miss,
+                }
+            )
+            diagnosed_cluster_keys.add(key)
+            if _is_lighting_shaped(
+                cluster,
+                legend_entries_by_page.get(cluster.page, ()),
+            ):
+                claimed_vector_ids.update(cluster.source_element_ids)
+            claimed_text_ids.add(tag_observation.element_id)
+            continue
+
+        confidence = min(0.99, max(0.60, float(shape_score)))
+        recognition: dict[str, Any] = {
+            "method": "lighting-fixture-letter-tag",
+            "legend_type": "lighting",
+            "fixture_tag": tag,
+            "tag_source_element_id": tag_observation.element_id,
+            "source_geometry_key": cluster.geometry_key,
+            "shape_signature": cluster.shape_signature,
+            "shape_score": shape_score,
+            "tag_is_primary_type_evidence": True,
+            "legend": {
+                "page": legend_entry.page,
+                "tag_source_element_id": legend_entry.label.element_id,
+                "heading_element_id": legend_entry.heading.element_id,
+                "prototype_geometry_key": legend_entry.prototype.geometry_key,
+            },
+        }
+        if schedule_row is not None:
+            recognition["fixture_schedule"] = _lighting_schedule_attributes(
+                schedule_row
+            )
+
+        candidate = _EntityCandidate(
+            key=f"p{cluster.page}:lighting:{cluster.geometry_key}",
+            entity_kind="device",
+            canonical_type="luminaire",
+            tag=tag,
+            identity_key=(
+                f"lighting:p{cluster.page}:{tag}:{cluster.geometry_key}"
+            ),
+            page=cluster.page,
+            x_pt=cluster.center_pt[0],
+            y_pt=cluster.center_pt[1],
+            confidence=confidence,
+            primary_method="pdf-lighting-fixture-tag",
+            lighting_recognition=recognition,
+        )
+        for vector in cluster.vectors:
+            candidate.merge_source(
+                element_id=vector.element_id,
+                text=None,
+                symbol_name=None,
+                x_pt=cluster.center_pt[0],
+                y_pt=cluster.center_pt[1],
+                confidence=confidence,
+                provenance=_provenance(
+                    document,
+                    element_id=vector.element_id,
+                    page=cluster.page,
+                    method="pdf-lighting-fixture-geometry",
+                    confidence=confidence,
+                    source_kind=vector.source_kind,
+                    attributes={
+                        "fixture_tag": tag,
+                        "source_geometry_key": cluster.geometry_key,
+                        "shape_signature": cluster.shape_signature,
+                        "shape_score": shape_score,
+                    },
+                ),
+                method="pdf-lighting-fixture-tag",
+            )
+        candidate.merge_source(
+            element_id=tag_observation.element_id,
+            text=tag_observation.text,
+            symbol_name=None,
+            x_pt=cluster.center_pt[0],
+            y_pt=cluster.center_pt[1],
+            confidence=0.99,
+            provenance=_provenance(
+                document,
+                element_id=tag_observation.element_id,
+                page=tag_observation.page,
+                method="pdf-lighting-fixture-tag",
+                confidence=0.99,
+                attributes={
+                    "source_text": tag_observation.text,
+                    "fixture_tag": tag,
+                    "tag_is_primary_type_evidence": True,
+                    "source_geometry_key": cluster.geometry_key,
+                },
+            ),
+            method="pdf-lighting-fixture-tag",
+        )
+        candidate.provenance.append(
+            _provenance(
+                document,
+                element_id=legend_entry.label.element_id,
+                page=legend_entry.page,
+                method="pdf-lighting-legend-tag",
+                confidence=legend_entry.confidence,
+                attributes={
+                    "source_text": legend_entry.label.text,
+                    "fixture_tag": tag,
+                    "prototype_geometry_key": legend_entry.prototype.geometry_key,
+                },
+            )
+        )
+        if schedule_row is not None:
+            schedule_attributes = _lighting_schedule_attributes(schedule_row)
+            for source_element_id in schedule_row.source_element_ids:
+                candidate.provenance.append(
+                    _provenance(
+                        document,
+                        element_id=source_element_id,
+                        page=schedule_row.page,
+                        method="pdf-lighting-fixture-schedule",
+                        confidence=0.99,
+                        attributes=schedule_attributes,
+                    )
+                )
+
+        candidates[candidate.key] = candidate
+        matched_vector_ids.update(cluster.source_element_ids)
+        claimed_vector_ids.update(cluster.source_element_ids)
+        claimed_text_ids.add(tag_observation.element_id)
+
+    # A symbol that looks like a known lighting prototype but has no readable
+    # local tag is evidence of a miss, never permission to infer its type.
+    # Exact switching codes are handled below and therefore are not fixture misses.
+    for cluster in field_clusters:
+        key = (cluster.page, cluster.geometry_key)
+        if (
+            key in ambiguous_cluster_keys
+            or key in diagnosed_cluster_keys
+            or set(cluster.source_element_ids) & claimed_vector_ids
+        ):
+            continue
+        nearby_switch_code = any(
+            observation.page == cluster.page
+            and re.sub(r"\s+", "", observation.text.strip().upper())
+            in _LIGHTING_SWITCH_CODES
+            and re.sub(r"\s+", "", observation.text.strip().upper())
+            not in fixture_tags_by_page.get(cluster.page, set())
+            and _distance_pt(
+                cluster.center_pt[0],
+                cluster.center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            <= _LIGHTING_TAG_CLUSTER_RADIUS_PT
+            for observation in texts
+        )
+        if nearby_switch_code:
+            continue
+        entry, score = _lighting_shape_support(
+            cluster,
+            fixture_entries_by_page.get(cluster.page, ()),
+        )
+        if entry is None or score is None or score < _GLYPH_MATCH_STRONG_SCORE:
+            continue
+        nearby_short_text = sorted(
+            {
+                " ".join(observation.text.split())
+                for observation in texts
+                if observation.page == cluster.page
+                and observation.element_id not in claimed_text_ids
+                and _distance_pt(
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                    observation.x_pt,
+                    observation.y_pt,
+                )
+                <= _LIGHTING_TAG_CLUSTER_RADIUS_PT
+                and len(" ".join(observation.text.split())) <= 16
+            }
+        )
+        unresolved.append(
+            {
+                "kind": "lighting_fixture",
+                "page": cluster.page,
+                "source_element_id": cluster.source_element_ids[0],
+                "source_element_ids": list(cluster.source_element_ids),
+                "position_pt": {
+                    "x": cluster.center_pt[0],
+                    "y": cluster.center_pt[1],
+                },
+                "status": "unresolved_classification",
+                "reason_code": (
+                    "lighting_fixture_tag_unreadable_or_unknown"
+                    if nearby_short_text
+                    else "lighting_fixture_tag_missing"
+                ),
+                "reason": (
+                    "fixture-like geometry has no unique readable schedule/legend "
+                    "tag; type is not inferred from symbol shape alone"
+                ),
+                "nearest_legend_tag": entry.tag,
+                "shape_score": score,
+                "nearby_text_candidates": nearby_short_text,
+            }
+        )
+        claimed_vector_ids.update(cluster.source_element_ids)
+
+    lighting_pages = set(fixture_tags_by_page)
+    lighting_pages.update(
+        observation.page
+        for observation in texts
+        if _lighting_heading_kind(observation) is not None
+    )
+    fixture_field_text_ids = set(claimed_text_ids)
+
+    # Switching is semantic only when the printed code is exact, uniquely
+    # attached to one small glyph on a confirmed lighting page, and that glyph
+    # matches the code's own lighting-legend prototype. The code table alone
+    # is not evidence: SD inside a circle is a smoke detector and S in a bubble
+    # is a grid line. Without that prototype the code stays an explicit,
+    # counted miss rather than a guessed switch.
+    for observation in texts:
+        if observation.page not in lighting_pages:
+            continue
+        if observation.element_id in fixture_field_text_ids:
+            continue
+        code = re.sub(r"\s+", "", observation.text.strip().upper())
+        switch_classification = _LIGHTING_SWITCH_CODES.get(code)
+        if switch_classification is None:
+            continue
+        if code in fixture_tags_by_page.get(observation.page, set()):
+            continue
+        nearby = [
+            cluster
+            for cluster in field_clusters
+            if cluster.page == observation.page
+            and not (set(cluster.source_element_ids) & claimed_vector_ids)
+            and _distance_pt(
+                cluster.center_pt[0],
+                cluster.center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            <= _LIGHTING_TAG_CLUSTER_RADIUS_PT
+        ]
+        nearby.sort(
+            key=lambda cluster: (
+                _distance_pt(
+                    cluster.center_pt[0],
+                    cluster.center_pt[1],
+                    observation.x_pt,
+                    observation.y_pt,
+                ),
+                cluster.geometry_key,
+            )
+        )
+        if not nearby:
+            continue
+        if (
+            len(nearby) > 1
+            and _distance_pt(
+                nearby[1].center_pt[0],
+                nearby[1].center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            - _distance_pt(
+                nearby[0].center_pt[0],
+                nearby[0].center_pt[1],
+                observation.x_pt,
+                observation.y_pt,
+            )
+            < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
+        ):
+            unresolved.append(
+                {
+                    "kind": "lighting_switch",
+                    "page": observation.page,
+                    "source_element_id": observation.element_id,
+                    "source_text": observation.text,
+                    "status": "unresolved_classification",
+                    "reason_code": "lighting_switch_association_ambiguous",
+                    "reason": (
+                        "legible switching code is not uniquely associated with one "
+                        "nearby glyph"
+                    ),
+                    "candidate_geometry_keys": [
+                        cluster.geometry_key for cluster in nearby[:4]
+                    ],
+                    "source_element_ids": sorted(
+                        {
+                            element_id
+                            for cluster in nearby
+                            for element_id in cluster.source_element_ids
+                        }
+                    ),
+                }
+            )
+            claimed_text_ids.add(observation.element_id)
+            for cluster in nearby:
+                if _is_lighting_shaped(
+                    cluster,
+                    legend_entries_by_page.get(cluster.page, ()),
+                ):
+                    claimed_vector_ids.update(cluster.source_element_ids)
+            continue
+
+        cluster = nearby[0]
+        canonical_type, switch_type = switch_classification
+        legend_entry, shape_score = _lighting_shape_support(
+            cluster,
+            switch_entries_by_page.get(cluster.page, ()),
+            tag=code,
+        )
+        if (
+            legend_entry is None
+            or shape_score is None
+            or shape_score < _LIGHTING_GLYPH_CONFIRM_SCORE
+        ):
+            if legend_entry is None:
+                miss = {
+                    "reason_code": "lighting_switch_symbol_unconfirmed",
+                    "reason": (
+                        "legible switching code has no code-specific "
+                        "lighting-legend prototype on this sheet; the code "
+                        "alone does not prove a switch"
+                    ),
+                }
+            else:
+                miss = {
+                    "reason_code": "lighting_switch_symbol_mismatch",
+                    "reason": (
+                        "legible switching code is present but adjacent geometry "
+                        "does not match that code's lighting-legend prototype"
+                    ),
+                    "shape_score": shape_score,
+                    "match_minimum": _LIGHTING_GLYPH_CONFIRM_SCORE,
+                }
+            unresolved.append(
+                {
+                    "kind": "lighting_switch",
+                    "page": observation.page,
+                    "source_element_id": observation.element_id,
+                    "source_text": observation.text,
+                    "switch_code": code,
+                    "candidate_switch_type": switch_type,
+                    "source_element_ids": list(cluster.source_element_ids),
+                    "status": "unresolved_classification",
+                    **miss,
+                }
+            )
+            claimed_text_ids.add(observation.element_id)
+            if _is_lighting_shaped(
+                cluster,
+                legend_entries_by_page.get(cluster.page, ()),
+            ):
+                claimed_vector_ids.update(cluster.source_element_ids)
+            continue
+
+        confidence = min(0.96, max(0.60, float(shape_score)))
+        recognition = {
+            "method": "lighting-switch-code",
+            "switch_code": code,
+            "switch_type": switch_type,
+            "code_source_element_id": observation.element_id,
+            "source_geometry_key": cluster.geometry_key,
+            "shape_signature": cluster.shape_signature,
+            "shape_score": shape_score,
+            "legend": {
+                "page": legend_entry.page,
+                "code_source_element_id": legend_entry.label.element_id,
+                "heading_element_id": legend_entry.heading.element_id,
+                "prototype_geometry_key": legend_entry.prototype.geometry_key,
+            },
+        }
+        candidate = _EntityCandidate(
+            key=f"p{cluster.page}:lighting-switch:{cluster.geometry_key}",
+            entity_kind="device",
+            canonical_type=canonical_type,
+            tag=code,
+            identity_key=(
+                f"lighting-switch:p{cluster.page}:{code}:{cluster.geometry_key}"
+            ),
+            page=cluster.page,
+            x_pt=cluster.center_pt[0],
+            y_pt=cluster.center_pt[1],
+            confidence=confidence,
+            primary_method="pdf-lighting-switch-code",
+            lighting_recognition=recognition,
+        )
+        for vector in cluster.vectors:
+            candidate.merge_source(
+                element_id=vector.element_id,
+                text=None,
+                symbol_name=None,
+                x_pt=cluster.center_pt[0],
+                y_pt=cluster.center_pt[1],
+                confidence=confidence,
+                provenance=_provenance(
+                    document,
+                    element_id=vector.element_id,
+                    page=cluster.page,
+                    method="pdf-lighting-switch-geometry",
+                    confidence=confidence,
+                    source_kind=vector.source_kind,
+                    attributes=recognition,
+                ),
+                method="pdf-lighting-switch-code",
+            )
+        candidate.merge_source(
+            element_id=observation.element_id,
+            text=observation.text,
+            symbol_name=None,
+            x_pt=cluster.center_pt[0],
+            y_pt=cluster.center_pt[1],
+            confidence=confidence,
+            provenance=_provenance(
+                document,
+                element_id=observation.element_id,
+                page=observation.page,
+                method="pdf-lighting-switch-code",
+                confidence=confidence,
+                attributes={
+                    "source_text": observation.text,
+                    **recognition,
+                },
+            ),
+            method="pdf-lighting-switch-code",
+        )
+        candidate.provenance.append(
+            _provenance(
+                document,
+                element_id=legend_entry.label.element_id,
+                page=legend_entry.page,
+                method="pdf-lighting-legend-switch-code",
+                confidence=legend_entry.confidence,
+                attributes={
+                    "source_text": legend_entry.label.text,
+                    "switch_code": code,
+                    "prototype_geometry_key": legend_entry.prototype.geometry_key,
+                },
+            )
+        )
+        candidates[candidate.key] = candidate
+        matched_vector_ids.update(cluster.source_element_ids)
+        claimed_vector_ids.update(cluster.source_element_ids)
+        claimed_text_ids.add(observation.element_id)
+
+    # Misses are counted beside recognitions so any recall a stricter rule
+    # costs stays visible in the output instead of silently disappearing.
+    unresolved_by_reason: dict[str, int] = {}
+    for item in unresolved:
+        reason_code = str(item.get("reason_code"))
+        unresolved_by_reason[reason_code] = unresolved_by_reason.get(reason_code, 0) + 1
+    recognition_summary = {
+        "legend_type": "lighting",
+        "legend_regions": legend_metadata,
+        "fixture_schedules": schedule_metadata,
+        "recognized_fixture_count": sum(
+            candidate.canonical_type == "luminaire"
+            for candidate in candidates.values()
+        ),
+        "recognized_switch_count": sum(
+            candidate.canonical_type in {"switch", "occupancy_sensor"}
+            for candidate in candidates.values()
+        ),
+        "unresolved_fixture_count": sum(
+            item.get("kind") == "lighting_fixture" for item in unresolved
+        ),
+        "unresolved_switch_count": sum(
+            item.get("kind") == "lighting_switch" for item in unresolved
+        ),
+        "unresolved_by_reason": dict(sorted(unresolved_by_reason.items())),
+        "fixture_tags": sorted(
+            {
+                candidate.tag
+                for candidate in candidates.values()
+                if candidate.canonical_type == "luminaire"
+                and candidate.tag is not None
+            }
+        ),
+    }
+    return (
+        candidates,
+        matched_vector_ids,
+        claimed_vector_ids,
+        claimed_text_ids,
+        unresolved,
+        recognition_summary,
+    )
+
+
 def _recognize_legend_shapes(
     document: PdfElectricalDocument,
     *,
@@ -5207,6 +6615,28 @@ class ElectricalPdfImporter:
             if observation.element_id not in annotation_code_text_ids
         )
         (
+            lighting_candidates,
+            lighting_matched_vector_ids,
+            lighting_claimed_vector_ids,
+            lighting_claimed_text_ids,
+            unresolved_lighting_rows,
+            lighting_recognition,
+        ) = _recognize_lighting(
+            document,
+            texts=legend_texts,
+            vectors=vectors,
+        )
+        generic_legend_texts = tuple(
+            observation
+            for observation in legend_texts
+            if observation.element_id not in lighting_claimed_text_ids
+        )
+        generic_vectors = tuple(
+            vector
+            for vector in vectors
+            if vector.element_id not in lighting_claimed_vector_ids
+        )
+        (
             shape_candidates,
             shape_matched_vector_ids,
             glyph_vector_ids,
@@ -5216,13 +6646,21 @@ class ElectricalPdfImporter:
             annotation_legend_entries,
         ) = _recognize_legend_shapes(
             document,
-            texts=legend_texts,
-            vectors=vectors,
+            texts=generic_legend_texts,
+            vectors=generic_vectors,
             rules=self.symbol_rules,
             ambiguity_margin=self.ambiguity_margin,
         )
-        candidates: dict[str, _EntityCandidate] = dict(shape_candidates)
-        unresolved_observations: list[dict[str, Any]] = []
+        shape_matched_vector_ids.update(lighting_matched_vector_ids)
+        glyph_vector_ids.update(lighting_claimed_vector_ids)
+        legend_text_ids.update(lighting_claimed_text_ids)
+        candidates: dict[str, _EntityCandidate] = {
+            **shape_candidates,
+            **lighting_candidates,
+        }
+        unresolved_observations: list[dict[str, Any]] = list(
+            unresolved_lighting_rows
+        )
         source_by_key: dict[
             tuple[int, str],
             list[PdfTextObservation | PdfSymbolObservation],
@@ -5965,6 +7403,25 @@ class ElectricalPdfImporter:
                     lane_attributes["status"] = candidate.shape_recognition["status"]
                     lane_attributes["status_meaning"] = candidate.shape_recognition[
                         "status_meaning"
+                    ]
+            if candidate.lighting_recognition is not None:
+                lane_attributes["lighting_recognition"] = dict(
+                    candidate.lighting_recognition
+                )
+                if "fixture_tag" in candidate.lighting_recognition:
+                    lane_attributes["fixture_tag"] = candidate.lighting_recognition[
+                        "fixture_tag"
+                    ]
+                if "fixture_schedule" in candidate.lighting_recognition:
+                    lane_attributes["fixture_schedule"] = dict(
+                        candidate.lighting_recognition["fixture_schedule"]
+                    )
+                if "switch_type" in candidate.lighting_recognition:
+                    lane_attributes["switch_type"] = candidate.lighting_recognition[
+                        "switch_type"
+                    ]
+                    lane_attributes["switch_code"] = candidate.lighting_recognition[
+                        "switch_code"
                     ]
             if candidate.annotation_recognition is not None:
                 lane_attributes["annotation_recognition"] = dict(
@@ -7677,6 +9134,7 @@ class ElectricalPdfImporter:
                         else {}
                     ),
                     "legend_recognition": legend_recognition,
+                    "lighting_recognition": lighting_recognition,
                     "panel_schedules": {
                         panel: {
                             "status": (

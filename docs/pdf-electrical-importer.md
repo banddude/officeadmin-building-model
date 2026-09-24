@@ -282,6 +282,99 @@ appears only inside the sheet's drawn legend. It has no paired expected-output
 artifact.
 
 
+### Lighting legends, fixture schedules, and letter tags
+
+Lighting recognition is a separate path from the power-device symbol legend. An
+explicit heading such as `LIGHTING FIXTURE LEGEND` establishes a lighting
+legend only when at least two readable letter-tag rows can be associated with
+small glyph prototypes. Tags such as `A`, `A1`, `B`, and `F2` are the
+fixture-type evidence. Geometry is supporting evidence only: the same symbol may
+legitimately appear under multiple fixture tags, so the importer never chooses a
+fixture type from shape alone.
+
+An explicit lighting/fixture schedule heading plus a tag/type column and at
+least one descriptive column establishes a fixture schedule. Readable rows are
+associated by tag and can carry description, lamp, wattage, mounting,
+manufacturer, and model/catalog text. Parsed wattage also exposes
+`wattage_w` when numeric. Conflicting duplicate schedule rows fail closed.
+Recognized luminaires carry the schedule row under
+`attributes.pdf_electrical.fixture_schedule` and preserve independent
+provenance for field geometry, the printed field tag, the lighting legend tag,
+and schedule cells.
+
+Field association is one-to-one and local. A schedule/legend-known tag must be
+uniquely adjacent to a small glyph, and a luminaire additionally requires that
+tag's own lighting-legend prototype on the same sheet with the adjacent glyph
+clearing the glyph match minimum (`_GLYPH_MATCH_SCORE_MIN`) against it. The tag
+narrows the candidates to one fixture type, so this is the power-device margin
+rule for a single candidate type; the lower absolute floor only marks shapes
+that are certainly not the prototype and never confirms one. Scale,
+quarter-turn rotation, mirroring, and CAD stroke variation therefore use the
+same normalized geometry machinery as power-device matching without making
+shape the semantic classifier. Repeated instances may share a fixture tag but
+retain separate stable source-geometry identities.
+
+A fixture schedule enriches a confirmed fixture; it never proves one. A
+schedule-known letter beside small geometry is exactly what a room name or
+grid label looks like, so a tag with no tag-specific legend prototype on the
+sheet stays unresolved with `lighting_fixture_symbol_unconfirmed`, whatever
+the adjacent geometry looks like. A tag whose adjacent glyph falls below the
+match minimum for that tag's prototype stays unresolved with
+`lighting_fixture_symbol_mismatch` and its shape score. Lighting claims field
+geometry only when the sheet's lighting legend confirms it is lighting-shaped;
+geometry it rejects stays available to the power-device path.
+
+Fixture-like geometry with no readable tag remains unresolved with
+`lighting_fixture_tag_missing` (or
+`lighting_fixture_tag_unreadable_or_unknown` when short unreadable text is
+adjacent). Competing tags or non-unique tag-to-glyph association also remain
+unresolved with explicit reason codes. A bare schedule-known letter elsewhere
+on the sheet, including a room-name lookalike, does not create a luminaire
+because it has no qualifying adjacent glyph.
+
+On a confirmed lighting page, exact legible codes `S`, `S3`, `SD`, and
+`OS` may classify switching as single-pole, three-way, dimmer, or occupancy
+sensor respectively. Like a fixture tag, the code alone is not evidence: `SD`
+inside a circle is a smoke detector and `S` in a bubble is a column grid label.
+A switch therefore needs one unambiguous adjacent glyph that clears the match
+minimum against that code's own lighting-legend prototype on the sheet. A
+lighting-legend row labelled with a switching code is that code's switch
+prototype only when the row's own description names a switching device
+(`SWITCH`, `DIMMER`, `OCCUPANCY`, or `VACANCY`), because `S1`/`S2`/`S3` are
+also common strip-fixture type tags. A row's description ends at the next
+legend entry in its row band (the first other glyph or tag-shaped label to
+the right), so a multi-column legend never lends one row its neighbouring
+column's description. Fixture tags always take precedence if a
+schedule actually defines one of those strings as a fixture type. A
+switch-code legend row that neither a schedule row nor its description settles
+stays out of both roles as `lighting_legend_code_role_ambiguous`. A code with
+no prototype on the sheet
+stays unresolved as `lighting_switch_symbol_unconfirmed`, and a glyph below the
+match minimum stays `lighting_switch_symbol_mismatch`. Ambiguous switching
+stays unresolved.
+
+This costs recall on sheets that print switch codes without a switch legend,
+and the cost stays visible. `lighting_recognition` reports
+`unresolved_fixture_count`, `unresolved_switch_count`, and
+`unresolved_by_reason` beside the recognized counts, so every legible code
+that did not become a switch is counted and explained rather than dropped.
+
+The Slice 16 acceptance tests generate public-safe PDFs at runtime and pass the
+generated source through `extract_pdf()`; there is no pre-extracted JSON and
+no paired `.expected.json` answer key. The generated sheet covers same-shape
+different-tag fixtures, scale/rotation/mirroring, adjacent distractor text,
+fixture schedules, switching, a room-name lookalike, a tagless fixture, and
+ambiguous/unreadable tags. A separate generated probe puts a schedule-known
+room label beside unrelated small closed geometry inside the association
+radius: without a lighting legend it yields zero luminaires, and with one the
+genuine legend-confirmed fixture beside it is still recognized. A switch probe
+puts a smoke-detector `SD` inside a circle and a grid-bubble `S` on a lighting
+sheet: both yield zero switches with or without a switch legend, and a genuine
+legend-confirmed `S` beside them is still recognized. A legend row `S3` that
+describes an LED strip never becomes a switch prototype: a schedule row makes
+it a fixture, and without one it stays ambiguous, even when a neighbouring
+legend column's `DIMMER SWITCH` shares its baseline.
+
 ### Notes-column legend tables and field status
 
 A right-hand notes column is not treated as one monolithic title block. Only the

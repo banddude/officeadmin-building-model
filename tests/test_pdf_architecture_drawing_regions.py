@@ -553,7 +553,11 @@ def test_scale_override_can_target_one_region(tmp_path: Path) -> None:
     ("SECOND FLOOR PLAN - UNIT 3", "Second Floor"),
     ("SECOND FLOOR PLAN: AREA A", "Second Floor"),
     ("SECOND FLOOR PLAN (NORTH)", "Second Floor"),
-    ("THIRD FLOOR - UNIT A", "Third Floor"),
+    ("THIRD FLOOR", "Third Floor"),
+    ("THIRD FLOOR - UNIT A", None),
+    ("THIRD FLOOR, TYP.", None),
+    ("SECOND FLOOR (TYP)", None),
+    ("SECOND FLOOR: SEE A5", None),
     ("EXISTING SECOND FLOOR PLAN \u2013 WEST WING", "Second Floor"),
     ("SEE SECOND FLOOR FRAMING FOR BLOCKING", None),
     ("SECOND FLOOR FRAMING FOR BLOCKING", None),
@@ -609,3 +613,15 @@ def test_two_sheet_set_with_qualified_floor_titles_keeps_both_floors(tmp_path: P
         "geometry_imported",
     ]
     assert "level_elevation_conflict" not in _codes(model)
+
+
+def test_floor_note_with_a_qualifier_is_not_a_second_level_name(tmp_path: Path) -> None:
+    noted = replace(SECOND, notes=(*SECOND.notes, "THIRD FLOOR, TYP."))
+    model = _import(_write_sheet(tmp_path / "noted.pdf", (noted,)))
+
+    [region] = _regions(model)
+    assert region["status"] == "resolved"
+    assert "level_ambiguous" not in _codes(model)
+    [level] = model.levels
+    assert level.name == "Second Floor"
+    assert _entities_on(model, level.id) == (1, 4)

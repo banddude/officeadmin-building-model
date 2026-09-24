@@ -76,6 +76,7 @@ class Drawing:
     evse: bool = False
     walls: bool = True
     jitter_stub_pt: float = 0.0
+    mirrored: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,8 @@ class Sheet:
 
 def _local(drawing: Drawing, point: tuple[float, float]) -> tuple[float, float]:
     x, y = point
+    if drawing.mirrored:
+        x = MAIN.w - x  # flipped about the room's vertical centre line
     for _ in range(drawing.quarter_turns % 4):
         x, y = -y, x
     return (drawing.origin[0] + x * drawing.scale, drawing.origin[1] + y * drawing.scale)
@@ -431,10 +434,33 @@ def test_identical_floors_on_distinct_levels_are_competing_targets(tmp_path: Pat
     _, source, architecture = _two_floor_architecture(tmp_path)
     regions = architecture.attributes["pdf_architecture"]["drawing_regions"]
     assert [region["status"] for region in regions] == ["resolved", "resolved"]
-    [page] = _register(architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL))).pages
+    untitled = replace(ELECTRICAL, title=None)
+    [page] = _register(architecture, source, _electrical(tmp_path, _e_sheet(untitled))).pages
     assert page.status == REGISTRATION_PENDING
     assert page.reason_codes == ("competing_targets",)
     assert page.record["competing_region_ids"] == sorted(region["region_id"] for region in regions)
+
+
+def test_electrical_level_name_selects_among_identical_floors(tmp_path: Path) -> None:
+    _, source, architecture = _two_floor_architecture(tmp_path)
+    second = next(level for level in architecture.levels if level.name == "Second Floor")
+    [page] = _register(architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL))).pages
+    assert page.status == REGISTERED
+    assert page.record["registration"]["level_id"] == second.id
+    rejected = [item for item in page.record["candidates"] if not item["accepted"]]
+    assert [item["reason_codes"] for item in rejected] == [["level_name_mismatch"]]
+
+
+def test_electrical_sheet_naming_another_level_is_refused(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path)
+    third = replace(ELECTRICAL, title="THIRD FLOOR POWER PLAN")
+    [page] = _register(architecture, source, _electrical(tmp_path, _e_sheet(third))).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("level_name_mismatch",)
+    # Equivalent spellings of the same level still register.
+    ordinal = replace(ELECTRICAL, title="2ND FLOOR POWER PLAN")
+    [same] = _register(architecture, source, _electrical(tmp_path, _e_sheet(ordinal), name="2nd.pdf")).pages
+    assert same.status == REGISTERED
 
 
 def test_multiple_drawings_on_one_electrical_page_stay_pending(tmp_path: Path) -> None:
@@ -541,3 +567,106 @@ def test_electrical_page_without_a_printed_scale_is_pending(tmp_path: Path) -> N
     ).pages
     assert overridden.status == REGISTERED
     assert overridden.record["electrical_scale"]["method"] == "caller-supplied electrical sheet scale"
+
+
+def _evse_error_m(transform, drawing: Drawing) -> float:
+    mapped = transform.apply(*_local(drawing, EVSE_AT))
+    expected = _local(SECOND, EVSE_AT)
+    return math.hypot(mapped.x - expected[0] * MPP, mapped.y - expected[1] * MPP)
+
+
+def test_mirrored_sheet_is_refused_and_the_true_sheet_still_registers(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path)
+    mirrored = replace(ELECTRICAL, mirrored=True)
+    result = _register(architecture, source, _electrical(tmp_path, _e_sheet(mirrored)))
+    [page] = result.pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("orientation_incompatible",)
+    alternative = page.record["diagnostics"]["alternative"]
+    assert alternative["mirrored"] is True
+    assert alternative["wall_inlier_count"] > page.record["diagnostics"]["identity_wall_inlier_count"]
+    assert result.page_transforms() is None
+
+    # Control: the unmirrored sheet registers and places the device exactly.
+    [control] = _register(
+        architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL), name="control.pdf"),
+    ).pages
+    assert control.status == REGISTERED
+    assert _evse_error_m(control.transform, ELECTRICAL) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_mirrored_sheet_with_grid_bubbles_is_refused(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path, Sheet((replace(SECOND, grid=GRID),)))
+    mirrored = replace(ELECTRICAL, mirrored=True, grid=GRID)
+    [page] = _register(architecture, source, _electrical(tmp_path, _e_sheet(mirrored))).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("orientation_incompatible",)
+
+
+def test_two_page_set_with_a_mirrored_page_offers_no_transforms(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path)
+    result = _register(
+        architecture,
+        source,
+        _electrical(tmp_path, _e_sheet(ELECTRICAL), _e_sheet(replace(ELECTRICAL, mirrored=True))),
+    )
+    assert [page.status for page in result.pages] == [REGISTERED, REGISTRATION_PENDING]
+    assert result.pages[1].reason_codes == ("orientation_incompatible",)
+    assert result.page_transforms() is None
+
+
+def test_grid_labels_contradicting_the_wall_placement_refuse(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path, Sheet((replace(SECOND, grid=GRID),)))
+    # Walls are true; two grid bubbles on the electrical sheet sit elsewhere.
+    scattered = tuple(
+        (label, x + (120.0 if label == "B" else -90.0 if label == "1" else 0.0), y)
+        for label, x, y in GRID
+    )
+    [page] = _register(
+        architecture, source, _electrical(tmp_path, _e_sheet(replace(ELECTRICAL, grid=scattered))),
+    ).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("grid_labels_inconsistent",)
+
+    # A consistent grid that disagrees with the walls also refuses.
+    shifted = tuple((label, x + 100.0, y + 100.0) for label, x, y in GRID)
+    [other] = _register(
+        architecture,
+        source,
+        _electrical(tmp_path, _e_sheet(replace(ELECTRICAL, grid=shifted)), name="shifted.pdf"),
+    ).pages
+    assert other.reason_codes == ("registration_methods_disagree",)
+
+
+def test_one_stray_grid_label_is_tolerated_when_others_agree(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path, Sheet((replace(SECOND, grid=GRID),)))
+    stray = tuple((label, x + (120.0 if label == "B" else 0.0), y) for label, x, y in GRID)
+    [page] = _register(
+        architecture, source, _electrical(tmp_path, _e_sheet(replace(ELECTRICAL, grid=stray))),
+    ).pages
+    assert page.status == REGISTERED
+    assert page.record["registration"]["evidence_method"] == "wall_vectors_and_grid_labels"
+    [candidate] = page.record["candidates"]
+    assert candidate["grid_label_outliers"] == ["B"]
+
+
+def test_symmetric_walls_need_grid_labels_to_fix_orientation(tmp_path: Path) -> None:
+    symmetric = replace(SECOND, stub=False)
+    _, source, architecture = _architecture(tmp_path, Sheet((symmetric,)))
+    plain = replace(ELECTRICAL, stub=False)
+    [page] = _register(architecture, source, _electrical(tmp_path, _e_sheet(plain))).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("ambiguous_orientation",)
+
+    (tmp_path / "grid").mkdir()
+    _, gridded_source, gridded = _architecture(
+        tmp_path / "grid", Sheet((replace(symmetric, grid=GRID),)),
+    )
+    [resolved] = _register(
+        gridded,
+        gridded_source,
+        _electrical(tmp_path, _e_sheet(replace(plain, grid=GRID)), name="gridded.pdf"),
+    ).pages
+    assert resolved.status == REGISTERED
+    assert resolved.record["registration"]["evidence_method"] == "wall_vectors_and_grid_labels"
+    assert _evse_error_m(resolved.transform, plain) == pytest.approx(0.0, abs=1e-9)

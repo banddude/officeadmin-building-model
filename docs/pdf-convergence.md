@@ -142,11 +142,22 @@ A page is `registered` only when all of these hold:
 - inliers spread at least `min_span_m` (3 m) and a quarter of the target's
   extent in both axes;
 - no second translation with nearly as many valid matches;
+- no mirrored or rotated placement (mirror × four quarter turns) explains as
+  many electrical wall segments as the identity placement. Symmetric walls match
+  a flipped sheet almost as well as the true one, so this is checked before
+  accepting;
+- when at least two grid labels are shared, they land on their architectural
+  bubbles under the wall placement. One stray label is tolerated when at least
+  two others agree, for example a keynote tag that happens to share a grid
+  label;
+- when the electrical drawing prints one level name and the target level is
+  named, the names agree. "Second Floor", "2nd Floor" and "2" are the same;
 - every region that accepts the page gives the same level and the same canonical
   placement.
 
-Grid labels register a page when at least two shared labels agree. When walls
-and grids both register a page, they must agree.
+Grid labels register a page on their own when walls are absent or too weak and
+at least two shared labels agree. Grid labels that agree with the wall placement
+also resolve walls that are symmetric under a mirror or turn.
 
 Otherwise the page stays `registration_pending` with a stable reason:
 
@@ -156,11 +167,16 @@ Otherwise the page stays `registration_pending` with a stable reason:
 - `insufficient_matched_evidence`, `evidence_clustered`, `excessive_residual`,
   `grid_labels_inconsistent`, `registration_methods_disagree`;
 - `competing_transforms`: repeated geometry inside one region;
+- `ambiguous_orientation`: a mirrored or turned placement explains exactly as
+  many wall segments and no grid labels settle it;
+- `level_name_mismatch`: the electrical drawing names a different level;
 - `competing_targets`: several regions or levels accept the page with different
   placements. The choice is never made by page order;
-- `orientation_incompatible` or `scale_incompatible`, when the walls would match
-  only under a rotation or a scale other than the printed ratio. This is a
-  diagnostic only, never applied;
+- `orientation_incompatible`: a mirrored or turned placement explains more wall
+  segments than the identity, or is the only one that matches. The matching
+  configuration is reported in `diagnostics`, never applied;
+- `scale_incompatible`: the walls match only at a scale other than the printed
+  ratio. This is a diagnostic only, never applied;
 - `multiple_drawing_regions_on_page`: one `PdfPageTransform` per page cannot
   place two floor drawings.
 

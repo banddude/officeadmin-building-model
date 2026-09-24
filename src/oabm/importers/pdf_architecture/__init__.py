@@ -3,6 +3,7 @@
 from .drawing_regions import RegionEvidence
 from .importer import (
     SheetWallEvidence,
+    drawing_level_names,
     import_architectural_pdf,
     printed_sheet_scale,
     region_wall_evidence,
@@ -17,6 +18,7 @@ __all__ = [
     "RegistrationHint",
     "ScaleOverride",
     "SheetWallEvidence",
+    "drawing_level_names",
     "import_architectural_pdf",
     "printed_sheet_scale",
     "region_wall_evidence",

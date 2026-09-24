@@ -4410,6 +4410,12 @@ class SheetWallEvidence:
     drawings: tuple[tuple[tuple[float, float, float, float], tuple[RegionEvidence, ...]], ...]
 
 
+def drawing_level_names(page: PdfPageObservation) -> tuple[str, ...]:
+    """Distinct level names printed as level or drawing-title text on a sheet."""
+
+    return tuple(sorted({_anchor(name): name for name, _ in _level_name_candidates(page)}.values()))
+
+
 def printed_sheet_scale(page: PdfPageObservation) -> tuple[float, str, str] | None:
     """The sheet's printed scale as (metres per point, text, element id), if unambiguous."""
 

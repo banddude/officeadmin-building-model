@@ -29,6 +29,7 @@ from typing import Any, Mapping
 
 from oabm.importers.pdf_architecture import (
     RegionEvidence,
+    drawing_level_names,
     printed_sheet_scale,
     region_wall_evidence,
     sheet_wall_evidence,
@@ -50,6 +51,25 @@ _METHOD_CONFIDENCE = {
     "wall_vectors": 0.85,
     "grid_labels": 0.8,
 }
+
+
+_ORDINALS = {
+    "first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5", "sixth": "6",
+}
+
+
+def _level_key(name: str) -> str:
+    """Compare level names across disciplines: "Second Floor" == "2nd Floor" == "2"."""
+
+    words = []
+    for word in name.lower().replace("-", " ").split():
+        if word in {"floor", "level", "plan"}:
+            continue
+        word = _ORDINALS.get(word, word)
+        if word[:-2].isdigit() and word[-2:] in {"st", "nd", "rd", "th"}:
+            word = word[:-2]
+        words.append(word)
+    return " ".join(words)
 
 
 class SheetRegistrationError(ValueError):
@@ -184,8 +204,15 @@ def _segments(evidence: tuple[RegionEvidence, ...]) -> tuple[_Segment, ...]:
     )
 
 
-def _map_point(point: tuple[float, float], scale: float, quarter_turns: int) -> tuple[float, float]:
+def _map_point(
+    point: tuple[float, float],
+    scale: float,
+    quarter_turns: int,
+    mirrored: bool = False,
+) -> tuple[float, float]:
     x, y = point
+    if mirrored:
+        x = -x
     for _ in range(quarter_turns % 4):
         x, y = -y, x
     return (x * scale, y * scale)
@@ -195,11 +222,25 @@ def _map_segments(
     segments: tuple[_Segment, ...],
     scale: float,
     quarter_turns: int,
+    mirrored: bool = False,
 ) -> tuple[_Segment, ...]:
     return tuple(
-        _Segment(_map_point(item.start, scale, quarter_turns), _map_point(item.end, scale, quarter_turns), item.element_id)
+        _Segment(
+            _map_point(item.start, scale, quarter_turns, mirrored),
+            _map_point(item.end, scale, quarter_turns, mirrored),
+            item.element_id,
+        )
         for item in segments
     )
+
+
+# Every mirror and quarter-turn configuration other than the identity.
+_ALTERNATIVE_ORIENTATIONS: tuple[tuple[bool, int], ...] = tuple(
+    (mirrored, quarter_turns)
+    for mirrored in (False, True)
+    for quarter_turns in range(4)
+    if (mirrored, quarter_turns) != (False, 0)
+)
 
 
 def _vote(
@@ -344,11 +385,12 @@ def _match_walls(
     scale: float,
     quarter_turns: int,
     options: SheetRegistrationOptions,
+    mirrored: bool = False,
 ) -> tuple[_WallMatch | None, list[str], _WallMatch | None]:
     """Best accepted wall match, its failure reasons, and a competing runner-up."""
 
     tolerance_pt = options.tolerance_m / target.meters_per_point
-    mapped = _map_segments(electrical, scale, quarter_turns)
+    mapped = _map_segments(electrical, scale, quarter_turns, mirrored)
     candidates = [
         _verify(mapped, architecture, translation, tolerance_pt)
         for translation in _vote(mapped, architecture, tolerance_pt)
@@ -374,6 +416,52 @@ def _match_walls(
     if not failures and runner_up is not None:
         failures = ["competing_transforms"]
     return best, failures, runner_up
+
+
+def _best_alternative_orientation(
+    electrical: tuple[_Segment, ...],
+    architecture: tuple[_Segment, ...],
+    target: _Target,
+    scale: float,
+    options: SheetRegistrationOptions,
+) -> tuple[int, bool, int]:
+    """Most wall segments any mirrored or rotated placement explains.
+
+    Symmetric walls can match a flipped or turned sheet almost as well as the
+    true placement. The identity match is trusted only when every alternative
+    explains strictly fewer electrical wall segments.
+    """
+
+    tolerance_pt = options.tolerance_m / target.meters_per_point
+    best = (0, False, 0)
+    for mirrored, quarter_turns in _ALTERNATIVE_ORIENTATIONS:
+        mapped = _map_segments(electrical, scale, quarter_turns, mirrored)
+        for translation in _vote(mapped, architecture, tolerance_pt):
+            count = len(_verify(mapped, architecture, translation, tolerance_pt).inliers)
+            if count > best[0]:
+                best = (count, mirrored, quarter_turns)
+    return best
+
+
+def _grid_labels_against(
+    translation: tuple[float, float],
+    electrical: Mapping[str, tuple[float, float]],
+    target: _Target,
+    scale: float,
+    tolerance_pt: float,
+) -> tuple[list[str], list[str]]:
+    """Shared grid labels that do and do not land on their architectural bubble."""
+
+    agreeing: list[str] = []
+    disagreeing: list[str] = []
+    for label in sorted(set(electrical) & set(target.grid_labels)):
+        x, y = electrical[label]
+        mapped = (x * scale + translation[0], y * scale + translation[1])
+        if math.dist(mapped, target.grid_labels[label]) <= 2.0 * tolerance_pt:
+            agreeing.append(label)
+        else:
+            disagreeing.append(label)
+    return agreeing, disagreeing
 
 
 def _grid_bubbles(page: PdfPageObservation) -> dict[str, tuple[float, float]]:
@@ -622,6 +710,7 @@ def _evaluate_target(
     cache: _EvidenceCache,
     electrical_labels: Mapping[str, tuple[float, float]],
     options: SheetRegistrationOptions,
+    electrical_level_names: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Match one electrical drawing against one architectural region."""
 
@@ -648,31 +737,72 @@ def _evaluate_target(
     wall_match: _WallMatch | None = None
     wall_reasons = ["missing_wall_evidence"]
     runner_up: _WallMatch | None = None
+    orientation_alternative: dict[str, Any] | None = None
     if walls and architecture_walls:
         wall_match, wall_reasons, runner_up = _match_walls(
             walls, architecture_walls, target, scale, 0, options,
         )
+        if wall_match is not None and not wall_reasons:
+            count, mirrored, quarter_turns = _best_alternative_orientation(
+                walls, architecture_walls, target, scale, options,
+            )
+            orientation_alternative = {
+                "mirrored": mirrored,
+                "rotation_degrees": 90 * quarter_turns,
+                "wall_inlier_count": count,
+            }
+            if count > len(wall_match.inliers):
+                wall_reasons = ["orientation_incompatible"]
+            elif count == len(wall_match.inliers):
+                wall_reasons = ["ambiguous_orientation"]
     grid_translation, grid_shared, grid_residual, grid_reasons = _match_grid(
         electrical_labels, target, scale, options,
     )
     tolerance_pt = options.tolerance_m / target.meters_per_point
     wall_ok = wall_match is not None and not wall_reasons
+    wall_tied = wall_match is not None and wall_reasons == ["ambiguous_orientation"]
     grid_ok = grid_translation is not None and not grid_reasons
     method = None
     translation = None
     reasons: list[str] = []
-    if wall_ok and grid_ok:
-        assert wall_match is not None and grid_translation is not None
-        if math.dist(wall_match.translation_pt, grid_translation) <= 2.0 * tolerance_pt:
-            method, translation = "wall_vectors_and_grid_labels", wall_match.translation_pt
-        else:
-            reasons = ["registration_methods_disagree"]
-    elif wall_ok:
+    grid_outliers: list[str] = []
+    if wall_ok or wall_tied:
+        # Explicit grid labels must agree with the wall placement. One stray
+        # label (a keynote tag that happens to share a grid label) is tolerated
+        # when at least two others agree; any larger contradiction refuses.
         assert wall_match is not None
-        method, translation = "wall_vectors", wall_match.translation_pt
+        agreeing, disagreeing = _grid_labels_against(
+            wall_match.translation_pt, electrical_labels, target, scale, tolerance_pt,
+        )
+        if len(agreeing) + len(disagreeing) >= options.min_grid_labels:
+            if len(disagreeing) >= 2 or (disagreeing and len(agreeing) < 2):
+                reasons = (
+                    ["grid_labels_inconsistent"]
+                    if "grid_labels_inconsistent" in grid_reasons
+                    else ["registration_methods_disagree"]
+                )
+            else:
+                method, translation = "wall_vectors_and_grid_labels", wall_match.translation_pt
+                grid_outliers = disagreeing
+        elif wall_ok:
+            method, translation = "wall_vectors", wall_match.translation_pt
+        else:
+            reasons = ["ambiguous_orientation"]
+    elif wall_match is not None and wall_reasons == ["orientation_incompatible"]:
+        # A better mirrored or turned wall placement is itself a contradiction;
+        # grid labels do not override it.
+        reasons = ["orientation_incompatible"]
     elif grid_ok:
         method, translation = "grid_labels", grid_translation
-    else:
+    if (
+        method is not None
+        and len(electrical_level_names) == 1
+        and target.level_name != "Unlabeled Level"
+        and _level_key(electrical_level_names[0]) != _level_key(target.level_name)
+    ):
+        # The sheets themselves name different levels; do not place one on the other.
+        method, translation, reasons = None, None, ["level_name_mismatch"]
+    if method is None and not reasons:
         reasons = sorted(set(wall_reasons) | set(grid_reasons))
         if {"missing_wall_evidence", "missing_grid_evidence"} <= set(reasons):
             reasons = ["missing_registration_evidence"]
@@ -704,6 +834,10 @@ def _evaluate_target(
         ),
         "competing_inlier_count": len(runner_up.inliers) if runner_up else 0,
         "grid_labels_shared": list(grid_shared),
+        "grid_label_outliers": grid_outliers,
+        "electrical_level_names": list(electrical_level_names),
+        "target_level_name": target.level_name,
+        "orientation_alternative": orientation_alternative,
         "grid_residual_rms_m": (
             round(grid_residual * target.meters_per_point, 9) if math.isfinite(grid_residual) else None
         ),
@@ -729,12 +863,18 @@ def _diagnose(
     if not walls or not architecture_walls:
         return [], {}
     rotations = []
-    for quarter_turns in (1, 2, 3):
-        match, failures, _ = _match_walls(walls, architecture_walls, target, scale, quarter_turns, options)
+    for mirrored, quarter_turns in _ALTERNATIVE_ORIENTATIONS:
+        match, failures, _ = _match_walls(
+            walls, architecture_walls, target, scale, quarter_turns, options, mirrored,
+        )
         if match is not None and not failures:
-            rotations.append((-len(match.inliers), quarter_turns))
+            rotations.append((-len(match.inliers), mirrored, quarter_turns))
     if rotations:
-        return ["orientation_incompatible"], {"matching_rotation_degrees": 90 * min(rotations)[1]}
+        _, mirrored, quarter_turns = min(rotations)
+        return ["orientation_incompatible"], {
+            "matching_rotation_degrees": 90 * quarter_turns,
+            "matching_mirrored": mirrored,
+        }
     ratios = []
     for ratio in options.diagnostic_scale_ratios:
         match, failures, _ = _match_walls(walls, architecture_walls, target, scale * ratio, 0, options)
@@ -787,6 +927,7 @@ def _register_page(
     cache = _EvidenceCache(page, electrical_mpp)
     wall_kind, drawings = cache.electrical(True)
     labels = _grid_bubbles(page)
+    level_names = drawing_level_names(page)
     record["evidence"] = {
         "wall_kind": wall_kind,
         "drawing_count": len(drawings),
@@ -808,7 +949,14 @@ def _register_page(
     per_drawing: list[list[dict[str, Any]]] = []
     for index, bbox in enumerate(drawing_boxes):
         per_drawing.append([
-            _evaluate_target(target, index if bbox is not None else None, cache, labels, options)
+            _evaluate_target(
+                target,
+                index if bbox is not None else None,
+                cache,
+                labels,
+                options,
+                level_names if len(drawing_boxes) == 1 else (),
+            )
             for target in targets
         ])
     if len(drawing_boxes) > 1:
@@ -841,6 +989,14 @@ def _register_page(
         if diagnostic_codes:
             reasons = diagnostic_codes
             record["diagnostics"] = {"target_region_id": best["target_region_id"], **diagnostics}
+        elif best.get("orientation_alternative") and set(reasons) & {
+            "orientation_incompatible", "ambiguous_orientation",
+        }:
+            record["diagnostics"] = {
+                "target_region_id": best["target_region_id"],
+                "identity_wall_inlier_count": best["wall_inlier_count"],
+                "alternative": best["orientation_alternative"],
+            }
         record["reason_codes"] = sorted(set(reasons)) or ["insufficient_matched_evidence"]
         return PageRegistration(
             page.page_number, REGISTRATION_PENDING, tuple(record["reason_codes"]), None, record,

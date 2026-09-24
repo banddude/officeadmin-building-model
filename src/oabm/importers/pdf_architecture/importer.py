@@ -8,9 +8,10 @@ canonical model's source-specific attributes rather than guessed.
 
 from __future__ import annotations
 
+import bisect
 import math
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from statistics import median
 from typing import Iterable
@@ -36,6 +37,12 @@ from oabm.model import (
     stable_id,
 )
 
+from .drawing_regions import (
+    RegionEvidence,
+    SourceDrawingRegion,
+    signatures_repeat,
+    split_drawing_regions,
+)
 from .extract import _is_wall_source_layer, extract_pdf
 from .layered_rooms import (
     LayeredRoomRegion,
@@ -107,6 +114,7 @@ class _Scale:
     confidence: float
     method: str
     source_text: str | None
+    source_element_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,8 +366,10 @@ def _explicit_drawing_title(page: PdfPageObservation) -> str | None:
     )
 
 
-def _scale_candidates(page: PdfPageObservation) -> list[tuple[float, str]]:
-    result: list[tuple[float, str]] = []
+def _scale_candidates(page: PdfPageObservation) -> list[tuple[float, str, str]]:
+    """Printed scales as (metres per point, matched text, source element id)."""
+
+    result: list[tuple[float, str, str]] = []
     imperial = re.compile(
         rf"(?:SCALE\s*[:=]?\s*)?(?P<paper>{_NUM})\s*[\"″]\s*=\s*"
         rf"(?P<feet>{_NUM})\s*['′]\s*(?:-\s*(?P<inches>{_NUM})\s*[\"″])?",
@@ -375,31 +385,36 @@ def _scale_candidates(page: PdfPageObservation) -> list[tuple[float, str]]:
                 real_inches += _number(match.group("inches"))
             if paper_inches > 0 and real_inches > 0:
                 ratio = real_inches / paper_inches
-                result.append((ratio * _INCH_M / _PT_PER_INCH, match.group(0)))
+                result.append((ratio * _INCH_M / _PT_PER_INCH, match.group(0), item.element_id))
         for match in metric.finditer(text):
             ratio = float(match.group("ratio"))
             if ratio > 0:
-                result.append((ratio * _INCH_M / _PT_PER_INCH, match.group(0)))
+                result.append((ratio * _INCH_M / _PT_PER_INCH, match.group(0), item.element_id))
     return result
-
-
-def _find_override(page_number: int, overrides: Iterable[ScaleOverride]) -> ScaleOverride | None:
-    matches = [item for item in overrides if item.page_number == page_number]
-    if len(matches) > 1:
-        raise ValueError(f"multiple scale overrides supplied for page {page_number}")
-    return matches[0] if matches else None
 
 
 def _resolve_scale(
     page: PdfPageObservation,
-    options: ImportOptions,
+    override: ScaleOverride | None,
     ambiguities: list[dict[str, object]],
+    *,
+    sheet_texts: tuple[PdfTextObservation, ...] = (),
 ) -> _Scale | None:
-    override = _find_override(page.page_number, options.scale_overrides)
+    """Resolve one drawing's scale.
+
+    ``sheet_texts`` are sheet-level annotations that belong to no single drawing
+    region. They are consulted only when the drawing carries no scale of its
+    own, and the inheritance is recorded in the scale method.
+    """
+
     if override:
         return _Scale(override.meters_per_point, override.confidence, override.note, None)
 
     candidates = _scale_candidates(page)
+    inherited = False
+    if not candidates and sheet_texts:
+        candidates = _scale_candidates(replace(page, texts=sheet_texts))
+        inherited = bool(candidates)
     if not candidates:
         nts = any("NOT TO SCALE" in item.text.upper() or re.search(r"\bNTS\b", item.text.upper()) for item in page.texts)
         ambiguities.append(
@@ -423,14 +438,15 @@ def _resolve_scale(
             }
         )
         return None
-    return _Scale(first, 0.98, "parsed printed scale annotation", candidates[0][1])
-
-
-def _find_registration(page_number: int, hints: Iterable[RegistrationHint]) -> RegistrationHint | None:
-    matches = [item for item in hints if item.page_number == page_number]
-    if len(matches) > 1:
-        raise ValueError(f"multiple registration hints supplied for page {page_number}")
-    return matches[0] if matches else None
+    if inherited:
+        return _Scale(
+            first,
+            0.9,
+            "sheet-level printed scale annotation inherited by drawing region",
+            candidates[0][1],
+            candidates[0][2],
+        )
+    return _Scale(first, 0.98, "parsed printed scale annotation", candidates[0][1], candidates[0][2])
 
 
 def _registration_from_hint(hint: RegistrationHint) -> _Transform2D:
@@ -580,10 +596,11 @@ def _resolve_transform(
     scale: _Scale | None,
     options: ImportOptions,
     *,
+    hint: RegistrationHint | None,
     allow_page_local_origin: bool,
+    allow_sheet_geometry_fallback: bool = True,
     ambiguities: list[dict[str, object]],
 ) -> tuple[_Transform2D | None, _Scale | None, dict[str, object] | None]:
-    hint = _find_registration(page.page_number, options.registrations)
     if hint:
         transform = _registration_from_hint(hint)
         if scale is not None:
@@ -624,43 +641,75 @@ def _resolve_transform(
             None,
         )
 
-    fallback = _sheet_geometry_registration(page, scale, options)
-    if fallback is not None:
-        transform, metadata = fallback
-        return transform, scale, metadata
+    if allow_sheet_geometry_fallback:
+        fallback = _sheet_geometry_registration(page, scale, options)
+        if fallback is not None:
+            transform, metadata = fallback
+            return transform, scale, metadata
+        detail = (
+            "additional architectural plan page requires RegistrationHint before "
+            "geometry can share the canonical frame"
+        )
+    else:
+        detail = (
+            "drawing region shares its sheet with other drawings; its own frame needs a "
+            "region-scoped RegistrationHint and is not taken from the sheet or page origin"
+        )
 
     ambiguities.append(
         {
             "page": page.page_number,
             "code": "registration_unresolved",
-            "detail": "additional architectural plan page requires RegistrationHint before geometry can share the canonical frame",
+            "detail": detail,
         }
     )
     return None, scale, None
 
 
-def _find_level_override(page_number: int, overrides: Iterable[LevelOverride]) -> LevelOverride | None:
-    matches = [item for item in overrides if item.page_number == page_number]
-    if len(matches) > 1:
-        raise ValueError(f"multiple level overrides supplied for page {page_number}")
-    return matches[0] if matches else None
+_EXPLICIT_LEVEL_RE = re.compile(
+    r"^LEVEL\s*[:#-]\s*([A-Z0-9][A-Z0-9 ._-]{0,30})$",
+    re.IGNORECASE,
+)
+_BARE_LEVEL_RE = re.compile(
+    r"^LEVEL\s+((?:GROUND|BASEMENT|\d{1,2}(?:ST|ND|RD|TH)?)(?:\s+FLOOR)?)"
+    r"(?:\s+(?:[A-Z/&.]+\s+){0,3}PLAN)?$",
+    re.IGNORECASE,
+)
+# A floor designation counts only as a drawing/level title, never inside a note:
+# "SECOND FLOOR PLAN", "EXISTING SECOND FLOOR POWER PLAN" or a title with a
+# short qualifier such as "SECOND FLOOR PLAN - UNIT A", ": AREA A" or
+# "(NORTH)", but not "SEE SECOND FLOOR FRAMING FOR BLOCKING" or
+# "SECOND FLOOR PLAN - SEE SHEET A5 FOR DETAILS".
+_TITLE_QUALIFIER_WORDS = r"[A-Z0-9#.&/'-]{1,12}(?:\s+[A-Z0-9#.&/'-]{1,12}){0,2}"
+_FLOOR_TITLE_RE = re.compile(
+    r"^(?:(?:EXISTING|PROPOSED|NEW|DEMOLITION|DEMO|PARTIAL|OVERALL|ENLARGED|\(E\)|\(N\))\s+)*"
+    r"(GROUND|FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|LOWER|MAIN|UPPER|BASEMENT|\d{1,2}(?:ST|ND|RD|TH))"
+    r"\s+FLOOR(?:\s*[-:]?\s*(?:[A-Z/&.]+\s+){0,4}PLAN)?"
+    rf"(?:\s*[-\u2013\u2014:,]\s*{_TITLE_QUALIFIER_WORDS}|\s*\(\s*{_TITLE_QUALIFIER_WORDS}\s*\))?$",
+    re.IGNORECASE,
+)
 
 
-def _level_name_from_text(page: PdfPageObservation) -> str | None:
-    explicit = re.compile(r"^LEVEL\s*[:#-]\s*([A-Z0-9][A-Z0-9 ._-]{0,30})$", re.IGNORECASE)
-    bare_level = re.compile(r"^LEVEL\s+((?:GROUND|BASEMENT|\d{1,2}(?:ST|ND|RD|TH)?)(?:\s+FLOOR)?)$", re.IGNORECASE)
-    floor_suffix = re.compile(r"\b(GROUND|FIRST|SECOND|THIRD|FOURTH|FIFTH)\s+FLOOR\b", re.IGNORECASE)
+def _level_name_candidates(
+    page: PdfPageObservation,
+) -> tuple[tuple[str, PdfTextObservation], ...]:
+    """Every explicit level name on the drawing, with its source text."""
+
+    result: list[tuple[str, PdfTextObservation]] = []
     for item in page.texts:
         text = _clean_text(item.text)
-        match = explicit.fullmatch(text) or bare_level.fullmatch(text)
+        match = _EXPLICIT_LEVEL_RE.fullmatch(text) or _BARE_LEVEL_RE.fullmatch(text)
         if match:
             candidate = _clean_text(match.group(1))
             if candidate.upper() != "PLAN":
-                return candidate.title() if candidate.isupper() else candidate
-        match = floor_suffix.search(text)
+                result.append((candidate.title() if candidate.isupper() else candidate, item))
+            continue
+        match = _FLOOR_TITLE_RE.fullmatch(text)
         if match:
-            return match.group(0).title()
-    return None
+            designation = match.group(1)
+            designation = designation.capitalize() if designation.isalpha() else designation.lower()
+            result.append((f"{designation} Floor", item))
+    return tuple(result)
 
 
 def _elevation_from_text(page: PdfPageObservation) -> tuple[float, PdfTextObservation] | None:
@@ -954,15 +1003,65 @@ def _reconcile_measurement(
     ), True
 
 
+def _level_name_evidence(
+    page: PdfPageObservation,
+    override: LevelOverride | None,
+) -> tuple[str | None, tuple[PdfTextObservation, ...], tuple[str, ...]]:
+    """Return (selected name, supporting texts, distinct parsed names).
+
+    An explicit override name wins. Otherwise the drawing must carry exactly
+    one distinct level name; several distinct names leave the name unselected.
+    """
+
+    candidates = _level_name_candidates(page)
+    distinct = tuple(sorted({_anchor(name): name for name, _ in candidates}.values()))
+    if override and override.name:
+        return override.name, (), distinct
+    if len(distinct) != 1:
+        return None, (), distinct
+    return distinct[0], tuple(item for _, item in candidates), distinct
+
+
 def _resolve_level(
     page: PdfPageObservation,
     options: ImportOptions,
     known_levels: dict[str, _LevelInfo],
     ambiguities: list[dict[str, object]],
+    *,
+    override: LevelOverride | None,
+    require_drawing_level_name: bool = False,
 ) -> _LevelInfo | None:
-    override = _find_level_override(page.page_number, options.level_overrides)
-    parsed_name = _level_name_from_text(page)
-    name = override.name if override and override.name else parsed_name or "Unlabeled Level"
+    parsed_name, _, distinct_names = _level_name_evidence(page, override)
+    if parsed_name is None and len(distinct_names) > 1:
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "level_ambiguous",
+                "detail": (
+                    "the drawing names more than one level; supply a LevelOverride "
+                    "with a name to select one"
+                ),
+                "level_names": list(distinct_names),
+                "source_element_ids": sorted(
+                    item.element_id for _, item in _level_name_candidates(page)
+                ),
+            }
+        )
+        return None
+    if parsed_name is None and require_drawing_level_name:
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "level_unresolved",
+                "detail": (
+                    "this drawing shares its sheet with other drawings and carries no "
+                    "level name of its own; sheet-level text is not assigned to one "
+                    "drawing, so supply a region-scoped LevelOverride"
+                ),
+            }
+        )
+        return None
+    name = parsed_name or "Unlabeled Level"
     anchor = _anchor(name)
     existing = known_levels.get(anchor)
 
@@ -3492,6 +3591,7 @@ def _geometric_wall_loop_entities(
     *,
     excluded_element_ids: set[str] | None = None,
     allow_partial_faces: bool = True,
+    sheet_anchor: str | None = None,
 ) -> tuple[
     tuple[_WallContext, ...],
     tuple[Space, ...],
@@ -3499,7 +3599,7 @@ def _geometric_wall_loop_entities(
 ]:
     if level.height_m is None or level_info.height is None:
         return (), (), {}
-    sheet_anchor = _sheet_anchor(page)
+    sheet_anchor = sheet_anchor or _sheet_anchor(page)
     if sheet_anchor is None:
         return (), (), {}
 
@@ -4022,6 +4122,487 @@ def _make_openings(
     return tuple(result)
 
 
+_REGION_SEPARATION_M = 3.0
+_REGION_MIN_SPAN_M = 4.0
+_REGION_MIN_WALL_LENGTH_M = 12.0
+_REGION_MIN_WALL_LAYER_SEGMENTS = 8
+_REGION_MIN_WALL_FACE_SEGMENTS = 3
+
+
+@dataclass(slots=True)
+class _DrawingRegionState:
+    """One separately drawn plan on a sheet and what has been resolved for it."""
+
+    region_id: str
+    page_number: int
+    index: int
+    scope: str
+    page: PdfPageObservation
+    bbox_pt: tuple[float, float, float, float] | None
+    scope_bbox_pt: tuple[float, float, float, float] | None
+    evidence_kind: str
+    evidence_count: int
+    signature: frozenset[tuple[int, int, int, int]] = frozenset()
+    sheet_texts: tuple[PdfTextObservation, ...] = ()
+    reason_codes: set[str] = field(default_factory=set)
+    repeated_with: set[str] = field(default_factory=set)
+    scale_hint: ScaleOverride | None = None
+    level_hint: LevelOverride | None = None
+    registration_hint: RegistrationHint | None = None
+    level_anchor: str | None = None
+    level_name_source_ids: tuple[str, ...] = ()
+    scale: _Scale | None = None
+    transform: _Transform2D | None = None
+    frame_basis: str | None = None
+    status: str = "unresolved"
+    entity_counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class _SheetRegions:
+    multiple: bool
+    regions: list[_DrawingRegionState]
+    detection: dict[str, object]
+
+
+def _region_detection_scale(page: PdfPageObservation, options: ImportOptions) -> float | None:
+    """Sheet scale used only to size region separation and wall-thickness gates."""
+
+    overrides = [
+        item for item in options.scale_overrides
+        if item.page_number == page.page_number and item.region_point_pt is None
+    ]
+    if len(overrides) == 1:
+        return overrides[0].meters_per_point
+    values = [value for value, _, _ in _scale_candidates(page)]
+    if values and all(abs(value - values[0]) / values[0] <= 1e-6 for value in values):
+        return values[0]
+    return None
+
+
+def _is_sheet_border_segment(
+    page: PdfPageObservation,
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> bool:
+    """A long segment running along a media edge is sheet framing, not a building."""
+
+    (ax, ay), (bx, by) = start, end
+    if abs(ay - by) <= 1.0 and abs(ax - bx) >= 0.5 * page.width_pt:
+        y = (ay + by) / 2.0
+        return y <= 0.10 * page.height_pt or y >= 0.90 * page.height_pt
+    if abs(ax - bx) <= 1.0 and abs(ay - by) >= 0.5 * page.height_pt:
+        x = (ax + bx) / 2.0
+        return x <= 0.10 * page.width_pt or x >= 0.90 * page.width_pt
+    return False
+
+
+def _nested_rect_wall_evidence(
+    page: PdfPageObservation,
+    meters_per_point: float,
+    options: ImportOptions,
+) -> list[RegionEvidence]:
+    """Outer edges of rectangle pairs whose four insets are wall-thickness gaps."""
+
+    minimum = options.min_wall_thickness_m / meters_per_point - 1e-9
+    maximum = options.max_wall_thickness_m / meters_per_point + 1e-9
+    rects = sorted(
+        (rect for rect in page.rects if not _is_sheet_frame_enclosure(page, rect.bbox_pt)),
+        key=lambda rect: (rect.bbox_pt, rect.element_id),
+    )
+    starts = [rect.bbox_pt[0] for rect in rects]
+    result: list[RegionEvidence] = []
+    for outer in rects:
+        x0, y0, x1, y1 = outer.bbox_pt
+        low = bisect.bisect_left(starts, x0 + minimum)
+        high = bisect.bisect_right(starts, x0 + maximum)
+        for inner in rects[low:high]:
+            ix0, iy0, ix1, iy1 = inner.bbox_pt
+            insets = (ix0 - x0, iy0 - y0, x1 - ix1, y1 - iy1)
+            if not all(minimum <= inset <= maximum for inset in insets):
+                continue
+            ids = tuple(sorted((outer.element_id, inner.element_id)))
+            corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+            result.extend(
+                RegionEvidence(corners[index], corners[(index + 1) % 4], ids)
+                for index in range(4)
+            )
+    return result
+
+
+def _drawing_region_evidence(
+    page: PdfPageObservation,
+    meters_per_point: float | None,
+    options: ImportOptions,
+    excluded_line_ids: set[str],
+) -> tuple[str, tuple[RegionEvidence, ...]]:
+    """Wall evidence that says where building drawings sit on a sheet."""
+
+    wall_lines = tuple(
+        line for line in page.lines
+        if any(_is_wall_source_layer(layer) for layer in line.source_layers)
+        and line.element_id not in excluded_line_ids
+        and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
+    )
+    if len(wall_lines) >= _REGION_MIN_WALL_LAYER_SEGMENTS:
+        return "visible_wall_layer", tuple(
+            RegionEvidence(line.start_pt, line.end_pt, (line.element_id,))
+            for line in wall_lines
+        )
+    if meters_per_point is None:
+        return "unavailable_without_sheet_scale", ()
+    evidence = _nested_rect_wall_evidence(page, meters_per_point, options)
+    if page.lines:
+        provisional = _Transform2D(
+            meters_per_point=meters_per_point,
+            rotation_radians=0.0,
+            tx_m=0.0,
+            ty_m=0.0,
+            method="scale-only drawing-region detection",
+            confidence=1.0,
+        )
+        pairs = _geometric_wall_face_pairs(
+            page,
+            provisional,
+            options,
+            excluded_element_ids=set(excluded_line_ids),
+        )
+        evidence.extend(
+            RegionEvidence(pair.start_pt, pair.end_pt, pair.source_element_ids)
+            for pair in pairs
+            if not _is_sheet_border_segment(page, pair.start_pt, pair.end_pt)
+        )
+    return "paired_wall_faces", tuple(evidence)
+
+
+def _assign_region_hints(
+    page_number: int,
+    regions: list[_DrawingRegionState],
+    hints: Iterable[ScaleOverride | LevelOverride | RegistrationHint],
+    *,
+    kind: str,
+    code_prefix: str,
+    page_scope_applies_to_every_region: bool,
+    ambiguities: list[dict[str, object]],
+) -> dict[int, ScaleOverride | LevelOverride | RegistrationHint]:
+    """Attach explicit caller hints to drawing regions, never by guessing.
+
+    On a single-drawing sheet every hint for the page targets that drawing. On a
+    multi-drawing sheet a hint selects its drawing with ``region_point_pt``; a
+    page-scoped scale override applies to every drawing, while a page-scoped
+    level or registration hint cannot say which drawing it means and is not used.
+    """
+
+    page_hints = [item for item in hints if item.page_number == page_number]
+    if len(regions) == 1 and regions[0].scope == "sheet":
+        if len(page_hints) > 1:
+            raise ValueError(f"multiple {kind}s supplied for page {page_number}")
+        return {regions[0].index: page_hints[0]} if page_hints else {}
+
+    page_scoped = [item for item in page_hints if item.region_point_pt is None]
+    if len(page_scoped) > 1:
+        raise ValueError(f"multiple {kind}s supplied for page {page_number}")
+    result: dict[int, ScaleOverride | LevelOverride | RegistrationHint] = {}
+    for hint in page_hints:
+        if hint.region_point_pt is None:
+            continue
+        containing = [
+            region for region in regions
+            if region.scope_bbox_pt is not None and _inside(region.scope_bbox_pt, hint.region_point_pt)
+        ]
+        if len(containing) != 1:
+            ambiguities.append(
+                {
+                    "page": page_number,
+                    "code": f"{code_prefix}_region_unresolved",
+                    "detail": (
+                        f"{kind} region_point_pt lies inside {len(containing)} drawing "
+                        "regions; it was not applied"
+                    ),
+                    "region_point_pt": list(hint.region_point_pt),
+                }
+            )
+            continue
+        index = containing[0].index
+        if index in result:
+            raise ValueError(
+                f"multiple {kind}s supplied for page {page_number} drawing region {index}"
+            )
+        result[index] = hint
+    if page_scoped:
+        if page_scope_applies_to_every_region:
+            for region in regions:
+                result.setdefault(region.index, page_scoped[0])
+        else:
+            ambiguities.append(
+                {
+                    "page": page_number,
+                    "code": f"{code_prefix}_region_unresolved",
+                    "detail": (
+                        f"page-scoped {kind} on a sheet with {len(regions)} drawing regions "
+                        "does not say which drawing it describes; set region_point_pt"
+                    ),
+                }
+            )
+    return result
+
+
+def _sheet_drawing_regions(
+    source_id: str,
+    page: PdfPageObservation,
+    options: ImportOptions,
+    ambiguities: list[dict[str, object]],
+) -> _SheetRegions:
+    """Find the separately drawn plans on one architectural sheet."""
+
+    meters_per_point = _region_detection_scale(page, options)
+    title_boxes, title_line_ids = _title_block_exclusion(page)
+    evidence_kind, evidence = _drawing_region_evidence(
+        page, meters_per_point, options, title_line_ids,
+    )
+    if meters_per_point is not None:
+        separation_pt = max(72.0, _REGION_SEPARATION_M / meters_per_point)
+        margin_pt = min(separation_pt / 3.0, max(36.0, 1.5 / meters_per_point))
+        min_span_pt = _REGION_MIN_SPAN_M / meters_per_point
+        min_length_pt = _REGION_MIN_WALL_LENGTH_M / meters_per_point
+    else:
+        separation_pt, margin_pt, min_span_pt, min_length_pt = 144.0, 36.0, 144.0, 432.0
+    split = split_drawing_regions(
+        page,
+        evidence,
+        gap_pt=separation_pt,
+        margin_pt=margin_pt,
+        text_margin_pt=max(separation_pt, 144.0),
+        min_span_pt=min_span_pt,
+        min_total_length_pt=min_length_pt,
+        min_evidence_count=(
+            _REGION_MIN_WALL_LAYER_SEGMENTS
+            if evidence_kind == "visible_wall_layer"
+            else _REGION_MIN_WALL_FACE_SEGMENTS
+        ),
+        excluded_text_ids=frozenset(
+            text.element_id for text in page.texts
+            if any(_inside(box, text.center_pt) for box in title_boxes)
+        ),
+    )
+    detection: dict[str, object] = {
+        "evidence_kind": evidence_kind,
+        "evidence_segment_count": len(evidence),
+        "evidence_cluster_count": split.cluster_count,
+        "drawing_cluster_count": split.qualifying_cluster_count,
+        "separation_pt": round(separation_pt, 6),
+        "detection_meters_per_point": meters_per_point,
+    }
+
+    if not split.regions:
+        regions = [
+            _DrawingRegionState(
+                region_id=stable_id("drawing-region", f"{source_id}|page:{page.page_number}|sheet"),
+                page_number=page.page_number,
+                index=1,
+                scope="sheet",
+                page=page,
+                bbox_pt=split.single_region_bbox_pt,
+                scope_bbox_pt=None,
+                evidence_kind=evidence_kind,
+                evidence_count=len(evidence),
+            )
+        ]
+    else:
+        regions = [
+            _DrawingRegionState(
+                region_id=stable_id(
+                    "drawing-region",
+                    f"{source_id}|page:{page.page_number}|bbox:"
+                    + ",".join(f"{value:.0f}" for value in item.bbox_pt),
+                ),
+                page_number=page.page_number,
+                index=item.index,
+                scope="region",
+                page=item.page,
+                bbox_pt=item.bbox_pt,
+                scope_bbox_pt=item.scope_bbox_pt,
+                evidence_kind=evidence_kind,
+                evidence_count=item.evidence_count,
+                signature=item.signature,
+                sheet_texts=split.sheet_texts,
+            )
+            for item in split.regions
+        ]
+        if split.overlapping:
+            for region in regions:
+                region.reason_codes.add("drawing_regions_overlap")
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "drawing_regions_overlap",
+                    "detail": (
+                        "separated wall drawings have overlapping extents, so source "
+                        "annotations cannot be scoped to one drawing"
+                    ),
+                    "drawing_region_ids": [region.region_id for region in regions],
+                }
+            )
+        for position, first in enumerate(regions):
+            for second in regions[position + 1:]:
+                if signatures_repeat(first.signature, second.signature):
+                    first.repeated_with.add(second.region_id)
+                    second.repeated_with.add(first.region_id)
+
+    for hints, kind, prefix, applies, attribute in (
+        (options.scale_overrides, "scale override", "scale_override", True, "scale_hint"),
+        (options.level_overrides, "level override", "level_override", False, "level_hint"),
+        (options.registrations, "registration hint", "registration_hint", False, "registration_hint"),
+    ):
+        assigned = _assign_region_hints(
+            page.page_number,
+            regions,
+            hints,
+            kind=kind,
+            code_prefix=prefix,
+            page_scope_applies_to_every_region=applies,
+            ambiguities=ambiguities,
+        )
+        for region in regions:
+            setattr(region, attribute, assigned.get(region.index))
+    return _SheetRegions(multiple=bool(split.regions), regions=regions, detection=detection)
+
+
+def _reason_codes_since(
+    ambiguities: list[dict[str, object]],
+    start: int,
+) -> set[str]:
+    return {str(item["code"]) for item in ambiguities[start:] if "code" in item}
+
+
+def _tag_region_ambiguities(
+    ambiguities: list[dict[str, object]],
+    start: int,
+    region: _DrawingRegionState,
+) -> None:
+    if region.scope == "region":
+        for item in ambiguities[start:]:
+            item.setdefault("drawing_region_id", region.region_id)
+
+
+def _block_regions_sharing_a_level(
+    sheet: _SheetRegions,
+    ambiguities: list[dict[str, object]],
+) -> None:
+    """Two drawings on one sheet may not be promoted onto the same level."""
+
+    if not sheet.multiple:
+        return
+    by_anchor: dict[str, list[_DrawingRegionState]] = {}
+    for region in sheet.regions:
+        if region.reason_codes:
+            continue
+        name, _, _ = _level_name_evidence(region.page, region.level_hint)
+        if name is not None:
+            by_anchor.setdefault(_anchor(name), []).append(region)
+    for anchor, members in sorted(by_anchor.items()):
+        if len(members) < 2:
+            continue
+        for region in members:
+            region.reason_codes.add("drawing_regions_share_level")
+            if region.repeated_with:
+                region.reason_codes.add("drawing_region_geometry_repeated")
+            ambiguities.append(
+                {
+                    "page": region.page_number,
+                    "code": "drawing_regions_share_level",
+                    "detail": (
+                        f"drawing region {region.index} names level {anchor!r}, as does "
+                        "another drawing on the same sheet; neither is promoted into a "
+                        "shared level and frame"
+                    ),
+                    "drawing_region_id": region.region_id,
+                    "level_anchor": anchor,
+                    "competing_region_ids": sorted(
+                        other.region_id for other in members if other is not region
+                    ),
+                    "repeated_geometry_region_ids": sorted(region.repeated_with),
+                }
+            )
+
+
+def _region_record(
+    region: _DrawingRegionState,
+    *,
+    frame_id: str,
+    levels_by_anchor: dict[str, Level],
+    level_info_by_anchor: dict[str, _LevelInfo],
+) -> dict[str, object]:
+    level_record: dict[str, object] | None = None
+    level_confidence: float | None = None
+    if region.level_anchor is not None and region.level_anchor in levels_by_anchor:
+        level = levels_by_anchor[region.level_anchor]
+        info = level_info_by_anchor[region.level_anchor]
+        level_confidence = level.confidence
+        level_record = {
+            "level_id": level.id,
+            "name": level.name,
+            "elevation_m": level.elevation_m,
+            "elevation_method": info.elevation.method,
+            "elevation_source_element_id": info.elevation.source_element_id,
+            "name_source_element_ids": list(region.level_name_source_ids),
+            "name_method": (
+                region.level_hint.note
+                if region.level_hint is not None and region.level_hint.name
+                else "parsed drawing level name" if region.level_name_source_ids
+                else "no level name printed; unlabeled level"
+            ),
+            "confidence": level.confidence,
+        }
+    scale_record: dict[str, object] | None = None
+    if region.scale is not None:
+        scale_record = {
+            "meters_per_point": region.scale.meters_per_point,
+            "method": region.scale.method,
+            "source_text": region.scale.source_text,
+            "source_element_id": region.scale.source_element_id,
+            "confidence": region.scale.confidence,
+        }
+    frame_record: dict[str, object] | None = None
+    if region.status == "resolved" and region.transform is not None:
+        frame_record = {
+            "frame_id": frame_id,
+            "basis": region.frame_basis,
+            "method": region.transform.method,
+            "confidence": region.transform.confidence,
+            "meters_per_point": region.transform.meters_per_point,
+            "rotation_radians": region.transform.rotation_radians,
+            "translation_m": [region.transform.tx_m, region.transform.ty_m],
+        }
+    confidences = [
+        value for value in (
+            level_confidence,
+            region.scale.confidence if region.scale else None,
+            region.transform.confidence if frame_record else None,
+        )
+        if value is not None
+    ]
+    return {
+        "region_id": region.region_id,
+        "page": region.page_number,
+        "index": region.index,
+        "scope": region.scope,
+        "source_bbox_pt": list(region.bbox_pt) if region.bbox_pt is not None else None,
+        "evidence": {
+            "kind": region.evidence_kind,
+            "segment_count": region.evidence_count,
+        },
+        "status": region.status,
+        "reason_codes": sorted(region.reason_codes),
+        "level": level_record,
+        "scale": scale_record,
+        "frame": frame_record,
+        "confidence": min(confidences) if region.status == "resolved" and confidences else None,
+        "entity_counts": dict(sorted(region.entity_counts.items())),
+        "repeated_geometry_region_ids": sorted(region.repeated_with),
+    }
+
+
 def _level_measurement_provenance(
     source_id: str,
     measurement: _Measurement,
@@ -4082,22 +4663,47 @@ def import_observations(
     ambiguities: list[dict[str, object]] = []
     page_metadata: list[dict[str, object]] = []
     level_info_by_anchor: dict[str, _LevelInfo] = {}
-    level_anchor_by_page: dict[int, str | None] = {}
     ordered_pages = tuple(sorted(document.pages, key=lambda item: item.page_number))
+    classifications = {page.page_number: classify_page(page) for page in ordered_pages}
+
+    # Split every architectural sheet into its separately drawn plans first.
+    # A sheet with one drawing stays whole and keeps page-level behavior.
+    sheets: dict[int, _SheetRegions] = {}
+    for page in ordered_pages:
+        if classifications[page.page_number].kind != "architectural_plan":
+            continue
+        sheets[page.page_number] = _sheet_drawing_regions(
+            document.source_id, page, options, ambiguities,
+        )
 
     # Resolve all level evidence before materializing geometry. This lets later
     # explicit/override evidence correctly upgrade an earlier local datum or
     # assumed height without leaving already-emitted geometry at stale Z/height.
     for page in ordered_pages:
-        classification = classify_page(page)
-        if classification.kind != "architectural_plan":
+        sheet = sheets.get(page.page_number)
+        if sheet is None:
             continue
-        level_info = _resolve_level(page, options, level_info_by_anchor, ambiguities)
-        if level_info is None:
-            level_anchor_by_page[page.page_number] = None
-            continue
-        level_info_by_anchor[level_info.anchor] = level_info
-        level_anchor_by_page[page.page_number] = level_info.anchor
+        _block_regions_sharing_a_level(sheet, ambiguities)
+        for region in sheet.regions:
+            if region.reason_codes:
+                continue
+            start = len(ambiguities)
+            level_info = _resolve_level(
+                region.page,
+                options,
+                level_info_by_anchor,
+                ambiguities,
+                override=region.level_hint,
+                require_drawing_level_name=sheet.multiple,
+            )
+            _tag_region_ambiguities(ambiguities, start, region)
+            if level_info is None:
+                region.reason_codes |= _reason_codes_since(ambiguities, start) or {"level_unresolved"}
+                continue
+            level_info_by_anchor[level_info.anchor] = level_info
+            region.level_anchor = level_info.anchor
+            _, name_sources, _ = _level_name_evidence(region.page, region.level_hint)
+            region.level_name_source_ids = tuple(sorted(item.element_id for item in name_sources))
 
     levels_by_anchor = {
         anchor: _level_entity(document.source_id, info)
@@ -4111,44 +4717,54 @@ def import_observations(
     openings: list[Opening] = []
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
-    base_geometry_page: int | None = None
+    base_geometry_region: str | None = None
     registration_fallback_provenance: list[Provenance] = []
 
-    for page in ordered_pages:
-        classification = classify_page(page)
-        page_record: dict[str, object] = {
-            "page": page.page_number,
-            "classification": classification.kind,
-            "classification_confidence": classification.confidence,
-            "architectural_score": classification.architectural_score,
-            "electrical_score": classification.electrical_score,
-        }
-        if classification.kind != "architectural_plan":
-            page_record["status"] = "ignored_non_architectural_plan"
-            page_metadata.append(page_record)
-            continue
+    def import_region(
+        page: PdfPageObservation,
+        sheet: _SheetRegions,
+        region: _DrawingRegionState,
+        record: dict[str, object],
+    ) -> None:
+        """Materialize one drawing region into the shared canonical lists."""
 
-        level_anchor = level_anchor_by_page.get(page.page_number)
-        if level_anchor is None:
-            page_record["status"] = "skipped_unresolved_level"
-            page_metadata.append(page_record)
-            continue
-        level_info = level_info_by_anchor[level_anchor]
-        level = levels_by_anchor[level_anchor]
+        nonlocal base_geometry_region
+        region_page = region.page
+        if region.level_anchor is None:
+            record["status"] = "skipped_unresolved_level"
+            return
+        level_info = level_info_by_anchor[region.level_anchor]
+        level = levels_by_anchor[region.level_anchor]
 
-        scale = _resolve_scale(page, options, ambiguities)
+        start = len(ambiguities)
+        scale = _resolve_scale(
+            region_page,
+            region.scale_hint,
+            ambiguities,
+            sheet_texts=region.sheet_texts,
+        )
         transform, scale, registration_fallback = _resolve_transform(
-            page,
+            region_page,
             scale,
             options,
-            allow_page_local_origin=base_geometry_page is None,
+            hint=region.registration_hint,
+            allow_page_local_origin=base_geometry_region is None,
+            allow_sheet_geometry_fallback=not sheet.multiple,
             ambiguities=ambiguities,
         )
+        region.scale = scale
         if transform is None or scale is None:
-            page_record["status"] = "skipped_unresolved_scale_or_registration"
-            page_metadata.append(page_record)
-            continue
-        page_record.update(
+            _tag_region_ambiguities(ambiguities, start, region)
+            region.reason_codes |= _reason_codes_since(ambiguities, start) or {"registration_unresolved"}
+            record["status"] = "skipped_unresolved_scale_or_registration"
+            return
+        region.transform = transform
+        region.frame_basis = (
+            "explicit_registration" if region.registration_hint is not None
+            else "sheet_geometry_fallback" if registration_fallback is not None
+            else "project_origin"
+        )
+        record.update(
             {
                 "scale_meters_per_point": scale.meters_per_point,
                 "scale_method": scale.method,
@@ -4160,12 +4776,12 @@ def import_observations(
             }
         )
         if registration_fallback is not None:
-            page_record["registration_confidence"] = transform.confidence
-            page_record["registration_provenance"] = registration_fallback
+            record["registration_confidence"] = transform.confidence
+            record["registration_provenance"] = registration_fallback
             registration_fallback_provenance.append(
                 Provenance(
                     source_kind="architectural_pdf",
-            derivation=DERIVATION_OBSERVED,
+                    derivation=DERIVATION_OBSERVED,
                     source_id=document.source_id,
                     page=page.page_number,
                     method=transform.method,
@@ -4174,10 +4790,11 @@ def import_observations(
                 )
             )
 
-        rooms = _room_labels(page)
-        rectangle_shells = _shell_candidates(page, scale, rooms, options, ambiguities)
+        counts_before = (len(spaces), len(slabs), len(ceilings))
+        rooms = _room_labels(region_page)
+        rectangle_shells = _shell_candidates(region_page, scale, rooms, options, ambiguities)
         ordinary_vector_shells = _ordinary_vector_shell_candidates(
-            page,
+            region_page,
             scale,
             rooms,
             options,
@@ -4185,8 +4802,10 @@ def import_observations(
             excluded_room_anchors={shell.room.anchor for shell in rectangle_shells},
         )
         shells = (*rectangle_shells, *ordinary_vector_shells)
-        room_heights, blocked_room_heights = _room_ceiling_height_evidence(page, shells, ambiguities)
-        slab_thickness = _slab_thickness_from_text(page)
+        room_heights, blocked_room_heights = _room_ceiling_height_evidence(
+            region_page, shells, ambiguities,
+        )
+        slab_thickness = _slab_thickness_from_text(region_page)
         page_walls: list[_WallContext] = []
         for shell in shells:
             prospective_space_id = stable_id(
@@ -4207,7 +4826,7 @@ def import_observations(
                 continue
             space, shell_walls, slab, ceiling = _shell_entities(
                 shell,
-                page,
+                region_page,
                 transform,
                 scale,
                 level,
@@ -4227,8 +4846,8 @@ def import_observations(
                 ceilings.append(ceiling)
 
         layered_room_count = 0
-        if not page.hidden_wall_source_present:
-            if has_multiple_wall_regions(page, scale.meters_per_point):
+        if not region_page.hidden_wall_source_present:
+            if has_multiple_wall_regions(region_page, scale.meters_per_point):
                 ambiguities.append({
                     "page": page.page_number,
                     "code": "multiple_layered_drawing_regions_unresolved",
@@ -4246,15 +4865,15 @@ def import_observations(
                 ) not in used_space_ids
             )
             regions = find_layered_room_regions(
-                page,
+                region_page,
                 scale.meters_per_point,
                 tuple((room.anchor, _room_label_center_pt(room)) for room in unique_rooms),
             )
             rooms_by_anchor = {room.anchor: room for room in unique_rooms}
-            for region in regions:
-                room = rooms_by_anchor[region.anchor]
+            for layered_region in regions:
+                room = rooms_by_anchor[layered_region.anchor]
                 space = _layered_region_space(
-                    region, room, page, transform, scale, level, level_info,
+                    layered_region, room, region_page, transform, scale, level, level_info,
                     document.source_id,
                 )
                 if space.id in used_space_ids:
@@ -4283,20 +4902,18 @@ def import_observations(
             "duplicate_room_label",
             "ordinary_vector_enclosure_ambiguous",
         }
-        page_has_blocking_enclosure_ambiguity = any(
-            item.get("page") == page.page_number
-            and item.get("code") in blocking_enclosure_codes
-            for item in ambiguities
+        region_has_blocking_enclosure_ambiguity = any(
+            item.get("code") in blocking_enclosure_codes
+            for item in ambiguities[start:]
         )
         legacy_single_loop_partial_guard = (
-            len(_ordinary_vector_rect_loops(page)) == 1
+            len(_ordinary_vector_rect_loops(region_page)) == 1
             and any(
-                item.get("page") == page.page_number
-                and item.get("code") == "ordinary_vector_enclosure_unresolved"
-                for item in ambiguities
+                item.get("code") == "ordinary_vector_enclosure_unresolved"
+                for item in ambiguities[start:]
             )
         )
-        if page_has_blocking_enclosure_ambiguity:
+        if region_has_blocking_enclosure_ambiguity:
             geometric_line_walls, geometric_spaces, geometric_diagnostics = (), (), {}
         else:
             (
@@ -4304,7 +4921,7 @@ def import_observations(
                 geometric_spaces,
                 geometric_diagnostics,
             ) = _geometric_wall_loop_entities(
-                page,
+                region_page,
                 transform,
                 level,
                 level_info,
@@ -4314,6 +4931,7 @@ def import_observations(
                 ambiguities,
                 excluded_element_ids=consumed_vector_line_ids,
                 allow_partial_faces=not legacy_single_loop_partial_guard,
+                sheet_anchor=_sheet_anchor(page),
             )
             resolved_geometric_label_anchors = {
                 space.attributes["pdf_architecture"].get("label_anchor")
@@ -4321,41 +4939,32 @@ def import_observations(
                 if space.attributes["pdf_architecture"].get("label_anchor")
             }
             if resolved_geometric_label_anchors:
-                ambiguities[:] = [
+                ambiguities[start:] = [
                     item
-                    for item in ambiguities
+                    for item in ambiguities[start:]
                     if not (
-                        item.get("page") == page.page_number
-                        and item.get("code") == "ordinary_vector_enclosure_unresolved"
+                        item.get("code") == "ordinary_vector_enclosure_unresolved"
                         and item.get("room_anchor") in resolved_geometric_label_anchors
                     )
                 ]
-        existing_wall_geometry = {
-            (
+
+        def wall_geometry_key(context: _WallContext) -> tuple[object, ...]:
+            points = context.wall.centerline.points
+            return (
                 tuple(
                     sorted(
                         (
-                            (round(context.wall.centerline.points[0].x, 6), round(context.wall.centerline.points[0].y, 6)),
-                            (round(context.wall.centerline.points[-1].x, 6), round(context.wall.centerline.points[-1].y, 6)),
+                            (round(points[0].x, 6), round(points[0].y, 6)),
+                            (round(points[-1].x, 6), round(points[-1].y, 6)),
                         )
                     )
                 ),
                 round(context.wall.thickness_m, 6),
             )
-            for context in page_walls
-        }
+
+        existing_wall_geometry = {wall_geometry_key(context) for context in page_walls}
         for context in geometric_line_walls:
-            geometry_key = (
-                tuple(
-                    sorted(
-                        (
-                            (round(context.wall.centerline.points[0].x, 6), round(context.wall.centerline.points[0].y, 6)),
-                            (round(context.wall.centerline.points[-1].x, 6), round(context.wall.centerline.points[-1].y, 6)),
-                        )
-                    )
-                ),
-                round(context.wall.thickness_m, 6),
-            )
+            geometry_key = wall_geometry_key(context)
             if geometry_key not in existing_wall_geometry:
                 page_walls.append(context)
                 existing_wall_geometry.add(geometry_key)
@@ -4384,7 +4993,7 @@ def import_observations(
 
         wall_contexts.extend(page_walls)
         page_openings = _make_openings(
-            page,
+            region_page,
             transform,
             level,
             tuple(page_walls),
@@ -4394,28 +5003,25 @@ def import_observations(
             used_opening_identity,
         )
         openings.extend(page_openings)
-        page_room_count = sum(
-            1 for space in spaces if space.provenance and space.provenance[0].page == page.page_number
-        )
-        page_slab_count = sum(
-            1 for slab in slabs if slab.provenance and slab.provenance[0].page == page.page_number
-        )
-        page_ceiling_count = sum(
-            1 for ceiling in ceilings if ceiling.provenance and ceiling.provenance[0].page == page.page_number
-        )
-        page_geometry_count = (
-            page_room_count
-            + len(page_walls)
-            + page_slab_count
-            + page_ceiling_count
-            + len(page_openings)
-        )
-        if page_geometry_count:
-            page_record["status"] = "geometry_imported"
-            if base_geometry_page is None:
-                base_geometry_page = page.page_number
+        region_room_count = len(spaces) - counts_before[0]
+        region_slab_count = len(slabs) - counts_before[1]
+        region_ceiling_count = len(ceilings) - counts_before[2]
+        region.entity_counts = {
+            "spaces": region_room_count,
+            "walls": len(page_walls),
+            "slabs": region_slab_count,
+            "ceilings": region_ceiling_count,
+            "openings": len(page_openings),
+        }
+        if sum(region.entity_counts.values()):
+            record["status"] = "geometry_imported"
+            region.status = "resolved"
+            if base_geometry_region is None:
+                base_geometry_region = region.region_id
         else:
-            page_record["status"] = "no_supported_geometry_recognized"
+            record["status"] = "no_supported_geometry_recognized"
+            region.status = "no_supported_geometry"
+            region.reason_codes.add("architectural_geometry_unrecognized")
             ambiguities.append(
                 {
                     "page": page.page_number,
@@ -4427,23 +5033,79 @@ def import_observations(
                     ),
                 }
             )
-        page_record["resolved_room_count"] = page_room_count
-        page_record["resolved_wall_count"] = len(page_walls)
+        _tag_region_ambiguities(ambiguities, start, region)
+        record["resolved_room_count"] = region_room_count
+        record["resolved_wall_count"] = len(page_walls)
         if ordinary_vector_shells:
-            page_record["ordinary_vector_enclosure_count"] = len(ordinary_vector_shells)
+            record["ordinary_vector_enclosure_count"] = len(ordinary_vector_shells)
         if layered_room_count:
-            page_record["layered_wall_room_count"] = layered_room_count
+            record["layered_wall_room_count"] = layered_room_count
         if geometric_spaces:
-            page_record["geometric_wall_loop_count"] = len(geometric_spaces)
+            record["geometric_wall_loop_count"] = len(geometric_spaces)
         if geometric_diagnostics:
-            page_record["geometric_wall_pair_diagnostics"] = geometric_diagnostics
-            page_record["geometric_partial_wall_count"] = int(
+            record["geometric_wall_pair_diagnostics"] = geometric_diagnostics
+            record["geometric_partial_wall_count"] = int(
                 geometric_diagnostics.get("partial_pair_count", 0)
             )
-        page_record["stable_native_line_count"] = sum(1 for item in page.lines if item.native_id)
-        page_record["untagged_vector_line_count"] = sum(1 for item in page.lines if not item.native_id)
+
+    for page in ordered_pages:
+        classification = classifications[page.page_number]
+        page_record: dict[str, object] = {
+            "page": page.page_number,
+            "classification": classification.kind,
+            "classification_confidence": classification.confidence,
+            "architectural_score": classification.architectural_score,
+            "electrical_score": classification.electrical_score,
+        }
+        sheet = sheets.get(page.page_number)
+        if sheet is None:
+            page_record["status"] = "ignored_non_architectural_plan"
+            page_metadata.append(page_record)
+            continue
+
+        page_record["drawing_region_ids"] = [region.region_id for region in sheet.regions]
+        page_record["drawing_region_detection"] = sheet.detection
+        if not sheet.multiple:
+            import_region(page, sheet, sheet.regions[0], page_record)
+        else:
+            region_statuses: list[str] = []
+            for region in sheet.regions:
+                if region.reason_codes:
+                    region_statuses.append("skipped_unresolved_drawing_region")
+                    continue
+                region_record: dict[str, object] = {}
+                import_region(page, sheet, region, region_record)
+                region_statuses.append(str(region_record["status"]))
+            page_record["status"] = (
+                "geometry_imported" if "geometry_imported" in region_statuses
+                else "no_supported_geometry_recognized"
+                if "no_supported_geometry_recognized" in region_statuses
+                else "skipped_unresolved_drawing_regions"
+            )
+            page_record["resolved_room_count"] = sum(
+                region.entity_counts.get("spaces", 0) for region in sheet.regions
+            )
+            page_record["resolved_wall_count"] = sum(
+                region.entity_counts.get("walls", 0) for region in sheet.regions
+            )
+        if sheet.multiple or page_record["status"] in {
+            "geometry_imported",
+            "no_supported_geometry_recognized",
+        }:
+            page_record["stable_native_line_count"] = sum(1 for item in page.lines if item.native_id)
+            page_record["untagged_vector_line_count"] = sum(1 for item in page.lines if not item.native_id)
         page_metadata.append(page_record)
 
+    drawing_regions = [
+        _region_record(
+            region,
+            frame_id=CoordinateSystem().frame_id,
+            levels_by_anchor=levels_by_anchor,
+            level_info_by_anchor=level_info_by_anchor,
+        )
+        for page_number in sorted(sheets)
+        for region in sheets[page_number].regions
+    ]
     walls = [context.wall for context in wall_contexts]
     entity_confidences = [
         *(item.confidence for item in levels_by_anchor.values()),
@@ -4469,9 +5131,15 @@ def import_observations(
         "pdf_architecture": {
             "content_sha256": document.content_sha256,
             "pages": page_metadata,
+            "drawing_regions": drawing_regions,
             "ambiguities": sorted(
                 ambiguities,
-                key=lambda item: (int(item.get("page", 0)), str(item.get("code", "")), str(item.get("detail", ""))),
+                key=lambda item: (
+                    int(item.get("page", 0)),
+                    str(item.get("code", "")),
+                    str(item.get("detail", "")),
+                    str(item.get("drawing_region_id", "")),
+                ),
             ),
         }
     }

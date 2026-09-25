@@ -300,11 +300,17 @@ fixture type from shape alone.
 
 Legend rows are read as table structure rather than as distance from the
 heading. The heading anchors the table over its own column, whose labels
-define the row grid; a further printed column belongs to the same legend when
-at least two of its rows continue that grid, however far from the heading it
-sits, so a two-column legend with the heading over column 1 still resolves
-column 2. A lone tag-shaped label far from the heading on no legend row is not
-table structure and never joins the legend. Every resolved legend label and
+define the row grid; a further printed column belongs to the same legend only
+when all three of these hold, so no one signal admits a column alone: it lies
+within one column pitch of an already-admitted column (contiguity, never
+anywhere on the sheet), every one of its labels continues that grid on a
+distinct row (table purity), and each of its rows carries description text to
+the right the way a printed legend row does and a bare field tag does not
+(row evidence). A two-column legend with the heading over column 1 therefore
+still resolves column 2, while a vertical run of tagged field fixtures on the
+grid rows -- even far right of the legend, inside the heading's band -- stays
+field evidence and never becomes legend prototypes. A lone tag-shaped label on
+no legend row is not table structure either. Every resolved legend label and
 row description is claimed as legend evidence, so legend rows no longer leak
 into the field-code pass or inflate `unresolved_switch_count`.
 

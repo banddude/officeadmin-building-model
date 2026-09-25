@@ -1719,11 +1719,18 @@ _LIGHTING_SWITCH_DESCRIPTION_WORDS = frozenset(
 _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT = 220.0
 _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT = 18.0
 # Legend rows are read as table structure. The heading anchors the table's
-# row grid over its own column; a second printed column belongs to the same
-# table through that shared grid, however far from the heading it sits.
+# row grid over its own column; a further printed column joins the table
+# only when it sits within one column pitch of an already-admitted column,
+# every one of its labels continues the grid on a distinct row, and each of
+# its rows carries description text to the right the way a legend row does.
+# A vertical run of tagged field fixtures on the grid rows must not be
+# mistaken for a legend column, so no one of these signals admits alone.
 _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT = 220.0
 _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT = 48.0
 _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT = 10.0
+_LIGHTING_LEGEND_COLUMN_PITCH_PT = (
+    _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT + _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT
+)
 _LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
     "TYPE": "tag",
     "TAG": "tag",
@@ -4801,6 +4808,57 @@ def _lighting_legend_row_grid(
     return tuple(rows)
 
 
+def _lighting_legend_column_grid_rows(
+    column: Sequence[PdfTextObservation],
+    row_grid: Sequence[float],
+) -> list[int] | None:
+    """Row index per label, or None when the column is not pure table rows.
+
+    Pure means every label continues the grid and no two labels share a
+    row: a column with an off-grid or doubled-up member is not legend
+    structure even though some of its rows line up.
+    """
+    assignments: list[int] = []
+    for label in column:
+        index = next(
+            (
+                index
+                for index, row_y in enumerate(row_grid)
+                if abs(label.y_pt - row_y)
+                <= _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT
+            ),
+            None,
+        )
+        if index is None:
+            return None
+        assignments.append(index)
+    if len(set(assignments)) != len(assignments):
+        return None
+    return assignments
+
+
+def _lighting_legend_row_has_description(
+    label: PdfTextObservation,
+    *,
+    texts: Sequence[PdfTextObservation],
+) -> bool:
+    """Whether non-tag text sits on the label's baseline to its right.
+
+    Legend rows carry descriptions such as ``DIMMER SWITCH``; a tagged
+    field fixture's label does not.
+    """
+    return any(
+        observation.page == label.page
+        and observation.element_id != label.element_id
+        and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
+        and label.x_pt
+        < observation.x_pt
+        <= label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+        and _normalize_lighting_tag(observation.text) is None
+        for observation in texts
+    )
+
+
 def _detect_lighting_legend_entries(
     *,
     texts: Sequence[PdfTextObservation],
@@ -4837,11 +4895,18 @@ def _detect_lighting_legend_entries(
             and 0.0 < heading.y_pt - observation.y_pt <= _LIGHTING_LEGEND_VERTICAL_SPAN_PT
             and _normalize_lighting_tag(observation.text) is not None
         ]
-        # Legend rows are read as table structure, not as distance from the
-        # heading: the heading's own column anchors the table's row grid, and
-        # a further printed column belongs to the same table when at least
-        # two of its rows continue that grid. A single stray tag-shaped
-        # label far from the heading is not table evidence and stays out.
+        # Legend rows are read as table structure, not as raw distance from
+        # the heading: the heading's own column anchors the table's row
+        # grid, and a further printed column joins the same table only when
+        # all three of these hold, so no one signal admits a column alone:
+        #   contiguity - it lies within one column pitch of an
+        #     already-admitted column, never anywhere on the sheet;
+        #   table purity - every one of its labels continues the grid, each
+        #     on a distinct row (a field-fixture run usually has off-grid
+        #     or doubled-up members);
+        #   row evidence - every row carries description text to the right,
+        #     the way a printed legend row does and a bare field tag does
+        #     not.
         heading_column_labels = [
             observation
             for observation in band_labels
@@ -4849,26 +4914,57 @@ def _detect_lighting_legend_entries(
             <= _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT
         ]
         row_grid = _lighting_legend_row_grid(heading_column_labels)
-        candidate_labels: list[PdfTextObservation] = []
+        heading_label_ids = {label.element_id for label in heading_column_labels}
+        candidate_labels: list[PdfTextObservation] = list(heading_column_labels)
+        pending_columns: list[tuple[PdfTextObservation, ...]] = []
+        # A column straddling the heading span is admitted whole, so its
+        # labels anchor contiguity for the next column out.
         for column in _lighting_legend_label_columns(band_labels):
             if any(
                 abs(label.x_pt - heading.x_pt)
                 <= _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT
                 for label in column
             ):
-                candidate_labels.extend(column)
-                continue
-            on_grid = [
-                label
-                for label in column
-                if any(
-                    abs(label.y_pt - row_y)
-                    <= _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT
-                    for row_y in row_grid
+                candidate_labels.extend(
+                    label
+                    for label in column
+                    if label.element_id not in heading_label_ids
                 )
-            ]
-            if len(on_grid) >= 2 and len(_lighting_legend_row_grid(on_grid)) >= 2:
-                candidate_labels.extend(on_grid)
+            else:
+                pending_columns.append(column)
+        admitted_labels = list(candidate_labels)
+        # Chained expansion admits multi-column legends column by column;
+        # a rejected column never anchors anything farther out.
+        progressed = True
+        while progressed and pending_columns:
+            progressed = False
+            remaining: list[tuple[PdfTextObservation, ...]] = []
+            for column in pending_columns:
+                gap = min(
+                    abs(label.x_pt - admitted.x_pt)
+                    for label in column
+                    for admitted in admitted_labels
+                )
+                if gap > _LIGHTING_LEGEND_COLUMN_PITCH_PT:
+                    remaining.append(column)
+                    continue
+                grid_rows = _lighting_legend_column_grid_rows(column, row_grid)
+                if (
+                    grid_rows is None
+                    or len(column) < 2
+                    or not all(
+                        _lighting_legend_row_has_description(
+                            label,
+                            texts=texts,
+                        )
+                        for label in column
+                    )
+                ):
+                    continue
+                candidate_labels.extend(column)
+                admitted_labels.extend(column)
+                progressed = True
+            pending_columns = remaining
         local_entries: list[_LightingLegendEntry] = []
         used_keys: set[tuple[int, str]] = set()
         for label in sorted(

@@ -3341,7 +3341,7 @@ def _dashed_arc_train_vector_ids(
             if abs(radial - radius) > tolerance:
                 on_arc = False
                 break
-            _, start, end = dashes[index]
+            _, start, end, _ = dashes[index]
             direction = (end[0] - start[0], end[1] - start[1])
             tangent = (-(midpoint[1] - center_y), midpoint[0] - center_x)
             dot = (

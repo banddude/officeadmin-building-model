@@ -5135,6 +5135,9 @@ def import_observations(
     openings: list[Opening] = []
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
+    # Canonical wall identity -> the region that emitted it, so a wall drawn on
+    # several sheets of one level is materialized once.
+    used_wall_ids: dict[str, str] = {}
     base_geometry_region: str | None = None
     resolved_regions: list[_DrawingRegionState] = []
     registration_provenance: list[Provenance] = []
@@ -5474,6 +5477,33 @@ def import_observations(
                 used_space_ids.add(geometric_space.id)
                 existing_space_footprints.add(footprint_key)
 
+        fresh_walls: list[_WallContext] = []
+        duplicate_wall_sources: set[str] = set()
+        for context in page_walls:
+            source_region = used_wall_ids.get(context.wall.id)
+            if source_region is not None:
+                duplicate_wall_sources.add(source_region)
+                continue
+            used_wall_ids[context.wall.id] = region.region_id
+            fresh_walls.append(context)
+        if duplicate_wall_sources:
+            # A wall at the same canonical place on the same level already has
+            # its entity; the repeated drawing adds no second wall.
+            region.repeated_with.update(duplicate_wall_sources)
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "duplicate_wall_identity_across_pages",
+                    "detail": (
+                        f"{len(page_walls) - len(fresh_walls)} wall(s) repeat canonical "
+                        "level/wall identities already emitted from earlier drawing "
+                        "regions; the repeated geometry was not emitted again"
+                    ),
+                    "drawing_region_ids": sorted(duplicate_wall_sources),
+                }
+            )
+        page_walls = fresh_walls
+
         wall_contexts.extend(page_walls)
         page_openings = _make_openings(
             region_page,
@@ -5506,6 +5536,8 @@ def import_observations(
             record["status"] = "no_supported_geometry_recognized"
             region.status = "no_supported_geometry"
             region.reason_codes.add("architectural_geometry_unrecognized")
+            if duplicate_wall_sources:
+                region.reason_codes.add("repeated_geometry_not_reemitted")
             ambiguities.append(
                 {
                     "page": page.page_number,

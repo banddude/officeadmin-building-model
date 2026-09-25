@@ -1198,6 +1198,758 @@ def test_switch_legend_description_stops_at_the_next_legend_column(
     assert lighting["unresolved_switch_count"] == 2
 
 
+_PROBE_SQUARE = ((-6.0, -6.0), (6.0, -6.0), (6.0, 6.0), (-6.0, 6.0))
+
+
+def _probe_octagon(radius: float) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (
+            round(
+                radius * math.cos(math.pi / 8.0 + 2.0 * math.pi * index / 8.0),
+                3,
+            ),
+            round(
+                radius * math.sin(math.pi / 8.0 + 2.0 * math.pi * index / 8.0),
+                3,
+            ),
+        )
+        for index in range(8)
+    )
+
+
+def _probe_hexagon(radius: float) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (
+            round(
+                radius * math.cos(math.pi / 6.0 + 2.0 * math.pi * index / 6.0),
+                3,
+            ),
+            round(
+                radius * math.sin(math.pi / 6.0 + 2.0 * math.pi * index / 6.0),
+                3,
+            ),
+        )
+        for index in range(6)
+    )
+
+
+def _probe_rotated_points(
+    points: tuple[tuple[float, float], ...],
+    *,
+    scale: float = 1.0,
+    degrees: float = 0.0,
+    mirrored: bool = False,
+) -> tuple[tuple[float, float], ...]:
+    theta = math.radians(degrees)
+    transformed: list[tuple[float, float]] = []
+    for x, y in points:
+        x *= scale
+        y *= scale
+        if mirrored:
+            x = -x
+        transformed.append(
+            (
+                x * math.cos(theta) - y * math.sin(theta),
+                x * math.sin(theta) + y * math.cos(theta),
+            )
+        )
+    return tuple(transformed)
+
+
+def _write_rotation_normalized_probe_pdf(path: Path) -> None:
+    """Issue #108 probe: field fixtures printed at non-orthogonal angles.
+
+    The legend keeps A as the L-shaped glyph and B as a triangle. Two A
+    instances sit at 45 degrees, and at 30 degrees with a 1.2 scale; quarter
+    turns alone scored those 0.289 and 0.355 and left them unresolved. An
+    A-tagged triangle stays the negative: rotation normalization must not
+    confirm a different shape.
+    """
+    commands = _probe_schedule_commands()
+    commands += [
+        _probe_text(760.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0),
+        _probe_path(770.0, 615.0, _PROBE_FIXTURE_SHAPE),
+        _probe_text(792.0, 615.0, "A"),
+        _probe_path(770.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(792.0, 585.0, "B"),
+        _probe_path(
+            120.0,
+            560.0,
+            _probe_rotated_points(_PROBE_FIXTURE_SHAPE, degrees=45.0),
+        ),
+        _probe_text(140.0, 560.0, "A"),
+        _probe_path(
+            300.0,
+            500.0,
+            _probe_rotated_points(
+                _PROBE_FIXTURE_SHAPE,
+                degrees=30.0,
+                scale=1.2,
+            ),
+        ),
+        _probe_text(324.0, 500.0, "A"),
+        _probe_path(500.0, 545.0, _PROBE_TRIANGLE),
+        _probe_text(518.0, 545.0, "A"),
+    ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_shape_class_probe_pdf(path: Path) -> None:
+    """Issue #108 probe: round legend prototype versus polygonal instances.
+
+    The legend defines A as a circle and C as a hexagon, whose radial range
+    (about 1.155) sits only 4% under the round-class cut. Small r4/r5
+    hexagon instances keep confirming against their own prototype, pinning
+    the class boundary against resampling noise. A 12x12 square beside an A
+    tag used to confirm at 0.567, barely over the 0.55 match minimum. The
+    octagon and the r4/r9 circles keep confirming, and the L-shaped fixture
+    stays a mismatch.
+    """
+    commands = _probe_schedule_commands()
+    commands += [
+        _probe_text(760.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0),
+        _probe_path(770.0, 615.0, _probe_circle(6.0)),
+        _probe_text(792.0, 615.0, "A"),
+        _probe_path(770.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(792.0, 585.0, "B"),
+        _probe_path(770.0, 555.0, _probe_hexagon(6.0)),
+        _probe_text(792.0, 555.0, "C"),
+        _probe_path(120.0, 450.0, _PROBE_SQUARE),
+        _probe_text(140.0, 450.0, "A"),
+        _probe_path(240.0, 450.0, _probe_octagon(6.0)),
+        _probe_text(264.0, 450.0, "A"),
+        _probe_path(360.0, 450.0, _probe_circle(4.0)),
+        _probe_text(380.0, 450.0, "A"),
+        _probe_path(480.0, 450.0, _probe_circle(9.0)),
+        _probe_text(502.0, 450.0, "A"),
+        _probe_path(100.0, 200.0, _PROBE_FIXTURE_SHAPE),
+        _probe_text(120.0, 200.0, "A"),
+        _probe_path(100.0, 300.0, _probe_hexagon(5.0)),
+        _probe_text(122.0, 300.0, "C"),
+        _probe_path(180.0, 300.0, _probe_hexagon(4.0)),
+        _probe_text(202.0, 300.0, "C"),
+    ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_far_legend_column_probe_pdf(path: Path) -> None:
+    """Issue #108 probe: a switch legend column outside the heading's radius.
+
+    The heading sits over column 1; column 2 lies about 340 pt right of the
+    heading (1100 - 760), the geometry measured in the issue, so under the
+    old radius rule its rows were invisible to legend detection and its
+    SD/S3 labels leaked into the field-code pass, inflating
+    ``unresolved_switch_count``. Column 2 shares column 1's row baselines
+    and starts 64 pt past column 1's estimated description right edge
+    (805 + 55 chars x 7 pt x 0.6 = 1036 for the longest row), which is the
+    description-aware contiguity that admits it. A lone tag-shaped label in
+    its own column on no legend row stays out of the table.
+    """
+    commands = [
+        _probe_text(760.0, 655.0, "LIGHTING LEGEND", size=11.0),
+        # Column 1, under the heading, with long row descriptions.
+        _probe_path(760.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(782.0, 615.0, "S"),
+        _probe_text(
+            805.0,
+            615.0,
+            "SINGLE POLE SWITCH WITH PILOT LIGHT AND CEILING MOUNTED",
+            size=7.0,
+        ),
+        _probe_path(760.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(782.0, 585.0, "OS"),
+        _probe_text(
+            805.0,
+            585.0,
+            "OCCUPANCY SENSOR SWITCH WITH DUAL TECHNOLOGY AND RELAY",
+            size=7.0,
+        ),
+        # Column 2, about 340 pt right of the heading, same row baselines.
+        _probe_path(1078.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(1100.0, 615.0, "SD"),
+        _probe_text(1123.0, 615.0, "DIMMER SWITCH", size=7.0),
+        _probe_path(1078.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(1100.0, 585.0, "S3"),
+        _probe_text(1123.0, 585.0, "3-WAY SWITCH", size=7.0),
+        # Tag-shaped text on no legend row, in its own column beyond
+        # column 2: off the grid and starting inside column 2's estimated
+        # text, so not a next table column.
+        _probe_path(1138.0, 480.0, _probe_circle(6.0)),
+        _probe_text(1160.0, 480.0, "B"),
+    ]
+    for x, code in ((100.0, "S"), (220.0, "S3"), (340.0, "SD"), (460.0, "OS")):
+        commands += [
+            _probe_path(x, 450.0, _PROBE_TRIANGLE),
+            _probe_text(x + 16.0, 450.0, code),
+        ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_field_fixture_run_probe_pdf(path: Path) -> None:
+    """Review negative for the far-column bound: a vertical run of fixtures.
+
+    Two ``A`` fixtures are printed far right of the legend, vertically
+    aligned on the legend's own grid rows, inside the band -- exactly what
+    unbounded row-grid matching turned into legend entries, which claimed
+    their labels, made their glyphs prototypes, and erased them from the
+    field count. Contiguity (they are far beyond one column pitch from the
+    legend), missing row descriptions, and the required >=2 legend rows
+    bound keep them field fixtures.
+    """
+    commands = [
+        _probe_text(200.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0),
+        _probe_path(210.0, 615.0, _PROBE_FIXTURE_SHAPE),
+        _probe_text(232.0, 615.0, "A"),
+        _probe_path(210.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(232.0, 585.0, "B"),
+        # Field fixtures: on the grid rows, far beyond one column pitch.
+        _probe_path(830.0, 615.0, _PROBE_FIXTURE_SHAPE),
+        _probe_text(852.0, 615.0, "A"),
+        _probe_path(830.0, 585.0, _PROBE_FIXTURE_SHAPE),
+        _probe_text(852.0, 585.0, "A"),
+    ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_long_description_legend_probe_pdf(path: Path) -> None:
+    """Review follow-up probe: description-aware contiguity at both edges.
+
+    Column 1 prints descriptions about 300 pt wide (63 characters at 8 pt),
+    so column 2 starts about 335 pt past column 1's labels -- far beyond
+    the heading span and the description-evidence span -- and resolves
+    because it sits within one inch of the estimated description right
+    edge (255 + 63 x 8 x 0.6 = 557; column 2 labels at 590). A third
+    column with valid on-grid rows and descriptions, but starting well
+    beyond one inch past the re-estimated edge (800 versus 668 + 72),
+    must not resolve.
+    """
+    commands = [
+        _probe_text(200.0, 655.0, "LIGHTING LEGEND", size=11.0),
+        # Column 1, under the heading, with ~300 pt descriptions.
+        _probe_path(210.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(232.0, 615.0, "S"),
+        _probe_text(
+            255.0,
+            615.0,
+            "SINGLE POLE SWITCH WITH PILOT LIGHT, OCCUPANCY SENSOR AND RELAY",
+            size=8.0,
+        ),
+        _probe_path(210.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(232.0, 585.0, "OS"),
+        _probe_text(
+            255.0,
+            585.0,
+            "OCCUPANCY SENSOR SWITCH, DUAL TECHNOLOGY, CEILING MOUNTED",
+            size=8.0,
+        ),
+        # Column 2, one inch past the estimated description edge.
+        _probe_path(568.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(590.0, 615.0, "SD"),
+        _probe_text(613.0, 615.0, "DIMMER SWITCH", size=7.0),
+        _probe_path(568.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(590.0, 585.0, "S3"),
+        _probe_text(613.0, 585.0, "3-WAY SWITCH", size=7.0),
+        # A third column with valid rows and descriptions, but starting
+        # more than one inch past the re-estimated description edge.
+        _probe_path(778.0, 615.0, _probe_circle(6.0)),
+        _probe_text(800.0, 615.0, "A"),
+        _probe_text(823.0, 615.0, "CIRCUIT A", size=7.0),
+        _probe_path(778.0, 585.0, _probe_circle(6.0)),
+        _probe_text(800.0, 585.0, "B"),
+        _probe_text(823.0, 585.0, "CIRCUIT B", size=7.0),
+    ]
+    for x, code in ((100.0, "S"), (220.0, "S3"), (340.0, "SD"), (460.0, "OS")):
+        commands += [
+            _probe_path(x, 450.0, _PROBE_TRIANGLE),
+            _probe_text(x + 16.0, 450.0, code),
+        ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_isotropic_rotation_probe_pdf(path: Path) -> None:
+    """Review note 1 probe: isotropic shapes at non-orthogonal angles.
+
+    The legend defines A as a square. A square's second-moment covariance
+    is isotropic, so its principal axis is undefined and rotation
+    normalization cannot remove a 30-degree print angle; the instance
+    fails closed today. The axis-aligned control confirms, pinning the
+    gap to rotation rather than to matching.
+    """
+    commands = _probe_schedule_commands()
+    commands += [
+        _probe_text(760.0, 655.0, "LIGHTING FIXTURE LEGEND", size=11.0),
+        _probe_path(770.0, 615.0, _PROBE_SQUARE),
+        _probe_text(792.0, 615.0, "A"),
+        _probe_path(770.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(792.0, 585.0, "B"),
+        _probe_path(120.0, 450.0, _PROBE_SQUARE),
+        _probe_text(142.0, 450.0, "A"),
+        _probe_path(
+            300.0,
+            450.0,
+            _probe_rotated_points(_PROBE_SQUARE, degrees=30.0),
+        ),
+        _probe_text(322.0, 450.0, "A"),
+    ]
+    _write_probe_pdf(path, commands)
+
+
+def test_non_orthogonal_fixture_rotations_confirm_through_rotation(
+    tmp_path: Path,
+) -> None:
+    # Issue #108: mirroring plus quarter turns covers only axis-aligned
+    # printings, so skewed-wing fixtures at arbitrary angles stayed
+    # unresolved. Principal-axis alignment before chamfer scoring, shared
+    # with power-device matching, recognizes them without weakening the
+    # different-shape negative.
+    pdf_path = tmp_path / "lighting-rotation-normalized-probe.pdf"
+    _write_rotation_normalized_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:lighting-rotation-normalized-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    luminaires = [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    assert sorted(
+        device.attributes["pdf_electrical"]["lighting_recognition"]["shape_score"]
+        for device in luminaires
+    ) == pytest.approx([0.874664, 0.874706], abs=0.02)
+    for device in luminaires:
+        lane = device.attributes["pdf_electrical"]
+        assert lane["fixture_tag"] == "A"
+        assert lane["lighting_recognition"]["tag_is_primary_type_evidence"] is True
+        assert (
+            lane["lighting_recognition"]["shape_score"]
+            >= pdf_electrical_importer._GLYPH_MATCH_STRONG_SCORE
+        )
+        assert lane["fixture_schedule"]["description"] == "DOWNLIGHT"
+
+    # The rotated triangle is still not fixture A: rotation normalization
+    # adds recall for the same shape, never for a different one.
+    misses = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "lighting_fixture"
+    ]
+    assert [(item["reason_code"], item["fixture_tag"]) for item in misses] == [
+        ("lighting_fixture_symbol_mismatch", "A")
+    ]
+    assert misses[0]["shape_score"] < pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_fixture_count"] == 2
+    assert lighting["unresolved_fixture_count"] == 1
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_square_beside_circle_legend_fails_closed_as_mismatch(
+    tmp_path: Path,
+) -> None:
+    # Issue #108: a 12x12 square beside an A tag scored 0.567 against the
+    # circle legend row, barely over the 0.55 match minimum. A round-versus-
+    # polygonal class disagreement may only confirm at the strong-score bar,
+    # so the square fails closed while the octagon and both circles keep
+    # confirming, and #74's tag-first rule still assigns the type.
+    pdf_path = tmp_path / "lighting-shape-class-probe.pdf"
+    _write_shape_class_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:lighting-shape-class-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    luminaires = [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    assert Counter(device.name for device in luminaires) == Counter(
+        {"A": 3, "C": 2}
+    )
+    # Each tag confirms against its own single prototype: the circle rows
+    # against A's circle, the small hexagons against C's hexagon.
+    prototype_keys_by_tag: dict[str, set[str]] = {}
+    for device in luminaires:
+        prototype_keys_by_tag.setdefault(device.name, set()).add(
+            device.attributes["pdf_electrical"]["lighting_recognition"]["legend"][
+                "prototype_geometry_key"
+            ]
+        )
+    assert sorted(
+        len(keys) for keys in prototype_keys_by_tag.values()
+    ) == [1, 1]
+    scores = sorted(
+        device.attributes["pdf_electrical"]["lighting_recognition"]["shape_score"]
+        for device in luminaires
+    )
+    # Octagon 0.895, small hexagons and the r4/r9 circles at the
+    # signature-exact 1.0.
+    assert scores[-1] >= pdf_electrical_importer._LIGHTING_GLYPH_CONFIRM_SCORE
+    assert scores[0] == pytest.approx(0.895188, abs=0.02)
+
+    misses = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "lighting_fixture"
+    ]
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    misses_by_tag_x = {
+        round(texts_by_id[item["source_element_id"]].x_pt): item for item in misses
+    }
+    assert sorted(misses_by_tag_x) == [120, 140]
+    assert {
+        item["reason_code"] for item in misses_by_tag_x.values()
+    } == {"lighting_fixture_symbol_mismatch"}
+
+    square_miss = misses_by_tag_x[140]
+    guard = square_miss["shape_class_guard"]
+    assert guard["candidate_shape_class"] == "polygonal"
+    assert guard["prototype_shape_class"] == "round"
+    # The raw score is exactly the too-thin margin the guard exists for.
+    assert 0.55 <= guard["raw_shape_score"] < 0.75
+    assert (
+        square_miss["shape_score"]
+        < pdf_electrical_importer._LIGHTING_GLYPH_CONFIRM_SCORE
+    )
+
+    l_miss = misses_by_tag_x[120]
+    assert l_miss["shape_class_guard"]["candidate_shape_class"] == "polygonal"
+    assert (
+        l_miss["shape_score"] < pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+    )
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_fixture_count"] == 5
+    assert lighting["unresolved_fixture_count"] == 2
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_far_legend_column_is_read_from_table_structure(tmp_path: Path) -> None:
+    # Issue #108, at the issue's own geometry: with the heading over
+    # column 1, column 2's rows sat about 340 pt from the heading (1100
+    # versus 760) and 64 pt past column 1's estimated description right
+    # edge, so the old heading-radius rule never detected them as legend
+    # entries and their SD/S3 labels were counted as field switch codes,
+    # inflating the unresolved count. Description-aware table structure --
+    # a second column starting within one inch of the estimated
+    # description edge, on the heading column's row grid, with row
+    # descriptions of its own -- recognizes all four switches and keeps
+    # every legend label out of the field-code pass.
+    pdf_path = tmp_path / "far-legend-column-probe.pdf"
+    _write_far_legend_column_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:far-legend-column-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert sorted(
+        (
+            device.attributes["pdf_electrical"]["switch_code"],
+            device.attributes["pdf_electrical"]["switch_type"],
+        )
+        for device in _lighting_switches(model)
+    ) == [
+        ("OS", "occupancy_sensor"),
+        ("S", "single_pole"),
+        ("S3", "three_way"),
+        ("SD", "dimmer"),
+    ]
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert not [item for item in unresolved if item.get("kind") == "lighting_switch"]
+    assert not [
+        item
+        for item in unresolved
+        if item.get("reason_code") == "lighting_legend_code_role_ambiguous"
+    ]
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_switch_count"] == 4
+    assert lighting["unresolved_switch_count"] == 0
+    assert lighting["legend_regions"][0]["row_count"] == 4
+    assert lighting["legend_regions"][0]["tags"] == ["OS", "S", "S3", "SD"]
+
+    # The lone off-grid label beside column 2 joined neither the legend nor
+    # the field-code pass: it produces no recognition and no counted miss.
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    assert not [
+        item
+        for item in unresolved
+        if texts_by_id.get(item.get("source_element_id", "")) is not None
+        and texts_by_id[item["source_element_id"]].text == "B"
+        and item.get("kind") in {"lighting_switch", "lighting_fixture"}
+    ]
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_field_fixture_run_far_right_of_legend_stays_field(tmp_path: Path) -> None:
+    # Required negative for the far-column bound: two tagged A fixtures
+    # printed far right of the legend, vertically aligned on the legend's
+    # own grid rows, inside the heading's band. Unbounded row-grid matching
+    # would make them legend entries: their labels would be claimed and
+    # their glyphs would become prototypes, erasing them from the field
+    # count. Contiguity, row evidence, and the other bounds keep them field
+    # fixtures.
+    pdf_path = tmp_path / "field-fixture-run-probe.pdf"
+    _write_field_fixture_run_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:field-fixture-run-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    luminaires = [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    assert Counter(device.name for device in luminaires) == Counter({"A": 2})
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    tag_positions = sorted(
+        (
+            texts_by_id[
+                device.attributes["pdf_electrical"]["lighting_recognition"][
+                    "tag_source_element_id"
+                ]
+            ].x_pt,
+            texts_by_id[
+                device.attributes["pdf_electrical"]["lighting_recognition"][
+                    "tag_source_element_id"
+                ]
+            ].y_pt,
+        )
+        for device in luminaires
+    )
+    # The confirmed fixtures are the far-right run itself, not the legend.
+    assert tag_positions == pytest.approx([(852.0, 585.0), (852.0, 615.0)], abs=1.0)
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["legend_regions"][0]["row_count"] == 2
+    assert lighting["legend_regions"][0]["tags"] == ["A", "B"]
+    assert lighting["recognized_fixture_count"] == 2
+    assert lighting["unresolved_fixture_count"] == 0
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert not [item for item in unresolved if item.get("kind") == "lighting_fixture"]
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_long_description_legend_resolves_but_column_past_edge_does_not(
+    tmp_path: Path,
+) -> None:
+    # Description-aware contiguity must hold at both edges. Column 1's
+    # descriptions run about 300 pt, so column 2 starts about 335 pt past
+    # column 1's labels -- beyond the heading span and the description
+    # evidence span -- and still resolves within one inch of the estimated
+    # description edge. A third column with equally valid on-grid rows and
+    # descriptions, but starting well beyond one inch past the re-estimated
+    # edge, stays out of the legend and leaves nothing behind.
+    pdf_path = tmp_path / "long-description-legend-probe.pdf"
+    _write_long_description_legend_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:long-description-legend-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert sorted(
+        (
+            device.attributes["pdf_electrical"]["switch_code"],
+            device.attributes["pdf_electrical"]["switch_type"],
+        )
+        for device in _lighting_switches(model)
+    ) == [
+        ("OS", "occupancy_sensor"),
+        ("S", "single_pole"),
+        ("S3", "three_way"),
+        ("SD", "dimmer"),
+    ]
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert not [item for item in unresolved if item.get("kind") == "lighting_switch"]
+    assert not [item for item in unresolved if item.get("kind") == "lighting_fixture"]
+    assert not [
+        item
+        for item in unresolved
+        if item.get("reason_code") == "lighting_legend_code_role_ambiguous"
+    ]
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_switch_count"] == 4
+    assert lighting["unresolved_switch_count"] == 0
+    assert lighting["legend_regions"][0]["row_count"] == 4
+    assert lighting["legend_regions"][0]["tags"] == ["OS", "S", "S3", "SD"]
+
+    # The too-far third column joined neither the legend nor the field-code
+    # pass: its tags and glyphs produce no recognition and no counted miss.
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    assert not [
+        item
+        for item in unresolved
+        if texts_by_id.get(item.get("source_element_id", "")) is not None
+        and texts_by_id[item["source_element_id"]].text in {"A", "B"}
+        and item.get("kind") in {"lighting_switch", "lighting_fixture"}
+    ]
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_isotropic_shape_at_non_orthogonal_angle_stays_fail_closed(
+    tmp_path: Path,
+) -> None:
+    # Review note 1, documenting current behaviour: a square's second-moment
+    # covariance is isotropic, so its principal axis is undefined and
+    # rotation normalization cannot remove a 30-degree print angle. The
+    # axis-aligned control confirms at 1.0 while the 30-degree square fails
+    # closed; a minimum-area-rectangle or coarse-sweep fallback is future
+    # work, not silently weaker thresholds.
+    pdf_path = tmp_path / "isotropic-rotation-probe.pdf"
+    _write_isotropic_rotation_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:isotropic-rotation-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    luminaires = [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+    assert [device.name for device in luminaires] == ["A"]
+    assert (
+        luminaires[0]
+        .attributes["pdf_electrical"]["lighting_recognition"]["shape_score"]
+        == 1.0
+    )
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    assert (
+        texts_by_id[
+            luminaires[0]
+            .attributes["pdf_electrical"]["lighting_recognition"][
+                "tag_source_element_id"
+            ]
+        ].x_pt
+        == pytest.approx(142.0, abs=1.0)
+    )
+
+    misses = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "lighting_fixture"
+    ]
+    assert [(item["reason_code"], item["fixture_tag"]) for item in misses] == [
+        ("lighting_fixture_symbol_mismatch", "A")
+    ]
+    assert misses[0]["shape_score"] < pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
+    assert (
+        texts_by_id[misses[0]["source_element_id"]].x_pt
+        == pytest.approx(322.0, abs=1.0)
+    )
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_fixture_count"] == 1
+    assert lighting["unresolved_fixture_count"] == 1
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+@pytest.mark.parametrize(
+    "probe_writer",
+    (
+        _write_rotation_normalized_probe_pdf,
+        _write_shape_class_probe_pdf,
+        _write_far_legend_column_probe_pdf,
+        _write_field_fixture_run_probe_pdf,
+        _write_long_description_legend_probe_pdf,
+        _write_isotropic_rotation_probe_pdf,
+    ),
+)
+def test_issue108_probes_are_deterministic_across_runs(
+    tmp_path: Path,
+    probe_writer,
+) -> None:
+    pdf_path = tmp_path / f"{probe_writer.__name__}.pdf"
+    probe_writer(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    first_extract = extract_pdf(
+        pdf_path,
+        source_id="fixture:issue108-probe-determinism",
+    )
+    second_extract = extract_pdf(
+        pdf_path,
+        source_id="fixture:issue108-probe-determinism",
+    )
+    assert first_extract == second_extract
+
+    first_model = ElectricalPdfImporter().import_document(first_extract)
+    second_model = ElectricalPdfImporter().import_document(second_extract)
+    assert first_model.to_dict() == second_model.to_dict()
+
+
 def test_geometry_only_power_sheet_matches_drawn_glyphs_to_its_own_legend() -> None:
     assert not LEGEND_SHAPE_FIXTURE.with_suffix(".expected.json").exists()
 

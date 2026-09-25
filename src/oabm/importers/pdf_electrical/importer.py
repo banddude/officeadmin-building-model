@@ -1689,6 +1689,15 @@ _LIGHTING_TAG_RE = re.compile(r"^[A-Z]{1,2}(?:-?\d{1,2})?$", re.IGNORECASE)
 # margin rule reduces to its match minimum. The absolute floor only marks
 # where a shape is certainly not the prototype; it never confirms one.
 _LIGHTING_GLYPH_CONFIRM_SCORE = _GLYPH_MATCH_SCORE_MIN
+# A round legend prototype and a polygonal field instance (or the reverse)
+# disagree on shape class. Chamfer scoring alone leaves a square only a
+# little under the circle it most resembles, so such a pair may confirm
+# only at the strong-score bar; anything thinner fails closed.
+_LIGHTING_SHAPE_CLASS_STRONG_SCORE = _GLYPH_MATCH_STRONG_SCORE
+# Maximum ratio of extreme centroid distances for a boundary cloud to count
+# as round. Circles sit near 1.0 and octagons near 1.08; squares reach
+# sqrt(2) and triangles reach 2.
+_LIGHTING_SHAPE_CLASS_ROUND_MAX_RADIAL_RANGE = 1.2
 _LIGHTING_TAG_CLUSTER_RADIUS_PT = 42.0
 _LIGHTING_TAG_ASSOCIATION_MARGIN_PT = 6.0
 _LIGHTING_LEGEND_VERTICAL_SPAN_PT = 190.0
@@ -1709,6 +1718,18 @@ _LIGHTING_SWITCH_DESCRIPTION_WORDS = frozenset(
 )
 _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT = 220.0
 _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT = 18.0
+# Legend rows are read as table structure. The heading anchors the table's
+# row grid over its own column; a further printed column joins the table
+# only when it starts within one inch past where the admitted table's
+# printed descriptions are estimated to end, every one of its labels
+# continues the grid on a distinct row, and each of its rows carries
+# description text to the right the way a legend row does. A vertical run
+# of tagged field fixtures on the grid rows must not be mistaken for a
+# legend column, so no one of these signals admits alone.
+_LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT = 220.0
+_LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT = 48.0
+_LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT = 10.0
+_LIGHTING_LEGEND_COLUMN_GAP_PT = 72.0
 _LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
     "TYPE": "tag",
     "TAG": "tag",
@@ -1951,6 +1972,76 @@ def _point_cloud_distance(
     return 0.55 * chamfer + 0.45 * hausdorff
 
 
+def _rotate_point_cloud(
+    cloud: Sequence[tuple[float, float]],
+    theta: float,
+) -> tuple[tuple[float, float], ...]:
+    cos_theta = math.cos(theta)
+    sin_theta = math.sin(theta)
+    return tuple(
+        sorted(
+            {
+                (
+                    round(x * cos_theta - y * sin_theta, 5),
+                    round(x * sin_theta + y * cos_theta, 5),
+                )
+                for x, y in cloud
+            }
+        )
+    )
+
+
+def _cloud_principal_angle(
+    cloud: Sequence[tuple[float, float]],
+) -> float | None:
+    """Orientation of a cloud's major axis, defined only up to half a turn.
+
+    Second-moment principal-axis angle. Radially uniform clouds such as
+    circles have a degenerate axis; any orientation matches them anyway, so
+    the arbitrary zero the formula returns there is harmless.
+    """
+    count = len(cloud)
+    if count < 2:
+        return None
+    mean_x = sum(x for x, _ in cloud) / count
+    mean_y = sum(y for _, y in cloud) / count
+    covariance_xx = sum((x - mean_x) ** 2 for x, _ in cloud) / count
+    covariance_yy = sum((y - mean_y) ** 2 for _, y in cloud) / count
+    covariance_xy = sum((x - mean_x) * (y - mean_y) for x, y in cloud) / count
+    if not math.isfinite(covariance_xx + covariance_yy + covariance_xy):
+        return None
+    return 0.5 * math.atan2(2.0 * covariance_xy, covariance_xx - covariance_yy)
+
+
+def _principal_axis_aligned_cloud(
+    cloud: Sequence[tuple[float, float]],
+) -> tuple[tuple[float, float], ...] | None:
+    """Re-express a resampled cloud in a rotation-invariant canonical frame.
+
+    Centroid and root-mean-square radius remove translation and uniform
+    scale; aligning the principal axis removes in-plane rotation. Both
+    clouds of a comparison land in the same frame only up to half a turn,
+    so the caller keeps the half-turn variant as an explicit alternative.
+    """
+    count = len(cloud)
+    if count < 2:
+        return None
+    mean_x = sum(x for x, _ in cloud) / count
+    mean_y = sum(y for _, y in cloud) / count
+    radius = math.sqrt(
+        sum((x - mean_x) ** 2 + (y - mean_y) ** 2 for x, y in cloud) / count
+    )
+    if radius <= 1e-9 or not math.isfinite(radius):
+        return None
+    centered = tuple(
+        ((x - mean_x) / radius, (y - mean_y) / radius) for x, y in cloud
+    )
+    angle = _cloud_principal_angle(centered)
+    if angle is None:
+        return None
+    return _rotate_point_cloud(centered, -angle)
+
+
 def _cluster_match_score(
     cluster: _VectorCluster,
     prototype: _VectorCluster,
@@ -1971,6 +2062,34 @@ def _cluster_match_score(
         for mirrored in (False, True)
         for rotation in range(4)
     )
+
+    # Quarter turns never cover skewed wings that print fixtures at
+    # arbitrary angles. Comparing both clouds in their principal-axis frames
+    # removes the remaining rotation (and uniform scale, which bbox
+    # normalization only handles for axis-aligned extents). The aligned
+    # clouds live at root-mean-square radius 1, a wider frame than the
+    # bbox-normalized clouds above, so aligned distances only win the min
+    # when the shapes genuinely coincide once rotated together.
+    prototype_aligned = _principal_axis_aligned_cloud(prototype_cloud)
+    if prototype_aligned is not None:
+        prototype_aligned_half_turn = _rotate_point_cloud(
+            prototype_aligned,
+            math.pi,
+        )
+        for mirrored in (False, True):
+            cluster_aligned = _principal_axis_aligned_cloud(
+                _resampled_point_cloud(cluster, mirrored=mirrored)
+            )
+            if cluster_aligned is None:
+                continue
+            distance = min(
+                distance,
+                _point_cloud_distance(cluster_aligned, prototype_aligned),
+                _point_cloud_distance(
+                    cluster_aligned,
+                    prototype_aligned_half_turn,
+                ),
+            )
     return round(
         max(0.0, min(1.0, 1.0 - distance / _GLYPH_CHAMFER_DISTANCE_SCALE)),
         6,
@@ -4644,6 +4763,136 @@ def _detect_lighting_fixture_schedules(
     return resolved, claimed_text_ids, unresolved, schedule_metadata
 
 
+def _lighting_legend_label_columns(
+    labels: Sequence[PdfTextObservation],
+) -> tuple[tuple[PdfTextObservation, ...], ...]:
+    """Group legend labels into x-aligned table columns."""
+    columns: list[list[PdfTextObservation]] = []
+    for label in sorted(
+        labels,
+        key=lambda item: (item.x_pt, -item.y_pt, item.element_id),
+    ):
+        column = next(
+            (
+                column
+                for column in columns
+                if abs(label.x_pt - column[0].x_pt)
+                <= _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT
+            ),
+            None,
+        )
+        if column is None:
+            columns.append([label])
+        else:
+            column.append(label)
+    return tuple(
+        tuple(
+            sorted(
+                column,
+                key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
+            )
+        )
+        for column in columns
+    )
+
+
+def _lighting_legend_row_grid(
+    labels: Sequence[PdfTextObservation],
+) -> tuple[float, ...]:
+    """Collapse legend-label y positions into descending table row bands."""
+    rows: list[float] = []
+    for y in sorted({label.y_pt for label in labels}, reverse=True):
+        if not rows or rows[-1] - y > _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT:
+            rows.append(y)
+    return tuple(rows)
+
+
+def _lighting_legend_column_grid_rows(
+    column: Sequence[PdfTextObservation],
+    row_grid: Sequence[float],
+) -> list[int] | None:
+    """Row index per label, or None when the column is not pure table rows.
+
+    Pure means every label continues the grid and no two labels share a
+    row: a column with an off-grid or doubled-up member is not legend
+    structure even though some of its rows line up.
+    """
+    assignments: list[int] = []
+    for label in column:
+        index = next(
+            (
+                index
+                for index, row_y in enumerate(row_grid)
+                if abs(label.y_pt - row_y)
+                <= _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT
+            ),
+            None,
+        )
+        if index is None:
+            return None
+        assignments.append(index)
+    if len(set(assignments)) != len(assignments):
+        return None
+    return assignments
+
+
+def _lighting_legend_row_description_text(
+    label: PdfTextObservation,
+    *,
+    texts: Sequence[PdfTextObservation],
+) -> PdfTextObservation | None:
+    """Nearest non-tag text on a legend label's baseline to its right.
+
+    Legend rows carry descriptions such as ``DIMMER SWITCH``; a tagged
+    field fixture's label has nothing but other tags beside it.
+    """
+    return min(
+        (
+            observation
+            for observation in texts
+            if observation.page == label.page
+            and observation.element_id != label.element_id
+            and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
+            and label.x_pt
+            < observation.x_pt
+            <= label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+            and _normalize_lighting_tag(observation.text) is None
+        ),
+        key=lambda observation: (observation.x_pt, observation.element_id),
+        default=None,
+    )
+
+
+def _lighting_legend_row_has_description(
+    label: PdfTextObservation,
+    *,
+    texts: Sequence[PdfTextObservation],
+) -> bool:
+    """Whether a legend row carries description text on its baseline."""
+    return _lighting_legend_row_description_text(label, texts=texts) is not None
+
+
+def _lighting_legend_row_description_edge(
+    label: PdfTextObservation,
+    *,
+    texts: Sequence[PdfTextObservation],
+) -> float:
+    """Estimated right edge of a legend row's printed description.
+
+    Character-count estimate at the description's own font size; the
+    estimate may legitimately run past the evidence search span, which is
+    what lets a legend printed with long descriptions admit the column
+    beside it. A row with no description at all is assumed to occupy the
+    full description span, so an undescribed heading column still bounds
+    how far the next printed column can sit.
+    """
+    description = _lighting_legend_row_description_text(label, texts=texts)
+    if description is None:
+        return label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+    font_size = float(description.font_size_pt or 8.0)
+    return description.x_pt + len(description.text) * font_size * 0.6
+
+
 def _detect_lighting_legend_entries(
     *,
     texts: Sequence[PdfTextObservation],
@@ -4671,16 +4920,109 @@ def _detect_lighting_legend_entries(
     entries_by_page: dict[int, list[_LightingLegendEntry]] = {}
 
     for heading in headings:
-        candidate_labels = [
+        band_labels = [
             observation
             for observation in texts
             if observation.page == heading.page
             and observation.element_id not in excluded_text_ids
             and observation.element_id != heading.element_id
             and 0.0 < heading.y_pt - observation.y_pt <= _LIGHTING_LEGEND_VERTICAL_SPAN_PT
-            and abs(observation.x_pt - heading.x_pt) <= 220.0
             and _normalize_lighting_tag(observation.text) is not None
         ]
+        # Legend rows are read as table structure, not as raw distance from
+        # the heading: the heading's own column anchors the table's row
+        # grid, and a further printed column joins the same table only when
+        # all three of these hold, so no one signal admits a column alone:
+        #   contiguity - it starts within about one inch past where the
+        #     admitted table's printed descriptions are estimated to end,
+        #     never anywhere on the sheet;
+        #   table purity - every one of its labels continues the grid, each
+        #     on a distinct row (a field-fixture run usually has off-grid
+        #     or doubled-up members);
+        #   row evidence - every row carries description text to the right,
+        #     the way a printed legend row does and a bare field tag does
+        #     not.
+        heading_column_labels = [
+            observation
+            for observation in band_labels
+            if abs(observation.x_pt - heading.x_pt)
+            <= _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT
+        ]
+        row_grid = _lighting_legend_row_grid(heading_column_labels)
+        heading_label_ids = {label.element_id for label in heading_column_labels}
+        candidate_labels: list[PdfTextObservation] = list(heading_column_labels)
+        pending_columns: list[tuple[PdfTextObservation, ...]] = []
+        # A column straddling the heading span is admitted whole, so its
+        # labels anchor contiguity for the next column out.
+        for column in _lighting_legend_label_columns(band_labels):
+            if any(
+                abs(label.x_pt - heading.x_pt)
+                <= _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT
+                for label in column
+            ):
+                candidate_labels.extend(
+                    label
+                    for label in column
+                    if label.element_id not in heading_label_ids
+                )
+            else:
+                pending_columns.append(column)
+        admitted_labels = list(candidate_labels)
+        table_description_edge = max(
+            (
+                _lighting_legend_row_description_edge(label, texts=texts)
+                for label in admitted_labels
+            ),
+            default=math.inf,
+        )
+        # Chained expansion admits multi-column legends column by column;
+        # a rejected column never anchors anything farther out.
+        progressed = True
+        while progressed and pending_columns:
+            progressed = False
+            remaining: list[tuple[PdfTextObservation, ...]] = []
+            for column in pending_columns:
+                column_x = min(label.x_pt for label in column)
+                if column_x <= table_description_edge:
+                    # Starts inside the text the table is estimated to have
+                    # already printed. The edge only grows, so this column
+                    # never becomes the next one.
+                    continue
+                if (
+                    column_x
+                    > table_description_edge + _LIGHTING_LEGEND_COLUMN_GAP_PT
+                ):
+                    # Well past the printed text; re-tested if a nearer
+                    # admission extends the edge outward.
+                    remaining.append(column)
+                    continue
+                grid_rows = _lighting_legend_column_grid_rows(column, row_grid)
+                if (
+                    grid_rows is None
+                    or len(column) < 2
+                    or not all(
+                        _lighting_legend_row_has_description(
+                            label,
+                            texts=texts,
+                        )
+                        for label in column
+                    )
+                ):
+                    continue
+                candidate_labels.extend(column)
+                admitted_labels.extend(column)
+                table_description_edge = max(
+                    table_description_edge,
+                    *(
+                        _lighting_legend_row_description_edge(
+                            label,
+                            texts=texts,
+                        )
+                        for label in column
+                    ),
+                )
+                progressed = True
+            pending_columns = remaining
         local_entries: list[_LightingLegendEntry] = []
         used_keys: set[tuple[int, str]] = set()
         for label in sorted(
@@ -4820,33 +5162,89 @@ def _detect_lighting_legend_entries(
     )
 
 
+def _cluster_shape_class(cluster: _VectorCluster) -> str:
+    """Round versus polygonal glyph class from the boundary cloud.
+
+    Arc-length-uniform boundary sampling keeps the ratio of extreme
+    centroid distances stable, so circles (and near-circular polygons such
+    as octagons) separate from shapes whose corners stick out, like squares
+    and triangles. Classification is rotation- and scale-invariant.
+    """
+    cloud = _resampled_point_cloud(cluster)
+    if len(cloud) < 2:
+        return "polygonal"
+    count = len(cloud)
+    mean_x = sum(x for x, _ in cloud) / count
+    mean_y = sum(y for _, y in cloud) / count
+    radii = [math.hypot(x - mean_x, y - mean_y) for x, y in cloud]
+    min_radius = min(radii)
+    if min_radius <= 1e-9:
+        return "polygonal"
+    if max(radii) <= _LIGHTING_SHAPE_CLASS_ROUND_MAX_RADIAL_RANGE * min_radius:
+        return "round"
+    return "polygonal"
+
+
+def _lighting_shape_class_guard(
+    score: float,
+    *,
+    candidate_class: str,
+    prototype: _VectorCluster,
+) -> tuple[float, dict[str, Any] | None]:
+    """Cap a cross-class score below the confirm minimum.
+
+    A square next to an `A` tag scores about 0.567 against a circle legend
+    row, barely over the match minimum; the round-versus-polygonal class
+    disagreement may only confirm at the strong-score bar instead.
+    """
+    if score >= _LIGHTING_SHAPE_CLASS_STRONG_SCORE:
+        return score, None
+    prototype_class = _cluster_shape_class(prototype)
+    if prototype_class == candidate_class:
+        return score, None
+    return (
+        round(min(score, _LIGHTING_GLYPH_CONFIRM_SCORE - 0.01), 6),
+        {
+            "candidate_shape_class": candidate_class,
+            "prototype_shape_class": prototype_class,
+            "raw_shape_score": score,
+            "shape_class_strong_score": _LIGHTING_SHAPE_CLASS_STRONG_SCORE,
+        },
+    )
+
+
 def _lighting_shape_support(
     cluster: _VectorCluster,
     entries: Sequence[_LightingLegendEntry],
     *,
     tag: str | None = None,
-) -> tuple[_LightingLegendEntry | None, float | None]:
+) -> tuple[_LightingLegendEntry | None, float | None, dict[str, Any] | None]:
     eligible = [
         entry
         for entry in entries
         if tag is None or entry.tag == tag
     ]
     if not eligible:
-        return None, None
-    ranked = sorted(
-        (
-            (_cluster_match_score(cluster, entry.prototype), entry)
-            for entry in eligible
-        ),
+        return None, None, None
+    candidate_class = _cluster_shape_class(cluster)
+    ranked = []
+    for entry in eligible:
+        score, guard = _lighting_shape_class_guard(
+            _cluster_match_score(cluster, entry.prototype),
+            candidate_class=candidate_class,
+            prototype=entry.prototype,
+        )
+        ranked.append((score, guard, entry))
+    ranked.sort(
         key=lambda item: (
             -item[0],
-            item[1].tag,
-            item[1].label.element_id,
-            item[1].prototype.geometry_key,
+            item[2].tag,
+            item[2].label.element_id,
+            item[2].prototype.geometry_key,
         ),
     )
-    score, entry = ranked[0]
-    return entry, score
+    score, guard, entry = ranked[0]
+    return entry, score, guard
 
 
 def _is_lighting_shaped(
@@ -4859,7 +5257,7 @@ def _is_lighting_shaped(
     available to the power-device path instead of vanishing into a lighting
     diagnostic.
     """
-    _entry, score = _lighting_shape_support(cluster, entries)
+    _entry, score, _guard = _lighting_shape_support(cluster, entries)
     return score is not None and score >= _LIGHTING_GLYPH_CONFIRM_SCORE
 
 
@@ -5185,7 +5583,7 @@ def _recognize_lighting(
                 observation.element_id,
             ),
         )
-        legend_entry, shape_score = _lighting_shape_support(
+        legend_entry, shape_score, shape_guard = _lighting_shape_support(
             cluster,
             fixture_entries_by_page.get(cluster.page, ()),
             tag=tag,
@@ -5221,6 +5619,12 @@ def _recognize_lighting(
                     "shape_score": shape_score,
                     "match_minimum": _LIGHTING_GLYPH_CONFIRM_SCORE,
                 }
+                if shape_guard is not None:
+                    miss["reason"] += (
+                        "; the instance and the prototype disagree on the "
+                        "round-versus-polygonal shape class"
+                    )
+                    miss["shape_class_guard"] = shape_guard
             unresolved.append(
                 {
                     "kind": "lighting_fixture",
@@ -5386,7 +5790,7 @@ def _recognize_lighting(
         )
         if nearby_switch_code:
             continue
-        entry, score = _lighting_shape_support(
+        entry, score, _shape_guard = _lighting_shape_support(
             cluster,
             fixture_entries_by_page.get(cluster.page, ()),
         )
@@ -5537,7 +5941,7 @@ def _recognize_lighting(
 
         cluster = nearby[0]
         canonical_type, switch_type = switch_classification
-        legend_entry, shape_score = _lighting_shape_support(
+        legend_entry, shape_score, _shape_guard = _lighting_shape_support(
             cluster,
             switch_entries_by_page.get(cluster.page, ()),
             tag=code,

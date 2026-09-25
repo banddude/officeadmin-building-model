@@ -3374,14 +3374,10 @@ def _glyph_cluster_vectors(
     """
 
     text_boxes = _shx_text_boxes(document.symbols)
-    arc_ids = (
-        _dashed_arc_train_vector_ids(vectors)
-        if text_boxes or vectors
-        else set()
-    )
+    arc_ids = _dashed_arc_train_vector_ids(vectors)
     if not text_boxes and not arc_ids:
         return tuple(vectors)
-    excluded = arc_ids
+    excluded = set(arc_ids)
     for vector in vectors:
         if vector.element_id in excluded:
             continue

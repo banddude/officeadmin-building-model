@@ -5872,21 +5872,6 @@ def _legend_frame_region(model: BuildingModel) -> dict:
     return regions[0]
 
 
-def _in_frame_devices(model: BuildingModel) -> list:
-    x0, y0, x1, y1 = _LEGEND_FRAME_BBOX
-    return [
-        device
-        for device in model.electrical_devices
-        if device.attributes["pdf_electrical"]["shape_recognition"].get("method")
-        == "sheet-legend-geometry-match"
-        and x0
-        <= device.attributes["pdf_electrical"]["shape_recognition"][
-            "match_diagnostics"
-        ].get("field_position_pt", {"x": 0.0, "y": 0.0})["x"]
-        and False
-    ]
-
-
 def test_framed_two_column_cad_legend_joins_columns_and_drops_abbreviations(
     tmp_path: Path,
 ) -> None:

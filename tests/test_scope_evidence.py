@@ -212,6 +212,35 @@ def test_outlet_note_default_applies_to_unmarked_outlets_only(
     assert device_scope_counts(model)["in_scope_total"] == in_scope
 
 
+def test_note_default_yields_to_scope_wording_beside_the_device(tmp_path: Path) -> None:
+    # "Unless otherwise noted": "(N) ..." printed beside the unmarked quad notes
+    # it otherwise, so the EXISTING default must not reach it. The other
+    # unmarked outlet, with nothing beside it, still takes the default.
+    path = _variant(
+        tmp_path,
+        "note-otherwise-noted",
+        UNMARK_QUAD,
+        (b"1 0 0 1 308 504 Tm (E) Tj", b"1 0 0 1 308 504 Tm ( ) Tj"),
+        *_notes(
+            _runs(494, (596, "4."), (604, "ALL OUTLETS SHOWN ON THIS SHEET")),
+            _runs(486, (604, "ARE EXISTING U.O.N.")),
+        ),
+        append=b"BT /F1 5 Tf 1 0 0 1 396 484 Tm ((N) SYNTHETIC CALLOUT) Tj ET\n",
+    )
+    model = _model(path)
+    quad = _lane_at(model, QUAD_POSITION)
+    assert quad["scope_status"] == "unresolved"
+    assert quad["scope_reason"] == "scope_default_note_otherwise_noted"
+    assert len(quad["scope_otherwise_noted_source_element_ids"]) == 1
+    other = _lane_at(model, (298.0, 500.0))
+    assert other["scope_status"] == "existing_to_remain"
+    assert other["scope_method"] == "sheet general note default for unmarked devices"
+    # The assumption does not override the sheet's own "otherwise noted".
+    on = _lane_at(_model(path, ASSUMPTION), QUAD_POSITION)
+    assert on["scope_reason"] == "scope_default_note_otherwise_noted"
+    assert not any(key.startswith("scope_assumption_") for key in on)
+
+
 def test_note_default_qualified_by_its_own_text_stays_unresolved(tmp_path: Path) -> None:
     path = _variant(
         tmp_path,
@@ -440,7 +469,7 @@ def _assumption_keys(lane: dict) -> list[str]:
     return sorted(key for key in lane if key.startswith("scope_assumption_"))
 
 
-# The E-marked receptacle beside the quad, at (298, 500), and its marker.
+# The E-marked quadruplex outlet west of the quad, at (298, 500), and its marker.
 EAST_POSITION = (298.0, 500.0)
 EAST_MARKER = b"1 0 0 1 308 504 Tm (E) Tj"
 UNMARK_EAST = (EAST_MARKER, EAST_MARKER.replace(b"(E)", b"( )"))

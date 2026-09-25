@@ -494,8 +494,12 @@ scopes (`NEW / EXISTING U.O.N.`), or whose own text qualifies the default
 (`... NEW U.O.N. REUSE EXISTING OUTLETS WHERE AVAILABLE.`), stays evidence of
 ambiguity: its devices remain `unresolved` with `scope_reason`
 `scope_default_note_ambiguous`, and two notes of the same family giving
-different scopes give `scope_default_note_conflict`. The note text and its
-source element IDs are recorded with the devices it reaches.
+different scopes give `scope_default_note_conflict`. "Unless otherwise noted"
+is honoured literally: scope wording printed beside a device, within the
+field-status radius (for example `(N) ...`, `NEW`, `EXISTING`, `RELOCATE`),
+notes it otherwise. That device stays `unresolved` with `scope_reason`
+`scope_default_note_otherwise_noted` and the wording's element IDs. The note
+text and its source element IDs are recorded with the devices it reaches.
 
 For document sets a human has explicitly ruled on, the importer accepts a
 `UserScopeAssumption(rule: str, source: str)`, passed as

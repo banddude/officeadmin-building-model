@@ -1862,6 +1862,11 @@ _SCOPE_NOTE_RE = re.compile(
 _SCOPE_NOTE_QUALIFIER_RE = re.compile(
     r"\b(?:NEW|EXIST\w*|RELOCAT\w*|REMOV\w*|DEMOL\w*|SALVAG\w*|REUS\w*|REPLAC\w*)\b"
 )
+# Scope wording printed beside a device notes it "otherwise" than a U.O.N.
+# default: a parenthesized status letter or a scope word.
+_SCOPE_WORD_RE = re.compile(
+    r"\((?:N|E|R|D)\)|\b(?:NEW|EXIST\w*|RELOCAT\w*|REMOV\w*|DEMOL\w*|DEMO|SALVAG\w*|REUS\w*|REPLAC\w*)\b"
+)
 # Runs on one baseline are one line while each starts within an upper bound of
 # the previous run's printed length; a note continues onto the next line when
 # that line starts in the note's text column and carries no new note number.
@@ -2049,6 +2054,7 @@ def _scope_status_attributes(
     position_pt: tuple[float, float] | None = None,
     status_letters: Mapping[int, Sequence[tuple[PdfTextObservation, str]]] | None = None,
     notes: Mapping[int, Mapping[str, Sequence[_ScopeNote]]] | None = None,
+    worded_texts: Mapping[int, Sequence[PdfTextObservation]] | None = None,
 ) -> dict[str, Any]:
     """Resolve one device's scope from its marker and its own sheet's legend.
 
@@ -2078,7 +2084,13 @@ def _scope_status_attributes(
             status_source_element_id = observation.element_id
             marker_evidence["scope_marker_method"] = "status letter beside device position"
         else:
-            return _scope_note_default_attributes(page, canonical_type, notes)
+            return _scope_note_default_attributes(
+                page,
+                canonical_type,
+                notes,
+                position_pt=position_pt,
+                worded_texts=worded_texts,
+            )
     if status is None:
         return {
             "scope_status": SCOPE_UNRESOLVED,
@@ -2110,12 +2122,35 @@ def _scope_status_attributes(
     }
 
 
+def _scope_worded_texts(
+    texts: Sequence[PdfTextObservation],
+) -> dict[int, tuple[PdfTextObservation, ...]]:
+    """Per page: drawing texts that state a scope ("(N)", "NEW", "EXISTING", ...)."""
+
+    worded: dict[int, list[PdfTextObservation]] = {}
+    for observation in texts:
+        normalized = " ".join(observation.text.upper().split())
+        if _SCOPE_NOTE_START_RE.match(normalized):
+            continue
+        if _SCOPE_WORD_RE.search(normalized):
+            worded.setdefault(observation.page, []).append(observation)
+    return {page: tuple(items) for page, items in worded.items()}
+
+
 def _scope_note_default_attributes(
     page: int,
     canonical_type: str | None,
     notes: Mapping[int, Mapping[str, Sequence[_ScopeNote]]] | None,
+    *,
+    position_pt: tuple[float, float] | None = None,
+    worded_texts: Mapping[int, Sequence[PdfTextObservation]] | None = None,
 ) -> dict[str, Any]:
-    """Scope of an unmarked device from its own sheet's general notes."""
+    """Scope of an unmarked device from its own sheet's general notes.
+
+    "Unless otherwise noted" means any scope wording printed beside the device
+    (within the field-status radius) notes it otherwise; such a device stays
+    unresolved rather than taking the default.
+    """
 
     unmarked = {"scope_status": SCOPE_UNRESOLVED, "scope_reason": "no_scope_marker"}
     if canonical_type is None or not notes:
@@ -2153,6 +2188,20 @@ def _scope_note_default_attributes(
             "scope_note_ambiguity": sorted({note.ambiguity or "" for note in applicable})[0],
             **evidence,
         }
+    if position_pt is not None and worded_texts:
+        noted = sorted(
+            observation.element_id
+            for observation in worded_texts.get(page, ())
+            if _distance_pt(position_pt[0], position_pt[1], observation.x_pt, observation.y_pt)
+            <= _FIELD_STATUS_RADIUS_PT
+        )
+        if noted:
+            return {
+                "scope_status": SCOPE_UNRESOLVED,
+                "scope_reason": "scope_default_note_otherwise_noted",
+                "scope_otherwise_noted_source_element_ids": noted,
+                **evidence,
+            }
     return {
         "scope_status": scope,
         "scope_method": "sheet general note default for unmarked devices",
@@ -7775,6 +7824,7 @@ class ElectricalPdfImporter:
         )
         scope_status_letters = _scope_status_letters(status_texts)
         scope_notes = _scope_default_notes(drawing_texts)
+        scope_worded_texts = _scope_worded_texts(drawing_texts) if scope_notes else {}
         generic_vectors = tuple(
             vector
             for vector in vectors
@@ -8612,6 +8662,7 @@ class ElectricalPdfImporter:
                     position_pt=(candidate.x_pt, candidate.y_pt),
                     status_letters=scope_status_letters,
                     notes=scope_notes,
+                    worded_texts=scope_worded_texts,
                 )
             )
             if self.user_scope_assumption is not None:

@@ -59,25 +59,59 @@ def _single_text_size(tmp_path: Path, commands: list[str], text: str) -> float:
     return matches[0].font_size_pt
 
 
-def test_scaled_text_matrix_reports_the_drawn_size(tmp_path: Path) -> None:
-    size = _single_text_size(
-        tmp_path,
-        ["BT /F1 60 Tf 0.12 0 0 0.12 100 200 Tm (GFCI) Tj ET"],
-        "GFCI",
+def _text(tf: float, tm: str) -> str:
+    return f"BT /F1 {tf} Tf {tm} Tm (GFCI) Tj ET"
+
+
+# Every case but the identity control draws at a size that differs from its raw
+# Tf operand, so a helper that ignores rotation, mirroring, the CTM, or the axis
+# it measures falls back to or reports the wrong value.
+@pytest.mark.parametrize(
+    ("commands", "expected_pt"),
+    [
+        pytest.param([_text(60, "0.12 0 0 0.12 100 200")], 7.2, id="scaled-tm"),
+        pytest.param([_text(7, "1 0 0 1 100 200")], 7.0, id="identity-tm"),
+        pytest.param(
+            ["q 0.5 0 0 0.5 0 0 cm", _text(60, "0.12 0 0 0.12 200 400"), "Q"],
+            3.6,
+            id="ctm-and-tm-compose",
+        ),
+        pytest.param([_text(60, "0 0.12 -0.12 0 100 200")], 7.2, id="rotated-tm-90"),
+        pytest.param(
+            [_text(60, "0 -0.12 0.12 0 100 200")], 7.2, id="rotated-tm-270"
+        ),
+        pytest.param(
+            ["q 0 1 -1 0 300 0 cm", _text(60, "0.12 0 0 0.12 100 200"), "Q"],
+            7.2,
+            id="rotated-ctm-90",
+        ),
+        pytest.param(
+            [_text(60, "-0.12 0 0 0.12 100 200")], 7.2, id="mirrored-tm-x"
+        ),
+        pytest.param(
+            [_text(60, "0.12 0 0 -0.12 100 200")], 7.2, id="mirrored-tm-y"
+        ),
+        # Glyph height follows the text-space y axis, not the x axis.
+        pytest.param(
+            [_text(60, "0.12 0 0 0.06 100 200")], 3.6, id="non-uniform-tm-y-axis"
+        ),
+        # The reverse: a small Tf blown up by the text matrix draws large.
+        pytest.param([_text(7.5, "10 0 0 10 100 200")], 75.0, id="upscaled-tm"),
+        # A negative Tf mirrors the glyphs; the drawn size is its magnitude.
+        pytest.param([_text(-60, "0.12 0 0 0.12 100 200")], 7.2, id="negative-tf"),
+    ],
+)
+def test_recorded_font_size_is_the_drawn_size(
+    tmp_path: Path,
+    commands: list[str],
+    expected_pt: float,
+) -> None:
+    assert _single_text_size(tmp_path, commands, "GFCI") == pytest.approx(
+        expected_pt, abs=1e-9
     )
-    assert size == pytest.approx(7.2, abs=1e-9)
 
 
-def test_identity_text_matrix_reports_the_tf_size(tmp_path: Path) -> None:
-    size = _single_text_size(
-        tmp_path,
-        ["BT /F1 7 Tf 1 0 0 1 100 200 Tm (GFCI) Tj ET"],
-        "GFCI",
-    )
-    assert size == pytest.approx(7.0, abs=1e-9)
-
-
-def test_graphics_matrix_scale_halves_the_size(tmp_path: Path) -> None:
+def test_graphics_matrix_scale_halves_the_size_and_position(tmp_path: Path) -> None:
     pdf = tmp_path / "probe.pdf"
     _write_pdf(
         pdf,
@@ -94,40 +128,9 @@ def test_graphics_matrix_scale_halves_the_size(tmp_path: Path) -> None:
     assert (label.x_pt, label.y_pt) == pytest.approx((100.0, 200.0), abs=1e-9)
 
 
-def test_graphics_and_text_matrix_scales_compose(tmp_path: Path) -> None:
-    size = _single_text_size(
-        tmp_path,
-        [
-            "q 0.5 0 0 0.5 0 0 cm",
-            "BT /F1 60 Tf 0.12 0 0 0.12 200 400 Tm (GFCI) Tj ET",
-            "Q",
-        ],
-        "GFCI",
-    )
-    assert size == pytest.approx(3.6, abs=1e-9)
-
-
-@pytest.mark.parametrize(
-    "text_matrix",
-    ["0 1 -1 0 100 200", "0 -1 1 0 100 200"],
-    ids=["rotated-90", "rotated-270"],
-)
-def test_rotated_unit_text_matrix_keeps_the_size(
-    tmp_path: Path,
-    text_matrix: str,
-) -> None:
-    size = _single_text_size(
-        tmp_path,
-        [f"BT /F1 7 Tf {text_matrix} Tm (GFCI) Tj ET"],
-        "GFCI",
-    )
-    assert size == pytest.approx(7.0, abs=1e-9)
-
-
 # The geometry-only power sheet from
 # fixtures/pdf_electrical/geometry-only-power-sheet-with-legend.pdf, with every
-# label drawn the CAD way: a large Tf shrunk by a 0.12 text matrix. The drawn
-# sizes (11 pt heading, 9 pt labels) match the fixture.
+# label drawn the CAD way, through a scaled text matrix.
 _FIELD_GLYPHS = [
     "85 300 10 10 re f",
     "83 305 m 97 305 l S",
@@ -160,26 +163,35 @@ _LEGEND_GLYPHS = [
 ]
 
 
-def _cad_text(x: float, y: float, text: str, *, rendered_pt: float) -> str:
-    scale = 0.12
-    return (
-        f"BT /F1 {rendered_pt / scale:.4f} Tf {scale} 0 0 {scale} {x} {y} Tm"
-        f" ({text}) Tj ET"
-    )
+def _cad_text(x: float, y: float, text: str, *, tf: float, scale: float) -> str:
+    return f"BT /F1 {tf} Tf {scale} 0 0 {scale} {x} {y} Tm ({text}) Tj ET"
 
 
-def _write_scaled_text_legend_sheet(path: Path) -> None:
+def _write_cad_text_legend_sheet(
+    path: Path,
+    *,
+    label_tf: float,
+    label_scale: float,
+) -> None:
+    labels = [(317, "GFCI"), (272, "JBOX"), (227, "LIGHT")]
     _write_pdf(
         path,
         [
             *_FIELD_GLYPHS,
             *_LEGEND_GLYPHS,
-            _cad_text(370, 365, "ELECTRICAL SYMBOL LEGEND", rendered_pt=11.0),
-            _cad_text(425, 317, "GFCI", rendered_pt=9.0),
-            _cad_text(425, 272, "JBOX", rendered_pt=9.0),
-            _cad_text(425, 227, "LIGHT", rendered_pt=9.0),
+            # 11 pt drawn, the same heading size as the fixture.
+            _cad_text(370, 365, "ELECTRICAL SYMBOL LEGEND", tf=91.6667, scale=0.12),
+            *(
+                _cad_text(425, y, text, tf=label_tf, scale=label_scale)
+                for y, text in labels
+            ),
         ],
     )
+
+
+def _write_scaled_text_legend_sheet(path: Path) -> None:
+    # Labels at Tf 75 shrunk by 0.12: 9 pt drawn, the fixture's label size.
+    _write_cad_text_legend_sheet(path, label_tf=75, label_scale=0.12)
 
 
 def _legend_shape_matched_devices(model: BuildingModel) -> list:
@@ -248,6 +260,32 @@ def test_legend_drawn_with_scaled_text_is_missed_with_raw_tf_sizes(
     assert {item.text: item.font_size_pt for item in extracted.texts}[
         "GFCI"
     ] == pytest.approx(75.0, abs=1e-3)
+
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert _legend_shape_matched_devices(model) == []
+
+
+def test_legend_drawn_with_upscaled_text_is_rejected_as_oversized(
+    tmp_path: Path,
+) -> None:
+    # The reverse of the CAD case: Tf 7.5 blown up by a 10x text matrix draws
+    # 75 pt labels. The raw operand would pass the 18 pt short-label filter;
+    # the drawn size must not, so this sheet yields no legend.
+    pdf = tmp_path / "upscaled-text-legend.pdf"
+    _write_cad_text_legend_sheet(pdf, label_tf=7.5, label_scale=10)
+
+    extracted = extract_pdf(pdf, source_id="test:upscaled-text-legend")
+    sizes = {item.text: item.font_size_pt for item in extracted.texts}
+    assert sizes == pytest.approx(
+        {
+            "ELECTRICAL SYMBOL LEGEND": 11.0,
+            "GFCI": 75.0,
+            "JBOX": 75.0,
+            "LIGHT": 75.0,
+        },
+        abs=1e-3,
+    )
 
     model = ElectricalPdfImporter().import_document(extracted)
 

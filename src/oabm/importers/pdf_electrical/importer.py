@@ -536,11 +536,13 @@ def _rendered_font_size(
 
     CAD exports often set a large ``Tf`` size and shrink it with the text
     matrix (or the reverse). The drawn glyph height is the ``Tf`` size times the
-    length of the text-space y axis after the text and graphics matrices.
+    length of the text-space y axis after the text and graphics matrices. A
+    negative ``Tf`` mirrors the glyphs but still draws them at its magnitude.
     """
 
     if font_size is None:
         return None
+    size = abs(float(font_size))
     # Text-space y axis (0, 1) through Tm, then through the CTM.
     tx = float(tm[2])
     ty = float(tm[3])
@@ -548,8 +550,8 @@ def _rendered_font_size(
     y = float(cm[1]) * tx + float(cm[3]) * ty
     scale = math.hypot(x, y)
     if not math.isfinite(scale) or scale <= 0.0:
-        return float(font_size)
-    return float(font_size) * scale
+        return size
+    return size * scale
 
 
 def _transform_graphics_point(

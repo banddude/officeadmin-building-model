@@ -174,7 +174,9 @@ with a `Tm` scale of 0.12, which draws 7.2 pt glyphs. The extractor records
 the text matrix and the current transformation matrix, so a quarter-turn
 rotation keeps the size and a `cm` scale applies to it. Without this, such
 labels would read as oversized text, fail the 18 pt short-label filter, and the
-sheet would yield no legend.
+sheet would yield no legend. The reverse also holds: a small `Tf` blown up by
+the text matrix draws large, so it records its large drawn size and is not a
+legend label. A negative `Tf` counts at its magnitude.
 
 For ruled notes-column legends, page-frame detection is deliberately sheet-level: it uses the largest axis-aligned closed rectangle or a rectangle formed by four long rules only when that rectangle covers at least 85% of the displayed media box, and otherwise falls back to the displayed media box. Interior plan/view borders therefore cannot become the sheet frame. The notes-column title-block exclusion is limited to a ruled bottom band and is capped at 12% of the sheet-frame height. If a candidate legend header nevertheless falls outside a detected frame, the importer re-derives the frame from the displayed media box and records that recovery in legend/model provenance.
 

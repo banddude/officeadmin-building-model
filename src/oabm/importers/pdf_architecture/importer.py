@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from statistics import median
-from typing import Iterable
+from typing import Any, Callable, Iterable
 
 from oabm.model import (
     DERIVATION_INFERRED,
@@ -60,6 +60,15 @@ from .types import (
     PdfTextObservation,
     RegistrationHint,
     ScaleOverride,
+)
+from .wall_registration import (
+    DEFAULT_WALL_MATCH_OPTIONS,
+    MatchSegment,
+    WallMatch,
+    composed_frame,
+    placements_agree,
+    register_walls,
+    segments_from_evidence,
 )
 
 _INCH_M = 0.0254
@@ -592,6 +601,265 @@ def _sheet_geometry_registration(
     return transform, metadata
 
 
+_INTER_SHEET_REGISTRATION_METHOD = "inter-sheet registration by shared wall vectors"
+_INTER_SHEET_REGISTRATION_METHOD_CONFIDENCE = 0.85
+
+_SourceDrawings = tuple[
+    tuple[tuple[float, float, float, float], tuple[MatchSegment, ...]], ...
+]
+
+
+@dataclass(frozen=True, slots=True)
+class _SharedFrameTarget:
+    """One already-resolved same-level region a later sheet may register to."""
+
+    region_id: str
+    page_number: int
+    page: PdfPageObservation
+    bbox_pt: tuple[float, float, float, float]
+    meters_per_point: float
+    rotation_radians: float
+    translation_m: tuple[float, float]
+    confidence: float
+    frame_basis: str
+
+
+class _SharedWallEvidence:
+    """Wall evidence for inter-sheet registration, computed once per region and mode.
+
+    Evidence is read with the #104 accessors so both registration consumers see
+    the same segments: a source sheet's drawings from ``sheet_wall_evidence``
+    and a target region's walls inside its extents from ``region_wall_evidence``.
+    """
+
+    def __init__(self, options: ImportOptions) -> None:
+        self.options = options
+        self._targets: dict[tuple[str, bool], tuple[str, tuple[MatchSegment, ...]]] = {}
+
+    def source(
+        self,
+        page: PdfPageObservation,
+        meters_per_point: float,
+        use_layers: bool,
+    ) -> tuple[str, _SourceDrawings]:
+        view = sheet_wall_evidence(
+            page,
+            meters_per_point=meters_per_point,
+            options=self.options,
+            use_wall_layers=use_layers,
+        )
+        return view.evidence_kind, tuple(
+            (bbox, segments_from_evidence(items)) for bbox, items in view.drawings
+        )
+
+    def target(self, target: _SharedFrameTarget, use_layers: bool) -> tuple[str, tuple[MatchSegment, ...]]:
+        key = (target.region_id, use_layers)
+        if key not in self._targets:
+            kind, evidence = region_wall_evidence(
+                target.page,
+                target.bbox_pt,
+                target.meters_per_point,
+                options=self.options,
+                use_wall_layers=use_layers,
+            )
+            self._targets[key] = (kind, segments_from_evidence(evidence))
+        return self._targets[key]
+
+
+def _register_region_by_shared_walls(
+    page: PdfPageObservation,
+    scale: _Scale,
+    targets: tuple[_SharedFrameTarget, ...],
+    evidence: _SharedWallEvidence,
+) -> tuple[tuple[_Transform2D, dict[str, object]] | None, dict[str, object]]:
+    """Register a sheet or region to already-resolved same-level regions by shared walls.
+
+    Uses the #104 wall matcher (candidate-translation voting, endpoint
+    verification, competing-translation uniqueness, and the mirrored/rotated
+    orientation guard) under the same default thresholds, at the ratio of the
+    two printed scales and no rotation. Wall evidence is compared like with
+    like: wall-layer segments on both sheets when both have them, otherwise
+    paired wall faces on both. Several targets may accept the sheet, but only
+    when they place it identically in the canonical frame; otherwise the result
+    is ``competing_targets`` and nothing is chosen.
+
+    Returns the accepted transform and its registration record, or ``None``,
+    plus the attempt record with one candidate per target. On ``None`` the
+    caller keeps its previous behavior unchanged.
+    """
+
+    options = DEFAULT_WALL_MATCH_OPTIONS
+    sources: dict[bool, tuple[str, _SourceDrawings]] = {}
+
+    def source(use_layers: bool) -> tuple[str, _SourceDrawings]:
+        if use_layers not in sources:
+            sources[use_layers] = evidence.source(page, scale.meters_per_point, use_layers)
+        return sources[use_layers]
+
+    candidates: list[dict[str, Any]] = []
+    for target in targets:
+        ratio = scale.meters_per_point / target.meters_per_point
+        reasons: tuple[str, ...] = ("missing_wall_evidence",)
+        chosen: tuple[
+            str, tuple[float, float, float, float], tuple[MatchSegment, ...], tuple[MatchSegment, ...]
+        ] | None = None
+        for use_layers in (True, False):
+            source_kind, drawings = source(use_layers)
+            target_kind, target_segments = evidence.target(target, use_layers)
+            if source_kind != target_kind or not drawings or not target_segments:
+                continue
+            if len(drawings) > 1:
+                # Several separate drawings in this sheet's evidence: one frame
+                # cannot place them all, and none is picked by position.
+                reasons = ("multiple_drawing_regions_on_page",)
+                break
+            chosen = (source_kind, drawings[0][0], drawings[0][1], target_segments)
+            break
+        candidate: dict[str, Any] = {
+            "target_region_id": target.region_id,
+            "target_page": target.page_number,
+            "target_frame_basis": target.frame_basis,
+            "scale_ratio": ratio,
+            "accepted": False,
+            "reason_codes": list(reasons),
+            "wall_evidence_kind": None,
+            "source_wall_segment_count": 0,
+            "target_wall_segment_count": 0,
+            "wall_inlier_count": 0,
+            "wall_coverage": 0.0,
+            "wall_residual_rms_m": None,
+            "wall_inlier_span_m": None,
+            "competing_translation_pt": None,
+            "competing_inlier_count": 0,
+            "orientation_alternative": None,
+        }
+        candidates.append(candidate)
+        if chosen is None:
+            continue
+        kind, source_bbox, source_segments, target_segments = chosen
+        compared = register_walls(
+            source_segments,
+            target_segments,
+            scale=ratio,
+            target_meters_per_point=target.meters_per_point,
+            options=options,
+        )
+        match = compared.match
+        candidate.update(
+            {
+                "accepted": compared.accepted,
+                "reason_codes": list(compared.reason_codes),
+                "wall_evidence_kind": kind,
+                "source_wall_segment_count": len(source_segments),
+                "target_wall_segment_count": len(target_segments),
+                "orientation_alternative": compared.orientation_alternative,
+            }
+        )
+        if match is not None:
+            candidate.update(
+                {
+                    "wall_inlier_count": len(match.inliers),
+                    "wall_coverage": round(match.coverage, 6),
+                    "wall_residual_rms_m": (
+                        round(match.residual_rms_pt * target.meters_per_point, 9)
+                        if math.isfinite(match.residual_rms_pt) else None
+                    ),
+                    "wall_inlier_span_m": [
+                        round(value * target.meters_per_point, 6) for value in match.span_pt
+                    ],
+                }
+            )
+        if compared.runner_up is not None:
+            candidate["competing_translation_pt"] = [
+                round(value, 6) for value in compared.runner_up.translation_pt
+            ]
+            candidate["competing_inlier_count"] = len(compared.runner_up.inliers)
+        if compared.accepted:
+            assert match is not None
+            candidate["_match"] = match
+            candidate["_target"] = target
+            candidate["_source_bbox"] = source_bbox
+            candidate["_placement"] = composed_frame(
+                target.meters_per_point,
+                target.rotation_radians,
+                target.translation_m,
+                ratio,
+                match.translation_pt,
+            )
+
+    def public(item: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in item.items() if not key.startswith("_")}
+
+    def rank(item: dict[str, Any]) -> tuple[int, str]:
+        return (-int(item["wall_inlier_count"]), str(item["target_region_id"]))
+
+    attempt: dict[str, object] = {
+        "method": _INTER_SHEET_REGISTRATION_METHOD,
+        "status": "refused",
+        "reason_codes": [],
+        "candidates": [
+            public(item) for item in sorted(candidates, key=lambda item: str(item["target_region_id"]))
+        ],
+    }
+    accepted = sorted((item for item in candidates if item["accepted"]), key=rank)
+    if not accepted:
+        best = sorted(candidates, key=rank)[0]
+        attempt["reason_codes"] = sorted(set(best["reason_codes"]))
+        return None, attempt
+
+    chosen_item = accepted[0]
+    chosen_target: _SharedFrameTarget = chosen_item["_target"]
+    agreeing: list[str] = []
+    disagreeing: list[str] = []
+    for item in accepted:
+        same_place = placements_agree(
+            item["_placement"],
+            chosen_item["_placement"],
+            chosen_item["_source_bbox"],
+            options.tolerance_m,
+        )
+        (agreeing if same_place else disagreeing).append(str(item["target_region_id"]))
+    if disagreeing:
+        # Same-level regions that place this sheet differently do not establish
+        # one frame. The choice is never made by page order or confidence.
+        attempt["reason_codes"] = ["competing_targets"]
+        attempt["competing_region_ids"] = sorted(agreeing + disagreeing)
+        return None, attempt
+
+    match: WallMatch = chosen_item["_match"]
+    confidence = round(min(chosen_target.confidence, _INTER_SHEET_REGISTRATION_METHOD_CONFIDENCE), 6)
+    registration: dict[str, object] = {
+        "method": _INTER_SHEET_REGISTRATION_METHOD,
+        "derivation": DERIVATION_INFERRED,
+        "target_region_id": chosen_target.region_id,
+        "target_page": chosen_target.page_number,
+        "target_frame_basis": chosen_target.frame_basis,
+        "agreeing_region_ids": sorted(agreeing),
+        "evidence_kind": chosen_item["wall_evidence_kind"],
+        "scale_ratio": chosen_item["scale_ratio"],
+        "rotation_degrees": 0,
+        "translation_pt": [round(value, 9) for value in match.translation_pt],
+        "wall_inlier_count": chosen_item["wall_inlier_count"],
+        "wall_coverage": chosen_item["wall_coverage"],
+        "wall_residual_rms_m": chosen_item["wall_residual_rms_m"],
+        "wall_inlier_span_m": chosen_item["wall_inlier_span_m"],
+        "matched_evidence_sample": [list(pair) for pair in match.inliers[:20]],
+        "tolerance_m": options.tolerance_m,
+        "confidence": confidence,
+    }
+    attempt["status"] = "registered"
+    mpp, rotation, tx_m, ty_m = chosen_item["_placement"]
+    transform = _Transform2D(
+        meters_per_point=mpp,
+        rotation_radians=rotation,
+        tx_m=tx_m,
+        ty_m=ty_m,
+        method=_INTER_SHEET_REGISTRATION_METHOD,
+        confidence=confidence,
+    )
+    return (transform, registration), attempt
+
+
 def _resolve_transform(
     page: PdfPageObservation,
     scale: _Scale | None,
@@ -601,7 +869,24 @@ def _resolve_transform(
     allow_page_local_origin: bool,
     allow_sheet_geometry_fallback: bool = True,
     ambiguities: list[dict[str, object]],
-) -> tuple[_Transform2D | None, _Scale | None, dict[str, object] | None]:
+    shared_wall_registration: Callable[
+        [_Scale], tuple[_Transform2D, dict[str, object]] | None
+    ] | None = None,
+) -> tuple[
+    _Transform2D | None,
+    _Scale | None,
+    dict[str, object] | None,
+    dict[str, object] | None,
+]:
+    """Resolve one region's sheet-to-canonical transform.
+
+    Returns ``(transform, scale, sheet_geometry_fallback, inter_sheet_registration)``;
+    at most one of the last two is non-None. ``shared_wall_registration`` is
+    tried after an explicit hint and the project origin and before the
+    sheet-geometry fallback; when it returns ``None`` the previous behavior
+    applies unchanged.
+    """
+
     if hint:
         transform = _registration_from_hint(hint)
         if scale is not None:
@@ -616,7 +901,7 @@ def _resolve_transform(
                         "registered_meters_per_point": transform.meters_per_point,
                     }
                 )
-                return None, scale, None
+                return None, scale, None, None
         else:
             scale = _Scale(
                 transform.meters_per_point,
@@ -624,10 +909,10 @@ def _resolve_transform(
                 "scale resolved by two-point registration",
                 None,
             )
-        return transform, scale, None
+        return transform, scale, None, None
 
     if scale is None:
-        return None, None, None
+        return None, None, None, None
     if allow_page_local_origin:
         return (
             _Transform2D(
@@ -640,13 +925,20 @@ def _resolve_transform(
             ),
             scale,
             None,
+            None,
         )
+
+    if shared_wall_registration is not None:
+        registered = shared_wall_registration(scale)
+        if registered is not None:
+            transform, registration = registered
+            return transform, scale, None, registration
 
     if allow_sheet_geometry_fallback:
         fallback = _sheet_geometry_registration(page, scale, options)
         if fallback is not None:
             transform, metadata = fallback
-            return transform, scale, metadata
+            return transform, scale, metadata, None
         detail = (
             "additional architectural plan page requires RegistrationHint before "
             "geometry can share the canonical frame"
@@ -664,7 +956,7 @@ def _resolve_transform(
             "detail": detail,
         }
     )
-    return None, scale, None
+    return None, scale, None, None
 
 
 _EXPLICIT_LEVEL_RE = re.compile(
@@ -4157,8 +4449,12 @@ class _DrawingRegionState:
     scale: _Scale | None = None
     transform: _Transform2D | None = None
     frame_basis: str | None = None
+    frame_roots: frozenset[str] | None = None
+    frame_registration: dict[str, object] | None = None
+    frame_registration_attempt: dict[str, object] | None = None
     status: str = "unresolved"
     entity_counts: dict[str, int] = field(default_factory=dict)
+    repeated_wall_count: int = 0
 
 
 @dataclass(slots=True)
@@ -4687,12 +4983,17 @@ def _region_record(
         frame_record = {
             "frame_id": frame_id,
             "basis": region.frame_basis,
+            "evidence_roots": (
+                sorted(region.frame_roots) if region.frame_roots is not None else None
+            ),
             "method": region.transform.method,
             "confidence": region.transform.confidence,
             "meters_per_point": region.transform.meters_per_point,
             "rotation_radians": region.transform.rotation_radians,
             "translation_m": [region.transform.tx_m, region.transform.ty_m],
         }
+        if region.frame_registration is not None:
+            frame_record["registered_to_region"] = dict(region.frame_registration)
     confidences = [
         value for value in (
             level_confidence,
@@ -4701,7 +5002,7 @@ def _region_record(
         )
         if value is not None
     ]
-    return {
+    record: dict[str, object] = {
         "region_id": region.region_id,
         "page": region.page_number,
         "index": region.index,
@@ -4720,6 +5021,11 @@ def _region_record(
         "entity_counts": dict(sorted(region.entity_counts.items())),
         "repeated_geometry_region_ids": sorted(region.repeated_with),
     }
+    if region.repeated_wall_count:
+        record["repeated_wall_count"] = region.repeated_wall_count
+    if region.frame_registration_attempt is not None:
+        record["shared_wall_registration"] = dict(region.frame_registration_attempt)
+    return record
 
 
 def _level_measurement_provenance(
@@ -4741,6 +5047,231 @@ def _level_measurement_provenance(
         source_element_id=measurement.source_element_id,
         attributes=attributes,
     )
+
+
+# A wall drawn again by another drawing region is the same wall when its
+# centerline lies on an already-materialized wall of the same level: both
+# endpoints correspond within the wall matcher's endpoint tolerance across the
+# wall, and within the wall's thickness along it (a closed-loop wall ends at
+# the loop vertex, a partial one at its faces' ends). Two real walls cannot
+# overlap like that; a wall that only resembles an emitted one (another level,
+# a parallel wall beside it, a longer or shifted collinear run) is distinct.
+_REPEATED_WALL_TOLERANCE_M = DEFAULT_WALL_MATCH_OPTIONS.tolerance_m
+
+# Geometry may be shared between two drawing regions only when their frames
+# rest on the same evidence. The project origin and an explicit two-point
+# registration establish the project frame; a region registered to targets
+# rests on those targets' roots; a sheet_geometry_fallback frame rests on
+# nothing but its own sheet, because the fallback places every sheet's largest
+# wall loop at the same canonical spot, so two fallback regions coincide there
+# by construction and their frames never share evidence.
+_FRAME_ROOT_PROJECT = "project"
+
+
+def _frame_roots(
+    basis: str | None,
+    region_id: str,
+    target_roots: Iterable[frozenset[str]],
+) -> frozenset[str]:
+    """Evidence identities behind a region's frame, for repeat gating.
+
+    A region registered to several agreeing targets rests on all of their
+    roots; when none of the targets carries a root the region can claim only
+    itself. Every other basis either claims the project frame or, for the
+    sheet-geometry fallback, only the region itself.
+    """
+
+    if basis in ("project_origin", "explicit_registration"):
+        return frozenset((_FRAME_ROOT_PROJECT,))
+    if basis == "registered_to_region":
+        roots: frozenset[str] = frozenset()
+        for item in target_roots:
+            roots |= item
+        if roots:
+            return roots
+    return frozenset((f"region:{region_id}",))
+
+
+def _frames_share_evidence(first: frozenset[str], second: frozenset[str]) -> bool:
+    """Whether two frames rest on common evidence, so their geometry may merge.
+
+    The single gate for every cross-region merge (repeated walls and repeated
+    wall-loop footprints). Without it, no two regions share evidence and the
+    importer behaves as it did before shared-wall registration existed.
+    """
+
+    return bool(first & second)
+
+
+def _wall_repeats(
+    candidate: Wall,
+    emitted: Wall,
+    tolerance_m: float,
+    along_limit_m: float,
+) -> float | None:
+    """Largest endpoint gap when ``candidate`` repeats ``emitted``, else ``None``."""
+
+    if candidate.level_id != emitted.level_id:
+        return None
+    a0, a1 = emitted.centerline.points[0], emitted.centerline.points[-1]
+    b0, b1 = candidate.centerline.points[0], candidate.centerline.points[-1]
+    length = math.hypot(a1.x - a0.x, a1.y - a0.y)
+    if length <= 1e-9:
+        return None
+    ux, uy = (a1.x - a0.x) / length, (a1.y - a0.y) / length
+    along_tolerance = min(
+        max(tolerance_m, emitted.thickness_m, candidate.thickness_m), along_limit_m,
+    )
+    best: float | None = None
+    for first, second in ((b0, b1), (b1, b0)):
+        worst = 0.0
+        for a, b in ((a0, first), (a1, second)):
+            dx, dy = b.x - a.x, b.y - a.y
+            across = abs(dx * uy - dy * ux)
+            along = abs(dx * ux + dy * uy)
+            if across > tolerance_m or along > along_tolerance:
+                break
+            worst = max(worst, math.hypot(dx, dy))
+        else:
+            if best is None or worst < best:
+                best = worst
+    return best
+
+
+def _footprints_coincide(first: Space, second: Space, tolerance_m: float) -> bool:
+    """Whether two footprints have the same vertices within ``tolerance_m``."""
+
+    a = first.footprint.points
+    b = second.footprint.points
+    if len(a) != len(b):
+        return False
+    # Vertices within the tolerance imply bounding boxes within it on every side.
+    if any(
+        abs(value(point.x for point in a) - value(point.x for point in b)) > tolerance_m
+        or abs(value(point.y for point in a) - value(point.y for point in b)) > tolerance_m
+        for value in (min, max)
+    ):
+        return False
+
+    def covered(points: tuple[Point3, ...], others: tuple[Point3, ...]) -> bool:
+        return all(
+            any(math.hypot(p.x - q.x, p.y - q.y) <= tolerance_m for q in others)
+            for p in points
+        )
+
+    return covered(a, b) and covered(b, a)
+
+
+def _remap_space_wall_ids(space: Space, wall_id_map: dict[str, str]) -> Space:
+    """Point a space's recorded wall ids at the walls actually emitted."""
+
+    lane = space.attributes.get("pdf_architecture")
+    if not wall_id_map or not isinstance(lane, dict) or "wall_ids" not in lane:
+        return space
+    wall_ids = sorted({wall_id_map.get(item, item) for item in lane["wall_ids"]})
+    if wall_ids == lane["wall_ids"]:
+        return space
+    provenance = tuple(
+        replace(item, attributes={**item.attributes, "wall_ids": wall_ids})
+        if "wall_ids" in item.attributes else item
+        for item in space.provenance
+    )
+    return replace(
+        space,
+        provenance=provenance,
+        attributes={**space.attributes, "pdf_architecture": {**lane, "wall_ids": wall_ids}},
+    )
+
+
+class _MaterializedWalls:
+    """Every wall emitted so far, with the drawing region that emitted it.
+
+    Indexed by level and centerline midpoint so a later region's wall can be
+    recognized as a repeat of an existing canonical wall in constant time.
+    """
+
+    def __init__(self, tolerance_m: float, max_wall_thickness_m: float) -> None:
+        self.tolerance_m = tolerance_m
+        self.along_limit_m = max(tolerance_m, max_wall_thickness_m)
+        # Corresponding endpoints of a repeat differ by at most the along and
+        # across bounds, so repeat midpoints lie within one cell of each other.
+        self.cell_m = self.along_limit_m + tolerance_m
+        self.contexts: list[_WallContext] = []
+        self.region_ids: list[str] = []
+        self.region_roots: list[frozenset[str]] = []
+        self._cells: dict[tuple[str, int, int], list[int]] = {}
+
+    def _cell(self, wall: Wall) -> tuple[str, int, int]:
+        start, end = wall.centerline.points[0], wall.centerline.points[-1]
+        return (
+            wall.level_id,
+            math.floor((start.x + end.x) / 2.0 / self.cell_m),
+            math.floor((start.y + end.y) / 2.0 / self.cell_m),
+        )
+
+    def repeat_of(
+        self, wall: Wall, region_id: str, frame_roots: frozenset[str],
+    ) -> int | None:
+        """Index of the emitted wall of another region that ``wall`` repeats.
+
+        Only walls whose region's frame rests on shared evidence are
+        considered; geometry that merely landed on the same canonical spot
+        from unrelated frames stays distinct.
+        """
+
+        level_id, cx, cy = self._cell(wall)
+        best: tuple[float, str, int] | None = None
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for index in self._cells.get((level_id, cx + dx, cy + dy), ()):
+                    if self.region_ids[index] == region_id:
+                        continue
+                    if not _frames_share_evidence(self.region_roots[index], frame_roots):
+                        continue
+                    other = self.contexts[index].wall
+                    gap = _wall_repeats(wall, other, self.tolerance_m, self.along_limit_m)
+                    if gap is None:
+                        continue
+                    candidate = (gap, other.id, index)
+                    if best is None or candidate < best:
+                        best = candidate
+        return None if best is None else best[2]
+
+    def add(
+        self, context: _WallContext, region_id: str, frame_roots: frozenset[str],
+    ) -> None:
+        index = len(self.contexts)
+        self.contexts.append(context)
+        self.region_ids.append(region_id)
+        self.region_roots.append(frame_roots)
+        self._cells.setdefault(self._cell(context.wall), []).append(index)
+
+    def record_repeat(self, index: int, repeat: Wall, region_id: str) -> _WallContext:
+        """Add the repeating region's observation to the kept wall's provenance.
+
+        The kept wall keeps its identity, geometry, and confidence; only the
+        repeat's own geometric observation (its first provenance entry) is
+        appended, tagged with both drawing regions. Measurement provenance
+        (height evidence) is the same level/room evidence and is not repeated.
+        """
+
+        kept = self.contexts[index]
+        added = tuple(
+            replace(
+                item,
+                attributes={
+                    **item.attributes,
+                    "drawing_region_id": region_id,
+                    "repeats_drawing_region_id": self.region_ids[index],
+                },
+            )
+            for item in repeat.provenance[:1]
+            if item not in kept.wall.provenance
+        )
+        if added:
+            kept = replace(kept, wall=replace(kept.wall, provenance=kept.wall.provenance + added))
+            self.contexts[index] = kept
+        return kept
 
 
 def _level_entity(source_id: str, info: _LevelInfo) -> Level:
@@ -4830,14 +5361,67 @@ def import_observations(
     }
 
     spaces: list[Space] = []
-    wall_contexts: list[_WallContext] = []
     slabs: list[Slab] = []
     ceilings: list[Ceiling] = []
     openings: list[Opening] = []
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
+    # The region that emitted each space and its frame roots, so a geometric
+    # space is only matched within tolerance to an earlier space of another
+    # region whose frame shares evidence with its own.
+    space_origins: dict[str, tuple[str, frozenset[str]]] = {}
+    # Every materialized wall and the region that emitted it, so a wall drawn
+    # again by another region of the same level is materialized once.
+    materialized_walls = _MaterializedWalls(
+        _REPEATED_WALL_TOLERANCE_M, options.max_wall_thickness_m,
+    )
     base_geometry_region: str | None = None
-    registration_fallback_provenance: list[Provenance] = []
+    resolved_regions: list[_DrawingRegionState] = []
+    registration_provenance: list[Provenance] = []
+
+    shared_wall_evidence = _SharedWallEvidence(options)
+
+    def shared_wall_registration(
+        region: _DrawingRegionState,
+    ) -> Callable[[_Scale], tuple[_Transform2D, dict[str, object]] | None] | None:
+        """Registration against already-resolved regions of the region's own level.
+
+        Returns ``None`` when no such region exists, so nothing is attempted.
+        The attempt record is kept on the region for its drawing-region record.
+        """
+
+        targets = tuple(
+            _SharedFrameTarget(
+                region_id=other.region_id,
+                page_number=other.page_number,
+                page=other.page,
+                bbox_pt=(
+                    other.bbox_pt
+                    if other.bbox_pt is not None
+                    else (0.0, 0.0, other.page.width_pt, other.page.height_pt)
+                ),
+                meters_per_point=other.transform.meters_per_point,
+                rotation_radians=other.transform.rotation_radians,
+                translation_m=(other.transform.tx_m, other.transform.ty_m),
+                confidence=other.transform.confidence,
+                frame_basis=str(other.frame_basis),
+            )
+            for other in resolved_regions
+            if other is not region
+            and other.level_anchor == region.level_anchor
+            and other.transform is not None
+        )
+        if not targets:
+            return None
+
+        def attempt(scale: _Scale) -> tuple[_Transform2D, dict[str, object]] | None:
+            registered, record = _register_region_by_shared_walls(
+                region.page, scale, targets, shared_wall_evidence,
+            )
+            region.frame_registration_attempt = record
+            return registered
+
+        return attempt
 
     def import_region(
         page: PdfPageObservation,
@@ -4862,7 +5446,7 @@ def import_observations(
             ambiguities,
             sheet_texts=region.sheet_texts,
         )
-        transform, scale, registration_fallback = _resolve_transform(
+        transform, scale, registration_fallback, inter_sheet_registration = _resolve_transform(
             region_page,
             scale,
             options,
@@ -4870,6 +5454,9 @@ def import_observations(
             allow_page_local_origin=base_geometry_region is None,
             allow_sheet_geometry_fallback=not sheet.multiple,
             ambiguities=ambiguities,
+            shared_wall_registration=(
+                shared_wall_registration(region) if region.registration_hint is None else None
+            ),
         )
         region.scale = scale
         if transform is None or scale is None:
@@ -4878,11 +5465,29 @@ def import_observations(
             record["status"] = "skipped_unresolved_scale_or_registration"
             return
         region.transform = transform
+        region.frame_registration = None
         region.frame_basis = (
-            "explicit_registration" if region.registration_hint is not None
+            "registered_to_region" if inter_sheet_registration is not None
+            else "explicit_registration" if region.registration_hint is not None
             else "sheet_geometry_fallback" if registration_fallback is not None
             else "project_origin"
         )
+        target_roots: list[frozenset[str]] = []
+        if inter_sheet_registration is not None:
+            roots_by_id = {
+                other.region_id: other.frame_roots
+                for other in resolved_regions
+                if other.frame_roots is not None
+            }
+            target_roots = [
+                roots_by_id[item]
+                for item in (
+                    inter_sheet_registration["target_region_id"],
+                    *inter_sheet_registration["agreeing_region_ids"],
+                )
+                if item in roots_by_id
+            ]
+        region.frame_roots = _frame_roots(region.frame_basis, region.region_id, target_roots)
         record.update(
             {
                 "scale_meters_per_point": scale.meters_per_point,
@@ -4897,7 +5502,7 @@ def import_observations(
         if registration_fallback is not None:
             record["registration_confidence"] = transform.confidence
             record["registration_provenance"] = registration_fallback
-            registration_fallback_provenance.append(
+            registration_provenance.append(
                 Provenance(
                     source_kind="architectural_pdf",
                     derivation=DERIVATION_OBSERVED,
@@ -4906,6 +5511,21 @@ def import_observations(
                     method=transform.method,
                     confidence=transform.confidence,
                     attributes=registration_fallback,
+                )
+            )
+        if inter_sheet_registration is not None:
+            region.frame_registration = inter_sheet_registration
+            record["registration_confidence"] = transform.confidence
+            record["registration_provenance"] = inter_sheet_registration
+            registration_provenance.append(
+                Provenance(
+                    source_kind="architectural_pdf",
+                    derivation=DERIVATION_INFERRED,
+                    source_id=document.source_id,
+                    page=page.page_number,
+                    method=transform.method,
+                    confidence=transform.confidence,
+                    attributes=inter_sheet_registration,
                 )
             )
 
@@ -4956,7 +5576,33 @@ def import_observations(
                 slab_thickness,
                 ambiguities,
             )
+            # A named room this region's frame put on the footprint of a room
+            # another evidence-linked region already emitted under another
+            # name: both are kept, and the unreconciled names are recorded.
+            renamed = sorted(
+                other.id
+                for other in spaces
+                if other.level_id == level.id
+                and other.name != space.name
+                and space_origins[other.id][0] != region.region_id
+                and _frames_share_evidence(space_origins[other.id][1], region.frame_roots)
+                and _footprints_coincide(space, other, _REPEATED_WALL_TOLERANCE_M)
+            )
+            if renamed:
+                ambiguities.append(
+                    {
+                        "page": page.page_number,
+                        "code": "repeated_space_name_conflict",
+                        "detail": (
+                            f"room {shell.room.name!r} lies on the footprint of a room an "
+                            "evidence-linked drawing region already emitted under another "
+                            "name; both spaces were kept and the names were not reconciled"
+                        ),
+                        "space_ids": [*renamed, space.id],
+                    }
+                )
             spaces.append(space)
+            space_origins[space.id] = (region.region_id, region.frame_roots)
             used_space_ids.add(space.id)
             page_walls.extend(shell_walls)
             if slab:
@@ -4998,6 +5644,7 @@ def import_observations(
                 if space.id in used_space_ids:
                     continue
                 spaces.append(space)
+                space_origins[space.id] = (region.region_id, region.frame_roots)
                 used_space_ids.add(space.id)
                 layered_room_count += 1
                 ambiguities.append({
@@ -5081,41 +5728,123 @@ def import_observations(
                 round(context.wall.thickness_m, 6),
             )
 
-        existing_wall_geometry = {wall_geometry_key(context) for context in page_walls}
+        # Wall ids a space of this region may name that resolve to another
+        # emitted wall: a geometric wall already emitted by a room shell of
+        # this region, or a wall repeating an earlier region's wall.
+        wall_id_map: dict[str, str] = {}
+        existing_wall_geometry = {
+            wall_geometry_key(context): context.wall.id for context in page_walls
+        }
         for context in geometric_line_walls:
             geometry_key = wall_geometry_key(context)
-            if geometry_key not in existing_wall_geometry:
-                page_walls.append(context)
-                existing_wall_geometry.add(geometry_key)
+            if geometry_key in existing_wall_geometry:
+                wall_id_map[context.wall.id] = existing_wall_geometry[geometry_key]
+                continue
+            page_walls.append(context)
+            existing_wall_geometry[geometry_key] = context.wall.id
 
-        existing_space_footprints = {
-            tuple(
-                sorted(
-                    (round(point.x, 6), round(point.y, 6))
-                    for point in space.footprint.points
-                )
+        # A wall another region of this level already materialized at the same
+        # canonical place is that wall when the two regions' frames rest on the
+        # same evidence: it is not emitted again, keeps the earlier identity,
+        # and gains this region's observation as provenance. Walls that only
+        # resemble an emitted wall (another level, another place, a partial
+        # overlap, an unrelated fallback frame) are distinct and emitted.
+        fresh_walls: list[_WallContext] = []
+        host_walls: dict[str, _WallContext] = {}
+        repeated_sources: set[str] = set()
+        repeated_wall_ids: list[str] = []
+        dimension_conflicts: list[str] = []
+        for context in page_walls:
+            repeat_index = materialized_walls.repeat_of(
+                context.wall, region.region_id, region.frame_roots,
             )
-            for space in spaces
-            if space.level_id == level.id
-        }
+            if repeat_index is not None:
+                kept = materialized_walls.record_repeat(
+                    repeat_index, context.wall, region.region_id,
+                )
+                repeated_sources.add(materialized_walls.region_ids[repeat_index])
+                repeated_wall_ids.append(kept.wall.id)
+                wall_id_map[context.wall.id] = kept.wall.id
+                host_walls[kept.wall.id] = kept
+                if (
+                    abs(kept.wall.thickness_m - context.wall.thickness_m) > _REPEATED_WALL_TOLERANCE_M
+                    or abs(kept.wall.height_m - context.wall.height_m) > _REPEATED_WALL_TOLERANCE_M
+                ):
+                    dimension_conflicts.append(kept.wall.id)
+                continue
+            materialized_walls.add(context, region.region_id, region.frame_roots)
+            fresh_walls.append(context)
+            host_walls[context.wall.id] = context
+        page_walls = fresh_walls
+        region.repeated_wall_count = len(repeated_wall_ids)
+        if repeated_sources:
+            region.repeated_with.update(repeated_sources)
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "duplicate_wall_identity_across_pages",
+                    "detail": (
+                        f"{len(repeated_wall_ids)} wall(s) repeat walls already emitted "
+                        "at the same canonical place on this level by earlier drawing "
+                        "regions; they were not emitted again and the earlier walls "
+                        "record this region's observation"
+                    ),
+                    "source_region_ids": sorted(repeated_sources),
+                    "wall_ids": sorted(set(repeated_wall_ids)),
+                }
+            )
+        if dimension_conflicts:
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "repeated_wall_dimension_conflict",
+                    "detail": (
+                        f"{len(dimension_conflicts)} repeated wall(s) disagree with the "
+                        "emitted wall's thickness or height by more than "
+                        f"{_REPEATED_WALL_TOLERANCE_M} m; the earlier wall was kept "
+                        "unchanged"
+                    ),
+                    "source_region_ids": sorted(repeated_sources),
+                    "wall_ids": sorted(set(dimension_conflicts)),
+                }
+            )
+
+        # A geometric wall-loop space whose footprint equals a space already on
+        # this level is not emitted again: the exact rule this importer always
+        # applied, kept unchanged. A later region's loop that its frame put on
+        # an earlier region's footprint within the wall tolerance is a repeat
+        # too, but only when the two frames share evidence; a loop that merely
+        # lands near another from an unrelated frame stays distinct.
+        def footprint_key(space: Space) -> tuple[tuple[float, float], ...]:
+            return tuple(
+                sorted((round(point.x, 6), round(point.y, 6)) for point in space.footprint.points)
+            )
+
+        level_spaces = [space for space in spaces if space.level_id == level.id]
+        existing_space_footprints = {footprint_key(space) for space in level_spaces}
         for geometric_space in geometric_spaces:
-            footprint_key = tuple(
-                sorted(
-                    (round(point.x, 6), round(point.y, 6))
-                    for point in geometric_space.footprint.points
-                )
-            )
-            if footprint_key not in existing_space_footprints:
-                spaces.append(geometric_space)
-                used_space_ids.add(geometric_space.id)
-                existing_space_footprints.add(footprint_key)
+            key = footprint_key(geometric_space)
+            if key in existing_space_footprints:
+                continue
+            if any(
+                space_origins[other.id][0] != region.region_id
+                and _frames_share_evidence(space_origins[other.id][1], region.frame_roots)
+                and _footprints_coincide(geometric_space, other, _REPEATED_WALL_TOLERANCE_M)
+                for other in level_spaces
+            ):
+                continue
+            geometric_space = _remap_space_wall_ids(geometric_space, wall_id_map)
+            spaces.append(geometric_space)
+            space_origins[geometric_space.id] = (region.region_id, region.frame_roots)
+            level_spaces.append(geometric_space)
+            existing_space_footprints.add(key)
+            used_space_ids.add(geometric_space.id)
 
-        wall_contexts.extend(page_walls)
         page_openings = _make_openings(
             region_page,
             transform,
             level,
-            tuple(page_walls),
+            tuple(host_walls[wall_id] for wall_id in sorted(host_walls)),
             document.source_id,
             options,
             ambiguities,
@@ -5132,9 +5861,13 @@ def import_observations(
             "ceilings": region_ceiling_count,
             "openings": len(page_openings),
         }
-        if sum(region.entity_counts.values()):
+        if sum(region.entity_counts.values()) or region.repeated_wall_count:
+            # A region whose every wall repeats an earlier region is resolved
+            # too: its frame placed its walls exactly on already-emitted walls,
+            # which now record its observation.
             record["status"] = "geometry_imported"
             region.status = "resolved"
+            resolved_regions.append(region)
             if base_geometry_region is None:
                 base_geometry_region = region.region_id
         else:
@@ -5225,7 +5958,7 @@ def import_observations(
         for page_number in sorted(sheets)
         for region in sheets[page_number].regions
     ]
-    walls = [context.wall for context in wall_contexts]
+    walls = [context.wall for context in materialized_walls.contexts]
     entity_confidences = [
         *(item.confidence for item in levels_by_anchor.values()),
         *(item.confidence for item in spaces),
@@ -5244,7 +5977,7 @@ def import_observations(
             confidence=model_confidence,
             attributes={"content_sha256": document.content_sha256},
         ),
-        *registration_fallback_provenance,
+        *registration_provenance,
     )
     attributes = {
         "pdf_architecture": {

@@ -5913,6 +5913,9 @@ def test_framed_two_column_cad_legend_joins_columns_and_drops_abbreviations(
     assert extracted == repeated
 
     model = ElectricalPdfImporter().import_document(extracted)
+    assert model.to_dict() == ElectricalPdfImporter().import_document(
+        extracted
+    ).to_dict()
     region = _legend_frame_region(model)
     assert region["heading_text"] == "ELECTRICAL SYMBOL LEGEND"
     assert region["classified_row_count"] == 7
@@ -6118,3 +6121,198 @@ def test_vocabulary_cases_for_cad_legend_words() -> None:
     assert [row["canonical_type"] for row in duplex_ranked] == [
         "receptacle_duplex"
     ]
+
+
+def test_multi_character_shx_annotation_boxes_are_text_not_glyphs(
+    tmp_path: Path,
+) -> None:
+    title_strokes = [
+        _cad_path_command(((120.0, 705.0), (120.0, 719.0)), close=False),
+        _cad_path_command(((120.0, 719.0), (132.0, 719.0)), close=False),
+        _cad_path_command(((120.0, 712.0), (130.0, 712.0)), close=False),
+        _cad_path_command(((120.0, 705.0), (132.0, 705.0)), close=False),
+        _cad_path_command(((140.0, 705.0), (140.0, 719.0)), close=False),
+        _cad_path_command(((140.0, 705.0), (150.0, 719.0)), close=False),
+        _cad_path_command(((150.0, 719.0), (150.0, 712.0)), close=False),
+        _cad_path_command(((150.0, 712.0), (140.0, 712.0)), close=False),
+        _cad_path_command(((158.0, 705.0), (158.0, 719.0)), close=False),
+        _cad_path_command(((158.0, 705.0), (168.0, 705.0)), close=False),
+        _cad_path_command(((158.0, 712.0), (168.0, 712.0)), close=False),
+        _cad_path_command(((158.0, 719.0), (168.0, 719.0)), close=False),
+        _cad_path_command(((176.0, 705.0), (176.0, 719.0)), close=False),
+        _cad_path_command(((176.0, 719.0), (186.0, 719.0)), close=False),
+    ]
+    switch_glyph_strokes = [
+        _cad_rect_command(402.0, 396.0, 12.0, 14.0),
+        _cad_path_command(((404.0, 398.0), (412.0, 402.0)), close=False),
+        _cad_path_command(((412.0, 402.0), (404.0, 406.0)), close=False),
+        _cad_path_command(((404.0, 406.0), (412.0, 410.0)), close=False),
+    ]
+    pdf_path = tmp_path / "shx-annotations.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612.0, height=792.0)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): writer._add_object(font)}
+            )
+        }
+    )
+    stream = DecodedStreamObject()
+    stream.set_data("\n".join(title_strokes + switch_glyph_strokes).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    page[NameObject("/Annots")] = ArrayObject(
+        [
+            writer._add_object(
+                DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/Annot"),
+                        NameObject("/Subtype"): NameObject("/Square"),
+                        NameObject("/Rect"): ArrayObject(
+                            [
+                                NumberObject(112.0),
+                                NumberObject(699.0),
+                                NumberObject(194.0),
+                                NumberObject(725.0),
+                            ]
+                        ),
+                        NameObject("/T"): TextStringObject("AutoCAD SHX Text"),
+                        NameObject("/F"): NumberObject(64),
+                        NameObject("/Border"): ArrayObject(
+                            [NumberObject(0), NumberObject(0), NumberObject(0)]
+                        ),
+                        NameObject("/Contents"): TextStringObject(
+                            "FIRST FLOOR PLAN"
+                        ),
+                    }
+                )
+            ),
+            writer._add_object(
+                DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/Annot"),
+                        NameObject("/Subtype"): NameObject("/Square"),
+                        NameObject("/Rect"): ArrayObject(
+                            [
+                                NumberObject(400.0),
+                                NumberObject(394.0),
+                                NumberObject(416.0),
+                                NumberObject(412.0),
+                            ]
+                        ),
+                        NameObject("/T"): TextStringObject("AutoCAD SHX Text"),
+                        NameObject("/F"): NumberObject(64),
+                        NameObject("/Border"): ArrayObject(
+                            [NumberObject(0), NumberObject(0), NumberObject(0)]
+                        ),
+                        NameObject("/Contents"): TextStringObject("S"),
+                    }
+                ),
+            ),
+        ]
+    )
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    extracted = extract_pdf(pdf_path, source_id="test:shx-annotations")
+
+    shx_symbols = [
+        symbol
+        for symbol in extracted.symbols
+        if symbol.metadata.get("title") == "AutoCAD SHX Text"
+    ]
+    assert {
+        symbol.metadata.get("contents") for symbol in shx_symbols
+    } == {"FIRST FLOOR PLAN", "S"}
+    assert all(
+        isinstance(symbol.metadata.get("rect_pt"), list)
+        and len(symbol.metadata["rect_pt"]) == 4
+        for symbol in shx_symbols
+    )
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert model.electrical_devices == ()
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    title_box_clusters = [
+        row
+        for row in unresolved
+        if row["kind"] == "vector_cluster"
+        and 112.0 <= row["position_pt"]["x"] <= 194.0
+        and 699.0 <= row["position_pt"]["y"] <= 725.0
+    ]
+    assert title_box_clusters == []
+    switch_box_clusters = [
+        row
+        for row in unresolved
+        if row["kind"] == "vector_cluster"
+        and 400.0 <= row["position_pt"]["x"] <= 416.0
+        and 394.0 <= row["position_pt"]["y"] <= 412.0
+    ]
+    assert len(switch_box_clusters) == 1
+    validate_model(model)
+
+
+def test_dashed_circuit_arc_dashes_do_not_form_glyph_clusters(
+    tmp_path: Path,
+) -> None:
+    center = (300.0, 300.0)
+    radius = 25.0
+    arc_dashes: list[str] = []
+    arc_ids: list[str] = []
+    for index in range(6):
+        start_angle = index * (2.0 * math.pi / 6.0)
+        sweep = 0.5
+        points = (
+            (
+                center[0] + radius * math.cos(start_angle),
+                center[1] + radius * math.sin(start_angle),
+            ),
+            (
+                center[0] + radius * math.cos(start_angle + sweep),
+                center[1] + radius * math.sin(start_angle + sweep),
+            ),
+        )
+        arc_dashes.append(_cad_path_command(points, close=False))
+        arc_ids.append(f"p1:vector:{len(arc_ids) + 1:05d}")
+    straight_dashes = [
+        _cad_path_command(((500.0 + offset, 300.0), (512.0 + offset, 300.0)), close=False)
+        for offset in (0.0, 20.0, 40.0, 60.0)
+    ]
+    content = arc_dashes + straight_dashes
+    pdf_path = tmp_path / "dashed-arc.pdf"
+    _write_pdf_with_content(pdf_path, content)
+    extracted = extract_pdf(pdf_path, source_id="test:dashed-arc")
+
+    arc_train_ids = pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    )
+    assert arc_train_ids == set(arc_ids)
+
+    filtered = pdf_electrical_importer._glyph_cluster_vectors(
+        extracted, extracted.vectors
+    )
+    filtered_ids = {vector.element_id for vector in filtered}
+    assert set(arc_ids).isdisjoint(filtered_ids)
+    straight_ids = {
+        vector.element_id
+        for vector in extracted.vectors
+        if vector.points_pt[0][0] >= 499.0
+    }
+    assert straight_ids <= filtered_ids
+
+    clusters = pdf_electrical_importer._cluster_small_vector_glyphs(filtered)
+    assert not any(
+        set(arc_ids)
+        & {
+            element_id
+            for cluster in clusters
+            for element_id in cluster.source_element_ids
+        }
+    )

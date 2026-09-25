@@ -1681,6 +1681,115 @@ _FIELD_STATUS_MEANINGS: Mapping[str, str] = {
     "R": "existing_to_be_removed",
 }
 
+# Scope of work comes from the sheet's own status legend, not from a fixed
+# letter convention: one set uses R for "removed", another for "removed and
+# salvaged for relocation". A legend row is a single marker letter immediately
+# left of its meaning on the same baseline, or "R = MEANING" in one string.
+SCOPE_NEW = "new"
+SCOPE_RELOCATED = "relocated"
+SCOPE_EXISTING = "existing_to_remain"
+SCOPE_REMOVED = "removed"
+SCOPE_UNRESOLVED = "unresolved"
+_SCOPE_LEGEND_INLINE_RE = re.compile(r"^\(?(?P<marker>[ENR])\)?\s*[-=:]\s*(?P<meaning>.+)$")
+_SCOPE_LEGEND_ROW_Y_PT = 3.0
+_SCOPE_LEGEND_ROW_GAP_PT = 60.0
+_SCOPE_LEGEND_MAX_MEANING_CHARS = 64
+
+
+def _scope_meaning(text: str) -> str | None:
+    """Map one legend meaning phrase to a scope-of-work status."""
+
+    upper = " ".join(text.upper().split())
+    if len(upper) > _SCOPE_LEGEND_MAX_MEANING_CHARS:
+        return None
+    if "RELOCAT" in upper:
+        return SCOPE_RELOCATED
+    if re.search(r"\b(?:REMOV|DEMOLISH|DEMO\b)", upper):
+        return SCOPE_REMOVED
+    if re.fullmatch(r"EXISTING(?:\s+(?:DEVICE|DEVICES|FIXTURE|FIXTURES))?(?:\s+TO\s+REMAIN)?", upper):
+        return SCOPE_EXISTING
+    if re.fullmatch(r"NEW(?:\s+(?:DEVICE|DEVICES|FIXTURE|FIXTURES|WORK|CONSTRUCTION))?", upper):
+        return SCOPE_NEW
+    return None
+
+
+def _scope_status_legends(
+    texts: Sequence[PdfTextObservation],
+) -> dict[int, dict[str, list[tuple[str, tuple[str, ...], str]]]]:
+    """Per page: marker letter -> [(scope, source element ids, meaning text)]."""
+
+    legends: dict[int, dict[str, list[tuple[str, tuple[str, ...], str]]]] = {}
+    by_page: dict[int, list[PdfTextObservation]] = {}
+    for observation in texts:
+        by_page.setdefault(observation.page, []).append(observation)
+    for page, observations in sorted(by_page.items()):
+        for observation in observations:
+            inline = _SCOPE_LEGEND_INLINE_RE.fullmatch(" ".join(observation.text.split()))
+            if inline:
+                scope = _scope_meaning(inline.group("meaning"))
+                if scope is not None:
+                    legends.setdefault(page, {}).setdefault(inline.group("marker"), []).append(
+                        (scope, (observation.element_id,), inline.group("meaning").strip())
+                    )
+                continue
+            status = _FIELD_STATUS_RE.fullmatch(observation.text)
+            if status is None:
+                continue
+            row = [
+                other for other in observations
+                if other is not observation
+                and abs(other.y_pt - observation.y_pt) <= _SCOPE_LEGEND_ROW_Y_PT
+                and 0.0 < other.x_pt - observation.x_pt <= _SCOPE_LEGEND_ROW_GAP_PT
+            ]
+            if not row:
+                continue
+            meaning = min(row, key=lambda item: (item.x_pt - observation.x_pt, item.element_id))
+            scope = _scope_meaning(meaning.text)
+            if scope is None:
+                continue
+            legends.setdefault(page, {}).setdefault(status.group("status").upper(), []).append(
+                (scope, (observation.element_id, meaning.element_id), meaning.text.strip())
+            )
+    return legends
+
+
+def _scope_status_attributes(
+    status: str | None,
+    status_source_element_id: str | None,
+    page: int,
+    legends: Mapping[int, Mapping[str, Sequence[tuple[str, tuple[str, ...], str]]]],
+) -> dict[str, Any]:
+    """Resolve one device's scope from its marker and its own sheet's legend."""
+
+    if status is None:
+        return {
+            "scope_status": SCOPE_UNRESOLVED,
+            "scope_reason": "no_scope_marker",
+        }
+    entries = legends.get(page, {}).get(status, ())
+    scopes = sorted({scope for scope, _, _ in entries})
+    evidence = {
+        "scope_marker": status,
+        "scope_marker_source_element_id": status_source_element_id,
+    }
+    if not scopes:
+        return {**evidence, "scope_status": SCOPE_UNRESOLVED, "scope_reason": "scope_marker_undefined"}
+    legend_ids = sorted({element for _, ids, _ in entries for element in ids})
+    if len(scopes) > 1:
+        return {
+            **evidence,
+            "scope_status": SCOPE_UNRESOLVED,
+            "scope_reason": "scope_legend_conflict",
+            "scope_legend_source_element_ids": legend_ids,
+        }
+    return {
+        **evidence,
+        "scope_status": scopes[0],
+        "scope_method": "sheet status legend",
+        "scope_legend_text": sorted({text for _, _, text in entries})[0],
+        "scope_legend_source_element_ids": legend_ids,
+    }
+
 # Lighting is intentionally a separate recognition path from power-device
 # legends. A fixture's readable type tag is the semantic evidence; geometry
 # only confirms that the tag is attached to a fixture instance.
@@ -7014,6 +7123,7 @@ class ElectricalPdfImporter:
         else:
             spatial_status = "single-page-local-unregistered"
         texts = tuple(sorted(document.texts, key=lambda item: (item.page, item.element_id)))
+        scope_legends = _scope_status_legends(texts)
         symbols = tuple(sorted(document.symbols, key=lambda item: (item.page, item.element_id)))
         vectors = tuple(sorted(document.vectors, key=lambda item: (item.page, item.element_id)))
         annotation_code_text_ids = {
@@ -7859,6 +7969,17 @@ class ElectricalPdfImporter:
                         "status_meaning",
                         candidate.annotation_recognition["status_meaning"],
                     )
+            lane_attributes.update(
+                _scope_status_attributes(
+                    lane_attributes.get("status"),
+                    (
+                        (candidate.shape_recognition or {}).get("status_source_element_id")
+                        or (candidate.annotation_recognition or {}).get("status_source_element_id")
+                    ),
+                    candidate.page,
+                    scope_legends,
+                )
+            )
             if mounting:
                 if len(mounting) == 1:
                     lane_attributes["mounting_height_m"] = mounting[0]

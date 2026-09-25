@@ -422,6 +422,7 @@ class _EntityCandidate:
     shape_recognition: dict[str, Any] | None = None
     annotation_recognition: dict[str, Any] | None = None
     lighting_recognition: dict[str, Any] | None = None
+    modifier_annotations: list[dict[str, Any]] = field(default_factory=list)
 
     def merge_source(
         self,
@@ -3893,6 +3894,582 @@ def _annotation_code_legend_match(
             "annotation code does not uniquely match a classified legend row"
         ),
     }
+
+
+# Square annotations whose contents qualifies an adjacent legend-matched
+# glyph instead of naming a device of its own. The normalized tag maps to the
+# canonical-type prefixes of the glyph it may modify and to the modifier
+# tokens recorded on that glyph. A modifier tag never becomes a device by
+# itself: beside a matching glyph it records ``modifiers``, otherwise it stays
+# unresolved with a reason code. ``D`` falls through to the pre-existing
+# annotation-code handling only when the page's own legend does not claim the
+# letter for one of its rows; on sheets whose legend tags a switch row ``D``,
+# the legend meaning (dimmer) owns the code and a data outlet is never
+# inferred from it.
+_ANNOTATION_MODIFIER_TARGET_PREFIXES: Mapping[str, tuple[str, ...]] = {
+    "GFI": ("receptacle",),
+    "AFCI": ("receptacle",),
+    "GFI AFCI": ("receptacle",),
+    "LED": ("luminaire",),
+    "HE": ("luminaire",),
+    "HE WP": ("luminaire",),
+    "S": ("luminaire",),
+    "D": ("switch",),
+    "3": ("switch",),
+}
+
+_ANNOTATION_MODIFIER_TOKENS: Mapping[str, tuple[str, ...]] = {
+    "GFI": ("gfci",),
+    "AFCI": ("afci",),
+    "GFI AFCI": ("afci", "gfci"),
+    "LED": ("led",),
+    "HE": ("he",),
+    "HE WP": ("he", "wp"),
+    "S": ("surface",),
+    "D": ("dimmer",),
+    "3": ("three-way",),
+}
+
+# Modifier tags fall through instead of applying only when the page's legend
+# does not claim the code for one of its own rows (see the ``D`` note above).
+_ANNOTATION_FALL_THROUGH_MODIFIER_CODES = frozenset({"D"})
+
+# A modifier tag qualifies a legend-matched glyph of a compatible type within
+# this radius. The nearest glyph of ANY type can be wrong -- a GFI box can sit
+# against a luminaire while its receptacle is farther away -- so the type
+# filter, not bare proximity, picks the target.
+_ANNOTATION_MODIFIER_RADIUS_PT = 25.0
+
+# A vertical voltage note beside a special-purpose outlet (for example
+# "220V FOR EV CHARGER") is longer than a letter code but still only
+# qualifies the outlet it runs along.
+_ANNOTATION_EV_NOTE_PATTERN = re.compile(
+    r"^\s*\d{3}\s*V\b.*\bEV\s+CHARGER\b",
+    re.IGNORECASE,
+)
+_ANNOTATION_EV_NOTE_TOKENS = ("ev-charger",)
+
+
+def _annotation_modifier(
+    symbol: PdfSymbolObservation,
+) -> tuple[str, str, tuple[str, ...] | None, tuple[str, ...]] | None:
+    """Classify a square annotation whose contents modifies a nearby glyph.
+
+    Returns ``(raw_code, normalized_code, target_type_prefixes, modifier_tokens)``,
+    or ``None`` when the annotation is not a known modifier tag. Target
+    prefixes of ``None`` mean the tag may qualify any legend-matched device:
+    only a note that names its own purpose, such as a voltage EV-charger
+    note, is trusted that far.
+    """
+
+    if symbol.source_kind != "annotation:square":
+        return None
+    raw = " ".join(str(symbol.metadata.get("contents") or "").split())
+    if not raw:
+        return None
+    normalized = re.sub(r"[^A-Z0-9]+", " ", raw.upper()).strip()
+    if not normalized:
+        return None
+    if _ANNOTATION_EV_NOTE_PATTERN.fullmatch(raw):
+        return (raw, normalized, None, _ANNOTATION_EV_NOTE_TOKENS)
+    target_prefixes = _ANNOTATION_MODIFIER_TARGET_PREFIXES.get(normalized)
+    if target_prefixes is None:
+        return None
+    return (
+        raw,
+        normalized,
+        target_prefixes,
+        _ANNOTATION_MODIFIER_TOKENS[normalized],
+    )
+
+
+def _annotation_modifier_targets(
+    candidates: Mapping[str, _EntityCandidate],
+    *,
+    page: int,
+    x_pt: float,
+    y_pt: float,
+    target_prefixes: tuple[str, ...] | None,
+) -> list[tuple[float, str, _EntityCandidate]]:
+    """Legend-matched device glyphs a modifier tag could apply to.
+
+    Only drawn glyphs recognized against the sheet legend (or the lighting
+    lane) qualify; a modifier refines an installed symbol, never a text-led
+    identity. Targets are sorted by distance then candidate key, and the
+    caller treats targets within the field-status ambiguity window of the
+    nearest one as an unresolved tie.
+    """
+
+    matched: list[tuple[float, str, _EntityCandidate]] = []
+    for key, candidate in candidates.items():
+        if candidate.page != page or candidate.entity_kind != "device":
+            continue
+        if (
+            candidate.shape_recognition is None
+            and candidate.lighting_recognition is None
+        ):
+            continue
+        if target_prefixes is not None and not any(
+            candidate.canonical_type == prefix
+            or candidate.canonical_type.startswith(f"{prefix}_")
+            for prefix in target_prefixes
+        ):
+            continue
+        distance = _distance_pt(candidate.x_pt, candidate.y_pt, x_pt, y_pt)
+        if distance <= _ANNOTATION_MODIFIER_RADIUS_PT:
+            matched.append((distance, key, candidate))
+    matched.sort(key=lambda item: (item[0], item[1]))
+    return matched
+
+
+def _is_annotation_letter_tag(token: str) -> bool:
+    """A short letter tag such as ``F5``, ``SCA`` or ``LF`` drawn in a legend."""
+
+    return (
+        1 <= len(token) <= 3
+        and token.isalnum()
+        and any(character.isalpha() for character in token)
+    )
+
+
+# Legend letter tags are boxed SHX annotations sitting at the lower-right of
+# their row's prototype glyph (or inside it, for tags drawn within the
+# symbol). The tag box centre therefore lies within the prototype bbox
+# widened by these pads; a wider net would reach a neighbouring legend row's
+# tag.
+_LEGEND_TAG_X_PAD_PT = 12.0
+_LEGEND_TAG_Y_PAD_PT = 6.0
+
+
+def _legend_annotation_tag_index(
+    entries_by_page: Mapping[int, Sequence[_LegendEntry]],
+    symbols: Sequence[PdfSymbolObservation],
+) -> dict[int, dict[str, tuple[_LegendEntry, ...]]]:
+    """Per page: annotation letter tag -> legend entries whose row carries it.
+
+    A legend row's letter tag is a short boxed annotation beside the row's
+    prototype glyph: fixture and switch rows draw the tag as SHX strokes in
+    its own invisible square box whose /Contents is the tag, never as sheet
+    text. A tag claimed by more than one legend entry is kept as a
+    multi-entry list so the caller can distinguish a unique row from an
+    ambiguous one and fail closed on the ambiguity.
+    """
+
+    index: dict[int, dict[str, list[_LegendEntry]]] = {}
+    for page, entries in sorted(entries_by_page.items()):
+        page_symbols = [
+            symbol
+            for symbol in symbols
+            if symbol.page == page and symbol.source_kind == "annotation:square"
+        ]
+        page_index: dict[str, list[_LegendEntry]] = {}
+        for entry in entries:
+            cluster = entry.prototype
+            if cluster.page != page:
+                continue
+            x0, y0, x1, y1 = cluster.bbox_pt
+            for symbol in page_symbols:
+                raw = " ".join(
+                    str(symbol.metadata.get("contents") or "").split()
+                )
+                normalized = re.sub(r"[^A-Z0-9]+", " ", raw.upper()).strip()
+                if not _is_annotation_letter_tag(normalized):
+                    continue
+                if (
+                    x0 - _LEGEND_TAG_X_PAD_PT
+                    <= symbol.x_pt
+                    <= x1 + _LEGEND_TAG_X_PAD_PT
+                    and y0 - _LEGEND_TAG_Y_PAD_PT
+                    <= symbol.y_pt
+                    <= y1 + _LEGEND_TAG_Y_PAD_PT
+                ):
+                    page_index.setdefault(normalized, []).append(entry)
+        index[page] = {
+            tag: tuple(page_entries)
+            for tag, page_entries in sorted(page_index.items())
+        }
+    return index
+
+
+def _unresolved_row_key(row: Mapping[str, Any]) -> tuple[int, str]:
+    source_element_ids = row.get("source_element_ids") or ()
+    return (int(row.get("page") or 0), str(sorted(source_element_ids)[0]))
+
+
+_TAG_RESOLVABLE_GEOMETRY_REASONS = frozenset({
+    "below threshold",
+    "tie within margin",
+})
+
+_TAG_GEOMETRY_MATCH_CONFIDENCE_CAP = 0.80
+
+
+def _resolve_unresolved_glyphs_from_annotation_tags(
+    *,
+    document: PdfElectricalDocument,
+    unresolved_rows: Sequence[dict[str, Any]],
+    candidates: dict[str, _EntityCandidate],
+    tag_index: Mapping[int, Mapping[str, tuple[_LegendEntry, ...]]],
+    symbols: Sequence[PdfSymbolObservation],
+    texts: Sequence[PdfTextObservation],
+) -> tuple[set[tuple[int, str]], set[str]]:
+    """Resolve below-threshold or tied glyphs from adjacent annotation tags.
+
+    A glyph whose geometry alone stayed unresolved may be classified by a
+    square annotation beside it, but only when the annotation's code is the
+    letter tag of exactly one legend row on the same page, and no other glyph
+    is equally close to that annotation. When the nearest claimant is instead
+    a glyph the legend already classified as that row's type, the tag joins
+    that device as identity evidence rather than inventing a second one. The
+    tag is evidence, never a device: an annotation with an ambiguous tag, or
+    a tag claimed equally by two glyphs, leaves every glyph unresolved with a
+    precise reason code. Returns the resolved row identities and the claimed
+    annotation element ids.
+    """
+
+    resolvable_rows: list[dict[str, Any]] = []
+    for row in unresolved_rows:
+        if row.get("kind") != "vector_cluster":
+            continue
+        if row.get("status") != "unresolved_classification":
+            continue
+        diagnostics = row.get("match_diagnostics")
+        if not isinstance(diagnostics, Mapping):
+            continue
+        if diagnostics.get("reason") not in _TAG_RESOLVABLE_GEOMETRY_REASONS:
+            continue
+        resolvable_rows.append(row)
+
+    glyph_candidates = sorted(
+        (
+            candidate
+            for candidate in candidates.values()
+            if candidate.shape_recognition is not None
+            or candidate.lighting_recognition is not None
+        ),
+        key=lambda candidate: (candidate.page, candidate.key),
+    )
+
+    def tag_evidence(
+        symbol: PdfSymbolObservation,
+        raw_code: str,
+        normalized_code: str,
+        entries: Sequence[_LegendEntry],
+    ) -> dict[str, Any]:
+        return {
+            "annotation_code": raw_code,
+            "normalized_code": normalized_code,
+            "annotation_source_element_id": symbol.element_id,
+            "legend_row_match_count": len(entries),
+            "legend_row_labels": sorted({entry.label.text for entry in entries}),
+        }
+
+    resolved_row_ids: set[tuple[int, str]] = set()
+    claimed_annotation_ids: set[str] = set()
+
+    for symbol in sorted(symbols, key=lambda item: (item.page, item.element_id)):
+        if symbol.source_kind != "annotation:square":
+            continue
+        code = _annotation_code(symbol)
+        if code is None:
+            continue
+        raw_code, normalized_code = code
+        # Modifier tags qualify glyphs; they never classify them.
+        if normalized_code in _ANNOTATION_MODIFIER_TOKENS:
+            continue
+        entries = tag_index.get(symbol.page, {}).get(normalized_code, ())
+        if not entries:
+            continue
+
+        near_rows: list[tuple[float, tuple[int, str], dict[str, Any]]] = []
+        for row in resolvable_rows:
+            row_key = _unresolved_row_key(row)
+            if row_key in resolved_row_ids:
+                continue
+            position = row.get("position_pt") or {}
+            distance = _distance_pt(
+                float(position.get("x", 0.0)),
+                float(position.get("y", 0.0)),
+                symbol.x_pt,
+                symbol.y_pt,
+            )
+            if distance <= _FIELD_STATUS_RADIUS_PT:
+                near_rows.append((distance, row_key, row))
+        near_rows.sort(key=lambda item: (item[0], item[1]))
+
+        near_glyphs: list[tuple[float, str, _EntityCandidate]] = []
+        for candidate in glyph_candidates:
+            if candidate.page != symbol.page:
+                continue
+            distance = _distance_pt(
+                candidate.x_pt,
+                candidate.y_pt,
+                symbol.x_pt,
+                symbol.y_pt,
+            )
+            if distance <= _FIELD_STATUS_RADIUS_PT:
+                near_glyphs.append((distance, candidate.key, candidate))
+        near_glyphs.sort(key=lambda item: (item[0], item[1]))
+        if not near_rows and not near_glyphs:
+            continue
+
+        claimants: list[tuple[float, str, Any]] = [
+            (distance, f"row:{key}", row)
+            for distance, key, row in near_rows
+        ]
+        claimants += [
+            (distance, f"glyph:{key}", candidate)
+            for distance, key, candidate in near_glyphs
+        ]
+        claimants.sort(key=lambda item: (item[0], item[1]))
+        nearest_distance = claimants[0][0]
+        tied = [
+            item
+            for item in claimants
+            if item[0] <= nearest_distance + _FIELD_STATUS_AMBIGUITY_PT
+        ]
+        if len(tied) != 1:
+            for row in near_rows:
+                row[2].setdefault(
+                    "annotation_tag",
+                    {
+                        **tag_evidence(symbol, raw_code, normalized_code, entries),
+                        "unique_legend_row": len(entries) == 1,
+                        "outcome": (
+                            "stays unresolved: annotation tag is equally close "
+                            "to multiple field glyph clusters"
+                        ),
+                    },
+                )
+            continue
+        tied_distance, tied_kind, tied_value = tied[0]
+        if not tied_kind.startswith("row:"):
+            # The tag names an already-recognized glyph. When the unique
+            # legend row behind the tag classifies that glyph's own type, the
+            # tag joins the device as identity evidence instead of staying an
+            # unresolved annotation or becoming a second device.
+            if len(entries) == 1:
+                entry = entries[0]
+                glyph_candidate = tied_value
+                if (
+                    glyph_candidate.entity_kind == entry.entity_kind
+                    and glyph_candidate.canonical_type == entry.canonical_type
+                ):
+                    glyph_candidate.merge_source(
+                        element_id=symbol.element_id,
+                        text=raw_code,
+                        symbol_name=symbol.name,
+                        x_pt=symbol.x_pt,
+                        y_pt=symbol.y_pt,
+                        confidence=min(
+                            _TAG_GEOMETRY_MATCH_CONFIDENCE_CAP,
+                            entry.confidence,
+                        ),
+                        provenance=_provenance(
+                            document,
+                            element_id=symbol.element_id,
+                            page=symbol.page,
+                            method="annotation-tag",
+                            confidence=min(
+                                _TAG_GEOMETRY_MATCH_CONFIDENCE_CAP,
+                                entry.confidence,
+                            ),
+                            source_kind=symbol.source_kind,
+                            attributes={
+                                "annotation_code": raw_code,
+                                "normalized_code": normalized_code,
+                                "letter_tag": normalized_code,
+                                "legend_row_label": entry.label.text,
+                                "canonical_type": entry.canonical_type,
+                                "attachment": (
+                                    "letter tag beside an already "
+                                    "legend-matched glyph"
+                                ),
+                            },
+                        ),
+                        method="annotation-tag",
+                    )
+                    claimed_annotation_ids.add(symbol.element_id)
+            continue
+        if len(entries) != 1:
+            tied_value.setdefault(
+                "annotation_tag",
+                {
+                    **tag_evidence(symbol, raw_code, normalized_code, entries),
+                    "unique_legend_row": False,
+                    "outcome": (
+                        "stays unresolved: annotation tag does not uniquely "
+                        "match a legend row letter tag"
+                    ),
+                },
+            )
+            continue
+
+        entry = entries[0]
+        position = tied_value["position_pt"]
+        source_element_ids = tuple(tied_value.get("source_element_ids") or ())
+        geometry_key = str(
+            tied_value.get("geometry_key") or source_element_ids[0]
+        )
+        confidence = min(
+            _TAG_GEOMETRY_MATCH_CONFIDENCE_CAP,
+            entry.confidence,
+        )
+        recognition: dict[str, Any] = {
+            "method": "annotation-tag-geometry-match",
+            "legend_scope": "same-page-only",
+            "annotation_code": raw_code,
+            "letter_tag": normalized_code,
+            "annotation_source_element_ids": [symbol.element_id],
+            "legend_label_element_id": entry.label.element_id,
+            "legend_page": entry.label.page,
+            "legend_row_label": entry.label.text,
+            "canonical_type": entry.canonical_type,
+            "match_diagnostics": dict(tied_value.get("match_diagnostics") or {}),
+            "legend_source_element_ids": list(entry.prototype.source_element_ids),
+            "source_element_ids": list(source_element_ids),
+            "confidence": {
+                "basis": "annotation letter tag beside an unresolved glyph",
+                "geometry_reason": (tied_value.get("match_diagnostics") or {}).get(
+                    "reason"
+                ),
+                "cap": _TAG_GEOMETRY_MATCH_CONFIDENCE_CAP,
+            },
+        }
+        status_evidence = _field_status_for_point(
+            page=symbol.page,
+            x_pt=symbol.x_pt,
+            y_pt=symbol.y_pt,
+            texts=texts,
+        )
+        if status_evidence is not None:
+            status_observation, status_code, status_meaning = status_evidence
+            recognition.update(
+                {
+                    "status": status_code,
+                    "status_meaning": status_meaning,
+                    "status_source_element_id": status_observation.element_id,
+                }
+            )
+        key = f"p{symbol.page}:annotation-tag:{geometry_key}"
+        candidate = _EntityCandidate(
+            key=key,
+            entity_kind=entry.entity_kind,
+            canonical_type=entry.canonical_type,
+            tag=None,
+            identity_key=f"geometry:p{symbol.page}:{geometry_key}",
+            page=symbol.page,
+            x_pt=float(position["x"]),
+            y_pt=float(position["y"]),
+            confidence=confidence,
+            primary_method="annotation-tag-geometry-match",
+            shape_recognition=recognition,
+        )
+        for element_id in source_element_ids:
+            candidate.merge_source(
+                element_id=str(element_id),
+                text=None,
+                symbol_name=None,
+                x_pt=float(position["x"]),
+                y_pt=float(position["y"]),
+                confidence=confidence,
+                provenance=_provenance(
+                    document,
+                    element_id=str(element_id),
+                    page=symbol.page,
+                    method="annotation-tag-geometry-match",
+                    confidence=confidence,
+                    attributes={
+                        "shape_signature": tied_value.get("shape_signature"),
+                        "geometry_key": geometry_key,
+                        "legend_scope": "same-page-only",
+                        "legend_page": entry.label.page,
+                        "legend_label_element_id": entry.label.element_id,
+                        "legend_row_label": entry.label.text,
+                        "canonical_type": entry.canonical_type,
+                        "letter_tag": normalized_code,
+                        "annotation_code": raw_code,
+                        "annotation_source_element_id": symbol.element_id,
+                        "match_diagnostics": dict(
+                            tied_value.get("match_diagnostics") or {}
+                        ),
+                    },
+                ),
+                method="annotation-tag-geometry-match",
+            )
+        candidate.merge_source(
+            element_id=symbol.element_id,
+            text=raw_code,
+            symbol_name=symbol.name,
+            x_pt=symbol.x_pt,
+            y_pt=symbol.y_pt,
+            confidence=confidence,
+            provenance=_provenance(
+                document,
+                element_id=symbol.element_id,
+                page=symbol.page,
+                method="annotation-tag",
+                confidence=confidence,
+                source_kind=symbol.source_kind,
+                attributes={
+                    "annotation_code": raw_code,
+                    "normalized_code": normalized_code,
+                    "letter_tag": normalized_code,
+                    "legend_row_label": entry.label.text,
+                    "canonical_type": entry.canonical_type,
+                },
+            ),
+            method="annotation-tag",
+        )
+        candidate.provenance.append(
+            _provenance(
+                document,
+                element_id=entry.label.element_id,
+                page=entry.label.page,
+                method="pdf-sheet-legend-type-label",
+                confidence=entry.confidence,
+                attributes={
+                    "source_text": entry.label.text,
+                    "legend_row_label": entry.label.text,
+                    "canonical_type": entry.canonical_type,
+                    "annotation_code": raw_code,
+                },
+            )
+        )
+        for label_element_id in (
+            entry.label_source_element_ids or (entry.label.element_id,)
+        ):
+            if label_element_id not in candidate.source_element_ids:
+                candidate.source_element_ids.append(label_element_id)
+        if status_evidence is not None:
+            status_observation, status_code, status_meaning = status_evidence
+            if (
+                status_observation.element_id
+                not in candidate.source_element_ids
+            ):
+                candidate.source_element_ids.append(
+                    status_observation.element_id
+                )
+            candidate.provenance.append(
+                _provenance(
+                    document,
+                    element_id=status_observation.element_id,
+                    page=status_observation.page,
+                    method="pdf-field-status-tag",
+                    confidence=0.92,
+                    attributes={
+                        "source_text": status_observation.text,
+                        "status": status_code,
+                        "status_meaning": status_meaning,
+                        "annotation_code": raw_code,
+                    },
+                )
+            )
+        candidates[key] = candidate
+        resolved_row_ids.add(_unresolved_row_key(tied_value))
+        claimed_annotation_ids.add(symbol.element_id)
+
+    return resolved_row_ids, claimed_annotation_ids
 
 
 def _legend_heading_words(
@@ -7682,6 +8259,7 @@ def _recognize_legend_shapes(
                             "page": cluster.page,
                             "source_element_id": cluster.source_element_ids[0],
                             "source_element_ids": list(cluster.source_element_ids),
+                            "geometry_key": cluster.geometry_key,
                             "position_pt": {
                                 "x": cluster.center_pt[0],
                                 "y": cluster.center_pt[1],
@@ -7791,6 +8369,7 @@ def _recognize_legend_shapes(
                     "page": cluster.page,
                     "source_element_id": cluster.source_element_ids[0],
                     "source_element_ids": list(cluster.source_element_ids),
+                    "geometry_key": cluster.geometry_key,
                     "position_pt": {
                         "x": cluster.center_pt[0],
                         "y": cluster.center_pt[1],
@@ -8606,23 +9185,137 @@ class ElectricalPdfImporter:
                     method="pdf-text-pattern",
                 )
 
+        # Letter tags claimed by the page's own classified legend rows. The
+        # index drives tag resolution and tag attachment.
+        annotation_tag_index = _legend_annotation_tag_index(
+            annotation_legend_entries,
+            symbols,
+        )
+
+        # A legend glyph often carries a letter code annotation of its own
+        # (the dimmer "D", a "$" drawn as "S", a row letter tag). Codes and
+        # tags are only read on the field side; inside the legend frame the
+        # symbol is a sample.
+        def _in_legend_frame(symbol: PdfSymbolObservation) -> bool:
+            frame_box = legend_frame_boxes.get(symbol.page)
+            return frame_box is not None and (
+                frame_box[0] <= symbol.x_pt <= frame_box[2]
+                and frame_box[1] <= symbol.y_pt <= frame_box[3]
+            )
+
+        # Before annotations are read as devices, let a letter tag beside an
+        # unresolved glyph classify that glyph; the annotation then joins the
+        # resolved device instead of inventing a second one.
+        (
+            tag_resolved_row_ids,
+            tag_claimed_annotation_ids,
+        ) = _resolve_unresolved_glyphs_from_annotation_tags(
+            document=document,
+            unresolved_rows=unresolved_shape_rows,
+            candidates=candidates,
+            tag_index=annotation_tag_index,
+            symbols=tuple(
+                symbol for symbol in symbols if not _in_legend_frame(symbol)
+            ),
+            texts=texts,
+        )
+
         inframe_symbols_skipped: dict[int, int] = {}
         for symbol in symbols:
             if (symbol.page, symbol.element_id) in claimed_source_ids:
                 continue
-
-            # A legend glyph often carries a letter code annotation of its own
-            # (the dimmer "D", a "$" drawn as "S"). Codes are only read on the
-            # field side; inside the legend frame the symbol is a sample.
-            frame_box = legend_frame_boxes.get(symbol.page)
-            if frame_box is not None and (
-                frame_box[0] <= symbol.x_pt <= frame_box[2]
-                and frame_box[1] <= symbol.y_pt <= frame_box[3]
-            ):
+            if symbol.element_id in tag_claimed_annotation_ids:
+                continue
+            if _in_legend_frame(symbol):
                 inframe_symbols_skipped[symbol.page] = (
                     inframe_symbols_skipped.get(symbol.page, 0) + 1
                 )
                 continue
+
+            modifier = _annotation_modifier(symbol)
+            if modifier is not None:
+                (
+                    raw_code,
+                    normalized_code,
+                    target_prefixes,
+                    modifier_tokens,
+                ) = modifier
+                matched = _annotation_modifier_targets(
+                    candidates,
+                    page=symbol.page,
+                    x_pt=symbol.x_pt,
+                    y_pt=symbol.y_pt,
+                    target_prefixes=target_prefixes,
+                )
+                applies = bool(matched) and not any(
+                    item[0] <= matched[0][0] + _FIELD_STATUS_AMBIGUITY_PT
+                    for item in matched[1:]
+                )
+                if applies:
+                    _distance, _key, target = matched[0]
+                    record = {
+                        "annotation_code": raw_code,
+                        "normalized_code": normalized_code,
+                        "modifiers": list(modifier_tokens),
+                        "annotation_source_element_id": symbol.element_id,
+                        "target_kind": target.entity_kind,
+                        "target_canonical_type": target.canonical_type,
+                    }
+                    target.modifier_annotations.append(record)
+                    target.merge_source(
+                        element_id=symbol.element_id,
+                        text=raw_code,
+                        symbol_name=symbol.name,
+                        x_pt=symbol.x_pt,
+                        y_pt=symbol.y_pt,
+                        confidence=0.92,
+                        provenance=_provenance(
+                            document,
+                            element_id=symbol.element_id,
+                            page=symbol.page,
+                            method="annotation-modifier",
+                            confidence=0.92,
+                            source_kind=symbol.source_kind,
+                            attributes=record,
+                        ),
+                        method="annotation-modifier",
+                    )
+                    continue
+                if (
+                    normalized_code not in _ANNOTATION_FALL_THROUGH_MODIFIER_CODES
+                    or normalized_code in annotation_tag_index.get(symbol.page, {})
+                ):
+                    unresolved_observations.append(
+                        {
+                            "kind": "symbol",
+                            "page": symbol.page,
+                            "source_element_id": symbol.element_id,
+                            "name": symbol.name,
+                            "source_kind": symbol.source_kind,
+                            "position_pt": {
+                                "x": symbol.x_pt,
+                                "y": symbol.y_pt,
+                            },
+                            "annotation_code": raw_code,
+                            "normalized_code": normalized_code,
+                            "modifier_target_types": list(target_prefixes or ()),
+                            "metadata": dict(symbol.metadata),
+                            "status": "unresolved_classification",
+                            "reason": (
+                                "modifier annotation is equally close to "
+                                "multiple legend-matched glyphs"
+                                if matched
+                                else (
+                                    "modifier annotation has no adjacent "
+                                    "legend-matched glyph"
+                                )
+                            ),
+                        }
+                    )
+                    continue
+                # The code keeps its pre-existing annotation-code handling only
+                # when the page's own legend does not claim the letter for one
+                # of its rows; the legend meaning owns a claimed code.
 
             annotation_match = _annotation_code_legend_match(
                 symbol,
@@ -8974,6 +9667,11 @@ class ElectricalPdfImporter:
                 and source_ids.issubset(vector_symbol_ids)
             ):
                 continue
+            if (
+                row.get("kind") == "vector_cluster"
+                and _unresolved_row_key(row) in tag_resolved_row_ids
+            ):
+                continue
             unresolved_observations.append(row)
 
         # Attach nearby note/mounting text without pretending it is a host reference.
@@ -9127,6 +9825,14 @@ class ElectricalPdfImporter:
                         "status_meaning",
                         candidate.annotation_recognition["status_meaning"],
                     )
+            if candidate.modifier_annotations:
+                lane_attributes["modifiers"] = sorted(
+                    {
+                        token
+                        for record in candidate.modifier_annotations
+                        for token in record["modifiers"]
+                    }
+                )
             lane_attributes.update(
                 _scope_status_attributes(
                     lane_attributes.get("status"),

@@ -672,7 +672,11 @@ def _probe_path(
     )
 
 
-def _write_probe_pdf(path: Path, commands: list[str]) -> None:
+def _write_probe_pdf(
+    path: Path,
+    commands: list[str],
+    annotations: list[tuple[float, float, str]] | None = None,
+) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=1200.0, height=700.0)
     font = DictionaryObject(
@@ -689,6 +693,32 @@ def _write_probe_pdf(path: Path, commands: list[str]) -> None:
             ),
         }
     )
+    if annotations:
+        squares = ArrayObject()
+        for index, (x, y, contents) in enumerate(annotations, start=1):
+            squares.append(
+                writer._add_object(
+                    DictionaryObject(
+                        {
+                            NameObject("/Type"): NameObject("/Annot"),
+                            NameObject("/Subtype"): NameObject("/Square"),
+                            NameObject("/Rect"): ArrayObject(
+                                [
+                                    NumberObject(x - 6.0),
+                                    NumberObject(y - 6.0),
+                                    NumberObject(x + 6.0),
+                                    NumberObject(y + 6.0),
+                                ]
+                            ),
+                            NameObject("/NM"): TextStringObject(
+                                f"probe-square-{index}"
+                            ),
+                            NameObject("/Contents"): TextStringObject(contents),
+                        }
+                    )
+                )
+            )
+        page[NameObject("/Annots")] = squares
     content = DecodedStreamObject()
     content.set_data(("\n".join(commands) + "\n").encode("ascii"))
     page[NameObject("/Contents")] = writer._add_object(content)
@@ -1231,6 +1261,22 @@ def _probe_hexagon(radius: float) -> tuple[tuple[float, float], ...]:
             ),
         )
         for index in range(6)
+    )
+
+
+def _probe_pentagon(radius: float) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (
+            round(
+                radius * math.cos(-math.pi / 2.0 + 2.0 * math.pi * index / 5.0),
+                3,
+            ),
+            round(
+                radius * math.sin(-math.pi / 2.0 + 2.0 * math.pi * index / 5.0),
+                3,
+            ),
+        )
+        for index in range(5)
     )
 
 
@@ -3932,6 +3978,371 @@ def test_unmatched_square_annotation_code_remains_unresolved_with_code() -> None
     assert rows[0]["annotation_code"] == "ZZ"
     assert rows[0]["annotation_code_recognition"]["normalized_code"] == "ZZ"
     assert rows[0]["status"] == "unresolved_classification"
+
+
+def _annotation_tag_legend_commands() -> list[str]:
+    """A symbol-function legend whose row labels classify each prototype.
+
+    The letter tags are NOT drawn as sheet text: on the real sheets they are
+    boxed SHX annotations beside each prototype, so they enter the probe as
+    ``/Square`` annotations (see ``_annotation_tag_probe_annotations``). Rows:
+    circle floodlight fixture (tag ``F5``), triangle sconce (``SCA``),
+    hexagon dimmer switch (``D``), square switch (``HD``), and an untagged
+    octagon duplex receptacle that also carries an ``HD`` tag, making ``HD``
+    the ambiguity negative.
+    """
+    rules = [
+        "60 652 m 360 652 l S",
+        "60 632 m 360 632 l S",
+        "150 492 m 150 652 l S",
+        "60 604 m 360 604 l S",
+        "60 576 m 360 576 l S",
+        "60 548 m 360 548 l S",
+        "60 520 m 360 520 l S",
+        "60 492 m 360 492 l S",
+    ]
+    cells = [
+        _probe_text(70.0, 640.0, "SYMBOL", size=8.0),
+        _probe_text(170.0, 640.0, "FUNCTION", size=8.0),
+        _probe_path(105.0, 618.0, _probe_circle(6.0)),
+        _probe_text(165.0, 616.0, "FLOODLIGHT FIXTURE", size=7.0),
+        _probe_path(105.0, 590.0, _PROBE_TRIANGLE),
+        _probe_text(165.0, 588.0, "SCONCE", size=7.0),
+        _probe_path(105.0, 562.0, _probe_hexagon(6.0)),
+        _probe_text(165.0, 560.0, "DIMMER SWITCH", size=7.0),
+        _probe_path(105.0, 534.0, _PROBE_SQUARE),
+        _probe_text(165.0, 532.0, "SWITCH", size=7.0),
+        _probe_path(105.0, 506.0, _probe_octagon(6.0)),
+        _probe_text(165.0, 506.0, "DUPLEX RECEPTACLE", size=7.0),
+    ]
+    return rules + cells
+
+
+def _annotation_tag_field_commands() -> list[str]:
+    """Field glyphs: legend-matched instances plus never-matching pentagons."""
+    return [
+        _probe_path(500.0, 450.0, _probe_pentagon(5.0)),
+        _probe_path(760.0, 450.0, _probe_pentagon(5.0)),
+        _probe_path(560.0, 450.0, _probe_circle(6.0)),
+        _probe_path(620.0, 450.0, _probe_circle(6.0)),
+        _probe_path(680.0, 450.0, _probe_circle(6.0)),
+        _probe_path(500.0, 380.0, _probe_hexagon(6.0)),
+        _probe_path(560.0, 380.0, _probe_hexagon(6.0)),
+        _probe_path(620.0, 380.0, _probe_octagon(6.0)),
+        _probe_path(680.0, 380.0, _probe_octagon(6.0)),
+        _probe_path(586.0, 300.0, _probe_octagon(6.0)),
+        _probe_path(610.0, 300.0, _probe_octagon(6.0)),
+    ]
+
+
+def _annotation_tag_probe_annotations() -> list[tuple[float, float, str]]:
+    # Legend tags sit at the lower-right of their prototype like the boxed
+    # SHX tags on the real sheets; field tags sit 12 pt beside and 8 pt below
+    # or above their glyph, so the nearest compatible glyph is unique.
+    return [
+        # Legend row tags (they name their row only by position).
+        (117.0, 610.0, "F5"),
+        (117.0, 582.0, "SCA"),
+        (112.0, 556.0, "D"),
+        (117.0, 528.0, "HD"),
+        (117.0, 500.0, "HD"),  # second HD row: the ambiguity negative
+        # Field tags.
+        (500.0, 450.0, "F5"),  # beside the unresolved pentagon: resolves it
+        (760.0, 450.0, "HD"),  # ambiguous tag: two legend rows carry HD
+        (900.0, 200.0, "SCA"),  # no glyph nearby: must not become a device
+        (572.0, 442.0, "LED"),  # luminaire modifier
+        (632.0, 442.0, "HE WP"),  # luminaire modifiers
+        (692.0, 442.0, "S"),  # surface-mount luminaire modifier
+        (668.0, 458.0, "F5"),  # names its row on an already-matched glyph
+        (512.0, 372.0, "D"),  # dimmer switch modifier
+        (572.0, 372.0, "3"),  # three-way switch modifier
+        (632.0, 372.0, "GFI"),  # receptacle modifier
+        (692.0, 372.0, "GFI/AFCI"),  # both receptacle modifiers
+        (668.0, 372.0, "220V FOR EV CHARGER"),  # special-outlet note modifier
+        (598.0, 300.0, "GFI"),  # equidistant from two receptacles
+        (900.0, 300.0, "GFI"),  # no adjacent receptacle glyph
+        (900.0, 380.0, "D"),  # no adjacent switch; the legend owns "D"
+    ]
+
+
+def _annotation_tag_probe_model(
+    tmp_path: Path,
+    *,
+    source_id: str,
+    annotations: list[tuple[float, float, str]] | None = None,
+):
+    path = tmp_path / "annotation-tag-probe.pdf"
+    _write_probe_pdf(
+        path,
+        _annotation_tag_legend_commands() + _annotation_tag_field_commands(),
+        annotations=(
+            _annotation_tag_probe_annotations()
+            if annotations is None
+            else annotations
+        ),
+    )
+    assert not path.with_suffix(".expected.json").exists()
+    extracted = extract_pdf(path, source_id=source_id)
+    return extracted, ElectricalPdfImporter().import_document(extracted)
+
+
+def _lane_device_at(model, x_pt: float, y_pt: float):
+    matched = [
+        device
+        for device in model.electrical_devices
+        if device.attributes["pdf_electrical"]["source_position_pt"]
+        == {"x": x_pt, "y": y_pt}
+    ]
+    assert len(matched) == 1, (x_pt, y_pt, [
+        device.attributes["pdf_electrical"]["source_position_pt"]
+        for device in model.electrical_devices
+    ])
+    return matched[0]
+
+
+def test_annotation_modifier_tags_qualify_adjacent_legend_glyphs(tmp_path) -> None:
+    """GFI/AFCI/D/3/LED/HE-WP/S and the EV note qualify the adjacent glyph.
+
+    A modifier tag never becomes a device by itself, and it changes nothing
+    about the host device type: the receptacle stays a receptacle with
+    ``modifiers: ["gfci"]``. A ``D`` square with no adjacent switch stays
+    unresolved, and it never becomes a data outlet even though the legend has
+    no data row: the legend claims ``D`` for its dimmer-switch row.
+    """
+    _extracted, model = _annotation_tag_probe_model(
+        tmp_path,
+        source_id="fixture:annotation-modifier-tags",
+    )
+    assert not model.electrical_equipment
+    expected_modifiers = {
+        (560.0, 450.0): ["led"],
+        (620.0, 450.0): ["he", "wp"],
+        (680.0, 450.0): ["surface"],
+        (500.0, 380.0): ["dimmer"],
+        (560.0, 380.0): ["three-way"],
+        (620.0, 380.0): ["gfci"],
+        # The GFI/AFCI square and the EV-charger note both qualify this
+        # receptacle; their tokens union in the lane attributes.
+        (680.0, 380.0): ["afci", "ev-charger", "gfci"],
+    }
+    for (x_pt, y_pt), modifiers in expected_modifiers.items():
+        device = _lane_device_at(model, x_pt, y_pt)
+        lane = device.attributes["pdf_electrical"]
+        assert lane["modifiers"] == modifiers, (x_pt, y_pt, lane.get("modifiers"))
+        records = [
+            provenance
+            for provenance in device.provenance
+            if provenance.method == "annotation-modifier"
+        ]
+        assert records
+        assert {record.source_element_id for record in records} <= set(
+            lane["source_element_ids"]
+        )
+        union: list[str] = sorted(
+            {
+                token
+                for record in records
+                for token in record.attributes["modifiers"]
+            }
+        )
+        assert union == modifiers, (x_pt, y_pt, union)
+    # The equidistant pair stays modifier-free: the tag resolves to neither.
+    for x_pt in (586.0, 610.0):
+        device = _lane_device_at(model, x_pt, 300.0)
+        assert "modifiers" not in device.attributes["pdf_electrical"]
+
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "data_outlet"
+    ]
+
+    unresolved_symbols = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "symbol"
+    ]
+    equidistant = [
+        item
+        for item in unresolved_symbols
+        if item.get("annotation_code") == "GFI"
+        and item.get("position_pt") == {"x": 598.0, "y": 300.0}
+    ]
+    assert len(equidistant) == 1
+    assert equidistant[0]["status"] == "unresolved_classification"
+    assert equidistant[0]["reason"] == (
+        "modifier annotation is equally close to multiple legend-matched glyphs"
+    )
+    no_adjacent = [
+        item
+        for item in unresolved_symbols
+        if item.get("annotation_code") == "GFI"
+        and item.get("position_pt") == {"x": 900.0, "y": 300.0}
+    ]
+    assert len(no_adjacent) == 1
+    assert no_adjacent[0]["reason"] == (
+        "modifier annotation has no adjacent legend-matched glyph"
+    )
+    assert no_adjacent[0]["modifier_target_types"] == ["receptacle"]
+    dimmer_no_switch = [
+        item
+        for item in unresolved_symbols
+        if item.get("annotation_code") == "D"
+        and item.get("position_pt") == {"x": 900.0, "y": 380.0}
+    ]
+    assert len(dimmer_no_switch) == 1
+    assert dimmer_no_switch[0]["reason"] == (
+        "modifier annotation has no adjacent legend-matched glyph"
+    )
+    assert dimmer_no_switch[0]["modifier_target_types"] == ["switch"]
+
+    # No annotation became a device of its own.
+    assert len(model.electrical_devices) == 10
+
+
+def test_annotation_letter_tag_resolves_unresolved_field_glyph(tmp_path) -> None:
+    """F5 beside a below-threshold pentagon resolves that glyph, fail-closed.
+
+    The resolution records the method, the legend row, the letter tag, and the
+    annotation source element id; the annotation joins the resolved device
+    instead of becoming a second one.
+    """
+    extracted, model = _annotation_tag_probe_model(
+        tmp_path,
+        source_id="fixture:annotation-tag-resolution",
+    )
+    assert extracted == extract_pdf(
+        tmp_path / "annotation-tag-probe.pdf",
+        source_id="fixture:annotation-tag-resolution",
+    )
+    device = _lane_device_at(model, 500.0, 450.0)
+    assert device.device_type == "luminaire"
+    lane = device.attributes["pdf_electrical"]
+    shape = lane["shape_recognition"]
+    assert shape["method"] == "annotation-tag-geometry-match"
+    assert shape["letter_tag"] == "F5"
+    assert shape["legend_row_label"] == "FLOODLIGHT FIXTURE"
+    # The failed geometry evidence is preserved, not discarded.
+    assert shape["match_diagnostics"]["reason"] in {
+        "below threshold",
+        "tie within margin",
+    }
+    assert lane["stable_identity_key"].startswith("geometry:p1:")
+    assert device.confidence <= 0.8
+
+    tag_provenance = [
+        provenance
+        for provenance in device.provenance
+        if provenance.method == "annotation-tag"
+    ]
+    assert len(tag_provenance) == 1
+    annotation_element_id = tag_provenance[0].source_element_id
+    assert annotation_element_id in lane["source_element_ids"]
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert all(
+        item.get("source_element_id") != annotation_element_id
+        for item in unresolved
+    )
+    assert all(
+        item.get("position_pt") != {"x": 500.0, "y": 450.0}
+        for item in unresolved
+        if item.get("kind") == "vector_cluster"
+    )
+
+
+def test_annotation_ambiguous_tag_and_tag_without_glyph_fail_closed(
+    tmp_path,
+) -> None:
+    """A tag naming two rows, or naming no nearby glyph, resolves nothing.
+
+    The ambiguous ``HD`` tag leaves its pentagon unresolved with the precise
+    outcome recorded, and the stray ``SCA`` square stays an unresolved
+    annotation that never becomes a device.
+    """
+    _extracted, model = _annotation_tag_probe_model(
+        tmp_path,
+        source_id="fixture:annotation-tag-fail-closed",
+    )
+    lane = model.attributes["pdf_electrical"]
+    assert len(model.electrical_devices) == 9
+
+    ambiguous_rows = [
+        item
+        for item in lane["unresolved_observations"]
+        if item.get("kind") == "vector_cluster"
+        and item.get("position_pt") == {"x": 760.0, "y": 450.0}
+    ]
+    assert len(ambiguous_rows) == 1
+    evidence = ambiguous_rows[0]["annotation_tag"]
+    assert evidence["normalized_code"] == "HD"
+    assert evidence["legend_row_match_count"] == 2
+    assert evidence["unique_legend_row"] is False
+    assert "does not uniquely match" in evidence["outcome"]
+
+    stray = [
+        item
+        for item in lane["unresolved_observations"]
+        if item.get("kind") == "symbol"
+        and item.get("position_pt") == {"x": 900.0, "y": 200.0}
+    ]
+    assert len(stray) == 1
+    assert stray[0]["annotation_code"] == "SCA"
+    assert stray[0]["status"] == "unresolved_classification"
+
+    # An F5 square beside an already legend-matched floodlight joins that
+    # device as identity evidence: no second device, no unresolved row.
+    host = _lane_device_at(model, 680.0, 450.0)
+    assert host.device_type == "luminaire"
+    tag_records = [
+        provenance
+        for provenance in host.provenance
+        if provenance.method == "annotation-tag"
+    ]
+    assert len(tag_records) == 1
+    assert tag_records[0].attributes["letter_tag"] == "F5"
+    assert tag_records[0].attributes["legend_row_label"] == "FLOODLIGHT FIXTURE"
+    assert tag_records[0].source_element_id in (
+        host.attributes["pdf_electrical"]["source_element_ids"]
+    )
+    assert all(
+        item.get("source_element_id") != tag_records[0].source_element_id
+        for item in lane["unresolved_observations"]
+    )
+
+    annotation_sources = {
+        provenance.source_element_id
+        for device in model.electrical_devices
+        for provenance in device.provenance
+        if provenance.source_element_id
+        and ":annotation:" in provenance.source_element_id
+    }
+    for element_id in annotation_sources:
+        record = [
+            provenance
+            for device in model.electrical_devices
+            for provenance in device.provenance
+            if provenance.source_element_id == element_id
+        ][0]
+        assert record.method in {"annotation-modifier", "annotation-tag"}
+
+    # The ambiguous tag and the stray still leave exactly ten devices.
+    assert len(model.electrical_devices) == 10
+
+
+def test_annotation_tag_probe_is_deterministic_across_runs(tmp_path) -> None:
+    path = tmp_path / "annotation-tag-probe.pdf"
+    _write_probe_pdf(
+        path,
+        _annotation_tag_legend_commands() + _annotation_tag_field_commands(),
+        annotations=_annotation_tag_probe_annotations(),
+    )
+    first = extract_pdf(path, source_id="fixture:annotation-tag-determinism")
+    second = extract_pdf(path, source_id="fixture:annotation-tag-determinism")
+    assert first == second
+    first_model = ElectricalPdfImporter().import_document(first)
+    second_model = ElectricalPdfImporter().import_document(second)
+    assert first_model.to_dict() == second_model.to_dict()
 
 
 

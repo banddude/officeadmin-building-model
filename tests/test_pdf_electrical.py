@@ -6751,7 +6751,28 @@ def test_framed_two_column_cad_legend_joins_columns_and_drops_abbreviations(
     assert labels["receptacle_duplex"] == "DUPLEX RECEPTACLE"
 
     unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
-    assert any(
+    # The field "D" box holds the field dimmer glyph's centre, so it is that
+    # switch's own letter, not an unresolved code and never a data outlet: it
+    # records the dimmer subtype on the already-resolved device instead. A
+    # "D" with no switch glyph centred in its box stays unresolved
+    # (test_single_character_tags_need_the_pages_legend_claim).
+    switch = next(
+        device
+        for device in model.electrical_devices
+        if device.device_type == "switch"
+    )
+    letters = [
+        record
+        for record in switch.attributes["pdf_electrical"][
+            "modifier_annotations"
+        ]
+        if record["annotation_code"] == "D"
+    ]
+    assert len(letters) == 1
+    assert letters[0]["modifiers"] == ["dimmer"]
+    assert letters[0]["association"] == "letter-is-glyph"
+    assert letters[0]["annotation_source_element_id"]
+    assert not any(
         row.get("annotation_code") == "D" for row in unresolved
     )
     assert not any(

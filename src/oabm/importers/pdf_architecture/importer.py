@@ -4449,6 +4449,7 @@ class _DrawingRegionState:
     scale: _Scale | None = None
     transform: _Transform2D | None = None
     frame_basis: str | None = None
+    frame_roots: frozenset[str] | None = None
     frame_registration: dict[str, object] | None = None
     frame_registration_attempt: dict[str, object] | None = None
     status: str = "unresolved"
@@ -4982,6 +4983,9 @@ def _region_record(
         frame_record = {
             "frame_id": frame_id,
             "basis": region.frame_basis,
+            "evidence_roots": (
+                sorted(region.frame_roots) if region.frame_roots is not None else None
+            ),
             "method": region.transform.method,
             "confidence": region.transform.confidence,
             "meters_per_point": region.transform.meters_per_point,
@@ -5053,6 +5057,39 @@ def _level_measurement_provenance(
 # overlap like that; a wall that only resembles an emitted one (another level,
 # a parallel wall beside it, a longer or shifted collinear run) is distinct.
 _REPEATED_WALL_TOLERANCE_M = DEFAULT_WALL_MATCH_OPTIONS.tolerance_m
+
+# Geometry may be shared between two drawing regions only when their frames
+# rest on the same evidence. The project origin and an explicit two-point
+# registration establish the project frame; a region registered to targets
+# rests on those targets' roots; a sheet_geometry_fallback frame rests on
+# nothing but its own sheet, because the fallback places every sheet's largest
+# wall loop at the same canonical spot, so two fallback regions coincide there
+# by construction and their frames never share evidence.
+_FRAME_ROOT_PROJECT = "project"
+
+
+def _frame_roots(
+    basis: str | None,
+    region_id: str,
+    target_roots: Iterable[frozenset[str]],
+) -> frozenset[str]:
+    """Evidence identities behind a region's frame, for repeat gating.
+
+    A region registered to several agreeing targets rests on all of their
+    roots; when none of the targets carries a root the region can claim only
+    itself. Every other basis either claims the project frame or, for the
+    sheet-geometry fallback, only the region itself.
+    """
+
+    if basis in ("project_origin", "explicit_registration"):
+        return frozenset((_FRAME_ROOT_PROJECT,))
+    if basis == "registered_to_region":
+        roots: frozenset[str] = frozenset()
+        for item in target_roots:
+            roots |= item
+        if roots:
+            return roots
+    return frozenset((f"region:{region_id}",))
 
 
 def _wall_repeats(
@@ -5150,6 +5187,7 @@ class _MaterializedWalls:
         self.cell_m = self.along_limit_m + tolerance_m
         self.contexts: list[_WallContext] = []
         self.region_ids: list[str] = []
+        self.region_roots: list[frozenset[str]] = []
         self._cells: dict[tuple[str, int, int], list[int]] = {}
 
     def _cell(self, wall: Wall) -> tuple[str, int, int]:
@@ -5160,8 +5198,15 @@ class _MaterializedWalls:
             math.floor((start.y + end.y) / 2.0 / self.cell_m),
         )
 
-    def repeat_of(self, wall: Wall, region_id: str) -> int | None:
-        """Index of the emitted wall of another region that ``wall`` repeats."""
+    def repeat_of(
+        self, wall: Wall, region_id: str, frame_roots: frozenset[str],
+    ) -> int | None:
+        """Index of the emitted wall of another region that ``wall`` repeats.
+
+        Only walls whose region's frame rests on shared evidence are
+        considered; geometry that merely landed on the same canonical spot
+        from unrelated frames stays distinct.
+        """
 
         level_id, cx, cy = self._cell(wall)
         best: tuple[float, str, int] | None = None
@@ -5169,6 +5214,8 @@ class _MaterializedWalls:
             for dy in (-1, 0, 1):
                 for index in self._cells.get((level_id, cx + dx, cy + dy), ()):
                     if self.region_ids[index] == region_id:
+                        continue
+                    if not (self.region_roots[index] & frame_roots):
                         continue
                     other = self.contexts[index].wall
                     gap = _wall_repeats(wall, other, self.tolerance_m, self.along_limit_m)
@@ -5179,10 +5226,13 @@ class _MaterializedWalls:
                         best = candidate
         return None if best is None else best[2]
 
-    def add(self, context: _WallContext, region_id: str) -> None:
+    def add(
+        self, context: _WallContext, region_id: str, frame_roots: frozenset[str],
+    ) -> None:
         index = len(self.contexts)
         self.contexts.append(context)
         self.region_ids.append(region_id)
+        self.region_roots.append(frame_roots)
         self._cells.setdefault(self._cell(context.wall), []).append(index)
 
     def record_repeat(self, index: int, repeat: Wall, region_id: str) -> _WallContext:
@@ -5305,6 +5355,9 @@ def import_observations(
     openings: list[Opening] = []
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
+    # The frame roots of the region that emitted each space, so a geometric
+    # space is only dropped for an earlier space of an evidence-linked frame.
+    space_roots: dict[str, frozenset[str]] = {}
     # Every materialized wall and the region that emitted it, so a wall drawn
     # again by another region of the same level is materialized once.
     materialized_walls = _MaterializedWalls(
@@ -5407,6 +5460,22 @@ def import_observations(
             else "sheet_geometry_fallback" if registration_fallback is not None
             else "project_origin"
         )
+        target_roots: list[frozenset[str]] = ()
+        if inter_sheet_registration is not None:
+            roots_by_id = {
+                other.region_id: other.frame_roots
+                for other in resolved_regions
+                if other.frame_roots is not None
+            }
+            target_roots = [
+                roots_by_id[item]
+                for item in (
+                    inter_sheet_registration["target_region_id"],
+                    *inter_sheet_registration["agreeing_region_ids"],
+                )
+                if item in roots_by_id
+            ]
+        region.frame_roots = _frame_roots(region.frame_basis, region.region_id, target_roots)
         record.update(
             {
                 "scale_meters_per_point": scale.meters_per_point,
@@ -5496,6 +5565,7 @@ def import_observations(
                 ambiguities,
             )
             spaces.append(space)
+            space_roots[space.id] = region.frame_roots
             used_space_ids.add(space.id)
             page_walls.extend(shell_walls)
             if slab:
@@ -5537,6 +5607,7 @@ def import_observations(
                 if space.id in used_space_ids:
                     continue
                 spaces.append(space)
+                space_roots[space.id] = region.frame_roots
                 used_space_ids.add(space.id)
                 layered_room_count += 1
                 ambiguities.append({
@@ -5636,17 +5707,20 @@ def import_observations(
             existing_wall_geometry[geometry_key] = context.wall.id
 
         # A wall another region of this level already materialized at the same
-        # canonical place is that wall: it is not emitted again, keeps the
-        # earlier identity, and gains this region's observation as provenance.
-        # Walls that only resemble an emitted wall (another level, another
-        # place, a partial overlap) are distinct and emitted as usual.
+        # canonical place is that wall when the two regions' frames rest on the
+        # same evidence: it is not emitted again, keeps the earlier identity,
+        # and gains this region's observation as provenance. Walls that only
+        # resemble an emitted wall (another level, another place, a partial
+        # overlap, an unrelated fallback frame) are distinct and emitted.
         fresh_walls: list[_WallContext] = []
         host_walls: dict[str, _WallContext] = {}
         repeated_sources: set[str] = set()
         repeated_wall_ids: list[str] = []
         dimension_conflicts: list[str] = []
         for context in page_walls:
-            repeat_index = materialized_walls.repeat_of(context.wall, region.region_id)
+            repeat_index = materialized_walls.repeat_of(
+                context.wall, region.region_id, region.frame_roots,
+            )
             if repeat_index is not None:
                 kept = materialized_walls.record_repeat(
                     repeat_index, context.wall, region.region_id,
@@ -5661,7 +5735,7 @@ def import_observations(
                 ):
                     dimension_conflicts.append(kept.wall.id)
                 continue
-            materialized_walls.add(context, region.region_id)
+            materialized_walls.add(context, region.region_id, region.frame_roots)
             fresh_walls.append(context)
             host_walls[context.wall.id] = context
         page_walls = fresh_walls
@@ -5703,12 +5777,26 @@ def import_observations(
         ]
         for geometric_space in geometric_spaces:
             if any(
-                _footprints_coincide(geometric_space, other, _REPEATED_WALL_TOLERANCE_M)
+                space_roots.get(other.id, frozenset()) & region.frame_roots
+                and _footprints_coincide(geometric_space, other, _REPEATED_WALL_TOLERANCE_M)
                 for other in region_spaces
             ):
                 continue
+            if geometric_space.id in used_space_ids:
+                ambiguities.append(
+                    {
+                        "page": page.page_number,
+                        "code": "duplicate_room_identity_across_pages",
+                        "detail": (
+                            "a geometric wall-loop space repeats a canonical level/room "
+                            "identity; later geometry was not substituted automatically"
+                        ),
+                    }
+                )
+                continue
             geometric_space = _remap_space_wall_ids(geometric_space, wall_id_map)
             spaces.append(geometric_space)
+            space_roots[geometric_space.id] = region.frame_roots
             region_spaces.append(geometric_space)
             used_space_ids.add(geometric_space.id)
 

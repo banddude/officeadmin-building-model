@@ -61,6 +61,15 @@ from .types import (
     RegistrationHint,
     ScaleOverride,
 )
+from .wall_registration import (
+    DEFAULT_WALL_MATCH_OPTIONS,
+    MatchSegment,
+    WallMatch,
+    best_alternative_orientation,
+    composed_frame,
+    match_walls,
+    segments_from_evidence,
+)
 
 _INCH_M = 0.0254
 _PT_PER_INCH = 72.0
@@ -592,6 +601,186 @@ def _sheet_geometry_registration(
     return transform, metadata
 
 
+_INTER_SHEET_REGISTRATION_METHOD = "inter-sheet registration by shared wall vectors"
+_INTER_SHEET_REGISTRATION_METHOD_CONFIDENCE = 0.85
+
+
+@dataclass(frozen=True, slots=True)
+class _SharedFrameTarget:
+    """One already-resolved same-level region a later sheet may register to."""
+
+    region_id: str
+    page: PdfPageObservation
+    bbox_pt: tuple[float, float, float, float]
+    meters_per_point: float
+    rotation_radians: float
+    translation_m: tuple[float, float]
+    confidence: float
+
+
+def _region_target_segments(
+    target: _SharedFrameTarget,
+    use_layers: bool,
+    options: ImportOptions,
+) -> tuple[str, tuple[MatchSegment, ...]]:
+    """The target region's wall segments in one evidence mode."""
+
+    kind, evidence = region_wall_evidence(
+        target.page,
+        target.bbox_pt,
+        target.meters_per_point,
+        options=options,
+        use_wall_layers=use_layers,
+    )
+    return kind, segments_from_evidence(evidence)
+
+
+def _register_region_by_shared_walls(
+    page: PdfPageObservation,
+    scale: _Scale,
+    targets: tuple[_SharedFrameTarget, ...],
+    options: ImportOptions,
+) -> tuple[_Transform2D, dict[str, object]] | None:
+    """Register this sheet to an already-resolved same-level region by shared walls.
+
+    Uses the #104 wall matcher — voting, endpoint verification, and the
+    mirrored/rotated orientation guard — under the same thresholds. Wall
+    evidence is compared like with like: wall-layer segments on both sheets
+    when both have them, otherwise paired wall faces on both. The sheet is
+    accepted only for one placement: enough spread-out inliers at the printed
+    scale ratio, no competing translation, and no mirrored or turned
+    alternative that explains the walls as well. Several same-level targets may
+    accept, but only when they place the sheet identically in the canonical
+    frame. Otherwise this returns None and the caller keeps its existing
+    registration behavior unchanged.
+    """
+
+    if not targets:
+        return None
+    tolerance_m = DEFAULT_WALL_MATCH_OPTIONS.tolerance_m
+    source_views: dict[bool, tuple[str, tuple[tuple[float, float, float, float], tuple[MatchSegment, ...]]]] = {}
+    for use_layers in (True, False):
+        view = sheet_wall_evidence(
+            page, meters_per_point=scale.meters_per_point, use_wall_layers=use_layers,
+        )
+        drawing = view.drawings[0] if view.drawings else None
+        source_views[use_layers] = (
+            view.evidence_kind,
+            (drawing[0], segments_from_evidence(drawing[1])) if drawing else (None, ()),
+        )
+    accepted: list[tuple[_SharedFrameTarget, str, float, WallMatch, tuple[float, float, float, float], tuple[float, float, float, float]]] = []
+    for target in targets:
+        # Compare like with like, as #104 does, and stop at the first mode
+        # where both sheets offer the same kind of wall evidence.
+        for use_layers in (True, False):
+            source_kind, (candidate_bbox, source) = source_views[use_layers]
+            if not source or candidate_bbox is None:
+                continue
+            target_kind, target_segments = _region_target_segments(target, use_layers, options)
+            if target_kind != source_kind or not target_segments:
+                continue
+            break
+        else:
+            continue
+        ratio = scale.meters_per_point / target.meters_per_point
+        match, failures, _ = match_walls(
+            source,
+            target_segments,
+            scale=ratio,
+            target_meters_per_point=target.meters_per_point,
+            options=DEFAULT_WALL_MATCH_OPTIONS,
+        )
+        if match is None or failures:
+            continue
+        alternative_count, _, _ = best_alternative_orientation(
+            source,
+            target_segments,
+            scale=ratio,
+            target_meters_per_point=target.meters_per_point,
+            options=DEFAULT_WALL_MATCH_OPTIONS,
+        )
+        if alternative_count >= len(match.inliers):
+            # A mirrored or turned placement explains the walls as well; the
+            # identity placement is not trusted.
+            continue
+        accepted.append((
+            target,
+            source_kind,
+            ratio,
+            match,
+            composed_frame(
+                target.meters_per_point,
+                target.rotation_radians,
+                target.translation_m,
+                ratio,
+                match.translation_pt,
+            ),
+            candidate_bbox,
+        ))
+    if not accepted:
+        return None
+    ranked = sorted(
+        accepted,
+        key=lambda item: (-len(item[3].inliers), item[0].region_id),
+    )
+    chosen_target, evidence_kind, ratio, match, chosen_placement, source_bbox = ranked[0]
+    corners = (
+        (source_bbox[0], source_bbox[1]), (source_bbox[2], source_bbox[1]),
+        (source_bbox[2], source_bbox[3]), (source_bbox[0], source_bbox[3]),
+    )
+
+    def canonical_point(placement: tuple[float, float, float, float], corner: tuple[float, float]) -> tuple[float, float]:
+        mpp, rotation, tx, ty = placement
+        c, s = math.cos(rotation), math.sin(rotation)
+        x, y = corner
+        return (mpp * (c * x - s * y) + tx, mpp * (s * x + c * y) + ty)
+
+    agreeing = [chosen_target.region_id]
+    for target, _, _, _, placement, _ in ranked[1:]:
+        if all(
+            math.dist(canonical_point(placement, corner), canonical_point(chosen_placement, corner)) <= tolerance_m
+            for corner in corners
+        ):
+            agreeing.append(target.region_id)
+        else:
+            # Same-level regions that place this sheet differently do not
+            # establish one frame; keep the sheet's previous behavior.
+            return None
+    confidence = round(min(chosen_target.confidence, _INTER_SHEET_REGISTRATION_METHOD_CONFIDENCE), 6)
+    registration: dict[str, object] = {
+        "method": _INTER_SHEET_REGISTRATION_METHOD,
+        "derivation": "inferred",
+        "target_region_id": chosen_target.region_id,
+        "target_page": chosen_target.page.page_number,
+        "agreeing_region_ids": sorted(agreeing),
+        "evidence_kind": evidence_kind,
+        "scale_ratio": ratio,
+        "translation_pt": [round(value, 9) for value in match.translation_pt],
+        "wall_inlier_count": len(match.inliers),
+        "wall_coverage": round(match.coverage, 6),
+        "wall_residual_rms_m": (
+            round(match.residual_rms_pt * chosen_target.meters_per_point, 9)
+            if math.isfinite(match.residual_rms_pt) else None
+        ),
+        "wall_inlier_span_m": [
+            round(value * chosen_target.meters_per_point, 6) for value in match.span_pt
+        ],
+        "matched_evidence_sample": [list(pair) for pair in match.inliers[:20]],
+        "tolerance_m": tolerance_m,
+        "confidence": confidence,
+    }
+    mpp, rotation, tx_m, ty_m = chosen_placement
+    transform = _Transform2D(
+        meters_per_point=mpp,
+        rotation_radians=rotation,
+        tx_m=tx_m,
+        ty_m=ty_m,
+        method=_INTER_SHEET_REGISTRATION_METHOD,
+        confidence=confidence,
+    )
+    return transform, registration
+
+
 def _resolve_transform(
     page: PdfPageObservation,
     scale: _Scale | None,
@@ -601,7 +790,19 @@ def _resolve_transform(
     allow_page_local_origin: bool,
     allow_sheet_geometry_fallback: bool = True,
     ambiguities: list[dict[str, object]],
-) -> tuple[_Transform2D | None, _Scale | None, dict[str, object] | None]:
+    shared_frames: tuple[_SharedFrameTarget, ...] = (),
+) -> tuple[
+    _Transform2D | None,
+    _Scale | None,
+    dict[str, object] | None,
+    dict[str, object] | None,
+]:
+    """Resolve one region's sheet-to-canonical transform.
+
+    Returns ``(transform, scale, sheet_geometry_fallback, inter_sheet_registration)``;
+    exactly one of the last two is non-None when a transform is resolved.
+    """
+
     if hint:
         transform = _registration_from_hint(hint)
         if scale is not None:
@@ -616,7 +817,7 @@ def _resolve_transform(
                         "registered_meters_per_point": transform.meters_per_point,
                     }
                 )
-                return None, scale, None
+                return None, scale, None, None
         else:
             scale = _Scale(
                 transform.meters_per_point,
@@ -624,10 +825,10 @@ def _resolve_transform(
                 "scale resolved by two-point registration",
                 None,
             )
-        return transform, scale, None
+        return transform, scale, None, None
 
     if scale is None:
-        return None, None, None
+        return None, None, None, None
     if allow_page_local_origin:
         return (
             _Transform2D(
@@ -640,13 +841,20 @@ def _resolve_transform(
             ),
             scale,
             None,
+            None,
         )
+
+    if allow_sheet_geometry_fallback and shared_frames:
+        registered = _register_region_by_shared_walls(page, scale, shared_frames, options)
+        if registered is not None:
+            transform, registration = registered
+            return transform, scale, None, registration
 
     if allow_sheet_geometry_fallback:
         fallback = _sheet_geometry_registration(page, scale, options)
         if fallback is not None:
             transform, metadata = fallback
-            return transform, scale, metadata
+            return transform, scale, metadata, None
         detail = (
             "additional architectural plan page requires RegistrationHint before "
             "geometry can share the canonical frame"
@@ -664,7 +872,7 @@ def _resolve_transform(
             "detail": detail,
         }
     )
-    return None, scale, None
+    return None, scale, None, None
 
 
 _EXPLICIT_LEVEL_RE = re.compile(
@@ -4157,6 +4365,7 @@ class _DrawingRegionState:
     scale: _Scale | None = None
     transform: _Transform2D | None = None
     frame_basis: str | None = None
+    frame_registration: dict[str, object] | None = None
     status: str = "unresolved"
     entity_counts: dict[str, int] = field(default_factory=dict)
 
@@ -4693,6 +4902,8 @@ def _region_record(
             "rotation_radians": region.transform.rotation_radians,
             "translation_m": [region.transform.tx_m, region.transform.ty_m],
         }
+        if region.frame_registration is not None:
+            frame_record["registered_to_region"] = dict(region.frame_registration)
     confidences = [
         value for value in (
             level_confidence,
@@ -4837,7 +5048,33 @@ def import_observations(
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
     base_geometry_region: str | None = None
-    registration_fallback_provenance: list[Provenance] = []
+    resolved_regions: list[_DrawingRegionState] = []
+    registration_provenance: list[Provenance] = []
+
+    def shared_frames(
+        region: _DrawingRegionState,
+    ) -> tuple[_SharedFrameTarget, ...]:
+        """Already-resolved regions of the region's own level, in page order."""
+
+        return tuple(
+            _SharedFrameTarget(
+                region_id=other.region_id,
+                page=other.page,
+                bbox_pt=(
+                    other.bbox_pt
+                    if other.bbox_pt is not None
+                    else (0.0, 0.0, other.page.width_pt, other.page.height_pt)
+                ),
+                meters_per_point=other.transform.meters_per_point,
+                rotation_radians=other.transform.rotation_radians,
+                translation_m=(other.transform.tx_m, other.transform.ty_m),
+                confidence=other.transform.confidence,
+            )
+            for other in resolved_regions
+            if other is not region
+            and other.level_anchor == region.level_anchor
+            and other.transform is not None
+        )
 
     def import_region(
         page: PdfPageObservation,
@@ -4862,7 +5099,7 @@ def import_observations(
             ambiguities,
             sheet_texts=region.sheet_texts,
         )
-        transform, scale, registration_fallback = _resolve_transform(
+        transform, scale, registration_fallback, inter_sheet_registration = _resolve_transform(
             region_page,
             scale,
             options,
@@ -4870,6 +5107,7 @@ def import_observations(
             allow_page_local_origin=base_geometry_region is None,
             allow_sheet_geometry_fallback=not sheet.multiple,
             ambiguities=ambiguities,
+            shared_frames=shared_frames(region),
         )
         region.scale = scale
         if transform is None or scale is None:
@@ -4878,8 +5116,10 @@ def import_observations(
             record["status"] = "skipped_unresolved_scale_or_registration"
             return
         region.transform = transform
+        region.frame_registration = None
         region.frame_basis = (
-            "explicit_registration" if region.registration_hint is not None
+            "registered_to_region" if inter_sheet_registration is not None
+            else "explicit_registration" if region.registration_hint is not None
             else "sheet_geometry_fallback" if registration_fallback is not None
             else "project_origin"
         )
@@ -4897,7 +5137,7 @@ def import_observations(
         if registration_fallback is not None:
             record["registration_confidence"] = transform.confidence
             record["registration_provenance"] = registration_fallback
-            registration_fallback_provenance.append(
+            registration_provenance.append(
                 Provenance(
                     source_kind="architectural_pdf",
                     derivation=DERIVATION_OBSERVED,
@@ -4906,6 +5146,21 @@ def import_observations(
                     method=transform.method,
                     confidence=transform.confidence,
                     attributes=registration_fallback,
+                )
+            )
+        if inter_sheet_registration is not None:
+            region.frame_registration = inter_sheet_registration
+            record["registration_confidence"] = transform.confidence
+            record["registration_provenance"] = inter_sheet_registration
+            registration_provenance.append(
+                Provenance(
+                    source_kind="architectural_pdf",
+                    derivation=DERIVATION_INFERRED,
+                    source_id=document.source_id,
+                    page=page.page_number,
+                    method=transform.method,
+                    confidence=transform.confidence,
+                    attributes=inter_sheet_registration,
                 )
             )
 
@@ -5135,6 +5390,7 @@ def import_observations(
         if sum(region.entity_counts.values()):
             record["status"] = "geometry_imported"
             region.status = "resolved"
+            resolved_regions.append(region)
             if base_geometry_region is None:
                 base_geometry_region = region.region_id
         else:
@@ -5244,7 +5500,7 @@ def import_observations(
             confidence=model_confidence,
             attributes={"content_sha256": document.content_sha256},
         ),
-        *registration_fallback_provenance,
+        *registration_provenance,
     )
     attributes = {
         "pdf_architecture": {

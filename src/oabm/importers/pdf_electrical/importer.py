@@ -7242,7 +7242,7 @@ def _recognize_legend_shapes(
             box[0] <= text.x_pt <= box[2] and box[1] <= text.y_pt <= box[3]
         ):
             continue
-        if _field_modifier_text(" ".join(text.split())) is not None:
+        if _field_modifier_text(" ".join(text.text.split())) is not None:
             continue
         if not _text_entity_hits(text.text):
             continue

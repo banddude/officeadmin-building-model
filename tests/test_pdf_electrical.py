@@ -5787,35 +5787,37 @@ def _write_pdf_with_content(
         writer.write(handle)
 
 
-_LEGEND_FRAME_BBOX = (72.0, 392.0, 360.0, 720.0)
-_FIELD_DUPLEX_POSITION_PT = (450.0, 600.0)
-_FIELD_DIMMER_POSITION_PT = (450.0, 560.0)
+_LEGEND_FRAME_BBOX = (72.0, 392.0, 720.0, 720.0)
+_FIELD_DUPLEX_POSITION_PT = (850.0, 600.0)
+_FIELD_DIMMER_POSITION_PT = (850.0, 560.0)
 
 
 def _cad_text_legend_content(*, frame_mode: str) -> list[str]:
     """A CAD-style sheet: ruled two-column legend plus two field glyphs.
 
-    Left column FIXTURES, right column ABBREVIATIONS (vector-drawn letters),
-    RECEPTACLES and SWITCHES, all inside one ruled frame. The combination
-    smoke/CO alarm label wraps onto three lines with its glyph beside the
-    middle line.
+    Left column FIXTURES under the legend title; the RECEPTACLES and
+    SWITCHES column sits farther right than the title-matching radius, so
+    only the ruled frame around the title can pull it into the legend. The
+    ABBREVIATIONS section above it holds vector-drawn letters. The
+    combination smoke/CO alarm label wraps onto three lines with its glyph
+    beside the middle line.
     """
 
-    content = [_cad_rect_command(36.0, 36.0, 540.0, 720.0)]
+    content = [_cad_rect_command(36.0, 36.0, 1128.0, 720.0)]
     if frame_mode == "closed":
-        content.append(_cad_rect_command(*_LEGEND_FRAME_BBOX[:2], 288.0, 328.0))
+        content.append(_cad_rect_command(*_LEGEND_FRAME_BBOX[:2], 648.0, 328.0))
     elif frame_mode == "open_top":
         content.extend(
             [
                 _cad_path_command(((72.0, 392.0), (72.0, 720.0)), close=False),
-                _cad_path_command(((360.0, 392.0), (360.0, 720.0)), close=False),
-                _cad_path_command(((72.0, 392.0), (360.0, 392.0)), close=False),
+                _cad_path_command(((720.0, 392.0), (720.0, 720.0)), close=False),
+                _cad_path_command(((72.0, 392.0), (720.0, 392.0)), close=False),
             ]
         )
     content.extend(
         [
-            _cad_path_command(((72.0, 700.0), (360.0, 700.0)), close=False),
-            _cad_path_command(((72.0, 702.0), (360.0, 702.0)), close=False),
+            _cad_path_command(((72.0, 700.0), (720.0, 700.0)), close=False),
+            _cad_path_command(((72.0, 702.0), (720.0, 702.0)), close=False),
             _cad_text_command(84.0, 712.0, "ELECTRICAL SYMBOL LEGEND", 9.0),
             _cad_text_command(84.0, 686.0, "FIXTURES", 7.0),
         ]
@@ -5843,22 +5845,22 @@ def _cad_text_legend_content(*, frame_mode: str) -> list[str]:
         for x, y, text in label_lines:
             content.append(_cad_text_command(x, y, text, 4.0))
     right_rows = [
-        (240.0, 686.0, "ABBREVIATIONS", None, None),
-        (244.0, 668.0, "ARC FAULT CIRCUIT INTERRUPTER", _legend_glyph_abbreviation_letters, 668.0),
-        (244.0, 650.0, "DOOR SWITCH", _legend_glyph_abbreviation_letters, 650.0),
-        (240.0, 630.0, "RECEPTACLES", None, None),
-        (244.0, 612.0, "DUPLEX RECEPTACLE", _legend_glyph_duplex, 612.0),
-        (244.0, 594.0, "FOURPLEX RECEPTACLE", _legend_glyph_fourplex, 594.0),
-        (240.0, 574.0, "SWITCHES", None, None),
-        (244.0, 556.0, "SINGLE POLE TOGGLE", _legend_glyph_toggle, 556.0),
-        (244.0, 538.0, "THREE WAY DIMMER", _legend_glyph_dimmer, 538.0),
+        (580.0, 686.0, "ABBREVIATIONS", None, None),
+        (584.0, 668.0, "ARC FAULT CIRCUIT INTERRUPTER", _legend_glyph_abbreviation_letters, 668.0),
+        (584.0, 650.0, "DOOR SWITCH", _legend_glyph_abbreviation_letters, 650.0),
+        (580.0, 630.0, "RECEPTACLES", None, None),
+        (584.0, 612.0, "DUPLEX RECEPTACLE", _legend_glyph_duplex, 612.0),
+        (584.0, 594.0, "FOURPLEX RECEPTACLE", _legend_glyph_fourplex, 594.0),
+        (580.0, 574.0, "SWITCHES", None, None),
+        (584.0, 556.0, "SINGLE POLE TOGGLE", _legend_glyph_toggle, 556.0),
+        (584.0, 538.0, "THREE WAY DIMMER", _legend_glyph_dimmer, 538.0),
     ]
     for label_x, label_y, text, glyph, glyph_y in right_rows:
         if glyph is None:
             content.append(_cad_text_command(label_x, label_y, text, 7.0))
         else:
-            content.extend(glyph(244.0, float(glyph_y)))
-            content.append(_cad_text_command(268.0, label_y, text, 4.0))
+            content.extend(glyph(584.0, float(glyph_y)))
+            content.append(_cad_text_command(608.0, label_y, text, 4.0))
     content.extend(_legend_glyph_duplex(*_FIELD_DUPLEX_POSITION_PT))
     content.extend(_legend_glyph_dimmer(*_FIELD_DIMMER_POSITION_PT))
     return content
@@ -5900,10 +5902,11 @@ def test_framed_two_column_cad_legend_joins_columns_and_drops_abbreviations(
             },
             {
                 "/Subtype": "/Square",
-                "__rect__": (440.0, 554.0, 460.0, 566.0),
+                "__rect__": (840.0, 554.0, 860.0, 566.0),
                 "/Contents": "D",
             },
         ),
+        width=1200.0,
     )
     extracted = extract_pdf(pdf_path, source_id="test:cad-text-legend")
     repeated = extract_pdf(pdf_path, source_id="test:cad-text-legend")
@@ -5916,7 +5919,7 @@ def test_framed_two_column_cad_legend_joins_columns_and_drops_abbreviations(
     legend_frame = region["legend_frame"]
     assert legend_frame["bbox_pt"] == list(_LEGEND_FRAME_BBOX)
     assert legend_frame["rows_dropped_in_rejected_sections"] == 2
-    assert legend_frame["joined_row_groups"] >= 2
+    assert legend_frame["joined_row_groups"] == 1
     assert legend_frame["inframe_glyph_clusters_excluded"] >= 8
 
     types = Counter(device.device_type for device in model.electrical_devices)
@@ -5949,7 +5952,9 @@ def test_legend_join_is_gated_on_a_real_legend_frame(
 ) -> None:
     pdf_path = tmp_path / f"cad-text-legend-{frame_mode}.pdf"
     _write_pdf_with_content(
-        pdf_path, _cad_text_legend_content(frame_mode=frame_mode)
+        pdf_path,
+        _cad_text_legend_content(frame_mode=frame_mode),
+        width=1200.0,
     )
     extracted = extract_pdf(pdf_path, source_id=f"test:cad-text-legend:{frame_mode}")
 
@@ -5959,7 +5964,7 @@ def test_legend_join_is_gated_on_a_real_legend_frame(
     assert region["heading_text"] == "ELECTRICAL SYMBOL LEGEND"
     assert "legend_frame" not in region
     assert region["classified_row_count"] == 3
-    assert model.electrical_devices == []
+    assert model.electrical_devices == ()
     unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
     assert any(
         row["kind"] == "vector_cluster"

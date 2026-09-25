@@ -4312,9 +4312,16 @@ def _switch_glyph_under_letter(
     tokens = _SWITCH_GLYPH_LETTER_MODIFIERS.get(normalized)
     if tokens is None:
         return None
-    hosts = [
-        candidate
-        for _key, candidate in sorted(candidates.items())
+    # Ganged switches sit 6-7 pt apart, so one letter box can reach a
+    # neighbour's centre: the host is the glyph centred on the letter, and a
+    # second glyph nearly as close leaves the letter unattached.
+    hosts = sorted(
+        (
+            _distance_pt(symbol.x_pt, symbol.y_pt, candidate.x_pt, candidate.y_pt),
+            key,
+            candidate,
+        )
+        for key, candidate in candidates.items()
         if candidate.page == symbol.page
         and _is_drawn_glyph_device(candidate)
         and _type_has_prefix(
@@ -4322,10 +4329,12 @@ def _switch_glyph_under_letter(
             _SWITCH_GLYPH_TARGET_PREFIXES,
         )
         and _annotation_box_holds_point(symbol, candidate.x_pt, candidate.y_pt)
-    ]
-    if len(hosts) != 1:
+    )
+    if not hosts:
         return None
-    return raw, normalized, tokens, hosts[0]
+    if len(hosts) > 1 and hosts[1][0] <= hosts[0][0] + _FIELD_STATUS_AMBIGUITY_PT:
+        return None
+    return raw, normalized, tokens, hosts[0][2]
 
 
 def _attach_annotation_modifier(
@@ -4550,10 +4559,14 @@ def _resolve_unresolved_glyphs_from_annotation_tags(
             position = row.get("position_pt") or {}
             x_pt = float(position.get("x", 0.0))
             y_pt = float(position.get("y", 0.0))
-            if letter_only and not _annotation_box_holds_point(symbol, x_pt, y_pt):
-                # A switch letter resolves only the glyph it is drawn as.
-                continue
-            distance = _annotation_distance_pt(symbol, x_pt, y_pt)
+            if letter_only:
+                # A switch letter resolves only the glyph it is drawn as, and
+                # that glyph is centred on it.
+                if not _annotation_box_holds_point(symbol, x_pt, y_pt):
+                    continue
+                distance = _distance_pt(symbol.x_pt, symbol.y_pt, x_pt, y_pt)
+            else:
+                distance = _annotation_distance_pt(symbol, x_pt, y_pt)
             if distance <= _ANNOTATION_MODIFIER_RADIUS_PT:
                 near_rows.append((distance, row_key, row))
         if is_modifier and not near_rows:
@@ -4563,7 +4576,18 @@ def _resolve_unresolved_glyphs_from_annotation_tags(
         for candidate in glyph_candidates:
             if candidate.page != symbol.page:
                 continue
-            distance = _annotation_distance_pt(symbol, candidate.x_pt, candidate.y_pt)
+            if letter_only:
+                if not _annotation_box_holds_point(
+                    symbol, candidate.x_pt, candidate.y_pt
+                ):
+                    continue
+                distance = _distance_pt(
+                    symbol.x_pt, symbol.y_pt, candidate.x_pt, candidate.y_pt
+                )
+            else:
+                distance = _annotation_distance_pt(
+                    symbol, candidate.x_pt, candidate.y_pt
+                )
             if distance <= _ANNOTATION_MODIFIER_RADIUS_PT:
                 near_glyphs.append((distance, candidate.key, candidate))
 

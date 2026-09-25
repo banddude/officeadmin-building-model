@@ -4086,9 +4086,11 @@ def _annotation_tag_field_commands() -> list[str]:
         # Special-purpose outlet (bbox centre 739.5, 380.5) with a vertical
         # EV-charger note beside it.
         _probe_path(740.0, 380.0, _PROBE_FIXTURE_SHAPE),
-        # A dimmer and a single-pole switch whose own letters sit on them, and
-        # a floodlight within reach of that S box.
+        # A dimmer and a single-pole switch whose own letters sit on them, a
+        # second dimmer whose centre the first D's box also reaches (as in a
+        # gang), and a floodlight within reach of the S box.
         _probe_path(800.0, 380.0, _probe_hexagon(6.0)),
+        _probe_path(815.0, 380.0, _probe_hexagon(6.0)),
         _probe_path(860.0, 380.0, _PROBE_SQUARE),
         _probe_path(885.0, 395.0, _probe_circle(6.0)),
         # A receptacle touched by a 34 pt wide GFI/AFCI box whose centre is
@@ -4130,7 +4132,7 @@ def _annotation_tag_probe_annotations(
         (632.0, 372.0, "GFI"),  # receptacle modifier
         (692.0, 372.0, "GFI/AFCI"),  # both receptacle modifiers
         (758.0, 380.0, "220V FOR EV CHARGER", 10.0, 87.0),  # vertical note
-        (800.0, 380.0, "D", 10.0, 12.0),  # the dimmer's own letter
+        (800.0, 380.0, "D", 30.0, 12.0),  # the dimmer's own letter
         (860.0, 380.0, "S", 10.0, 12.0),  # the switch's own letter
         (598.0, 300.0, "GFI"),  # equidistant from two receptacles
         (900.0, 300.0, "GFI"),  # no adjacent receptacle glyph
@@ -4175,9 +4177,9 @@ def _lane_device_at(model, x_pt: float, y_pt: float):
     return matched[0]
 
 
-# Fourteen field glyphs match the legend; the F5 tag resolves one of the two
+# Fifteen field glyphs match the legend; the F5 tag resolves one of the two
 # stars. No annotation adds a device of its own.
-_ANNOTATION_TAG_PROBE_DEVICE_COUNT = 15
+_ANNOTATION_TAG_PROBE_DEVICE_COUNT = 16
 
 
 def test_annotation_modifier_tags_qualify_adjacent_legend_glyphs(tmp_path) -> None:
@@ -4257,6 +4259,12 @@ def test_annotation_modifier_tags_qualify_adjacent_legend_glyphs(tmp_path) -> No
     assert _lane_device_at(model, 800.0, 380.0).attributes["pdf_electrical"][
         "switch_type"
     ] == "dimmer"
+
+    # The D box also reaches the neighbouring dimmer's centre; the letter
+    # belongs to the glyph centred on it.
+    assert "modifiers" not in _lane_device_at(model, 815.0, 380.0).attributes[
+        "pdf_electrical"
+    ]
 
     # An S drawn as a switch's own letter is that switch, not a surface tag
     # for the floodlight within reach of its box.

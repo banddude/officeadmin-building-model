@@ -607,3 +607,39 @@ def test_text_symbols_sharing_a_frame_are_told_apart_by_their_code(
             "boxed_text_code": "CRD",
         }
     ]
+
+
+def test_status_marker_annotation_on_a_glyph_does_not_strip_its_strokes(
+    tmp_path: Path,
+) -> None:
+    # Review markup often drops the E/N square right on the glyph it marks.
+    # Its letter is markup, not printed text, so the glyph's own inner strokes
+    # must not be cut away as "text glyphs".
+    path = _variant(
+        tmp_path,
+        "status-annotation-on-glyph",
+        (QUAD_EXISTING_MARKER, b""),
+        annotations=(
+            *FIXTURE_ANNOTATIONS,
+            ("E", 298.0, 500.0),
+            ("N", 406.0, 500.0),
+            ("E", 82.0, 500.0),
+        ),
+    )
+    model = _model(path)
+    assert len(model.electrical_devices) == 16
+    for device_type, x, marker, element_id in (
+        ("receptacle_quad", 298.0, "E", "p1:annotation:0003:text"),
+        ("receptacle_quad", 406.0, "N", "p1:annotation:0004:text"),
+        ("receptacle_duplex", 82.0, "E", "p1:annotation:0005:text"),
+    ):
+        lane = _lane(_at(model, device_type, x, 500.0))
+        diagnostics = lane["shape_recognition"]["match_diagnostics"]
+        assert diagnostics["score"] == 1.0
+        assert "stripped-text-glyphs" not in diagnostics["cleanup_actions"]
+        assert lane["status"] == marker
+        assert lane["scope_marker_source_element_id"] == element_id
+    assert not any(
+        row.get("status") == "unbound_status_marker"
+        for row in model.attributes["pdf_electrical"]["unresolved_observations"]
+    )

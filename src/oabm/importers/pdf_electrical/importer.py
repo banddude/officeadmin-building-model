@@ -2765,6 +2765,15 @@ def _make_vector_cluster(
     )
 
 
+# Text the extractor reads from an annotation's /Contents (see the
+# ``p<page>:annotation:<index>:text`` element ids it assigns).
+_ANNOTATION_CONTENTS_TEXT_ID_RE = re.compile(r"^p\d+:annotation:\d+:text$")
+
+
+def _is_annotation_contents_text(observation: PdfTextObservation) -> bool:
+    return _ANNOTATION_CONTENTS_TEXT_ID_RE.fullmatch(observation.element_id) is not None
+
+
 def _strippable_text_tags(
     cluster: _VectorCluster,
     texts: Sequence[PdfTextObservation],
@@ -2772,6 +2781,13 @@ def _strippable_text_tags(
     matched: list[PdfTextObservation] = []
     for observation in texts:
         if observation.page != cluster.page:
+            continue
+        # An annotation's contents are markup laid over the sheet, not ink in
+        # its content stream, and its position is the annotation rectangle's
+        # centre. A status-marker annotation square often sits right on the
+        # glyph it marks, so treating its letter as printed text would strip
+        # the glyph's own inner strokes. Status lookup still reads it.
+        if _is_annotation_contents_text(observation):
             continue
         cleaned = " ".join(observation.text.split())
         if not cleaned or not _STRIPPABLE_FIELD_TEXT_RE.fullmatch(cleaned):

@@ -5499,7 +5499,7 @@ def import_observations(
                         "level/wall identities already emitted from earlier drawing "
                         "regions; the repeated geometry was not emitted again"
                     ),
-                    "drawing_region_ids": sorted(duplicate_wall_sources),
+                    "source_region_ids": sorted(duplicate_wall_sources),
                 }
             )
         page_walls = fresh_walls
@@ -5535,20 +5535,23 @@ def import_observations(
         else:
             record["status"] = "no_supported_geometry_recognized"
             region.status = "no_supported_geometry"
-            region.reason_codes.add("architectural_geometry_unrecognized")
             if duplicate_wall_sources:
+                # Every recognized wall repeated an earlier region: the plan
+                # itself is already modeled, not unrecognized.
                 region.reason_codes.add("repeated_geometry_not_reemitted")
-            ambiguities.append(
-                {
-                    "page": page.page_number,
-                    "code": "architectural_geometry_unrecognized",
-                    "detail": (
-                        "architectural plan resolved level, scale, and registration but "
-                        "produced no supported canonical spatial geometry; the page did "
-                        "not establish the shared geometry frame"
-                    ),
-                }
-            )
+            else:
+                region.reason_codes.add("architectural_geometry_unrecognized")
+                ambiguities.append(
+                    {
+                        "page": page.page_number,
+                        "code": "architectural_geometry_unrecognized",
+                        "detail": (
+                            "architectural plan resolved level, scale, and registration but "
+                            "produced no supported canonical spatial geometry; the page did "
+                            "not establish the shared geometry frame"
+                        ),
+                    }
+                )
         _tag_region_ambiguities(ambiguities, start, region)
         record["resolved_room_count"] = region_room_count
         record["resolved_wall_count"] = len(page_walls)

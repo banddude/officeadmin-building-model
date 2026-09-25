@@ -442,6 +442,97 @@ def test_registered_sheets_let_an_electrical_sheet_see_one_frame(
     assert pending.reason_codes == ("competing_targets",)
 
 
+def test_walls_repeated_by_a_registered_sheet_are_emitted_once(tmp_path: Path) -> None:
+    # Every sheet prints the same SHEET NO, like a real plan set whose anchor
+    # token repeats. The second sheet registers to the first and draws the
+    # same walls, which already have their canonical entities: the model keeps
+    # one wall set instead of failing validation on duplicate entity ids.
+    path = _write(
+        tmp_path / "plans.pdf",
+        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
+        ("A101", (replace(SECOND_COPY, label="NOTE: GRID"),)),
+    )
+    model = _import(path)
+
+    first, second = _regions(model)
+    assert first["status"] == "resolved"
+    assert second["status"] == "no_supported_geometry"
+    assert second["reason_codes"] == ["repeated_geometry_not_reemitted"]
+    assert sorted(second["entity_counts"].values()) == [0, 0, 0, 0, 0]
+    assert second["repeated_geometry_region_ids"] == [first["region_id"]]
+    # The registration itself stays visible on the repeated region.
+    assert second["shared_wall_registration"]["status"] == "registered"
+    [duplicate] = [
+        item for item in model.attributes["pdf_architecture"]["ambiguities"]
+        if item["code"] == "duplicate_wall_identity_across_pages"
+    ]
+    assert duplicate["source_region_ids"] == [first["region_id"]]
+    assert "wall(s) repeat" in duplicate["detail"]
+
+    first_only = _import(_write(tmp_path / "first.pdf", ("A101", (replace(FIRST, label="NOTE: GRID"),))))
+    assert len(model.walls) == len(first_only.walls)
+    assert _wall_points(model) == _wall_points(first_only)
+    validate_model(model)
+
+
+def test_a_later_different_plan_still_emits_its_walls(tmp_path: Path) -> None:
+    # Deduplication suppresses only exact canonical repeats: after sheet 2
+    # (a repeat of sheet 1) is reduced to nothing, sheet 3's different plan
+    # still resolves and emits its own walls.
+    path = _write(
+        tmp_path / "plans.pdf",
+        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
+        ("A101", (replace(SECOND_COPY, label="NOTE: GRID"),)),
+        ("A101", (replace(OTHER, label="NOTE: GRID"),)),
+    )
+    model = _import(path)
+
+    first, second, third = _regions(model)
+    assert (first["status"], second["status"], third["status"]) == (
+        "resolved", "no_supported_geometry", "resolved",
+    )
+    assert third["entity_counts"]["walls"] > 0
+    assert third["repeated_geometry_region_ids"] == []
+    first_and_third = _import(_write(
+        tmp_path / "two.pdf",
+        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
+        ("A101", (replace(OTHER, label="NOTE: GRID"),)),
+    ))
+    assert _wall_points(model) == _wall_points(first_and_third)
+    validate_model(model)
+
+
+def test_repeated_sheets_do_not_compete_as_electrical_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Three registered copies of one plan leave the model with one resolved
+    # region, so the electrical sheet has a single target and registers; with
+    # the registration disabled the extra fallback frames compete as before.
+    path = _write(
+        tmp_path / "plans.pdf",
+        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
+        ("A101", (replace(SECOND_COPY, label="NOTE: GRID"),)),
+        ("A101", (replace(FIRST, origin=(ORIGIN[0] - 150.0, ORIGIN[1] + 200.0), label="NOTE: GRID"),)),
+    )
+    source = extract_pdf(path, source_id="fixture:architecture")
+    electrical = extract_pdf(
+        _write(tmp_path / "power.pdf", ("E101", (replace(FIRST, origin=(500.0, 350.0), label="ROOM: POWER"),))),
+        source_id="fixture:electrical",
+    )
+    model = _import(path, source=source)
+
+    resolved = [region for region in _regions(model) if region["status"] == "resolved"]
+    assert [region["page"] for region in resolved] == [1]
+    [registered] = register_electrical_sheets(model, source, electrical).pages
+    assert registered.status == REGISTERED
+    assert registered.record["registration"]["agreeing_region_ids"] == [resolved[0]["region_id"]]
+
+    unregistered = _import_without_shared_walls(path, monkeypatch)
+    [pending] = register_electrical_sheets(unregistered, source, electrical).pages
+    assert pending.status == REGISTRATION_PENDING
+    assert pending.reason_codes == ("competing_targets",)
+
+
 def test_registration_is_deterministic_and_order_independent(tmp_path: Path) -> None:
     path = _write(tmp_path / "plans.pdf", ("A101", (FIRST,)), ("A102", (SECOND_COPY,)))
     first = _import(path).to_json()

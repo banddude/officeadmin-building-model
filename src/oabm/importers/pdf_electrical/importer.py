@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import hashlib
 from collections import Counter
 import math
@@ -457,6 +458,8 @@ class _LegendRow:
     orientation: int
     horizontal_gap_pt: float
     label_source_element_ids: tuple[str, ...] = ()
+    # The wrapped source lines of a multi-line label, first line first.
+    label_lines: tuple[PdfTextObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3389,50 +3392,27 @@ def _heading_distance_to_group(
     return distance
 
 
-def _section_heading_min_size_pt(
-    rows: Sequence[_LegendRow],
-) -> float | None:
-    """Smallest rendered size a section heading over ``rows`` may have.
-
-    CAD legends draw section headings (FIXTURES, RECEPTACLES, ...) larger than
-    the 7 pt-ish row labels, while a wrapped label's continuation lines render
-    at the label size. Without a size floor, a continuation line sitting beside
-    its own row group outranks the real legend title and the legend is never
-    detected. Mirrors the ratio used by ``_drop_rows_in_rejected_sections``.
-    """
-
-    sizes = sorted(
-        row.label.font_size_pt for row in rows if row.label.font_size_pt
-    )
-    if not sizes:
-        return None
-    return 1.15 * sizes[len(sizes) // 2]
-
-
 def _nearest_section_heading(
     rows: Sequence[_LegendRow],
     texts: Sequence[PdfTextObservation],
     vectors: Sequence[PdfVectorPathObservation],
     *,
     allow_beside: bool,
-    require_legend_title: bool = False,
 ) -> PdfTextObservation | None:
     if not rows:
         return None
     page = rows[0].cluster.page
-    row_label_ids = {row.label.element_id for row in rows}
-    min_size_pt = _section_heading_min_size_pt(rows)
+    # Every line of a wrapped row label is label text, never the group's heading.
+    row_label_ids = {
+        element_id
+        for row in rows
+        for element_id in (row.label_source_element_ids or (row.label.element_id,))
+    }
     candidates: list[tuple[float, float, str, PdfTextObservation]] = []
     for observation in texts:
         if observation.page != page or observation.element_id in row_label_ids:
             continue
         if not _looks_like_section_heading(observation):
-            continue
-        if min_size_pt is not None and (
-            observation.font_size_pt or 0.0
-        ) < min_size_pt:
-            continue
-        if require_legend_title and not _is_legend_heading(observation):
             continue
         distance = _heading_distance_to_group(
             observation,
@@ -3462,7 +3442,10 @@ def _dense_legend_group_is_valid(
     if len(rows) < _LEGEND_TABLE_MIN_ROWS:
         return False
     if not all(
-        _is_glyph_cluster(row.cluster) and _is_short_legend_label(row.label)
+        _is_glyph_cluster(row.cluster)
+        and _is_short_legend_label(
+            row.label_lines[0] if row.label_lines else row.label
+        )
         for row in rows
     ):
         return False
@@ -3492,7 +3475,11 @@ def _dense_legend_group_is_valid(
     if numeric_rows * 2 >= len(nearby_text):
         return False
 
-    paired_label_ids = {row.label.element_id for row in rows}
+    paired_label_ids = {
+        element_id
+        for row in rows
+        for element_id in (row.label_source_element_ids or (row.label.element_id,))
+    }
     if len(paired_label_ids) * 2 <= len(nearby_text):
         return False
     return True
@@ -3537,52 +3524,153 @@ def _heading_is_explicitly_referenced_from_other_page(
     return False
 
 
-def _label_wrap_lines(
-    label: PdfTextObservation,
-    texts: Sequence[PdfTextObservation],
-    *,
-    claimed: set[str],
-) -> tuple[PdfTextObservation, ...]:
-    """Wrapped continuation lines directly below a legend row label.
+_LEGEND_CONTINUATION_X_TOLERANCE_PT = 1.5
+_LEGEND_CONTINUATION_MAX_PITCH_RATIO = 1.5
+_LEGEND_CONTINUATION_FONT_RATIO = 1.2
+# A baseline sits below the visual middle of a capital line by about a third of
+# the rendered size; glyphs are drawn centred on that middle, not the baseline.
+_TEXT_VISUAL_CENTER_RATIO = 0.35
 
-    CAD legends wrap long labels onto 2-5 lines while the row pairs with the
-    first line only. The continuation lines are label text, not section
-    headings or field labels, and their words belong to the row's
-    classification text ("DUPLEX 2X" / "RECEPTACLE" is a duplex receptacle,
-    "CAT 6 COMPUTER" / "HOOK-UP" is a data outlet). A continuation renders at
-    the label size, starts at the label's column within the first line's own
-    width, and chains downward within a few line pitches.
+
+def _is_continuation_pair(
+    upper: PdfTextObservation,
+    lower: PdfTextObservation,
+) -> bool:
+    """Whether ``lower`` can be the next wrapped line of the label ``upper``."""
+
+    if upper.page != lower.page:
+        return False
+    if not upper.font_size_pt or not lower.font_size_pt:
+        return False
+    if upper.font_size_pt <= 0.0 or lower.font_size_pt <= 0.0:
+        return False
+    ratio = max(upper.font_size_pt, lower.font_size_pt) / min(
+        upper.font_size_pt,
+        lower.font_size_pt,
+    )
+    if ratio > _LEGEND_CONTINUATION_FONT_RATIO:
+        return False
+    if abs(upper.x_pt - lower.x_pt) > _LEGEND_CONTINUATION_X_TOLERANCE_PT:
+        return False
+    pitch = upper.y_pt - lower.y_pt
+    return (
+        0.0
+        < pitch
+        <= _LEGEND_CONTINUATION_MAX_PITCH_RATIO * upper.font_size_pt
+    )
+
+
+def _legend_label_blocks(
+    labels: Sequence[PdfTextObservation],
+    clusters: Sequence[_VectorCluster],
+) -> tuple[tuple[PdfTextObservation, ...], ...]:
+    """Group the wrapped lines of legend labels into one block per legend row.
+
+    CAD legends wrap long labels onto several lines that share the label's
+    left edge and sit one line pitch apart. The row's glyph is drawn beside
+    one of those lines, not necessarily the first, so pairing each line with
+    its nearest glyph splits one label into pieces and gives the glyph the
+    wrong words. Lines are first chained by column and pitch; a chain beside
+    several glyphs is then split at each glyph's own line, so wrapped lines
+    stay with the glyph above them and lines above the first glyph belong to
+    it. A chain with no glyph beside it stays as single lines.
     """
 
-    if not label.font_size_pt or label.font_size_pt <= 0.0:
-        return ()
-    label_width = 0.5 * len(label.text) * label.font_size_pt
-    max_pitch = 4.8 * label.font_size_pt
-    lines: list[PdfTextObservation] = []
-    last = label
-    while True:
-        following = [
-            text for text in texts
-            if text.page == label.page
-            and text.element_id not in claimed
-            and text.font_size_pt is not None
-            and 0.0 < text.font_size_pt < 1.15 * label.font_size_pt
-            and label.x_pt - 2.0 <= text.x_pt <= label.x_pt + label_width
-            and 0.0 < last.y_pt - text.y_pt <= max_pitch
-        ]
-        if not following:
-            return tuple(lines)
-        next_line = min(
-            following,
-            key=lambda text: (
-                last.y_pt - text.y_pt,
-                text.x_pt,
-                text.element_id,
-            ),
+    ordered = sorted(
+        labels,
+        key=lambda item: (item.page, item.x_pt, -item.y_pt, item.element_id),
+    )
+    keys = [(item.page, item.x_pt) for item in ordered]
+    predecessor: dict[str, PdfTextObservation] = {}
+    for lower in ordered:
+        low = bisect.bisect_left(
+            keys,
+            (lower.page, lower.x_pt - _LEGEND_CONTINUATION_X_TOLERANCE_PT),
         )
-        lines.append(next_line)
-        claimed.add(next_line.element_id)
-        last = next_line
+        high = bisect.bisect_right(
+            keys,
+            (lower.page, lower.x_pt + _LEGEND_CONTINUATION_X_TOLERANCE_PT),
+        )
+        above = [
+            upper
+            for upper in ordered[low:high]
+            if upper.element_id != lower.element_id
+            and _is_continuation_pair(upper, lower)
+        ]
+        if above:
+            predecessor[lower.element_id] = min(
+                above,
+                key=lambda item: (item.y_pt - lower.y_pt, item.element_id),
+            )
+    successor: dict[str, PdfTextObservation] = {}
+    for lower in ordered:
+        upper = predecessor.get(lower.element_id)
+        if upper is None:
+            continue
+        current = successor.get(upper.element_id)
+        if current is None or (
+            upper.y_pt - lower.y_pt,
+            lower.element_id,
+        ) < (upper.y_pt - current.y_pt, current.element_id):
+            successor[upper.element_id] = lower
+    heads = [
+        label
+        for label in ordered
+        if label.element_id not in predecessor
+        or successor.get(predecessor[label.element_id].element_id) is not label
+    ]
+
+    blocks: list[tuple[PdfTextObservation, ...]] = []
+    for head in heads:
+        chain = [head]
+        while chain[-1].element_id in successor:
+            chain.append(successor[chain[-1].element_id])
+        if len(chain) == 1:
+            blocks.append((head,))
+            continue
+        top = chain[0]
+        bottom = chain[-1]
+
+        def visual_center(line: PdfTextObservation) -> float:
+            return line.y_pt + _TEXT_VISUAL_CENTER_RATIO * float(line.font_size_pt or 0.0)
+
+        anchors: set[int] = set()
+        for cluster in clusters:
+            if cluster.page != top.page:
+                continue
+            gap = top.x_pt - cluster.bbox_pt[2]
+            if not 0.0 <= gap <= _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT:
+                continue
+            center_y = cluster.center_pt[1]
+            if not (
+                bottom.y_pt - _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+                <= center_y
+                <= top.y_pt + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+            ):
+                continue
+            anchors.add(
+                min(
+                    range(len(chain)),
+                    key=lambda index: (
+                        abs(visual_center(chain[index]) - center_y),
+                        index,
+                    ),
+                )
+            )
+        if not anchors:
+            blocks.extend((line,) for line in chain)
+            continue
+        starts = sorted(anchors)
+        starts[0] = 0
+        for index, start in enumerate(starts):
+            stop = starts[index + 1] if index + 1 < len(starts) else len(chain)
+            blocks.append(tuple(chain[start:stop]))
+    return tuple(
+        sorted(
+            blocks,
+            key=lambda block: (block[0].page, -block[0].y_pt, block[0].x_pt, block[0].element_id),
+        )
+    )
 
 
 def _legend_row_candidates(
@@ -3602,11 +3690,22 @@ def _legend_row_candidates(
             PdfTextObservation,
             tuple[str, str, float] | None,
             tuple[Mapping[str, Any], ...],
+            tuple[PdfTextObservation, ...],
         ]
     ] = []
-    for label in texts:
-        if not _is_short_legend_label(label):
-            continue
+    blocks = _legend_label_blocks(
+        [label for label in texts if _is_short_legend_label(label)],
+        clusters,
+    )
+    for block in blocks:
+        first = block[0]
+        # A wrapped label is classified and reported as its whole text; the
+        # row keeps the first line's position.
+        label = (
+            first
+            if len(block) == 1
+            else replace(first, text=" ".join(line.text for line in block))
+        )
         classification, ranked = _classify_semantic_text(
             label.text,
             rules,
@@ -3615,7 +3714,10 @@ def _legend_row_candidates(
         for cluster in clusters:
             if cluster.page != label.page:
                 continue
-            vertical_delta = abs(label.y_pt - cluster.center_pt[1])
+            vertical_delta = min(
+                abs(line.y_pt - cluster.center_pt[1])
+                for line in block
+            )
             if vertical_delta > _LEGEND_ROW_VERTICAL_TOLERANCE_PT:
                 continue
             horizontal_gap = label.x_pt - cluster.bbox_pt[2]
@@ -3631,6 +3733,7 @@ def _legend_row_candidates(
                     label,
                     classification,
                     tuple(ranked),
+                    block,
                 )
             )
 
@@ -3647,6 +3750,7 @@ def _legend_row_candidates(
         label,
         classification,
         ranked,
+        block,
     ) in possible:
         cluster_key = (cluster.page, cluster.geometry_key)
         if label.element_id in used_labels or cluster_key in used_clusters:
@@ -3661,36 +3765,14 @@ def _legend_row_candidates(
                 classification_candidates=ranked,
                 orientation=1,
                 horizontal_gap_pt=horizontal_gap,
-            )
-        )
-
-    # Fold wrapped label continuation lines into their row: the merged text is
-    # what the vocabulary rules classify, and the continuation element ids stay
-    # claimed as legend label text.
-    enriched: list[_LegendRow] = []
-    claimed_wraps: set[str] = {row.label.element_id for row in rows}
-    for row in rows:
-        wraps = _label_wrap_lines(row.label, texts, claimed=claimed_wraps)
-        if not wraps:
-            enriched.append(row)
-            continue
-        merged_text = " ".join([row.label.text, *(line.text for line in wraps)])
-        merged_classification, merged_ranked = _classify_semantic_text(
-            merged_text,
-            rules,
-            ambiguity_margin=ambiguity_margin,
-        )
-        enriched.append(
-            replace(
-                row,
-                classification=merged_classification,
-                classification_candidates=merged_ranked,
-                label_source_element_ids=tuple(
-                    [row.label.element_id, *[line.element_id for line in wraps]]
+                label_source_element_ids=(
+                    tuple(line.element_id for line in block)
+                    if len(block) > 1
+                    else ()
                 ),
+                label_lines=block if len(block) > 1 else (),
             )
         )
-    rows = enriched
     return tuple(
         sorted(
             rows,

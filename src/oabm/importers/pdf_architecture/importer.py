@@ -4453,6 +4453,7 @@ class _DrawingRegionState:
     frame_registration_attempt: dict[str, object] | None = None
     status: str = "unresolved"
     entity_counts: dict[str, int] = field(default_factory=dict)
+    repeated_wall_count: int = 0
 
 
 @dataclass(slots=True)
@@ -5016,6 +5017,8 @@ def _region_record(
         "entity_counts": dict(sorted(region.entity_counts.items())),
         "repeated_geometry_region_ids": sorted(region.repeated_with),
     }
+    if region.repeated_wall_count:
+        record["repeated_wall_count"] = region.repeated_wall_count
     if region.frame_registration_attempt is not None:
         record["shared_wall_registration"] = dict(region.frame_registration_attempt)
     return record
@@ -5040,6 +5043,167 @@ def _level_measurement_provenance(
         source_element_id=measurement.source_element_id,
         attributes=attributes,
     )
+
+
+# A wall drawn again by another drawing region is the same wall when its
+# centerline lies on an already-materialized wall of the same level: both
+# endpoints correspond within the wall matcher's endpoint tolerance across the
+# wall, and within the wall's thickness along it (a closed-loop wall ends at
+# the loop vertex, a partial one at its faces' ends). Two real walls cannot
+# overlap like that; a wall that only resembles an emitted one (another level,
+# a parallel wall beside it, a longer or shifted collinear run) is distinct.
+_REPEATED_WALL_TOLERANCE_M = DEFAULT_WALL_MATCH_OPTIONS.tolerance_m
+
+
+def _wall_repeats(
+    candidate: Wall,
+    emitted: Wall,
+    tolerance_m: float,
+    along_limit_m: float,
+) -> float | None:
+    """Largest endpoint gap when ``candidate`` repeats ``emitted``, else ``None``."""
+
+    if candidate.level_id != emitted.level_id:
+        return None
+    a0, a1 = emitted.centerline.points[0], emitted.centerline.points[-1]
+    b0, b1 = candidate.centerline.points[0], candidate.centerline.points[-1]
+    length = math.hypot(a1.x - a0.x, a1.y - a0.y)
+    if length <= 1e-9:
+        return None
+    ux, uy = (a1.x - a0.x) / length, (a1.y - a0.y) / length
+    along_tolerance = min(
+        max(tolerance_m, emitted.thickness_m, candidate.thickness_m), along_limit_m,
+    )
+    best: float | None = None
+    for first, second in ((b0, b1), (b1, b0)):
+        worst = 0.0
+        for a, b in ((a0, first), (a1, second)):
+            dx, dy = b.x - a.x, b.y - a.y
+            across = abs(dx * uy - dy * ux)
+            along = abs(dx * ux + dy * uy)
+            if across > tolerance_m or along > along_tolerance:
+                break
+            worst = max(worst, math.hypot(dx, dy))
+        else:
+            if best is None or worst < best:
+                best = worst
+    return best
+
+
+def _footprints_coincide(first: Space, second: Space, tolerance_m: float) -> bool:
+    """Whether two footprints have the same vertices within ``tolerance_m``."""
+
+    a = first.footprint.points
+    b = second.footprint.points
+    if len(a) != len(b):
+        return False
+
+    def covered(points: tuple[Point3, ...], others: tuple[Point3, ...]) -> bool:
+        return all(
+            any(math.hypot(p.x - q.x, p.y - q.y) <= tolerance_m for q in others)
+            for p in points
+        )
+
+    return covered(a, b) and covered(b, a)
+
+
+def _remap_space_wall_ids(space: Space, wall_id_map: dict[str, str]) -> Space:
+    """Point a space's recorded wall ids at the walls actually emitted."""
+
+    lane = space.attributes.get("pdf_architecture")
+    if not wall_id_map or not isinstance(lane, dict) or "wall_ids" not in lane:
+        return space
+    wall_ids = sorted({wall_id_map.get(item, item) for item in lane["wall_ids"]})
+    if wall_ids == lane["wall_ids"]:
+        return space
+    provenance = tuple(
+        replace(item, attributes={**item.attributes, "wall_ids": wall_ids})
+        if "wall_ids" in item.attributes else item
+        for item in space.provenance
+    )
+    return replace(
+        space,
+        provenance=provenance,
+        attributes={**space.attributes, "pdf_architecture": {**lane, "wall_ids": wall_ids}},
+    )
+
+
+class _MaterializedWalls:
+    """Every wall emitted so far, with the drawing region that emitted it.
+
+    Indexed by level and centerline midpoint so a later region's wall can be
+    recognized as a repeat of an existing canonical wall in constant time.
+    """
+
+    def __init__(self, tolerance_m: float, max_wall_thickness_m: float) -> None:
+        self.tolerance_m = tolerance_m
+        self.along_limit_m = max(tolerance_m, max_wall_thickness_m)
+        # Corresponding endpoints of a repeat differ by at most the along and
+        # across bounds, so repeat midpoints lie within one cell of each other.
+        self.cell_m = self.along_limit_m + tolerance_m
+        self.contexts: list[_WallContext] = []
+        self.region_ids: list[str] = []
+        self._cells: dict[tuple[str, int, int], list[int]] = {}
+
+    def _cell(self, wall: Wall) -> tuple[str, int, int]:
+        start, end = wall.centerline.points[0], wall.centerline.points[-1]
+        return (
+            wall.level_id,
+            math.floor((start.x + end.x) / 2.0 / self.cell_m),
+            math.floor((start.y + end.y) / 2.0 / self.cell_m),
+        )
+
+    def repeat_of(self, wall: Wall, region_id: str) -> int | None:
+        """Index of the emitted wall of another region that ``wall`` repeats."""
+
+        level_id, cx, cy = self._cell(wall)
+        best: tuple[float, str, int] | None = None
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for index in self._cells.get((level_id, cx + dx, cy + dy), ()):
+                    if self.region_ids[index] == region_id:
+                        continue
+                    other = self.contexts[index].wall
+                    gap = _wall_repeats(wall, other, self.tolerance_m, self.along_limit_m)
+                    if gap is None:
+                        continue
+                    candidate = (gap, other.id, index)
+                    if best is None or candidate < best:
+                        best = candidate
+        return None if best is None else best[2]
+
+    def add(self, context: _WallContext, region_id: str) -> None:
+        index = len(self.contexts)
+        self.contexts.append(context)
+        self.region_ids.append(region_id)
+        self._cells.setdefault(self._cell(context.wall), []).append(index)
+
+    def record_repeat(self, index: int, repeat: Wall, region_id: str) -> _WallContext:
+        """Add the repeating region's observation to the kept wall's provenance.
+
+        The kept wall keeps its identity, geometry, and confidence; only the
+        repeat's own geometric observation (its first provenance entry) is
+        appended, tagged with both drawing regions. Measurement provenance
+        (height evidence) is the same level/room evidence and is not repeated.
+        """
+
+        kept = self.contexts[index]
+        added = tuple(
+            replace(
+                item,
+                attributes={
+                    **item.attributes,
+                    "drawing_region_id": region_id,
+                    "repeats_drawing_region_id": self.region_ids[index],
+                },
+            )
+            for item in repeat.provenance[:1]
+            if item not in kept.wall.provenance
+        )
+        if added:
+            kept = replace(kept, wall=replace(kept.wall, provenance=kept.wall.provenance + added))
+            self.contexts[index] = kept
+        return kept
 
 
 def _level_entity(source_id: str, info: _LevelInfo) -> Level:
@@ -5129,15 +5293,16 @@ def import_observations(
     }
 
     spaces: list[Space] = []
-    wall_contexts: list[_WallContext] = []
     slabs: list[Slab] = []
     ceilings: list[Ceiling] = []
     openings: list[Opening] = []
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
-    # Canonical wall identity -> the region that emitted it, so a wall drawn on
-    # several sheets of one level is materialized once.
-    used_wall_ids: dict[str, str] = {}
+    # Every materialized wall and the region that emitted it, so a wall drawn
+    # again by another region of the same level is materialized once.
+    materialized_walls = _MaterializedWalls(
+        _REPEATED_WALL_TOLERANCE_M, options.max_wall_thickness_m,
+    )
     base_geometry_region: str | None = None
     resolved_regions: list[_DrawingRegionState] = []
     registration_provenance: list[Provenance] = []
@@ -5448,68 +5613,103 @@ def import_observations(
                 round(context.wall.thickness_m, 6),
             )
 
-        existing_wall_geometry = {wall_geometry_key(context) for context in page_walls}
+        # Wall ids a space of this region may name that resolve to another
+        # emitted wall: a geometric wall already emitted by a room shell of
+        # this region, or a wall repeating an earlier region's wall.
+        wall_id_map: dict[str, str] = {}
+        existing_wall_geometry = {
+            wall_geometry_key(context): context.wall.id for context in page_walls
+        }
         for context in geometric_line_walls:
             geometry_key = wall_geometry_key(context)
-            if geometry_key not in existing_wall_geometry:
-                page_walls.append(context)
-                existing_wall_geometry.add(geometry_key)
-
-        existing_space_footprints = {
-            tuple(
-                sorted(
-                    (round(point.x, 6), round(point.y, 6))
-                    for point in space.footprint.points
-                )
-            )
-            for space in spaces
-            if space.level_id == level.id
-        }
-        for geometric_space in geometric_spaces:
-            footprint_key = tuple(
-                sorted(
-                    (round(point.x, 6), round(point.y, 6))
-                    for point in geometric_space.footprint.points
-                )
-            )
-            if footprint_key not in existing_space_footprints:
-                spaces.append(geometric_space)
-                used_space_ids.add(geometric_space.id)
-                existing_space_footprints.add(footprint_key)
-
-        fresh_walls: list[_WallContext] = []
-        duplicate_wall_sources: set[str] = set()
-        for context in page_walls:
-            source_region = used_wall_ids.get(context.wall.id)
-            if source_region is not None:
-                duplicate_wall_sources.add(source_region)
+            if geometry_key in existing_wall_geometry:
+                wall_id_map[context.wall.id] = existing_wall_geometry[geometry_key]
                 continue
-            used_wall_ids[context.wall.id] = region.region_id
+            page_walls.append(context)
+            existing_wall_geometry[geometry_key] = context.wall.id
+
+        # A wall another region of this level already materialized at the same
+        # canonical place is that wall: it is not emitted again, keeps the
+        # earlier identity, and gains this region's observation as provenance.
+        # Walls that only resemble an emitted wall (another level, another
+        # place, a partial overlap) are distinct and emitted as usual.
+        fresh_walls: list[_WallContext] = []
+        host_walls: dict[str, _WallContext] = {}
+        repeated_sources: set[str] = set()
+        repeated_wall_ids: list[str] = []
+        dimension_conflicts: list[str] = []
+        for context in page_walls:
+            repeat_index = materialized_walls.repeat_of(context.wall, region.region_id)
+            if repeat_index is not None:
+                kept = materialized_walls.record_repeat(
+                    repeat_index, context.wall, region.region_id,
+                )
+                repeated_sources.add(materialized_walls.region_ids[repeat_index])
+                repeated_wall_ids.append(kept.wall.id)
+                wall_id_map[context.wall.id] = kept.wall.id
+                host_walls[kept.wall.id] = kept
+                if (
+                    abs(kept.wall.thickness_m - context.wall.thickness_m) > _REPEATED_WALL_TOLERANCE_M
+                    or abs(kept.wall.height_m - context.wall.height_m) > _REPEATED_WALL_TOLERANCE_M
+                ):
+                    dimension_conflicts.append(kept.wall.id)
+                continue
+            materialized_walls.add(context, region.region_id)
             fresh_walls.append(context)
-        if duplicate_wall_sources:
-            # A wall at the same canonical place on the same level already has
-            # its entity; the repeated drawing adds no second wall.
-            region.repeated_with.update(duplicate_wall_sources)
+            host_walls[context.wall.id] = context
+        page_walls = fresh_walls
+        region.repeated_wall_count = len(repeated_wall_ids)
+        if repeated_sources:
+            region.repeated_with.update(repeated_sources)
             ambiguities.append(
                 {
                     "page": page.page_number,
                     "code": "duplicate_wall_identity_across_pages",
                     "detail": (
-                        f"{len(page_walls) - len(fresh_walls)} wall(s) repeat canonical "
-                        "level/wall identities already emitted from earlier drawing "
-                        "regions; the repeated geometry was not emitted again"
+                        f"{len(repeated_wall_ids)} wall(s) repeat walls already emitted "
+                        "at the same canonical place on this level by earlier drawing "
+                        "regions; they were not emitted again and the earlier walls "
+                        "record this region's observation"
                     ),
-                    "source_region_ids": sorted(duplicate_wall_sources),
+                    "source_region_ids": sorted(repeated_sources),
+                    "wall_ids": sorted(set(repeated_wall_ids)),
                 }
             )
-        page_walls = fresh_walls
+        if dimension_conflicts:
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "repeated_wall_dimension_conflict",
+                    "detail": (
+                        f"{len(dimension_conflicts)} repeated wall(s) disagree with the "
+                        "emitted wall's thickness or height by more than "
+                        f"{_REPEATED_WALL_TOLERANCE_M} m; the earlier wall was kept "
+                        "unchanged"
+                    ),
+                    "source_region_ids": sorted(repeated_sources),
+                    "wall_ids": sorted(set(dimension_conflicts)),
+                }
+            )
 
-        wall_contexts.extend(page_walls)
+        region_spaces = [
+            space for space in spaces if space.level_id == level.id
+        ]
+        for geometric_space in geometric_spaces:
+            if any(
+                _footprints_coincide(geometric_space, other, _REPEATED_WALL_TOLERANCE_M)
+                for other in region_spaces
+            ):
+                continue
+            geometric_space = _remap_space_wall_ids(geometric_space, wall_id_map)
+            spaces.append(geometric_space)
+            region_spaces.append(geometric_space)
+            used_space_ids.add(geometric_space.id)
+
         page_openings = _make_openings(
             region_page,
             transform,
             level,
-            tuple(page_walls),
+            tuple(host_walls[wall_id] for wall_id in sorted(host_walls)),
             document.source_id,
             options,
             ambiguities,
@@ -5526,7 +5726,10 @@ def import_observations(
             "ceilings": region_ceiling_count,
             "openings": len(page_openings),
         }
-        if sum(region.entity_counts.values()):
+        if sum(region.entity_counts.values()) or region.repeated_wall_count:
+            # A region whose every wall repeats an earlier region is resolved
+            # too: its frame placed its walls exactly on already-emitted walls,
+            # which now record its observation.
             record["status"] = "geometry_imported"
             region.status = "resolved"
             resolved_regions.append(region)
@@ -5535,23 +5738,18 @@ def import_observations(
         else:
             record["status"] = "no_supported_geometry_recognized"
             region.status = "no_supported_geometry"
-            if duplicate_wall_sources:
-                # Every recognized wall repeated an earlier region: the plan
-                # itself is already modeled, not unrecognized.
-                region.reason_codes.add("repeated_geometry_not_reemitted")
-            else:
-                region.reason_codes.add("architectural_geometry_unrecognized")
-                ambiguities.append(
-                    {
-                        "page": page.page_number,
-                        "code": "architectural_geometry_unrecognized",
-                        "detail": (
-                            "architectural plan resolved level, scale, and registration but "
-                            "produced no supported canonical spatial geometry; the page did "
-                            "not establish the shared geometry frame"
-                        ),
-                    }
-                )
+            region.reason_codes.add("architectural_geometry_unrecognized")
+            ambiguities.append(
+                {
+                    "page": page.page_number,
+                    "code": "architectural_geometry_unrecognized",
+                    "detail": (
+                        "architectural plan resolved level, scale, and registration but "
+                        "produced no supported canonical spatial geometry; the page did "
+                        "not establish the shared geometry frame"
+                    ),
+                }
+            )
         _tag_region_ambiguities(ambiguities, start, region)
         record["resolved_room_count"] = region_room_count
         record["resolved_wall_count"] = len(page_walls)
@@ -5625,7 +5823,7 @@ def import_observations(
         for page_number in sorted(sheets)
         for region in sheets[page_number].regions
     ]
-    walls = [context.wall for context in wall_contexts]
+    walls = [context.wall for context in materialized_walls.contexts]
     entity_confidences = [
         *(item.confidence for item in levels_by_anchor.values()),
         *(item.confidence for item in spaces),

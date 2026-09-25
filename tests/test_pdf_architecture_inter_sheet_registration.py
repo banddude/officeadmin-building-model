@@ -22,7 +22,7 @@ from pypdf.generic import (
     TextStringObject,
 )
 
-from oabm.importers.pdf_architecture import ImportOptions
+from oabm.importers.pdf_architecture import ImportOptions, RegistrationHint
 from oabm.importers.pdf_architecture import importer as architecture_importer
 from oabm.importers.pdf_architecture.extract import extract_pdf
 from oabm.importers.pdf_architecture.importer import import_observations
@@ -53,6 +53,7 @@ class Plan:
     mirrored: bool = False
     title: str | None = None
     notes: tuple[str, ...] = ()
+    texts: tuple[tuple[float, float, str], ...] = ()  # plan-local annotations
 
 
 def _local(plan: Plan, point: tuple[float, float]) -> tuple[float, float]:
@@ -96,6 +97,9 @@ def _plan_commands(plan: Plan) -> list[str]:
         commands.append(_text(x0, y0 - 40, plan.title, size=14))
     for index, note in enumerate(plan.notes):
         commands.append(_text(x0, y0 - 60 - 16 * index, note))
+    for x, y, value in plan.texts:
+        tx, ty = _local(plan, (x, y))
+        commands.append(_text(tx, ty, value))
     return commands
 
 
@@ -142,9 +146,9 @@ def _write(path: Path, *sheets: tuple[str, tuple[Plan, ...]]) -> Path:
     return path
 
 
-def _import(path: Path, *, source=None):
+def _import(path: Path, *, source=None, options: ImportOptions | None = None):
     source = source or extract_pdf(path, source_id="fixture:architecture")
-    model = import_observations(source, options=ImportOptions())
+    model = import_observations(source, options=options or ImportOptions())
     validate_model(model)
     return model
 
@@ -442,43 +446,182 @@ def test_registered_sheets_let_an_electrical_sheet_see_one_frame(
     assert pending.reason_codes == ("competing_targets",)
 
 
-def test_walls_repeated_by_a_registered_sheet_are_emitted_once(tmp_path: Path) -> None:
-    # Every sheet prints the same SHEET NO, like a real plan set whose anchor
-    # token repeats. The second sheet registers to the first and draws the
-    # same walls, which already have their canonical entities: the model keeps
-    # one wall set instead of failing validation on duplicate entity ids.
-    path = _write(
-        tmp_path / "plans.pdf",
-        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
-        ("A101", (replace(SECOND_COPY, label="NOTE: GRID"),)),
-    )
-    model = _import(path)
+def _ambiguities(model, code: str) -> list[dict]:
+    return [item for item in model.attributes["pdf_architecture"]["ambiguities"] if item["code"] == code]
+
+
+def _wall_geometry(model) -> list[tuple]:
+    return [
+        (wall.id, wall.level_id, wall.centerline, wall.thickness_m, wall.height_m, wall.confidence)
+        for wall in model.walls
+    ]
+
+
+@pytest.mark.parametrize(
+    ("sheet_numbers", "labels"),
+    [
+        (("A101", "A102"), ("NOTE: GRID", "NOTE: GRID")),
+        # Every sheet prints the same sheet number, so the repeated walls get
+        # the very same stable ids: before, the model failed validation with a
+        # duplicate wall entity id.
+        (("A101", "A101"), ("NOTE: GRID", "NOTE: GRID")),
+        (("A101", "A102"), ("ROOM: OFFICE", "ROOM: STUDY")),
+    ],
+    ids=["wall-faces", "repeated-sheet-number", "labelled-room-walls"],
+)
+def test_walls_repeated_by_a_registered_sheet_are_emitted_once(
+    tmp_path: Path, sheet_numbers: tuple[str, str], labels: tuple[str, str],
+) -> None:
+    first_plan = replace(FIRST, label=labels[0])
+    second_plan = replace(SECOND_COPY, label=labels[1])
+    model = _import(_write(
+        tmp_path / "plans.pdf", (sheet_numbers[0], (first_plan,)), (sheet_numbers[1], (second_plan,)),
+    ))
+    first_only = _import(_write(tmp_path / "first.pdf", (sheet_numbers[0], (first_plan,))))
+    assert len(first_only.walls) == 4
+
+    # One canonical wall per wall, with the identity, geometry, and confidence
+    # the first sheet gives it.
+    assert _wall_geometry(model) == _wall_geometry(first_only)
 
     first, second = _regions(model)
-    assert first["status"] == "resolved"
-    assert second["status"] == "no_supported_geometry"
-    assert second["reason_codes"] == ["repeated_geometry_not_reemitted"]
-    assert sorted(second["entity_counts"].values()) == [0, 0, 0, 0, 0]
+    assert second["status"] == "resolved"
+    assert second["reason_codes"] == []
+    assert second["frame"]["basis"] == "registered_to_region"
+    assert second["entity_counts"]["walls"] == 0
+    assert second["repeated_wall_count"] == 4
     assert second["repeated_geometry_region_ids"] == [first["region_id"]]
-    # The registration itself stays visible on the repeated region.
-    assert second["shared_wall_registration"]["status"] == "registered"
-    [duplicate] = [
-        item for item in model.attributes["pdf_architecture"]["ambiguities"]
-        if item["code"] == "duplicate_wall_identity_across_pages"
-    ]
+    assert "repeated_wall_count" not in first
+    [duplicate] = _ambiguities(model, "duplicate_wall_identity_across_pages")
+    assert duplicate["page"] == 2
     assert duplicate["source_region_ids"] == [first["region_id"]]
-    assert "wall(s) repeat" in duplicate["detail"]
+    assert duplicate["wall_ids"] == sorted(wall.id for wall in first_only.walls)
+    assert not _ambiguities(model, "repeated_wall_dimension_conflict")
 
+    # The repeat is not dropped silently: each kept wall records the second
+    # sheet's observation after its own.
+    for wall, original in zip(model.walls, first_only.walls):
+        assert wall.provenance[: len(original.provenance)] == original.provenance
+        [repeat] = wall.provenance[len(original.provenance):]
+        assert repeat.page == 2
+        assert repeat.derivation == "observed"
+        assert repeat.source_element_id
+        assert repeat.source_element_id != original.provenance[0].source_element_id
+        assert repeat.attributes["drawing_region_id"] == second["region_id"]
+        assert repeat.attributes["repeats_drawing_region_id"] == first["region_id"]
+    validate_model(model)
+
+
+def test_a_door_drawn_only_on_the_repeating_sheet_is_hosted_by_the_kept_wall(tmp_path: Path) -> None:
+    door = (120.0, 45.0, "DOOR D1 3'-0\" X 7'-0\"")  # inside the room, by the south wall
+    model = _import(_write(
+        tmp_path / "plans.pdf",
+        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
+        ("A102", (replace(SECOND_COPY, label="NOTE: GRID", texts=(door,)),)),
+    ))
+
+    [opening] = model.openings
+    wall_ids = {wall.id for wall in model.walls}
+    assert opening.host_id in wall_ids
+    [host] = [wall for wall in model.walls if wall.id == opening.host_id]
+    # The host is the first sheet's south wall, which the second sheet repeats.
+    assert host.provenance[0].page == 1
+    assert {item.page for item in host.provenance} == {1, 2}
+    assert opening.provenance[0].page == 2
+    assert _regions(model)[1]["entity_counts"]["openings"] == 1
+    assert not _ambiguities(model, "opening_host_unresolved")
+    validate_model(model)
+
+
+def test_the_same_plan_on_another_level_keeps_its_own_walls(tmp_path: Path) -> None:
+    # Lookalike: sheet 2 is sheet 1's plan on the level above, placed at the
+    # very same canonical XY by an explicit registration. Its walls coincide in
+    # plan but are different walls.
+    second_floor = replace(FIRST, label="NOTE: GRID", title="SECOND FLOOR PLAN", notes=("ELEVATION: 10'-0\"",))
+    third_floor = replace(SECOND_COPY, label="NOTE: GRID", title="THIRD FLOOR PLAN", notes=("ELEVATION: 20'-0\"",))
+    a, b = (0.0, 0.0), (100.0, 0.0)
+    hint = RegistrationHint(
+        page_number=2,
+        source_a_pt=(a[0] + OFFSET[0], a[1] + OFFSET[1]),
+        source_b_pt=(b[0] + OFFSET[0], b[1] + OFFSET[1]),
+        model_a_m=(a[0] * MPP, a[1] * MPP),
+        model_b_m=(b[0] * MPP, b[1] * MPP),
+    )
+    model = _import(
+        _write(tmp_path / "plans.pdf", ("A101", (second_floor,)), ("A102", (third_floor,))),
+        options=ImportOptions(registrations=(hint,)),
+    )
+
+    first, second = _regions(model)
+    assert second["frame"]["basis"] == "explicit_registration"
+    assert first["level"]["level_id"] != second["level"]["level_id"]
+    assert len(model.walls) == 8
+    by_level: dict[str, set] = {}
+    for wall in model.walls:
+        by_level.setdefault(wall.level_id, set()).add(
+            tuple(sorted((round(point.x, 6), round(point.y, 6)) for point in wall.centerline.points))
+        )
+    assert len(by_level) == 2
+    [first_level, second_level] = by_level.values()
+    assert first_level == second_level
+    assert second["entity_counts"]["walls"] == 4
+    assert "repeated_wall_count" not in second
+    assert second["repeated_geometry_region_ids"] == []
+    assert not _ambiguities(model, "duplicate_wall_identity_across_pages")
+
+
+def test_a_lookalike_wall_beside_a_repeated_wall_stays_distinct(tmp_path: Path) -> None:
+    # Sheet 2 repeats sheet 1's room and adds a second room just east of it.
+    # The new room's west wall has the east wall's length and orientation and
+    # lies half a metre east of it, raised 40 pt so no faces are collinear: it
+    # is a different wall, not a repeat.
+    half_metre_pt = 0.5 / MPP
+    beside = Plan(
+        (SECOND_COPY.origin[0] + FIRST.room[0] - WALL_T + half_metre_pt, SECOND_COPY.origin[1] + 40.0),
+        "NOTE: GRID",
+        room=(200.0, FIRST.room[1]),
+        stub=None,
+    )
+    model = _import(_write(
+        tmp_path / "plans.pdf",
+        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
+        ("A102", (replace(SECOND_COPY, label="NOTE: GRID"), beside)),
+    ))
     first_only = _import(_write(tmp_path / "first.pdf", ("A101", (replace(FIRST, label="NOTE: GRID"),))))
-    assert len(model.walls) == len(first_only.walls)
-    assert _wall_points(model) == _wall_points(first_only)
+
+    first, second = _regions(model)
+    assert second["frame"]["basis"] == "registered_to_region"
+    assert second["repeated_wall_count"] == 4
+    assert second["entity_counts"]["walls"] == 4
+    assert len(model.walls) == 8
+    kept = {wall.id: wall for wall in first_only.walls}
+    new = [wall for wall in model.walls if wall.id not in kept]
+    assert len(new) == 4
+    for wall in new:
+        assert wall.provenance[0].page == 2
+        assert not any("repeats_drawing_region_id" in item.attributes for item in wall.provenance)
+    for wall in model.walls:
+        if wall.id in kept:
+            assert wall.provenance[0] == kept[wall.id].provenance[0]
+            assert wall.provenance[-1].attributes["drawing_region_id"] == second["region_id"]
+
+    def x_span(wall) -> tuple[float, float]:
+        xs = sorted(point.x for point in wall.centerline.points)
+        return xs[0], xs[-1]
+
+    [east] = [wall for wall in first_only.walls if x_span(wall)[0] == x_span(wall)[1] == max(x_span(w)[1] for w in first_only.walls)]
+    [lookalike] = [wall for wall in new if x_span(wall)[0] == x_span(wall)[1] == min(x_span(w)[0] for w in new)]
+    east_length = abs(east.centerline.points[-1].y - east.centerline.points[0].y)
+    lookalike_length = abs(lookalike.centerline.points[-1].y - lookalike.centerline.points[0].y)
+    assert lookalike_length == pytest.approx(east_length, abs=1e-6)
+    # Half a metre between true centerlines; far beyond the 0.05 m repeat tolerance.
+    assert 0.45 < x_span(lookalike)[0] - x_span(east)[0] < 0.65
     validate_model(model)
 
 
 def test_a_later_different_plan_still_emits_its_walls(tmp_path: Path) -> None:
-    # Deduplication suppresses only exact canonical repeats: after sheet 2
-    # (a repeat of sheet 1) is reduced to nothing, sheet 3's different plan
-    # still resolves and emits its own walls.
+    # After sheet 2 (a repeat of sheet 1) contributes no new wall, sheet 3's
+    # different plan still resolves and emits its own walls.
     path = _write(
         tmp_path / "plans.pdf",
         ("A101", (replace(FIRST, label="NOTE: GRID"),)),
@@ -488,9 +631,8 @@ def test_a_later_different_plan_still_emits_its_walls(tmp_path: Path) -> None:
     model = _import(path)
 
     first, second, third = _regions(model)
-    assert (first["status"], second["status"], third["status"]) == (
-        "resolved", "no_supported_geometry", "resolved",
-    )
+    assert (first["status"], second["status"], third["status"]) == ("resolved",) * 3
+    assert second["entity_counts"]["walls"] == 0
     assert third["entity_counts"]["walls"] > 0
     assert third["repeated_geometry_region_ids"] == []
     first_and_third = _import(_write(
@@ -498,16 +640,18 @@ def test_a_later_different_plan_still_emits_its_walls(tmp_path: Path) -> None:
         ("A101", (replace(FIRST, label="NOTE: GRID"),)),
         ("A101", (replace(OTHER, label="NOTE: GRID"),)),
     ))
+    assert len(model.walls) == len(first_and_third.walls)
     assert _wall_points(model) == _wall_points(first_and_third)
     validate_model(model)
 
 
-def test_repeated_sheets_do_not_compete_as_electrical_targets(
+def test_repeated_registered_sheets_are_agreeing_electrical_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Three registered copies of one plan leave the model with one resolved
-    # region, so the electrical sheet has a single target and registers; with
-    # the registration disabled the extra fallback frames compete as before.
+    # Three copies of one plan, all on one sheet number. Registered to one
+    # frame they emit one wall set and agree as targets, so the electrical
+    # sheet registers; with the registration disabled the extra fallback
+    # frames compete as before.
     path = _write(
         tmp_path / "plans.pdf",
         ("A101", (replace(FIRST, label="NOTE: GRID"),)),
@@ -521,11 +665,17 @@ def test_repeated_sheets_do_not_compete_as_electrical_targets(
     )
     model = _import(path, source=source)
 
-    resolved = [region for region in _regions(model) if region["status"] == "resolved"]
-    assert [region["page"] for region in resolved] == [1]
+    regions = _regions(model)
+    assert [region["status"] for region in regions] == ["resolved"] * 3
+    assert [region.get("repeated_wall_count", 0) for region in regions] == [0, 4, 4]
+    assert len(model.walls) == 4
     [registered] = register_electrical_sheets(model, source, electrical).pages
     assert registered.status == REGISTERED
-    assert registered.record["registration"]["agreeing_region_ids"] == [resolved[0]["region_id"]]
+    assert registered.record["registration"]["agreeing_region_ids"] == sorted(
+        region["region_id"] for region in regions
+    )
+    mapped = registered.transform.apply(500.0, 350.0)
+    assert (mapped.x, mapped.y) == pytest.approx((ORIGIN[0] * MPP, ORIGIN[1] * MPP), abs=1e-6)
 
     unregistered = _import_without_shared_walls(path, monkeypatch)
     [pending] = register_electrical_sheets(unregistered, source, electrical).pages

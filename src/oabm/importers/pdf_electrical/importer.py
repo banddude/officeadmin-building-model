@@ -490,6 +490,28 @@ class _LightingScheduleRow:
 
 
 @dataclass(frozen=True, slots=True)
+class _LinearOutline:
+    """One stroked rectangular outline much longer than it is wide.
+
+    Identical duplicate paths (CAD often draws an outline twice) are one
+    outline; all of their source paths stay attached for provenance.
+    """
+
+    page: int
+    vectors: tuple[PdfVectorPathObservation, ...]
+    corners_pt: tuple[tuple[float, float], ...]
+    center_pt: tuple[float, float]
+    axis: tuple[float, float]
+    length_pt: float
+    width_pt: float
+    geometry_key: str
+
+    @property
+    def source_element_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(vector.element_id for vector in self.vectors))
+
+
+@dataclass(frozen=True, slots=True)
 class _LightingLegendEntry:
     page: int
     tag: str
@@ -497,6 +519,9 @@ class _LightingLegendEntry:
     label: PdfTextObservation
     heading: PdfTextObservation
     confidence: float
+    # Set when the legend row draws a linear fixture: a bar whose length is
+    # schematic, matched in the field by outline kind and width.
+    linear: _LinearOutline | None = None
 
 
 def _validate_source_observation(element_id: str, page: int, x_pt: float, y_pt: float) -> None:
@@ -1479,6 +1504,34 @@ def _vector_contains_bezier(observation: PdfVectorPathObservation) -> bool:
     return bool(observation.metadata.get("curve_commands"))
 
 
+def _vector_is_closed_outline(observation: PdfVectorPathObservation) -> bool:
+    """Whether a path outlines a region, with or without the closepath operator.
+
+    CAD exports often draw a closed outline, such as a fixture square, as a
+    stroked polyline that returns to its start point without ``h``. That path
+    encloses a region exactly like an explicitly closed one. An open stroke,
+    or a path that doubles back over itself without enclosing any area, does
+    not.
+    """
+
+    if observation.closed:
+        return True
+    points = observation.points_pt
+    if len(points) < 4:
+        return False
+    first, last = points[0], points[-1]
+    if (
+        _distance_pt(first[0], first[1], last[0], last[1])
+        > _OUTLINE_CLOSURE_TOLERANCE_PT
+    ):
+        return False
+    twice_area = sum(
+        x_1 * y_2 - x_2 * y_1
+        for (x_1, y_1), (x_2, y_2) in zip(points, points[1:])
+    )
+    return abs(twice_area) / 2.0 > _OUTLINE_MIN_AREA_PT2
+
+
 def _vector_segments(
     observation: PdfVectorPathObservation,
 ) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
@@ -1640,6 +1693,11 @@ def _merge_provenance(
 
 _GLYPH_PATH_MAX_EXTENT_PT = 54.0
 _GLYPH_CLUSTER_GAP_PT = 2.5
+# A stroked path whose last point returns to within this distance of its
+# first point, and which encloses more than a trace of area, is a closed
+# outline even without the closepath operator.
+_OUTLINE_CLOSURE_TOLERANCE_PT = 0.05
+_OUTLINE_MIN_AREA_PT2 = 1e-3
 _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT = 120.0
 _LEGEND_ROW_VERTICAL_TOLERANCE_PT = 12.0
 _LEGEND_TITLE_REGION_RADIUS_PT = 320.0
@@ -1820,7 +1878,9 @@ def _scope_status_attributes(
 # Lighting is intentionally a separate recognition path from power-device
 # legends. A fixture's readable type tag is the semantic evidence; geometry
 # only confirms that the tag is attached to a fixture instance.
-_LIGHTING_TAG_RE = re.compile(r"^[A-Z]{1,2}(?:-?\d{1,2})?$", re.IGNORECASE)
+# Tags such as A, A1, F2, LF-4 and LF-5A: one or two letters, then an
+# optional number with an optional one-letter variant suffix.
+_LIGHTING_TAG_RE = re.compile(r"^[A-Z]{1,2}(?:-?\d{1,2}[A-Z]?)?$", re.IGNORECASE)
 # The tag narrows the candidates to one fixture type, so the power-device
 # margin rule reduces to its match minimum. The absolute floor only marks
 # where a shape is certainly not the prototype; it never confirms one.
@@ -1866,6 +1926,67 @@ _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT = 220.0
 _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT = 48.0
 _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT = 10.0
 _LIGHTING_LEGEND_COLUMN_GAP_PT = 72.0
+# A general legend (for example a reflected ceiling legend) carries no
+# lighting word in its title and lists ceiling finishes, exit signs and
+# switching beside its fixtures. Such a legend can supply fixture prototypes
+# only through rows whose own description names a luminaire, and its body is
+# read as structure: printed lines in the title's column that continue down
+# without a blank band taller than one inch and end at the next section title.
+_LIGHTING_LEGEND_BODY_ROW_GAP_PT = 72.0
+_LEGEND_SECTION_TITLE_WORDS = frozenset(
+    {
+        "LEGEND",
+        "SYMBOL",
+        "SYMBOLS",
+        "SCHEDULE",
+        "KEYNOTE",
+        "KEYNOTES",
+        "NOTE",
+        "NOTES",
+        "ABBREVIATIONS",
+    }
+)
+_LIGHTING_LUMINAIRE_DESCRIPTION_WORDS = frozenset(
+    {
+        "LIGHT",
+        "LIGHTS",
+        "LIGHTING",
+        "LUMINAIRE",
+        "LUMINAIRES",
+        "DOWNLIGHT",
+        "DOWNLIGHTS",
+        "TROFFER",
+        "TROFFERS",
+        "SCONCE",
+        "SCONCES",
+        "PENDANT",
+        "PENDANTS",
+    }
+)
+# Linear fixtures are drawn to scale ("length per plan"), so a legend bar can
+# be longer than the glyph cap and a field run far longer still. A linear
+# prototype is one stroked, unfilled rectangular outline at least this many
+# times longer than it is wide. A field run must be the same kind of outline
+# with the prototype's width; its length is free.
+_LINEAR_FIXTURE_MIN_ASPECT = 6.0
+_LINEAR_FIXTURE_MIN_WIDTH_PT = 0.2
+_LINEAR_FIXTURE_RIGHT_ANGLE_COS = 0.02
+_LINEAR_FIXTURE_SIDE_TOLERANCE = 0.02
+_LINEAR_FIXTURE_WIDTH_TOLERANCE = 0.2
+_LINEAR_FIXTURE_WIDTH_TOLERANCE_MIN_PT = 0.3
+_LINEAR_PROTOTYPE_BBOX_TOLERANCE_PT = 0.5
+# A tag belongs to a linear run only when the tag is printed along the run:
+# at least half of the tag's estimated text extent lies beside the run, within
+# one and a half text heights of it. The text extent is estimated from the
+# printed character count and the rendered font size, so a tag whose size is
+# not a plausible drawn size fails closed rather than using its anchor point,
+# which cannot tell a run behind the text from one beyond it.
+_LINEAR_TAG_ALONGSIDE_MIN_FRACTION = 0.5
+_LINEAR_TAG_GAP_EM = 1.5
+_LINEAR_TAG_CHAR_WIDTH_EM = 0.55
+_LINEAR_TAG_CAP_HEIGHT_EM = 0.7
+_LINEAR_TAG_FONT_SIZE_MIN_PT = 1.0
+_LINEAR_TAG_FONT_SIZE_MAX_PT = 18.0
 _LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
     "TYPE": "tag",
     "TAG": "tag",
@@ -2561,7 +2682,7 @@ def _is_leader_vector(
     glyph_extent_pt: float,
 ) -> bool:
     if (
-        vector.closed
+        _vector_is_closed_outline(vector)
         or _vector_contains_bezier(vector)
         or _paint_family(vector) != "stroke"
     ):
@@ -3048,10 +3169,12 @@ def _cluster_small_vector_glyphs(
 
 
 def _is_glyph_cluster(cluster: _VectorCluster) -> bool:
+    # A single open stroke is drafting or wiring, never a glyph; a single
+    # outline is a glyph whether or not the source closed it with ``h``.
     return bool(
         len(cluster.vectors) > 1
         or any(
-            vector.closed
+            _vector_is_closed_outline(vector)
             or _vector_contains_bezier(vector)
             or _paint_family(vector) != "stroke"
             for vector in cluster.vectors
@@ -4671,6 +4794,470 @@ def _lighting_schedule_header_key(value: str) -> str | None:
     return _LIGHTING_SCHEDULE_HEADER_ALIASES.get(normalized)
 
 
+def _plain_words(value: str) -> tuple[str, ...]:
+    return tuple(re.findall(r"[A-Z0-9]+", value.upper()))
+
+
+def _is_general_legend_heading(observation: PdfTextObservation) -> bool:
+    """A legend title without a lighting word, such as REFLECTED CEILING LEGEND.
+
+    It is only a candidate: fixture prototypes come from it solely through
+    rows that describe themselves as luminaires.
+    """
+
+    return _lighting_heading_kind(observation) is None and _is_legend_heading(
+        observation
+    )
+
+
+def _is_section_title(observation: PdfTextObservation) -> bool:
+    """A printed title that starts a new sheet section (legend, notes, ...)."""
+
+    if _lighting_heading_kind(observation) is not None:
+        return True
+    if not _looks_like_section_heading(observation):
+        return False
+    words = _plain_words(observation.text)
+    return bool(words) and words[-1] in _LEGEND_SECTION_TITLE_WORDS
+
+
+def _general_legend_body_span(
+    heading: PdfTextObservation,
+    texts: Sequence[PdfTextObservation],
+) -> float:
+    """Vertical extent of a general legend's body below its title.
+
+    The body is the run of printed lines in the title's column that continues
+    downward without a blank band taller than one inch. It ends before the
+    next section title, so notes, keynotes or a schedule printed below the
+    legend never become part of it.
+    """
+
+    column = sorted(
+        (
+            observation
+            for observation in texts
+            if observation.page == heading.page
+            and observation.element_id != heading.element_id
+            and observation.y_pt < heading.y_pt
+            and abs(observation.x_pt - heading.x_pt)
+            <= _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT
+        ),
+        key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
+    )
+    bottom = heading.y_pt
+    for observation in column:
+        if bottom - observation.y_pt > _LIGHTING_LEGEND_BODY_ROW_GAP_PT:
+            break
+        if _is_section_title(observation):
+            break
+        bottom = observation.y_pt
+    return heading.y_pt - bottom + _LIGHTING_ROW_Y_TOLERANCE_PT
+
+
+def _general_legend_row_description_lines(
+    label: PdfTextObservation,
+    *,
+    labels: Sequence[PdfTextObservation],
+    texts: Sequence[PdfTextObservation],
+) -> tuple[PdfTextObservation, ...]:
+    """Description lines of one general-legend row.
+
+    A row's description may wrap onto lines above and below the label's
+    baseline. Each line right of the label belongs to the nearest legend
+    label on its left, so a row never borrows its neighbour's description; a
+    line equally near two labels belongs to neither.
+    """
+
+    lines: list[PdfTextObservation] = []
+    for observation in texts:
+        if (
+            observation.page != label.page
+            or observation.element_id == label.element_id
+            or _normalize_lighting_tag(observation.text) is not None
+            or not (
+                label.x_pt
+                < observation.x_pt
+                <= label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+            )
+        ):
+            continue
+        offset = abs(observation.y_pt - label.y_pt)
+        if offset > _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT:
+            continue
+        if any(
+            other.element_id != label.element_id
+            and other.page == label.page
+            and other.x_pt < observation.x_pt
+            and observation.x_pt - other.x_pt <= _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+            and abs(other.y_pt - observation.y_pt) <= offset
+            for other in labels
+        ):
+            continue
+        lines.append(observation)
+    return tuple(
+        sorted(lines, key=lambda item: (-item.y_pt, item.x_pt, item.element_id))
+    )
+
+
+def _general_legend_row_describes_luminaire(
+    label: PdfTextObservation,
+    *,
+    labels: Sequence[PdfTextObservation],
+    texts: Sequence[PdfTextObservation],
+) -> tuple[bool, tuple[PdfTextObservation, ...]]:
+    """Whether a general-legend row's own description names a luminaire.
+
+    Status markers (E, N, R) define scope, not fixture types, even when the
+    row reads "INDICATES NEW LIGHT FIXTURE". A row that also names a
+    switching device ("LIGHT SWITCH") is not a fixture row.
+    """
+
+    if _field_modifier_text(label.text) is not None:
+        return False, ()
+    lines = _general_legend_row_description_lines(label, labels=labels, texts=texts)
+    words = {word for line in lines for word in _plain_words(line.text)}
+    describes = bool(
+        words & _LIGHTING_LUMINAIRE_DESCRIPTION_WORDS
+        and not words & _LIGHTING_SWITCH_DESCRIPTION_WORDS
+    )
+    return describes, lines
+
+
+def _linear_outline(vector: PdfVectorPathObservation) -> _LinearOutline | None:
+    """The vector as a linear-fixture outline, when it is one.
+
+    A stroked, unfilled, straight-sided rectangle (explicitly closed or
+    returning to its start) whose long sides are at least
+    ``_LINEAR_FIXTURE_MIN_ASPECT`` times its short sides. A single rule line,
+    a filled wall and a curved path are never linear outlines.
+    """
+
+    if (
+        _paint_family(vector) != "stroke"
+        or _vector_contains_bezier(vector)
+        or not _vector_is_closed_outline(vector)
+    ):
+        return None
+    corners = list(vector.points_pt)
+    if not vector.closed:
+        corners = corners[:-1]
+    if len(corners) != 4:
+        return None
+    sides = [
+        (
+            corners[(index + 1) % 4][0] - corners[index][0],
+            corners[(index + 1) % 4][1] - corners[index][1],
+        )
+        for index in range(4)
+    ]
+    lengths = [math.hypot(dx, dy) for dx, dy in sides]
+    if min(lengths) <= _LINEAR_FIXTURE_MIN_WIDTH_PT:
+        return None
+    for index in range(4):
+        first, second = sides[index], sides[(index + 1) % 4]
+        cosine = (first[0] * second[0] + first[1] * second[1]) / (
+            lengths[index] * lengths[(index + 1) % 4]
+        )
+        if abs(cosine) > _LINEAR_FIXTURE_RIGHT_ANGLE_COS:
+            return None
+    for first, second in ((lengths[0], lengths[2]), (lengths[1], lengths[3])):
+        if abs(first - second) > _LINEAR_FIXTURE_SIDE_TOLERANCE * max(first, second):
+            return None
+    long_index = 0 if lengths[0] + lengths[2] >= lengths[1] + lengths[3] else 1
+    length = (lengths[long_index] + lengths[long_index + 2]) / 2.0
+    width = (lengths[1 - long_index] + lengths[3 - long_index]) / 2.0
+    if length < _LINEAR_FIXTURE_MIN_ASPECT * width:
+        return None
+    axis_x = sides[long_index][0] / lengths[long_index]
+    axis_y = sides[long_index][1] / lengths[long_index]
+    if axis_x < -1e-9 or (abs(axis_x) <= 1e-9 and axis_y < 0.0):
+        axis_x, axis_y = -axis_x, -axis_y
+    center = (
+        sum(point[0] for point in corners) / 4.0,
+        sum(point[1] for point in corners) / 4.0,
+    )
+    return _LinearOutline(
+        page=vector.page,
+        vectors=(vector,),
+        corners_pt=tuple((float(x), float(y)) for x, y in corners),
+        center_pt=center,
+        axis=(axis_x, axis_y),
+        length_pt=round(length, 6),
+        width_pt=round(width, 6),
+        geometry_key=_cluster_geometry_key((vector,)),
+    )
+
+
+def _linear_outlines(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[_LinearOutline, ...]:
+    """Every linear outline, with identical redrawn duplicates merged."""
+
+    grouped: dict[tuple[Any, ...], list[_LinearOutline]] = {}
+    for vector in vectors:
+        outline = _linear_outline(vector)
+        if outline is None:
+            continue
+        corners_key = (
+            outline.page,
+            tuple(
+                sorted((round(x, 2), round(y, 2)) for x, y in outline.corners_pt)
+            ),
+        )
+        grouped.setdefault(corners_key, []).append(outline)
+    merged: list[_LinearOutline] = []
+    for group in grouped.values():
+        group.sort(key=lambda outline: (outline.geometry_key, outline.vectors[0].element_id))
+        primary = group[0]
+        merged.append(
+            replace(
+                primary,
+                vectors=tuple(
+                    sorted(
+                        (outline.vectors[0] for outline in group),
+                        key=lambda vector: vector.element_id,
+                    )
+                ),
+            )
+        )
+    return tuple(
+        sorted(
+            merged,
+            key=lambda outline: (
+                outline.page,
+                round(outline.center_pt[0], 6),
+                round(outline.center_pt[1], 6),
+                outline.geometry_key,
+            ),
+        )
+    )
+
+
+def _cluster_linear_outline(
+    cluster: _VectorCluster,
+    outlines: Sequence[_LinearOutline],
+) -> _LinearOutline | None:
+    """The linear outline a small glyph cluster consists of, if any.
+
+    A short legend bar can fall under the glyph cap; it is still a linear
+    prototype when the cluster is that one outline (plus identical redraws or
+    edge strokes lying on it).
+    """
+
+    for outline in outlines:
+        if outline.page != cluster.page:
+            continue
+        if not set(outline.source_element_ids) & set(cluster.source_element_ids):
+            continue
+        bbox = _vector_bbox(outline.vectors[0])
+        if all(
+            abs(first - second) <= _LINEAR_PROTOTYPE_BBOX_TOLERANCE_PT
+            for first, second in zip(bbox, cluster.bbox_pt)
+        ):
+            return outline
+    return None
+
+
+def _tag_text_box(
+    observation: PdfTextObservation,
+) -> tuple[tuple[float, float], ...] | None:
+    """Estimated printed box of a short horizontal tag, or None.
+
+    The box runs right from the text anchor for the printed character count
+    at an average character width, and up one cap height. A font size that is
+    missing or not a plausible drawn size (for example a raw ``Tf`` operand
+    that the text matrix scales) yields None, because the anchor alone cannot
+    say which side of the tag a run lies on.
+    """
+
+    size = observation.font_size_pt
+    if (
+        size is None
+        or not math.isfinite(size)
+        or not _LINEAR_TAG_FONT_SIZE_MIN_PT <= size <= _LINEAR_TAG_FONT_SIZE_MAX_PT
+    ):
+        return None
+    characters = len("".join(observation.text.split()))
+    width = characters * size * _LINEAR_TAG_CHAR_WIDTH_EM
+    height = size * _LINEAR_TAG_CAP_HEIGHT_EM
+    x, y = observation.x_pt, observation.y_pt
+    return ((x, y), (x + width, y), (x + width, y + height), (x, y + height))
+
+
+def _point_in_convex_polygon(
+    point: tuple[float, float],
+    polygon: Sequence[tuple[float, float]],
+) -> bool:
+    sign = 0.0
+    for index, first in enumerate(polygon):
+        second = polygon[(index + 1) % len(polygon)]
+        cross = (second[0] - first[0]) * (point[1] - first[1]) - (
+            second[1] - first[1]
+        ) * (point[0] - first[0])
+        if abs(cross) <= 1e-9:
+            continue
+        if sign == 0.0:
+            sign = cross
+        elif (cross > 0.0) != (sign > 0.0):
+            return False
+    return True
+
+
+def _convex_polygon_gap(
+    first: Sequence[tuple[float, float]],
+    second: Sequence[tuple[float, float]],
+) -> float:
+    """Shortest distance between two convex polygons; 0 when they overlap."""
+
+    if any(_point_in_convex_polygon(point, second) for point in first) or any(
+        _point_in_convex_polygon(point, first) for point in second
+    ):
+        return 0.0
+    first_edges = [
+        (first[index], first[(index + 1) % len(first)]) for index in range(len(first))
+    ]
+    second_edges = [
+        (second[index], second[(index + 1) % len(second)])
+        for index in range(len(second))
+    ]
+    for a_start, a_end in first_edges:
+        for b_start, b_end in second_edges:
+            if _segments_properly_cross(a_start, a_end, b_start, b_end):
+                return 0.0
+    # Disjoint convex polygons: the closest pair always involves a vertex.
+    return min(
+        [
+            _point_segment_distance_pt(point, start, end)
+            for point in first
+            for start, end in second_edges
+        ]
+        + [
+            _point_segment_distance_pt(point, start, end)
+            for point in second
+            for start, end in first_edges
+        ]
+    )
+
+
+def _segments_properly_cross(
+    a_start: tuple[float, float],
+    a_end: tuple[float, float],
+    b_start: tuple[float, float],
+    b_end: tuple[float, float],
+) -> bool:
+    def side(
+        origin: tuple[float, float],
+        end: tuple[float, float],
+        point: tuple[float, float],
+    ) -> float:
+        return (end[0] - origin[0]) * (point[1] - origin[1]) - (
+            end[1] - origin[1]
+        ) * (point[0] - origin[0])
+
+    return (
+        side(a_start, a_end, b_start) * side(a_start, a_end, b_end) < 0.0
+        and side(b_start, b_end, a_start) * side(b_start, b_end, a_end) < 0.0
+    )
+
+
+def _tag_linear_run_relation(
+    box: Sequence[tuple[float, float]],
+    outline: _LinearOutline,
+) -> tuple[float, float]:
+    """(gap, alongside fraction) between a tag's text box and a linear run.
+
+    The fraction is how much of the text box's extent along the run's axis
+    lies within the run's own length.
+    """
+
+    axis_x, axis_y = outline.axis
+    center_x, center_y = outline.center_pt
+    projections = [
+        (x - center_x) * axis_x + (y - center_y) * axis_y for x, y in box
+    ]
+    box_start, box_end = min(projections), max(projections)
+    half = outline.length_pt / 2.0
+    overlap = max(0.0, min(box_end, half) - max(box_start, -half))
+    extent = box_end - box_start
+    fraction = 1.0 if extent <= 1e-9 else overlap / extent
+    return _convex_polygon_gap(box, outline.corners_pt), fraction
+
+
+def _point_outline_distance(
+    point: tuple[float, float],
+    outline: _LinearOutline,
+) -> float:
+    corners = outline.corners_pt
+    if _point_in_convex_polygon(point, corners):
+        return 0.0
+    return min(
+        _point_segment_distance_pt(point, corners[index], corners[(index + 1) % 4])
+        for index in range(4)
+    )
+
+
+def _linear_legend_entry(
+    label: PdfTextObservation,
+    *,
+    tag: str,
+    heading: PdfTextObservation,
+    outlines: Sequence[_LinearOutline],
+    used_outline_keys: set[tuple[int, str]],
+) -> tuple[_LightingLegendEntry | None, dict[str, Any] | None]:
+    """The legend row's linear-bar prototype when its symbol is a bar.
+
+    Used only when no small glyph sits in the row band. The bar must lie in
+    the row band and be uniquely nearest to the label; a near tie fails
+    closed like a tied glyph row.
+    """
+
+    ranked = sorted(
+        (
+            (_point_outline_distance((label.x_pt, label.y_pt), outline), outline)
+            for outline in outlines
+            if outline.page == label.page
+            and (outline.page, outline.geometry_key) not in used_outline_keys
+            and abs(outline.center_pt[1] - label.y_pt)
+            <= _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT
+        ),
+        key=lambda item: (item[0], item[1].geometry_key),
+    )
+    ranked = [item for item in ranked if item[0] <= _LIGHTING_TAG_CLUSTER_RADIUS_PT]
+    if not ranked:
+        return None, None
+    if (
+        len(ranked) > 1
+        and ranked[1][0] - ranked[0][0] < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
+    ):
+        return None, {
+            "kind": "lighting_legend_tag",
+            "page": label.page,
+            "source_element_id": label.element_id,
+            "source_text": label.text,
+            "fixture_tag": tag,
+            "status": "unresolved_lighting_legend",
+            "reason_code": "lighting_legend_tag_geometry_ambiguous",
+            "reason": (
+                "lighting legend tag is equally close to more than one linear "
+                "fixture bar"
+            ),
+        }
+    outline = ranked[0][1]
+    return (
+        _LightingLegendEntry(
+            page=label.page,
+            tag=tag,
+            prototype=_make_vector_cluster(outline.vectors),
+            label=label,
+            heading=heading,
+            confidence=0.99,
+            linear=outline,
+        ),
+        None,
+    )
+
+
 def _detect_lighting_fixture_schedules(
     texts: Sequence[PdfTextObservation],
 ) -> tuple[
@@ -5034,6 +5621,7 @@ def _detect_lighting_legend_entries(
     texts: Sequence[PdfTextObservation],
     clusters: Sequence[_VectorCluster],
     excluded_text_ids: set[str],
+    linear_outlines: Sequence[_LinearOutline] = (),
 ) -> tuple[
     dict[int, tuple[_LightingLegendEntry, ...]],
     set[tuple[int, str]],
@@ -5046,23 +5634,36 @@ def _detect_lighting_legend_entries(
             observation
             for observation in texts
             if _lighting_heading_kind(observation) == "lighting_legend"
+            or _is_general_legend_heading(observation)
         ),
         key=lambda item: (item.page, -item.y_pt, item.x_pt, item.element_id),
     )
-    claimed_text_ids = {heading.element_id for heading in headings}
+    # A general legend title stays available to the power-device legend path:
+    # only its confirmed fixture rows are claimed as lighting evidence.
+    claimed_text_ids = {
+        heading.element_id
+        for heading in headings
+        if not _is_general_legend_heading(heading)
+    }
     prototype_keys: set[tuple[int, str]] = set()
     unresolved: list[dict[str, Any]] = []
     region_metadata: list[dict[str, Any]] = []
     entries_by_page: dict[int, list[_LightingLegendEntry]] = {}
 
     for heading in headings:
+        general_legend = _is_general_legend_heading(heading)
+        vertical_span = (
+            _general_legend_body_span(heading, texts)
+            if general_legend
+            else _LIGHTING_LEGEND_VERTICAL_SPAN_PT
+        )
         band_labels = [
             observation
             for observation in texts
             if observation.page == heading.page
             and observation.element_id not in excluded_text_ids
             and observation.element_id != heading.element_id
-            and 0.0 < heading.y_pt - observation.y_pt <= _LIGHTING_LEGEND_VERTICAL_SPAN_PT
+            and 0.0 < heading.y_pt - observation.y_pt <= vertical_span
             and _normalize_lighting_tag(observation.text) is not None
         ]
         # Legend rows are read as table structure, not as raw distance from
@@ -5159,8 +5760,25 @@ def _detect_lighting_legend_entries(
                 )
                 progressed = True
             pending_columns = remaining
+        # A general legend is a lighting legend only through rows whose own
+        # description names a luminaire; its other rows (finishes, exit
+        # signs, switching, status markers) are never fixture prototypes.
+        row_descriptions: dict[str, tuple[PdfTextObservation, ...]] = {}
+        if general_legend:
+            described_labels: list[PdfTextObservation] = []
+            for label in candidate_labels:
+                describes, lines = _general_legend_row_describes_luminaire(
+                    label,
+                    labels=band_labels,
+                    texts=texts,
+                )
+                if describes:
+                    described_labels.append(label)
+                    row_descriptions[label.element_id] = lines
+            candidate_labels = described_labels
         local_entries: list[_LightingLegendEntry] = []
         used_keys: set[tuple[int, str]] = set()
+        used_outline_keys: set[tuple[int, str]] = set()
         for label in sorted(
             candidate_labels,
             key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
@@ -5181,7 +5799,32 @@ def _detect_lighting_legend_entries(
                     label.y_pt,
                 )
                 <= _LIGHTING_TAG_CLUSTER_RADIUS_PT + 18.0
+                # A tag printed inside its glyph is a keynote or callout
+                # bubble, not a legend row beside its symbol.
+                and not (
+                    general_legend
+                    and cluster.bbox_pt[0] < label.x_pt < cluster.bbox_pt[2]
+                    and cluster.bbox_pt[1] < label.y_pt < cluster.bbox_pt[3]
+                )
             ]
+            if not nearby:
+                linear_entry, linear_miss = _linear_legend_entry(
+                    label,
+                    tag=tag,
+                    heading=heading,
+                    outlines=linear_outlines,
+                    used_outline_keys=used_outline_keys,
+                )
+                if linear_miss is not None:
+                    unresolved.append(linear_miss)
+                    claimed_text_ids.add(label.element_id)
+                if linear_entry is not None:
+                    assert linear_entry.linear is not None
+                    used_outline_keys.add(
+                        (linear_entry.page, linear_entry.linear.geometry_key)
+                    )
+                    local_entries.append(linear_entry)
+                continue
             nearby.sort(
                 key=lambda cluster: (
                     _distance_pt(
@@ -5193,8 +5836,6 @@ def _detect_lighting_legend_entries(
                     cluster.geometry_key,
                 )
             )
-            if not nearby:
-                continue
             if (
                 len(nearby) > 1
                 and _distance_pt(
@@ -5230,6 +5871,11 @@ def _detect_lighting_legend_entries(
                 continue
             cluster = nearby[0]
             used_keys.add((cluster.page, cluster.geometry_key))
+            # A short legend bar can fall under the glyph cap; it is still a
+            # linear prototype, matched in the field by outline and width.
+            cluster_outline = _cluster_linear_outline(cluster, linear_outlines)
+            if cluster_outline is not None:
+                used_outline_keys.add((cluster.page, cluster_outline.geometry_key))
             local_entries.append(
                 _LightingLegendEntry(
                     page=heading.page,
@@ -5238,6 +5884,7 @@ def _detect_lighting_legend_entries(
                     label=label,
                     heading=heading,
                     confidence=0.99,
+                    linear=cluster_outline,
                 )
             )
 
@@ -5266,6 +5913,10 @@ def _detect_lighting_legend_entries(
         for entry in local_entries:
             prototype_keys.add((entry.page, entry.prototype.geometry_key))
             claimed_text_ids.add(entry.label.element_id)
+            claimed_text_ids.update(
+                line.element_id
+                for line in row_descriptions.get(entry.label.element_id, ())
+            )
         region_metadata.append(
             {
                 "page": heading.page,
@@ -5274,6 +5925,18 @@ def _detect_lighting_legend_entries(
                 "heading_text": heading.text,
                 "row_count": len(local_entries),
                 "tags": sorted({entry.tag for entry in local_entries}),
+                "linear_tags": sorted(
+                    {entry.tag for entry in local_entries if entry.linear is not None}
+                ),
+                **(
+                    {
+                        "heading_kind": "general-legend",
+                        "row_confirmation": "row description names a luminaire",
+                        "body_span_pt": round(vertical_span, 3),
+                    }
+                    if general_legend
+                    else {"heading_kind": "lighting-legend"}
+                ),
             }
         )
 
@@ -5458,6 +6121,356 @@ def _lighting_schedule_attributes(row: _LightingScheduleRow) -> dict[str, Any]:
     return attributes
 
 
+def _lighting_fixture_candidate(
+    document: PdfElectricalDocument,
+    *,
+    page: int,
+    geometry_key: str,
+    center_pt: tuple[float, float],
+    vectors: Sequence[PdfVectorPathObservation],
+    tag: str,
+    tag_observation: PdfTextObservation,
+    legend_entry: _LightingLegendEntry,
+    schedule_row: _LightingScheduleRow | None,
+    confidence: float,
+    recognition: dict[str, Any],
+    geometry_attributes: Mapping[str, Any],
+) -> _EntityCandidate:
+    """A luminaire confirmed by its printed tag and that tag's legend row.
+
+    Field geometry, the printed field tag, the legend tag and any schedule
+    cells each keep their own provenance. Identity comes from the tag plus
+    the field geometry's source fingerprint.
+    """
+
+    candidate = _EntityCandidate(
+        key=f"p{page}:lighting:{geometry_key}",
+        entity_kind="device",
+        canonical_type="luminaire",
+        tag=tag,
+        identity_key=f"lighting:p{page}:{tag}:{geometry_key}",
+        page=page,
+        x_pt=center_pt[0],
+        y_pt=center_pt[1],
+        confidence=confidence,
+        primary_method="pdf-lighting-fixture-tag",
+        lighting_recognition=recognition,
+    )
+    for vector in vectors:
+        candidate.merge_source(
+            element_id=vector.element_id,
+            text=None,
+            symbol_name=None,
+            x_pt=center_pt[0],
+            y_pt=center_pt[1],
+            confidence=confidence,
+            provenance=_provenance(
+                document,
+                element_id=vector.element_id,
+                page=page,
+                method="pdf-lighting-fixture-geometry",
+                confidence=confidence,
+                source_kind=vector.source_kind,
+                attributes=dict(geometry_attributes),
+            ),
+            method="pdf-lighting-fixture-tag",
+        )
+    candidate.merge_source(
+        element_id=tag_observation.element_id,
+        text=tag_observation.text,
+        symbol_name=None,
+        x_pt=center_pt[0],
+        y_pt=center_pt[1],
+        confidence=0.99,
+        provenance=_provenance(
+            document,
+            element_id=tag_observation.element_id,
+            page=tag_observation.page,
+            method="pdf-lighting-fixture-tag",
+            confidence=0.99,
+            attributes={
+                "source_text": tag_observation.text,
+                "fixture_tag": tag,
+                "tag_is_primary_type_evidence": True,
+                "source_geometry_key": geometry_key,
+            },
+        ),
+        method="pdf-lighting-fixture-tag",
+    )
+    candidate.provenance.append(
+        _provenance(
+            document,
+            element_id=legend_entry.label.element_id,
+            page=legend_entry.page,
+            method="pdf-lighting-legend-tag",
+            confidence=legend_entry.confidence,
+            attributes={
+                "source_text": legend_entry.label.text,
+                "fixture_tag": tag,
+                "prototype_geometry_key": legend_entry.prototype.geometry_key,
+            },
+        )
+    )
+    if schedule_row is not None:
+        schedule_attributes = _lighting_schedule_attributes(schedule_row)
+        for source_element_id in schedule_row.source_element_ids:
+            candidate.provenance.append(
+                _provenance(
+                    document,
+                    element_id=source_element_id,
+                    page=schedule_row.page,
+                    method="pdf-lighting-fixture-schedule",
+                    confidence=0.99,
+                    attributes=schedule_attributes,
+                )
+            )
+    return candidate
+
+
+def _recognize_linear_lighting_fixtures(
+    document: PdfElectricalDocument,
+    *,
+    texts: Sequence[PdfTextObservation],
+    outlines: Sequence[_LinearOutline],
+    linear_entries_by_page: Mapping[int, Sequence[_LightingLegendEntry]],
+    linear_only_tags_by_page: Mapping[int, set[str]],
+    schedules: Mapping[tuple[int, str], _LightingScheduleRow],
+    claimed_text_ids: set[str],
+    claimed_vector_ids: set[str],
+) -> tuple[dict[str, _EntityCandidate], set[str], set[str], list[dict[str, Any]]]:
+    """Linear luminaires: a tag printed along one run of its legend bar's width.
+
+    The tag is the type evidence, exactly as for glyph fixtures. The run is a
+    stroked rectangular outline much longer than it is wide; a rule line, a
+    filled wall or a curved path never qualifies. The tag must lie along the
+    run (at least half its text extent beside the run, within one and a half
+    text heights) and be uniquely nearest to it; a run of a different width
+    than the tag's legend bar stays unresolved. Length is free because linear
+    fixtures are drawn to scale.
+    """
+
+    candidates: dict[str, _EntityCandidate] = {}
+    matched_vector_ids: set[str] = set()
+    newly_claimed_text_ids: set[str] = set()
+    unresolved: list[dict[str, Any]] = []
+    if not linear_only_tags_by_page:
+        return candidates, matched_vector_ids, newly_claimed_text_ids, unresolved
+
+    outlines_by_page: dict[int, list[_LinearOutline]] = {}
+    for outline in outlines:
+        if set(outline.source_element_ids) & claimed_vector_ids:
+            continue
+        outlines_by_page.setdefault(outline.page, []).append(outline)
+
+    outline_by_key: dict[tuple[int, str], _LinearOutline] = {}
+    assignments: dict[
+        tuple[int, str],
+        list[tuple[PdfTextObservation, str, float, float]],
+    ] = {}
+    for observation in texts:
+        if observation.element_id in claimed_text_ids:
+            continue
+        tag = _normalize_lighting_tag(observation.text)
+        if tag is None or tag not in linear_only_tags_by_page.get(
+            observation.page, set()
+        ):
+            continue
+        box = _tag_text_box(observation)
+        if box is None:
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture",
+                    "page": observation.page,
+                    "source_element_id": observation.element_id,
+                    "source_text": observation.text,
+                    "fixture_tag": tag,
+                    "font_size_pt": observation.font_size_pt,
+                    "status": "unresolved_classification",
+                    "reason_code": "lighting_linear_tag_extent_unknown",
+                    "reason": (
+                        "readable linear-fixture tag has no plausible printed "
+                        "size, so which run it is printed along cannot be "
+                        "established from its anchor point alone"
+                    ),
+                }
+            )
+            newly_claimed_text_ids.add(observation.element_id)
+            continue
+        max_gap = _LINEAR_TAG_GAP_EM * float(observation.font_size_pt or 0.0)
+        alongside: list[tuple[float, float, _LinearOutline]] = []
+        for outline in outlines_by_page.get(observation.page, ()):
+            gap, fraction = _tag_linear_run_relation(box, outline)
+            if gap > max_gap or fraction < _LINEAR_TAG_ALONGSIDE_MIN_FRACTION:
+                continue
+            alongside.append((gap, fraction, outline))
+        alongside.sort(key=lambda item: (item[0], item[2].geometry_key))
+        if not alongside:
+            # A bare tag with no run printed beside it may be a room label or
+            # a note; it is not evidence of a fixture.
+            continue
+        if (
+            len(alongside) > 1
+            and alongside[1][0] - alongside[0][0] < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
+        ):
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture",
+                    "page": observation.page,
+                    "source_element_id": observation.element_id,
+                    "source_text": observation.text,
+                    "fixture_tag": tag,
+                    "status": "unresolved_classification",
+                    "reason_code": "lighting_fixture_tag_association_ambiguous",
+                    "reason": (
+                        "readable linear-fixture tag is printed along more than "
+                        "one run at nearly the same distance"
+                    ),
+                    "candidate_geometry_keys": [
+                        outline.geometry_key for _gap, _fraction, outline in alongside[:4]
+                    ],
+                    "candidate_gaps_pt": [
+                        round(gap, 3) for gap, _fraction, _outline in alongside[:4]
+                    ],
+                }
+            )
+            newly_claimed_text_ids.add(observation.element_id)
+            continue
+        gap, fraction, outline = alongside[0]
+        key = (outline.page, outline.geometry_key)
+        outline_by_key[key] = outline
+        assignments.setdefault(key, []).append((observation, tag, gap, fraction))
+
+    for key in sorted(assignments):
+        outline = outline_by_key[key]
+        claims = assignments[key]
+        claim_ids = {observation.element_id for observation, *_rest in claims}
+        distinct_tags = sorted({tag for _observation, tag, _gap, _fraction in claims})
+        if len(distinct_tags) > 1:
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture",
+                    "page": outline.page,
+                    "source_element_id": outline.source_element_ids[0],
+                    "source_element_ids": list(outline.source_element_ids),
+                    "position_pt": {"x": outline.center_pt[0], "y": outline.center_pt[1]},
+                    "status": "unresolved_classification",
+                    "reason_code": "lighting_fixture_tag_ambiguous",
+                    "reason": (
+                        "linear run has more than one readable fixture tag "
+                        "printed along it"
+                    ),
+                    "candidate_tags": distinct_tags,
+                    "tag_source_element_ids": sorted(claim_ids),
+                }
+            )
+            newly_claimed_text_ids.update(claim_ids)
+            continue
+        tag = distinct_tags[0]
+        tag_observation, _tag, gap, fraction = min(
+            claims,
+            key=lambda claim: (claim[2], claim[0].element_id),
+        )
+        legend_entry = min(
+            (
+                entry
+                for entry in linear_entries_by_page.get(outline.page, ())
+                if entry.tag == tag and entry.linear is not None
+            ),
+            key=lambda entry: (
+                abs(entry.linear.width_pt - outline.width_pt),  # type: ignore[union-attr]
+                entry.label.element_id,
+            ),
+        )
+        prototype = legend_entry.linear
+        assert prototype is not None
+        width_delta = abs(outline.width_pt - prototype.width_pt)
+        width_tolerance = max(
+            _LINEAR_FIXTURE_WIDTH_TOLERANCE_MIN_PT,
+            _LINEAR_FIXTURE_WIDTH_TOLERANCE * prototype.width_pt,
+        )
+        newly_claimed_text_ids.update(claim_ids)
+        if width_delta > width_tolerance:
+            unresolved.append(
+                {
+                    "kind": "lighting_fixture",
+                    "page": outline.page,
+                    "source_element_id": tag_observation.element_id,
+                    "source_text": tag_observation.text,
+                    "fixture_tag": tag,
+                    "source_element_ids": list(outline.source_element_ids),
+                    "status": "unresolved_classification",
+                    "reason_code": "lighting_fixture_symbol_mismatch",
+                    "reason": (
+                        "readable fixture tag is printed along a linear run whose "
+                        "width does not match that tag's legend bar"
+                    ),
+                    "run_width_pt": outline.width_pt,
+                    "prototype_width_pt": prototype.width_pt,
+                    "width_tolerance_pt": round(width_tolerance, 6),
+                }
+            )
+            continue
+
+        confidence = round(
+            min(0.95, max(0.60, 1.0 - width_delta / prototype.width_pt)),
+            6,
+        )
+        linear_run = {
+            "printed_length_pt": outline.length_pt,
+            "printed_width_pt": outline.width_pt,
+            "axis_angle_deg": round(
+                math.degrees(math.atan2(outline.axis[1], outline.axis[0])),
+                3,
+            ),
+            "prototype_width_pt": prototype.width_pt,
+            "width_tolerance_pt": round(width_tolerance, 6),
+            "tag_gap_pt": round(gap, 3),
+            "tag_alongside_fraction": round(fraction, 3),
+        }
+        recognition: dict[str, Any] = {
+            "method": "lighting-linear-fixture-tag",
+            "legend_type": "lighting",
+            "fixture_tag": tag,
+            "tag_source_element_id": tag_observation.element_id,
+            "source_geometry_key": outline.geometry_key,
+            "linear_run": linear_run,
+            "tag_is_primary_type_evidence": True,
+            "legend": {
+                "page": legend_entry.page,
+                "tag_source_element_id": legend_entry.label.element_id,
+                "heading_element_id": legend_entry.heading.element_id,
+                "prototype_geometry_key": legend_entry.prototype.geometry_key,
+            },
+        }
+        schedule_row = schedules.get((outline.page, tag))
+        if schedule_row is not None:
+            recognition["fixture_schedule"] = _lighting_schedule_attributes(
+                schedule_row
+            )
+        candidate = _lighting_fixture_candidate(
+            document,
+            page=outline.page,
+            geometry_key=outline.geometry_key,
+            center_pt=outline.center_pt,
+            vectors=outline.vectors,
+            tag=tag,
+            tag_observation=tag_observation,
+            legend_entry=legend_entry,
+            schedule_row=schedule_row,
+            confidence=confidence,
+            recognition=recognition,
+            geometry_attributes={
+                "fixture_tag": tag,
+                "source_geometry_key": outline.geometry_key,
+                "linear_run": linear_run,
+            },
+        )
+        candidates[candidate.key] = candidate
+        matched_vector_ids.update(outline.source_element_ids)
+
+    return candidates, matched_vector_ids, newly_claimed_text_ids, unresolved
+
+
 def _recognize_lighting(
     document: PdfElectricalDocument,
     *,
@@ -5482,8 +6495,9 @@ def _recognize_lighting(
         schedule_unresolved,
         schedule_metadata,
     ) = _detect_lighting_fixture_schedules(texts)
+    linear_outlines = _linear_outlines(vectors)
     (
-        legend_entries_by_page,
+        all_legend_entries_by_page,
         prototype_keys,
         legend_text_ids,
         legend_unresolved,
@@ -5492,7 +6506,18 @@ def _recognize_lighting(
         texts=texts,
         clusters=clusters,
         excluded_text_ids=set(schedule_text_ids),
+        linear_outlines=linear_outlines,
     )
+    # Linear-bar prototypes are matched by outline kind and width, never by
+    # glyph shape, so they stay out of every shape comparison below.
+    legend_entries_by_page: dict[int, tuple[_LightingLegendEntry, ...]] = {
+        page: tuple(entry for entry in entries if entry.linear is None)
+        for page, entries in all_legend_entries_by_page.items()
+    }
+    linear_entries_by_page: dict[int, tuple[_LightingLegendEntry, ...]] = {
+        page: tuple(entry for entry in entries if entry.linear is not None)
+        for page, entries in all_legend_entries_by_page.items()
+    }
 
     claimed_text_ids = set(schedule_text_ids) | set(legend_text_ids)
     claimed_vector_ids = {
@@ -5501,6 +6526,13 @@ def _recognize_lighting(
         if (cluster.page, cluster.geometry_key) in prototype_keys
         for element_id in cluster.source_element_ids
     }
+    claimed_vector_ids.update(
+        element_id
+        for entries in linear_entries_by_page.values()
+        for entry in entries
+        if entry.linear is not None
+        for element_id in entry.linear.source_element_ids
+    )
     matched_vector_ids: set[str] = set()
     unresolved: list[dict[str, Any]] = [
         *schedule_unresolved,
@@ -5561,12 +6593,52 @@ def _recognize_lighting(
         fixture_entries_by_page[page] = tuple(fixture_entries)
         switch_entries_by_page[page] = tuple(switch_entries)
 
+    # A linear bar is never a switch symbol; a switching code labelling one
+    # is left out of both roles unless a schedule defines it as a fixture.
+    linear_fixture_entries_by_page: dict[int, tuple[_LightingLegendEntry, ...]] = {}
+    for page, entries in linear_entries_by_page.items():
+        schedule_tags = schedule_tags_by_page.get(page, set())
+        kept: list[_LightingLegendEntry] = []
+        for entry in entries:
+            if entry.tag in _LIGHTING_SWITCH_CODES and entry.tag not in schedule_tags:
+                unresolved.append(
+                    {
+                        "kind": "lighting_legend_tag",
+                        "page": entry.page,
+                        "source_element_id": entry.label.element_id,
+                        "source_text": entry.label.text,
+                        "legend_code": entry.tag,
+                        "status": "unresolved_lighting_legend",
+                        "reason_code": "lighting_legend_code_role_ambiguous",
+                        "reason": (
+                            "legend row label is a switching code drawn as a "
+                            "linear bar, and no fixture schedule row "
+                            "establishes it as a fixture type"
+                        ),
+                    }
+                )
+                continue
+            kept.append(entry)
+        if kept:
+            linear_fixture_entries_by_page[page] = tuple(kept)
+
     fixture_tags_by_page: dict[int, set[str]] = {
         page: set(tags) for page, tags in schedule_tags_by_page.items()
     }
     for page, entries in fixture_entries_by_page.items():
         fixture_tags_by_page.setdefault(page, set()).update(
             entry.tag for entry in entries
+        )
+    # Tags whose only legend prototype is a linear bar are associated with
+    # field runs by the linear pass below, not with nearby small glyphs.
+    linear_only_tags_by_page: dict[int, set[str]] = {}
+    for page, entries in linear_fixture_entries_by_page.items():
+        shape_tags = {entry.tag for entry in fixture_entries_by_page.get(page, ())}
+        linear_only_tags_by_page[page] = {
+            entry.tag for entry in entries if entry.tag not in shape_tags
+        }
+        fixture_tags_by_page.setdefault(page, set()).update(
+            linear_only_tags_by_page[page]
         )
 
     field_clusters = [
@@ -5583,6 +6655,8 @@ def _recognize_lighting(
             continue
         tag = _normalize_lighting_tag(observation.text)
         if tag is None or tag not in fixture_tags_by_page.get(observation.page, set()):
+            continue
+        if tag in linear_only_tags_by_page.get(observation.page, set()):
             continue
         nearby = [
             cluster
@@ -5804,95 +6878,25 @@ def _recognize_lighting(
                 schedule_row
             )
 
-        candidate = _EntityCandidate(
-            key=f"p{cluster.page}:lighting:{cluster.geometry_key}",
-            entity_kind="device",
-            canonical_type="luminaire",
-            tag=tag,
-            identity_key=(
-                f"lighting:p{cluster.page}:{tag}:{cluster.geometry_key}"
-            ),
+        candidate = _lighting_fixture_candidate(
+            document,
             page=cluster.page,
-            x_pt=cluster.center_pt[0],
-            y_pt=cluster.center_pt[1],
+            geometry_key=cluster.geometry_key,
+            center_pt=cluster.center_pt,
+            vectors=cluster.vectors,
+            tag=tag,
+            tag_observation=tag_observation,
+            legend_entry=legend_entry,
+            schedule_row=schedule_row,
             confidence=confidence,
-            primary_method="pdf-lighting-fixture-tag",
-            lighting_recognition=recognition,
+            recognition=recognition,
+            geometry_attributes={
+                "fixture_tag": tag,
+                "source_geometry_key": cluster.geometry_key,
+                "shape_signature": cluster.shape_signature,
+                "shape_score": shape_score,
+            },
         )
-        for vector in cluster.vectors:
-            candidate.merge_source(
-                element_id=vector.element_id,
-                text=None,
-                symbol_name=None,
-                x_pt=cluster.center_pt[0],
-                y_pt=cluster.center_pt[1],
-                confidence=confidence,
-                provenance=_provenance(
-                    document,
-                    element_id=vector.element_id,
-                    page=cluster.page,
-                    method="pdf-lighting-fixture-geometry",
-                    confidence=confidence,
-                    source_kind=vector.source_kind,
-                    attributes={
-                        "fixture_tag": tag,
-                        "source_geometry_key": cluster.geometry_key,
-                        "shape_signature": cluster.shape_signature,
-                        "shape_score": shape_score,
-                    },
-                ),
-                method="pdf-lighting-fixture-tag",
-            )
-        candidate.merge_source(
-            element_id=tag_observation.element_id,
-            text=tag_observation.text,
-            symbol_name=None,
-            x_pt=cluster.center_pt[0],
-            y_pt=cluster.center_pt[1],
-            confidence=0.99,
-            provenance=_provenance(
-                document,
-                element_id=tag_observation.element_id,
-                page=tag_observation.page,
-                method="pdf-lighting-fixture-tag",
-                confidence=0.99,
-                attributes={
-                    "source_text": tag_observation.text,
-                    "fixture_tag": tag,
-                    "tag_is_primary_type_evidence": True,
-                    "source_geometry_key": cluster.geometry_key,
-                },
-            ),
-            method="pdf-lighting-fixture-tag",
-        )
-        candidate.provenance.append(
-            _provenance(
-                document,
-                element_id=legend_entry.label.element_id,
-                page=legend_entry.page,
-                method="pdf-lighting-legend-tag",
-                confidence=legend_entry.confidence,
-                attributes={
-                    "source_text": legend_entry.label.text,
-                    "fixture_tag": tag,
-                    "prototype_geometry_key": legend_entry.prototype.geometry_key,
-                },
-            )
-        )
-        if schedule_row is not None:
-            schedule_attributes = _lighting_schedule_attributes(schedule_row)
-            for source_element_id in schedule_row.source_element_ids:
-                candidate.provenance.append(
-                    _provenance(
-                        document,
-                        element_id=source_element_id,
-                        page=schedule_row.page,
-                        method="pdf-lighting-fixture-schedule",
-                        confidence=0.99,
-                        attributes=schedule_attributes,
-                    )
-                )
-
         candidates[candidate.key] = candidate
         matched_vector_ids.update(cluster.source_element_ids)
         claimed_vector_ids.update(cluster.source_element_ids)
@@ -5974,6 +6978,27 @@ def _recognize_lighting(
             }
         )
         claimed_vector_ids.update(cluster.source_element_ids)
+
+    (
+        linear_candidates,
+        linear_matched_vector_ids,
+        linear_claimed_text_ids,
+        linear_unresolved,
+    ) = _recognize_linear_lighting_fixtures(
+        document,
+        texts=texts,
+        outlines=linear_outlines,
+        linear_entries_by_page=linear_fixture_entries_by_page,
+        linear_only_tags_by_page=linear_only_tags_by_page,
+        schedules=schedules,
+        claimed_text_ids=claimed_text_ids,
+        claimed_vector_ids=claimed_vector_ids,
+    )
+    candidates.update(linear_candidates)
+    matched_vector_ids.update(linear_matched_vector_ids)
+    claimed_vector_ids.update(linear_matched_vector_ids)
+    claimed_text_ids.update(linear_claimed_text_ids)
+    unresolved.extend(linear_unresolved)
 
     lighting_pages = set(fixture_tags_by_page)
     lighting_pages.update(
@@ -6228,6 +7253,11 @@ def _recognize_lighting(
         "fixture_schedules": schedule_metadata,
         "recognized_fixture_count": sum(
             candidate.canonical_type == "luminaire"
+            for candidate in candidates.values()
+        ),
+        "recognized_linear_fixture_count": sum(
+            (candidate.lighting_recognition or {}).get("method")
+            == "lighting-linear-fixture-tag"
             for candidate in candidates.values()
         ),
         "recognized_switch_count": sum(

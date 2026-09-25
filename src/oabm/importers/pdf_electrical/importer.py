@@ -3253,8 +3253,14 @@ def _is_multi_character_shx_text(contents: str) -> bool:
 
 def _shx_text_boxes(
     symbols: Sequence[PdfSymbolObservation],
+    *,
+    multi_character_only: bool = True,
 ) -> dict[int, tuple[tuple[float, float, float, float], ...]]:
-    """Displayed rectangles of the multi-character SHX text on each page."""
+    """Displayed rectangles of the SHX text on each page.
+
+    By default only multi-character (word) text; with
+    ``multi_character_only=False`` every drawn string, glyph codes included.
+    """
 
     boxes: dict[int, list[tuple[float, float, float, float]]] = {}
     for symbol in symbols:
@@ -3264,7 +3270,7 @@ def _shx_text_boxes(
         contents = str(symbol.metadata.get("contents") or "")
         if not isinstance(rect, (list, tuple)) or len(rect) != 4:
             continue
-        if not _is_multi_character_shx_text(contents):
+        if multi_character_only and not _is_multi_character_shx_text(contents):
             continue
         boxes.setdefault(symbol.page, []).append(
             (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
@@ -3292,27 +3298,72 @@ _DASH_ARC_MIN_DASHES = 4
 _DASH_ARC_MIN_SEGMENT_PT = 2.0
 _DASH_ARC_MAX_SEGMENT_PT = 34.0
 _DASH_ARC_CHAIN_GAP_PT = 30.0
-_DASH_ARC_MAX_RADIUS_PT = 200.0
-_DASH_ARC_FIT_TOLERANCE_PT = 2.0
+# A circuit arc's circle is larger than any device glyph: an arc that could
+# close inside the glyph size limit may be a glyph outline drawn in pieces.
+_DASH_ARC_MIN_RADIUS_PT = _GLYPH_PATH_MAX_EXTENT_PT / 2.0
+_DASH_ARC_MAX_RADIUS_PT = 600.0
+_DASH_ARC_FIT_TOLERANCE_PT = 1.0
+_DASH_ARC_FIT_TOLERANCE_RATIO = 0.01
 _DASH_ARC_TANGENT_TOLERANCE_RAD = 0.61
+# A curved dash bends away from its chord by at most this share of the chord.
+_DASH_CURVE_MAX_SAGITTA_RATIO = 0.25
 
 
-def _dash_segment(
-    vector: PdfVectorPathObservation,
-) -> tuple[tuple[float, float], tuple[float, float], float] | None:
-    """Return the straight segment of one short open dash, when it is one."""
+@dataclass(frozen=True, slots=True)
+class _Dash:
+    vector: PdfVectorPathObservation
+    start: tuple[float, float]
+    end: tuple[float, float]
+    middle: tuple[float, float]
 
-    if vector.closed or len(vector.points_pt) != 2:
+
+def _dash_segment(vector: PdfVectorPathObservation) -> _Dash | None:
+    """One short open dash, straight or gently curved, or None.
+
+    A dash runs one way along its chord: every point projects forward along
+    the chord and stays within a small bend of it. Its middle is the point
+    halfway along the drawn path, which lies on the arc a curved dash follows.
+    """
+
+    points = vector.points_pt
+    if vector.closed or len(points) < 2:
         return None
-    (x0, y0), (x1, y1) = vector.points_pt
-    length = math.hypot(x1 - x0, y1 - y0)
-    if not (
-        _DASH_ARC_MIN_SEGMENT_PT
-        <= length
-        <= _DASH_ARC_MAX_SEGMENT_PT
-    ):
+    start, end = points[0], points[-1]
+    chord = math.hypot(end[0] - start[0], end[1] - start[1])
+    if not _DASH_ARC_MIN_SEGMENT_PT <= chord <= _DASH_ARC_MAX_SEGMENT_PT:
         return None
-    return (x0, y0), (x1, y1), length
+    if len(points) == 2:
+        return _Dash(
+            vector,
+            start,
+            end,
+            ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0),
+        )
+    unit = ((end[0] - start[0]) / chord, (end[1] - start[1]) / chord)
+    bend_limit = _DASH_CURVE_MAX_SAGITTA_RATIO * chord
+    previous = 0.0
+    for x, y in points:
+        along = (x - start[0]) * unit[0] + (y - start[1]) * unit[1]
+        across = (x - start[0]) * unit[1] - (y - start[1]) * unit[0]
+        if abs(across) > bend_limit or along < previous - 1e-6:
+            return None
+        previous = along
+    lengths = [
+        math.hypot(second[0] - first[0], second[1] - first[1])
+        for first, second in zip(points, points[1:])
+    ]
+    remaining = sum(lengths) / 2.0
+    middle = end
+    for (first, second), length in zip(zip(points, points[1:]), lengths):
+        if remaining <= length:
+            share = remaining / length if length > 0.0 else 0.0
+            middle = (
+                first[0] + share * (second[0] - first[0]),
+                first[1] + share * (second[1] - first[1]),
+            )
+            break
+        remaining -= length
+    return _Dash(vector, start, end, middle)
 
 
 def _fit_circle(
@@ -3372,13 +3423,16 @@ def _fit_circle(
 def _dashed_arc_train_vector_ids(
     vectors: Sequence[PdfVectorPathObservation],
 ) -> set[str]:
-    """Element ids of dashes that lie on a common short-radius arc.
+    """Element ids of dashes that run along a common circuit-sized arc.
 
-    Circuit arcs are drawn as chains of separate short straight dashes. A
-    chain of four or more such dashes whose midpoints share one circle, each
-    dash running along its tangent, is wiring, not glyph strokes; letters do
-    not form evenly curved dash trains. Chains that fit no circle (a dashed
-    straight leader, mixed crossings) are left untouched.
+    Circuit arcs are drawn as chains of separate short dashes, straight or
+    gently curved. Dashes are linked end to end into chains (each dash end to
+    the nearest end of another dash, when that link is mutual), so a device
+    glyph, a tag or a second arc meeting a chain cannot pull it apart. Any
+    four consecutive dashes of a chain whose middles share one circle, larger
+    than a glyph and each dash running along its tangent, are wiring, not
+    glyph strokes. Straight dashed runs fit no such circle and are left
+    untouched.
     """
 
     by_page: dict[int, list[PdfVectorPathObservation]] = {}
@@ -3390,115 +3444,125 @@ def _dashed_arc_train_vector_ids(
     return matched
 
 
+def _dash_window_on_arc(window: Sequence[_Dash]) -> bool:
+    """Whether consecutive dashes lie along one circuit-sized circle."""
+
+    circle = _fit_circle([dash.middle for dash in window])
+    if circle is None:
+        return False
+    center_x, center_y, radius = circle
+    if not _DASH_ARC_MIN_RADIUS_PT <= radius <= _DASH_ARC_MAX_RADIUS_PT:
+        return False
+    tolerance = _DASH_ARC_FIT_TOLERANCE_PT + _DASH_ARC_FIT_TOLERANCE_RATIO * radius
+    alignment = math.cos(_DASH_ARC_TANGENT_TOLERANCE_RAD)
+    for dash in window:
+        offset = (dash.middle[0] - center_x, dash.middle[1] - center_y)
+        if abs(math.hypot(*offset) - radius) > tolerance:
+            return False
+        direction = (dash.end[0] - dash.start[0], dash.end[1] - dash.start[1])
+        tangent = (-offset[1], offset[0])
+        norm = math.hypot(*direction) * math.hypot(*tangent)
+        if norm <= 1e-9:
+            return False
+        dot = direction[0] * tangent[0] + direction[1] * tangent[1]
+        if not math.isfinite(dot) or abs(dot) / norm < alignment:
+            return False
+    return True
+
+
 def _page_dashed_arc_train_vector_ids(
     vectors: Sequence[PdfVectorPathObservation],
 ) -> set[str]:
     """Dashed-arc dash ids among the vectors of one page."""
 
-    dashes: list[
-        tuple[
-            PdfVectorPathObservation,
-            tuple[float, float],
-            tuple[float, float],
-            float,
-        ]
-    ] = []
-    for vector in vectors:
-        segment = _dash_segment(vector)
-        if segment is None:
-            continue
-        (x0, y0), (x1, y1) = segment[0], segment[1]
-        dashes.append((vector, (x0, y0), (x1, y1), min(x0, x1)))
+    dashes = sorted(
+        (
+            dash
+            for dash in (_dash_segment(vector) for vector in vectors)
+            if dash is not None
+        ),
+        key=lambda dash: dash.vector.element_id,
+    )
     if len(dashes) < _DASH_ARC_MIN_DASHES:
         return set()
-    dashes.sort(key=lambda item: (item[3], item[0].element_id))
 
-    parent = list(range(len(dashes)))
+    # Every dash end, bucketed on a grid one chain gap wide.
+    ends: list[tuple[float, float]] = []
+    for dash in dashes:
+        ends.extend((dash.start, dash.end))
+    cell = _DASH_ARC_CHAIN_GAP_PT
+    grid: dict[tuple[int, int], list[int]] = {}
+    for index, (x, y) in enumerate(ends):
+        grid.setdefault((math.floor(x / cell), math.floor(y / cell)), []).append(index)
 
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
+    nearest: dict[int, int] = {}
+    for index, (x, y) in enumerate(ends):
+        cell_x, cell_y = math.floor(x / cell), math.floor(y / cell)
+        best: tuple[float, int] | None = None
+        for neighbour_x in (cell_x - 1, cell_x, cell_x + 1):
+            for neighbour_y in (cell_y - 1, cell_y, cell_y + 1):
+                for other in grid.get((neighbour_x, neighbour_y), ()):
+                    if other // 2 == index // 2:
+                        continue
+                    distance = math.hypot(ends[other][0] - x, ends[other][1] - y)
+                    if distance > _DASH_ARC_CHAIN_GAP_PT:
+                        continue
+                    key = (distance, other)
+                    if best is None or key < best:
+                        best = key
+        if best is not None:
+            nearest[index] = best[1]
 
-    def union(first: int, second: int) -> None:
-        first_root = find(first)
-        second_root = find(second)
-        if first_root == second_root:
-            return
-        if first_root < second_root:
-            parent[second_root] = first_root
-        else:
-            parent[first_root] = second_root
-
-    for first in range(len(dashes)):
-        _, first_start, first_end, _first_x = dashes[first]
-        # Candidates are sorted by their left end; one whose left end lies
-        # beyond this dash's right end plus the gap cannot be within the gap.
-        reach_x = max(first_start[0], first_end[0]) + _DASH_ARC_CHAIN_GAP_PT
-        for second in range(first + 1, len(dashes)):
-            candidate = dashes[second]
-            if candidate[3] > reach_x:
-                break
-            second_start, second_end = candidate[1], candidate[2]
-            gap = min(
-                math.hypot(first_start[0] - second_start[0], first_start[1] - second_start[1]),
-                math.hypot(first_start[0] - second_end[0], first_start[1] - second_end[1]),
-                math.hypot(first_end[0] - second_start[0], first_end[1] - second_start[1]),
-                math.hypot(first_end[0] - second_end[0], first_end[1] - second_end[1]),
-            )
-            if gap <= _DASH_ARC_CHAIN_GAP_PT:
-                union(first, second)
-
-    groups: dict[int, list[int]] = {}
-    for index in range(len(dashes)):
-        groups.setdefault(find(index), []).append(index)
+    # Mutual nearest ends link two dashes; each dash end links at most once,
+    # so the links form simple chains.
+    links: dict[int, list[int]] = {}
+    for index, other in nearest.items():
+        if nearest.get(other) == index and index < other:
+            links.setdefault(index // 2, []).append(other // 2)
+            links.setdefault(other // 2, []).append(index // 2)
 
     matched: set[str] = set()
-    for members in groups.values():
-        if len(members) < _DASH_ARC_MIN_DASHES:
+    visited: set[int] = set()
+    for first in range(len(dashes)):
+        if first in visited or len(links.get(first, ())) == 2:
             continue
-        midpoints = [
-            (
-                (dashes[index][1][0] + dashes[index][2][0]) / 2.0,
-                (dashes[index][1][1] + dashes[index][2][1]) / 2.0,
-            )
-            for index in members
-        ]
-        circle = _fit_circle(midpoints)
-        if circle is None:
+        chain = [first]
+        visited.add(first)
+        while True:
+            following = [
+                other for other in sorted(links.get(chain[-1], ()))
+                if other not in visited
+            ]
+            if not following:
+                break
+            chain.append(following[0])
+            visited.add(following[0])
+        for offset in range(len(chain) - _DASH_ARC_MIN_DASHES + 1):
+            window = [dashes[index] for index in chain[offset:offset + _DASH_ARC_MIN_DASHES]]
+            if _dash_window_on_arc(window):
+                matched.update(dash.vector.element_id for dash in window)
+    # Closed loops of dashes (every dash linked on both ends).
+    for first in range(len(dashes)):
+        if first in visited:
             continue
-        center_x, center_y, radius = circle
-        if radius > _DASH_ARC_MAX_RADIUS_PT:
+        chain = [first]
+        visited.add(first)
+        while True:
+            following = [
+                other for other in sorted(links.get(chain[-1], ()))
+                if other not in visited
+            ]
+            if not following:
+                break
+            chain.append(following[0])
+            visited.add(following[0])
+        if len(chain) < _DASH_ARC_MIN_DASHES:
             continue
-        tolerance = _DASH_ARC_FIT_TOLERANCE_PT + 0.02 * radius
-        on_arc = True
-        for index, midpoint in zip(members, midpoints):
-            radial = math.hypot(
-                midpoint[0] - center_x,
-                midpoint[1] - center_y,
-            )
-            if abs(radial - radius) > tolerance:
-                on_arc = False
-                break
-            _, start, end, _ = dashes[index]
-            direction = (end[0] - start[0], end[1] - start[1])
-            tangent = (-(midpoint[1] - center_y), midpoint[0] - center_x)
-            dot = (
-                direction[0] * tangent[0] + direction[1] * tangent[1]
-            )
-            if not math.isfinite(dot):
-                on_arc = False
-                break
-            norm = math.hypot(*direction) * math.hypot(*tangent)
-            if norm <= 1e-9:
-                on_arc = False
-                break
-            if abs(dot) / norm < math.cos(_DASH_ARC_TANGENT_TOLERANCE_RAD):
-                on_arc = False
-                break
-        if on_arc:
-            matched.update(dashes[index][0].element_id for index in members)
+        loop = chain + chain[: _DASH_ARC_MIN_DASHES - 1]
+        for offset in range(len(chain)):
+            window = [dashes[index] for index in loop[offset:offset + _DASH_ARC_MIN_DASHES]]
+            if len(window) == _DASH_ARC_MIN_DASHES and _dash_window_on_arc(window):
+                matched.update(dash.vector.element_id for dash in window)
     return matched
 
 
@@ -3559,8 +3623,26 @@ def _glyph_cluster_vectors(
     """
 
     text_boxes = _shx_text_boxes(document.symbols)
-    arc_ids = _dashed_arc_train_vector_ids(vectors)
     screened_ids = _screened_background_vector_ids(vectors)
+    # Arc dashes are looked for among the opaque linework outside any drawn
+    # SHX string: letter strokes, even of one-letter glyph codes, are never
+    # dashes, and screened architecture would chain unrelated strokes in.
+    all_text_boxes = _shx_text_boxes(document.symbols, multi_character_only=False)
+    arc_ids = _dashed_arc_train_vector_ids(
+        [
+            vector
+            for vector in vectors
+            if vector.element_id not in screened_ids
+            and not any(
+                _points_inside_box_pt(
+                    vector.points_pt,
+                    box,
+                    tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
+                )
+                for box in all_text_boxes.get(vector.page, ())
+            )
+        ]
+    )
     if not text_boxes and not arc_ids and not screened_ids:
         return tuple(vectors)
     excluded = set(arc_ids) | screened_ids

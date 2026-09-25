@@ -6248,13 +6248,14 @@ def test_multi_character_shx_annotation_boxes_are_text_not_glyphs(
 def test_dashed_circuit_arc_dashes_do_not_form_glyph_clusters(
     tmp_path: Path,
 ) -> None:
+    # A circuit-sized arc: six 15 pt dashes with 6 pt gaps on a 60 pt radius.
     center = (300.0, 300.0)
-    radius = 25.0
+    radius = 60.0
     arc_dashes: list[str] = []
     arc_ids: list[str] = []
     for index in range(6):
-        start_angle = index * (2.0 * math.pi / 6.0)
-        sweep = 0.5
+        start_angle = index * 0.35
+        sweep = 0.25
         points = (
             (
                 center[0] + radius * math.cos(start_angle),
@@ -6362,14 +6363,14 @@ def test_dashed_arc_filter_chains_long_dashes_along_a_flat_arc(
 def test_dashed_arc_filter_never_chains_dashes_across_pages(
     tmp_path: Path,
 ) -> None:
-    # Three dashes of one circle on page 1 and the other three, at the same
+    # Three dashes of one arc on page 1 and the other three, at the same
     # coordinates, on page 2: neither page holds an arc train of four.
     dashes = _arc_dash_commands(
         (300.0, 300.0),
-        25.0,
+        60.0,
         start_angle=0.0,
-        dash_angle=0.5,
-        gap_angle=2.0 * math.pi / 6.0 - 0.5,
+        dash_angle=0.25,
+        gap_angle=0.1,
         count=6,
     )
     writer = PdfWriter()
@@ -6746,3 +6747,130 @@ def test_an_entirely_translucent_page_keeps_its_paths_for_glyphs(
     assert pdf_electrical_importer._screened_background_vector_ids(
         extracted.vectors
     ) == set()
+
+
+def _simple_legend_content(
+    rows: list[tuple[object, str]],
+) -> list[str]:
+    font = 7.0
+    content = [_cad_text_command(84.0, 712.0, "ELECTRICAL SYMBOL LEGEND", 9.0)]
+    for index, (glyph, label) in enumerate(rows):
+        y = 680.0 - 26.0 * index
+        content.extend(glyph(100.0, y))  # type: ignore[operator]
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    return content
+
+
+def test_dashed_arcs_leaving_a_device_do_not_swallow_its_glyph(
+    tmp_path: Path,
+) -> None:
+    # Two circuit arcs leave one duplex receptacle at 45 degrees, each drawn
+    # as 10 pt dashes with 2 pt gaps: inside the glyph clustering gap, so
+    # without the arc filter the glyph and both arcs chain into one cluster
+    # far over the glyph size limit. The glyph's own bar is a dash-sized
+    # straight stroke touching both arcs, and the two arcs meet at the glyph.
+    content = _simple_legend_content(
+        [
+            (_legend_glyph_duplex, "DUPLEX RECEPTACLE"),
+            (_legend_glyph_fourplex, "FOURPLEX RECEPTACLE"),
+            (_legend_glyph_toggle, "SINGLE POLE TOGGLE"),
+        ]
+    )
+    radius = 80.0
+    dash = 10.0 / radius
+    step = 12.0 / radius
+    count = 8
+    offset = radius / math.sqrt(2.0)
+    # The right arc runs clockwise up and away from the glyph's right end,
+    # the left arc counter-clockwise from its left end.
+    right_arc = _arc_dash_commands(
+        (458.0 + offset, 400.0 - offset),
+        radius,
+        start_angle=3.0 * math.pi / 4.0 - dash - (count - 1) * step,
+        dash_angle=dash,
+        gap_angle=step - dash,
+        count=count,
+    )
+    left_arc = _arc_dash_commands(
+        (442.0 - offset, 400.0 - offset),
+        radius,
+        start_angle=math.pi / 4.0,
+        dash_angle=dash,
+        gap_angle=step - dash,
+        count=count,
+    )
+    content.extend(right_arc + left_arc)
+    content.extend(_legend_glyph_duplex(450.0, 400.0))
+    pdf_path = tmp_path / "arcs-at-device.pdf"
+    _write_pdf_with_content(pdf_path, content)
+
+    extracted = extract_pdf(pdf_path, source_id="test:arcs-at-device")
+    arc_vectors = {
+        vector.element_id
+        for vector in extracted.vectors
+        if len(vector.points_pt) == 2
+        and vector.points_pt[0][0] > 300.0
+        and min(vector.points_pt[0][1], vector.points_pt[-1][1]) > 399.5
+        and abs(vector.points_pt[0][1] - vector.points_pt[-1][1]) > 0.01
+    }
+    assert len(arc_vectors) == 2 * count
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == arc_vectors
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert [
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"]["source_position_pt"],
+        )
+        for device in model.electrical_devices
+    ] == [("receptacle_duplex", {"x": 450.0, "y": 400.0})]
+    validate_model(model)
+
+
+def _legend_glyph_chord_circle(x: float, y: float) -> list[str]:
+    radius = 10.75
+    corners = [
+        (
+            x + radius * math.cos(index * math.pi / 4.0),
+            y + radius * math.sin(index * math.pi / 4.0),
+        )
+        for index in range(8)
+    ]
+    return [
+        _cad_path_command((corners[index], corners[(index + 1) % 8]), close=False)
+        for index in range(8)
+    ]
+
+
+def test_a_glyph_outline_drawn_as_separate_chords_is_not_an_arc(
+    tmp_path: Path,
+) -> None:
+    # A recessed light whose circle is exported as eight separate touching
+    # chords: its chords fit one circle, but a circle that small closes inside
+    # the glyph size limit, so it stays a glyph in the legend and the field.
+    content = _simple_legend_content(
+        [
+            (_legend_glyph_chord_circle, "RECESSED LIGHT"),
+            (_legend_glyph_duplex, "DUPLEX RECEPTACLE"),
+            (_legend_glyph_toggle, "SINGLE POLE TOGGLE"),
+        ]
+    )
+    content.extend(_legend_glyph_chord_circle(450.0, 400.0))
+    pdf_path = tmp_path / "chord-circle.pdf"
+    _write_pdf_with_content(pdf_path, content)
+
+    extracted = extract_pdf(pdf_path, source_id="test:chord-circle")
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == set()
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert [
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"]["source_position_pt"],
+        )
+        for device in model.electrical_devices
+    ] == [("luminaire", {"x": 450.0, "y": 400.0})]
+    validate_model(model)

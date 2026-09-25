@@ -4940,7 +4940,16 @@ def _linear_outline(vector: PdfVectorPathObservation) -> _LinearOutline | None:
     ):
         return None
     corners = list(vector.points_pt)
-    if not vector.closed:
+    # Normalize the repeated start point, whether the path closes with ``h``
+    # or by returning to its first point, so both spellings of one rectangle
+    # leave exactly its four corners.
+    if (
+        len(corners) >= 2
+        and _distance_pt(
+            corners[0][0], corners[0][1], corners[-1][0], corners[-1][1]
+        )
+        <= _OUTLINE_CLOSURE_TOLERANCE_PT
+    ):
         corners = corners[:-1]
     if len(corners) != 4:
         return None

@@ -467,6 +467,46 @@ string (`R = EXISTING TO BE RELOCATED`). Every device records `scope_status`:
 Legends are page-local, like symbol legends; a legend on another sheet is not
 inherited.
 
+A device whose position has no marker of its own still takes a status letter
+printed beside it: single `E`/`N`/`R` texts within the field-status radius are
+marker candidates, and letters that tie within the ambiguity margin with
+different values leave the device `unresolved` with `scope_reason`
+`scope_marker_ambiguous` and both candidates recorded. Some CAD exports draw
+SHX-font text as strokes and repeat each string as a read-only `/Square`
+comment whose title is "AutoCAD SHX Text"; such a comment is the drawing's own
+printed text, so its letter is a marker candidate too (recorded with
+`text_proxy: autocad_shx_text`, never an annotation author). Markup comments
+by any other author are not markers.
+
+A sheet general note can also default the scope of the unmarked devices of one
+family on that sheet, for example
+`4. LIGHT FIXTURES SHOWN ON PLAN ARE EXISTING U.O.N.` A default needs a named
+family (light fixtures, luminaires, outlets, receptacles), exactly one scope,
+and an "unless otherwise noted" clause, with no further scope wording in the
+note's own text. The note reaches only unmarked devices whose canonical type
+is in that family, and only on the note's own page. A note that names both
+scopes (`NEW / EXISTING U.O.N.`), or whose own text qualifies the default
+(`... NEW U.O.N. USE EXISTING IN LIEU OF NEW ...`), stays evidence of
+ambiguity: its devices remain `unresolved` with `scope_reason`
+`scope_default_note_ambiguous`, and two notes of the same family giving
+different scopes give `scope_default_note_conflict`. The note text and its
+source element IDs are recorded with the devices it reaches.
+
+For document sets a human has explicitly ruled on, the importer accepts a
+`UserScopeAssumption(rule, source)` — `ElectricalPdfImporter(
+user_scope_assumption=...)`, off by default. For every entity the sheets still
+leave unresolved (and only those), it records `scope_status: new` with
+`scope_method: "user scope assumption"` plus the rule and source verbatim and
+`scope_assumption_derivation: user`; it is never treated as observed sheet
+evidence. The rule's exception is an uppercase `(E)` callout: within the
+default annotation association radius it marks the nearest such unresolved
+entity `existing_to_remain` (`scope_method: "user scope assumption, (E)
+exception"`, with the callout's element IDs); a tie for the nearest leaves the
+callout's target ambiguous, so the exception does not fire. Sheet evidence
+always wins: legend-resolved markers and valid sheet-note defaults keep their
+own scope, and unresolved conflicts (tied markers, a legend giving a letter two
+meanings, a note naming both scopes) stay unresolved.
+
 Unresolved vector glyph clusters retain tuning evidence instead of only a
 generic failure string. Each unresolved cluster exposes the nearest and
 second-nearest canonical types and scores, the active threshold, a normalized

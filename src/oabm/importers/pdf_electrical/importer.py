@@ -29,6 +29,7 @@ from oabm.model import (
 from .extract import PdfPageDisplayTransform, page_display_transform
 
 POINT_TO_M = 0.0254 / 72.0
+_SHX_TEXT_PROXY = "autocad_shx_text"
 
 
 class ElectricalPdfError(ValueError):
@@ -288,6 +289,29 @@ class ElectricalInstanceHint:
             raise ElectricalPdfError("instance hint source_element_id cannot be blank")
         if not 0.0 <= self.confidence <= 1.0:
             raise ElectricalPdfError("instance hint confidence must be between 0 and 1")
+
+
+@dataclass(frozen=True, slots=True)
+class UserScopeAssumption:
+    """Explicit caller-supplied scope rule for entities the sheets leave unresolved.
+
+    This is never inferred from a sheet: it records a human decision about a
+    named document set, verbatim, and every entity it classifies carries that
+    user derivation. Pass it only for the documents the rule text names.
+    Sheet evidence always wins: a marker resolved through a page legend, or a
+    sheet general-note default, keeps its own scope, and unresolved evidence
+    that reports a conflict (tied markers, or a default that names both scopes)
+    stays unresolved. OFF unless explicitly passed.
+    """
+
+    rule: str
+    source: str
+
+    def __post_init__(self) -> None:
+        if not self.rule.strip():
+            raise ElectricalPdfError("user scope assumption rule text is required")
+        if not self.source.strip():
+            raise ElectricalPdfError("user scope assumption source attribution is required")
 
 
 @dataclass(frozen=True, slots=True)
@@ -987,6 +1011,19 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             subject = _clean_pdf_string(annotation.get("/Subj"))
             contents = _clean_pdf_string(annotation.get("/Contents"))
             native_id = _clean_pdf_string(annotation.get("/NM"))
+            # AutoCAD writes each SHX-font string, which it draws as strokes,
+            # a second time as a read-only /Square comment carrying the text.
+            # That comment is the drawing's own printed text, not a markup.
+            # Only this producer label is recorded, never an annotation author.
+            text_proxy = (
+                _SHX_TEXT_PROXY
+                if any(
+                    " ".join((_clean_pdf_string(annotation.get(key)) or "").split()).casefold()
+                    == "autocad shx text"
+                    for key in ("/T", "/Subj")
+                )
+                else None
+            )
             element_root = f"p{page_number}:annotation:{annotation_index:04d}"
 
             if contents:
@@ -1015,6 +1052,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                                 "subject": subject,
                                 "contents": contents,
                                 "native_id": native_id,
+                                "text_proxy": text_proxy,
                             }.items()
                             if value is not None
                         },
@@ -1780,14 +1818,265 @@ def _scope_status_legends(
     return legends
 
 
+# A sheet general note can set the scope of the unmarked devices of one family
+# on that sheet: "LIGHT FIXTURES SHOWN ON PLAN ARE EXISTING U.O.N." A default
+# needs a named family, exactly one scope, and "unless otherwise noted", with
+# no further scope wording in the rest of the note. "ALL OUTLETS SHOWN ON PLAN
+# ARE NEW / EXISTING U.O.N." names both scopes, so its devices stay unresolved
+# and the note is recorded as the reason. Notes are page-local, like legends.
+_SCOPE_NOTE_AMBIGUOUS = "ambiguous"
+_SCOPE_NOTE_FAMILY_TYPES: Mapping[str, frozenset[str]] = {
+    "light_fixtures": frozenset({"luminaire"}),
+    "outlets": frozenset(
+        {
+            "receptacle",
+            "receptacle_duplex",
+            "receptacle_quad",
+            "combination_outlet",
+            "data_outlet",
+            "catv_outlet",
+        }
+    ),
+    "receptacles": frozenset({"receptacle", "receptacle_duplex", "receptacle_quad"}),
+}
+_SCOPE_NOTE_NUMBER_RE = re.compile(r"^\d{1,2}\s*[.)]")
+# A notes column holds several blocks. A line that is exactly one of these
+# column-block headings ends the note: a heading is never a wrapped note line.
+_SCOPE_NOTE_BLOCK_HEADINGS = (
+    _LEGEND_TITLE_WORDS | _LEGEND_REJECTED_HEADING_WORDS | frozenset({"GENERAL NOTES", "KEY NOTES"})
+)
+_SCOPE_NOTE_FAMILY_PATTERN = (
+    r"^(?:\d{1,2}\s*[.)]\s*)?(?:ALL\s+)?(?:THE\s+)?"
+    r"(?P<family>LIGHT(?:ING)?\s+FIXTURES|LUMINAIRES|OUTLETS|RECEPTACLES)\s+SHOWN"
+)
+_SCOPE_NOTE_START_RE = re.compile(_SCOPE_NOTE_FAMILY_PATTERN + r"\b")
+_SCOPE_NOTE_RE = re.compile(
+    _SCOPE_NOTE_FAMILY_PATTERN
+    + r"(?:\s+ON\s+(?:THE\s+|THIS\s+)?(?:PLANS?|SHEETS?|DRAWINGS?))?\s+"
+    r"(?:ARE|SHALL\s+BE)\s+(?P<scope>[A-Z/ ]+?)\s*,?\s*"
+    r"(?:U\.\s*O\.\s*N\b\.?|UON\b|UNLESS\s+OTHERWISE\s+(?:NOTED|INDICATED|SHOWN)\b\.?)"
+    r"(?P<rest>.*)$"
+)
+_SCOPE_NOTE_QUALIFIER_RE = re.compile(
+    r"\b(?:NEW|EXIST\w*|RELOCAT\w*|REMOV\w*|DEMOL\w*|SALVAG\w*|REUS\w*|REPLAC\w*)\b"
+)
+# Runs on one baseline are one line while each starts within an upper bound of
+# the previous run's printed length; a note continues onto the next line when
+# that line starts in the note's text column and carries no new note number.
+_SCOPE_NOTE_BASELINE_PT = 1.5
+_SCOPE_NOTE_MAX_CHAR_WIDTH_PT = 8.0
+_SCOPE_NOTE_RUN_SLACK_PT = 12.0
+_SCOPE_NOTE_LINE_PITCH_PT = 18.0
+_SCOPE_NOTE_COLUMN_TOLERANCE_PT = 16.0
+_SCOPE_NOTE_MAX_LINES = 8
+
+
+@dataclass(frozen=True, slots=True)
+class _ScopeNote:
+    family: str
+    scope: str
+    ambiguity: str | None
+    text: str
+    source_element_ids: tuple[str, ...]
+
+
+def _scope_note_scope(phrase: str) -> str | None:
+    words = " ".join(phrase.split())
+    if re.fullmatch(r"EXISTING(?:\s+TO\s+REMAIN)?", words):
+        return SCOPE_EXISTING
+    if words == "NEW":
+        return SCOPE_NEW
+    if re.fullmatch(
+        r"NEW\s*(?:/|OR|AND\s*/\s*OR)\s*EXISTING|EXISTING\s*(?:/|OR|AND\s*/\s*OR)\s*NEW",
+        words,
+    ):
+        return _SCOPE_NOTE_AMBIGUOUS
+    return None
+
+
+def _page_text_lines(
+    observations: Sequence[PdfTextObservation],
+) -> list[tuple[PdfTextObservation, ...]]:
+    """Contiguous same-baseline runs, top to bottom and left to right."""
+
+    ordered = sorted(observations, key=lambda item: (-item.y_pt, item.x_pt, item.element_id))
+    baselines: list[list[PdfTextObservation]] = []
+    for observation in ordered:
+        if baselines and abs(baselines[-1][0].y_pt - observation.y_pt) <= _SCOPE_NOTE_BASELINE_PT:
+            baselines[-1].append(observation)
+        else:
+            baselines.append([observation])
+    lines: list[tuple[PdfTextObservation, ...]] = []
+    for baseline in baselines:
+        baseline.sort(key=lambda item: (item.x_pt, item.element_id))
+        current = [baseline[0]]
+        for observation in baseline[1:]:
+            previous = current[-1]
+            reach = len(previous.text) * _SCOPE_NOTE_MAX_CHAR_WIDTH_PT + _SCOPE_NOTE_RUN_SLACK_PT
+            if observation.x_pt - previous.x_pt <= reach:
+                current.append(observation)
+            else:
+                lines.append(tuple(current))
+                current = [observation]
+        lines.append(tuple(current))
+    return lines
+
+
+def _line_text(line: Sequence[PdfTextObservation]) -> str:
+    return " ".join(" ".join(item.text.upper().split()) for item in line)
+
+
+def _scope_default_notes(
+    texts: Sequence[PdfTextObservation],
+) -> dict[int, dict[str, list[_ScopeNote]]]:
+    """Per page: device family -> general notes that set its unmarked scope."""
+
+    notes: dict[int, dict[str, list[_ScopeNote]]] = {}
+    by_page: dict[int, list[PdfTextObservation]] = {}
+    for observation in texts:
+        by_page.setdefault(observation.page, []).append(observation)
+    for page, observations in sorted(by_page.items()):
+        lines = _page_text_lines(observations)
+        for index, line in enumerate(lines):
+            if _SCOPE_NOTE_START_RE.match(_line_text(line)) is None:
+                continue
+            column = next(
+                (item for item in line if not _SCOPE_NOTE_NUMBER_RE.fullmatch(item.text.strip())),
+                line[0],
+            )
+            paragraph = [line]
+            for following in lines[index + 1 :]:
+                if len(paragraph) >= _SCOPE_NOTE_MAX_LINES:
+                    break
+                gap = paragraph[-1][0].y_pt - following[0].y_pt
+                if gap <= _SCOPE_NOTE_BASELINE_PT:
+                    continue
+                if gap > _SCOPE_NOTE_LINE_PITCH_PT:
+                    break
+                if abs(following[0].x_pt - column.x_pt) > _SCOPE_NOTE_COLUMN_TOLERANCE_PT:
+                    continue
+                if _SCOPE_NOTE_NUMBER_RE.match(_line_text(following)):
+                    break
+                if _line_text(following) in _SCOPE_NOTE_BLOCK_HEADINGS:
+                    break
+                paragraph.append(following)
+            text = " ".join(_line_text(item) for item in paragraph)
+            match = _SCOPE_NOTE_RE.match(text)
+            if match is None:
+                continue
+            scope = _scope_note_scope(match.group("scope"))
+            if scope is None:
+                continue
+            ambiguity = None
+            if scope == _SCOPE_NOTE_AMBIGUOUS:
+                ambiguity = "names_new_and_existing"
+            elif _SCOPE_NOTE_QUALIFIER_RE.search(match.group("rest")):
+                scope = _SCOPE_NOTE_AMBIGUOUS
+                ambiguity = "default_qualified_by_note_text"
+            family_words = " ".join(match.group("family").split())
+            family = (
+                "light_fixtures"
+                if family_words in {"LIGHT FIXTURES", "LIGHTING FIXTURES", "LUMINAIRES"}
+                else family_words.lower()
+            )
+            notes.setdefault(page, {}).setdefault(family, []).append(
+                _ScopeNote(
+                    family=family,
+                    scope=scope,
+                    ambiguity=ambiguity,
+                    text=text,
+                    source_element_ids=tuple(
+                        sorted(item.element_id for row in paragraph for item in row)
+                    ),
+                )
+            )
+    return notes
+
+
+def _scope_status_letters(
+    texts: Sequence[PdfTextObservation],
+) -> dict[int, tuple[tuple[PdfTextObservation, str], ...]]:
+    """Per page: every single-letter E/N/R text that may mark a device."""
+
+    letters: dict[int, list[tuple[PdfTextObservation, str]]] = {}
+    for observation in texts:
+        modifier = _field_modifier_text(observation.text)
+        if modifier is not None and modifier[0] == "status":
+            letters.setdefault(observation.page, []).append((observation, modifier[1]))
+    return {page: tuple(items) for page, items in letters.items()}
+
+
+def _scope_marker_near(
+    page: int,
+    x_pt: float,
+    y_pt: float,
+    letters: Mapping[int, Sequence[tuple[PdfTextObservation, str]]],
+) -> tuple[str, list[tuple[PdfTextObservation, str]]]:
+    """Whether a device is marked: "marked", "ambiguous", or "unmarked".
+
+    Uses the same radius and tie rule as field status letters beside glyphs.
+    """
+
+    candidates = sorted(
+        (
+            (_distance_pt(x_pt, y_pt, observation.x_pt, observation.y_pt), observation.element_id, observation, letter)
+            for observation, letter in letters.get(page, ())
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    candidates = [item for item in candidates if item[0] <= _FIELD_STATUS_RADIUS_PT]
+    if not candidates:
+        return "unmarked", []
+    nearest = [
+        (observation, letter)
+        for distance, _, observation, letter in candidates
+        if distance <= candidates[0][0] + _FIELD_STATUS_AMBIGUITY_PT
+    ]
+    if len({letter for _, letter in nearest}) != 1:
+        return "ambiguous", nearest
+    return "marked", nearest[:1]
+
+
 def _scope_status_attributes(
     status: str | None,
     status_source_element_id: str | None,
     page: int,
     legends: Mapping[int, Mapping[str, Sequence[tuple[str, tuple[str, ...], str]]]],
+    *,
+    canonical_type: str | None = None,
+    position_pt: tuple[float, float] | None = None,
+    status_letters: Mapping[int, Sequence[tuple[PdfTextObservation, str]]] | None = None,
+    notes: Mapping[int, Mapping[str, Sequence[_ScopeNote]]] | None = None,
 ) -> dict[str, Any]:
-    """Resolve one device's scope from its marker and its own sheet's legend."""
+    """Resolve one device's scope from its marker and its own sheet's legend.
 
+    A device without a recognized marker is checked for status letters around
+    its own position. Letters that tie with different values leave it
+    unresolved; only a device with no letter in reach is unmarked, and only an
+    unmarked device takes its sheet's general-note default for its family.
+    """
+
+    marker_evidence: dict[str, Any] = {}
+    if status is None and position_pt is not None and status_letters is not None:
+        state, nearest = _scope_marker_near(page, position_pt[0], position_pt[1], status_letters)
+        if state == "ambiguous":
+            return {
+                "scope_status": SCOPE_UNRESOLVED,
+                "scope_reason": "scope_marker_ambiguous",
+                "scope_marker_candidates": [
+                    {"marker": letter, "source_element_id": observation.element_id}
+                    for observation, letter in sorted(
+                        nearest, key=lambda item: (item[1], item[0].element_id)
+                    )
+                ],
+            }
+        if state == "marked":
+            observation, letter = nearest[0]
+            status = letter
+            status_source_element_id = observation.element_id
+            marker_evidence["scope_marker_method"] = "status letter beside device position"
+        else:
+            return _scope_note_default_attributes(page, canonical_type, notes)
     if status is None:
         return {
             "scope_status": SCOPE_UNRESOLVED,
@@ -1798,6 +2087,7 @@ def _scope_status_attributes(
     evidence = {
         "scope_marker": status,
         "scope_marker_source_element_id": status_source_element_id,
+        **marker_evidence,
     }
     if not scopes:
         return {**evidence, "scope_status": SCOPE_UNRESOLVED, "scope_reason": "scope_marker_undefined"}
@@ -1816,6 +2106,148 @@ def _scope_status_attributes(
         "scope_legend_text": sorted({text for _, _, text in entries})[0],
         "scope_legend_source_element_ids": legend_ids,
     }
+
+
+def _scope_note_default_attributes(
+    page: int,
+    canonical_type: str | None,
+    notes: Mapping[int, Mapping[str, Sequence[_ScopeNote]]] | None,
+) -> dict[str, Any]:
+    """Scope of an unmarked device from its own sheet's general notes."""
+
+    unmarked = {"scope_status": SCOPE_UNRESOLVED, "scope_reason": "no_scope_marker"}
+    if canonical_type is None or not notes:
+        return unmarked
+    applicable = sorted(
+        (
+            note
+            for family, family_notes in notes.get(page, {}).items()
+            if canonical_type in _SCOPE_NOTE_FAMILY_TYPES.get(family, frozenset())
+            for note in family_notes
+        ),
+        key=lambda note: note.source_element_ids,
+    )
+    if not applicable:
+        return unmarked
+    note_ids = sorted({element for note in applicable for element in note.source_element_ids})
+    evidence = {
+        "scope_note_text": applicable[0].text,
+        "scope_note_family": applicable[0].family,
+        "scope_note_source_element_ids": note_ids,
+    }
+    scopes = {note.scope for note in applicable}
+    if len(scopes) > 1:
+        return {
+            "scope_status": SCOPE_UNRESOLVED,
+            "scope_reason": "scope_default_note_conflict",
+            **evidence,
+            "scope_note_texts": sorted({note.text for note in applicable}),
+        }
+    scope = scopes.pop()
+    if scope == _SCOPE_NOTE_AMBIGUOUS:
+        return {
+            "scope_status": SCOPE_UNRESOLVED,
+            "scope_reason": "scope_default_note_ambiguous",
+            "scope_note_ambiguity": sorted({note.ambiguity or "" for note in applicable})[0],
+            **evidence,
+        }
+    return {
+        "scope_status": scope,
+        "scope_method": "sheet general note default for unmarked devices",
+        **evidence,
+    }
+
+
+# An explicit user-supplied scope rule never overrides unresolved evidence that
+# is itself a conflict: two markers agreeing on nothing, a legend giving one
+# letter two meanings, or a general note naming both scopes all stay unresolved.
+_USER_SCOPE_CONFLICT_REASONS = frozenset(
+    {
+        "scope_marker_ambiguous",
+        "scope_legend_conflict",
+        "scope_default_note_ambiguous",
+        "scope_default_note_conflict",
+    }
+)
+# Only a standalone uppercase "(E)" token is the exception marker the rule
+# names; "(N)" needs no detection because the rule's default is already new.
+_USER_SCOPE_EXISTING_MARKER_RE = re.compile(r"\(E\)")
+# An "(E)" callout qualifies the item its leader targets, and callout text
+# stands off from that target. No leader geometry is modeled here, so the
+# marker reaches the nearest candidate within the importer's default
+# annotation association radius. A tie within the field-status ambiguity
+# margin leaves the marker's target ambiguous, so it claims nothing.
+_USER_SCOPE_MARKER_RADIUS_PT = 144.0
+
+
+def _user_scope_existing_claims(
+    candidates: Iterable[_EntityCandidate],
+    texts: Sequence[PdfTextObservation],
+) -> dict[str, tuple[str, ...]]:
+    """Candidate key -> element IDs of "(E)" callouts that mark it existing."""
+
+    markers: dict[int, list[PdfTextObservation]] = {}
+    for observation in texts:
+        if _USER_SCOPE_EXISTING_MARKER_RE.search(observation.text):
+            markers.setdefault(observation.page, []).append(observation)
+    if not markers:
+        return {}
+    positions: dict[int, list[tuple[float, float, str]]] = {}
+    for candidate in candidates:
+        positions.setdefault(candidate.page, []).append(
+            (candidate.x_pt, candidate.y_pt, candidate.key)
+        )
+    claims: dict[str, list[str]] = {}
+    for page, observations in sorted(markers.items()):
+        page_positions = positions.get(page, ())
+        for observation in observations:
+            ranked = sorted(
+                (
+                    (_distance_pt(observation.x_pt, observation.y_pt, x_pt, y_pt), key)
+                    for x_pt, y_pt, key in page_positions
+                ),
+                key=lambda item: (item[0], item[1]),
+            )
+            ranked = [item for item in ranked if item[0] <= _USER_SCOPE_MARKER_RADIUS_PT]
+            if not ranked:
+                continue
+            if len(ranked) > 1 and ranked[1][0] <= ranked[0][0] + _FIELD_STATUS_AMBIGUITY_PT:
+                continue
+            claims.setdefault(ranked[0][1], []).append(observation.element_id)
+    return {key: tuple(sorted(element_ids)) for key, element_ids in claims.items()}
+
+
+def _user_scope_assumption_attributes(
+    lane: Mapping[str, Any],
+    claim_source_element_ids: tuple[str, ...] | None,
+    assumption: UserScopeAssumption,
+) -> dict[str, Any]:
+    """Scope for one still-unresolved entity from the caller's explicit rule."""
+
+    if lane.get("scope_status") != SCOPE_UNRESOLVED:
+        return {}
+    if lane.get("scope_reason") in _USER_SCOPE_CONFLICT_REASONS:
+        return {}
+    evidence = {
+        "scope_assumption_rule": assumption.rule,
+        "scope_assumption_source": assumption.source,
+        "scope_assumption_derivation": DERIVATION_USER,
+    }
+    if claim_source_element_ids:
+        return {
+            "scope_status": SCOPE_EXISTING,
+            "scope_method": "user scope assumption, (E) exception",
+            "scope_assumption_existing_marker_source_element_ids": list(
+                claim_source_element_ids
+            ),
+            **evidence,
+        }
+    return {
+        "scope_status": SCOPE_NEW,
+        "scope_method": "user scope assumption",
+        **evidence,
+    }
+
 
 # Lighting is intentionally a separate recognition path from power-device
 # legends. A fixture's readable type tag is the semantic evidence; geometry
@@ -6267,6 +6699,7 @@ def _recognize_legend_shapes(
     vectors: Sequence[PdfVectorPathObservation],
     rules: Sequence[SymbolRule],
     ambiguity_margin: float,
+    status_texts: Sequence[PdfTextObservation] | None = None,
 ) -> tuple[
     dict[str, _EntityCandidate],
     set[str],
@@ -6759,7 +7192,9 @@ def _recognize_legend_shapes(
                 label_source_element_ids
             )
 
-        status_evidence = _field_status_for_cluster(cluster, texts)
+        status_evidence = _field_status_for_cluster(
+            cluster, texts if status_texts is None else status_texts
+        )
         if status_evidence is not None:
             status_observation, status_code, status_meaning = status_evidence
             shape_recognition.update(
@@ -6992,9 +7427,11 @@ class ElectricalPdfImporter:
         topology_snap_radius_pt: float = 4.0,
         topology_endpoint_radius_pt: float = 18.0,
         topology_annotation_radius_pt: float = 60.0,
+        user_scope_assumption: UserScopeAssumption | None = None,
     ) -> None:
         self.symbol_rules = tuple(symbol_rules)
         self.instance_hints = tuple(instance_hints)
+        self.user_scope_assumption = user_scope_assumption
         seen_hint_ids: set[str] = set()
         for hint in self.instance_hints:
             if hint.identity_key in seen_hint_ids:
@@ -7180,6 +7617,33 @@ class ElectricalPdfImporter:
             for observation in legend_texts
             if observation.element_id not in lighting_claimed_text_ids
         )
+        # Field status letters: the plan's own texts, plus single E/N/R letters
+        # that the drawing prints in an SHX font and carries as text-proxy
+        # comments. Other annotation codes and fixture tags are not markers.
+        shx_status_text_ids = {
+            f"{symbol.element_id}:text"
+            for symbol in symbols
+            if symbol.metadata.get("text_proxy") == _SHX_TEXT_PROXY
+            and (_field_modifier_text(str(symbol.metadata.get("contents") or "")) or ("",))[0]
+            == "status"
+        }
+        generic_text_ids = {observation.element_id for observation in generic_legend_texts}
+        status_texts = tuple(
+            sorted(
+                (
+                    *generic_legend_texts,
+                    *(
+                        observation
+                        for observation in texts
+                        if observation.element_id in shx_status_text_ids
+                        and observation.element_id not in generic_text_ids
+                    ),
+                ),
+                key=lambda item: (item.page, item.element_id),
+            )
+        )
+        scope_status_letters = _scope_status_letters(status_texts)
+        scope_notes = _scope_default_notes(texts)
         generic_vectors = tuple(
             vector
             for vector in vectors
@@ -7199,6 +7663,7 @@ class ElectricalPdfImporter:
             vectors=generic_vectors,
             rules=self.symbol_rules,
             ambiguity_margin=self.ambiguity_margin,
+            status_texts=status_texts,
         )
         shape_matched_vector_ids.update(lighting_matched_vector_ids)
         glyph_vector_ids.update(lighting_claimed_vector_ids)
@@ -7888,6 +8353,11 @@ class ElectricalPdfImporter:
         # a sheet whose panel is also named `EVSE` invented a circuit.
         entity_identity_text_owner: dict[str, str] = {}
         identity_owners: dict[str, str] = {}
+        user_scope_claims = (
+            _user_scope_existing_claims(candidates.values(), texts)
+            if self.user_scope_assumption is not None
+            else {}
+        )
 
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
             if candidate.identity_key is None:
@@ -8005,8 +8475,23 @@ class ElectricalPdfImporter:
                     ),
                     candidate.page,
                     scope_legends,
+                    canonical_type=candidate.canonical_type,
+                    position_pt=(candidate.x_pt, candidate.y_pt),
+                    status_letters=scope_status_letters,
+                    notes=scope_notes,
                 )
             )
+            if self.user_scope_assumption is not None:
+                user_scope = _user_scope_assumption_attributes(
+                    lane_attributes,
+                    user_scope_claims.get(candidate.key),
+                    self.user_scope_assumption,
+                )
+                if user_scope:
+                    # The entity is no longer unresolved; the stale reason would
+                    # contradict the recorded user decision.
+                    lane_attributes.pop("scope_reason", None)
+                    lane_attributes.update(user_scope)
             if mounting:
                 if len(mounting) == 1:
                     lane_attributes["mounting_height_m"] = mounting[0]

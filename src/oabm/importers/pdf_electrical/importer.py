@@ -10168,7 +10168,9 @@ class ElectricalPdfImporter:
                     "canonicalized_length_unit": "m",
                     "spatial_status": spatial_status,
                     "registration_pending": not has_explicit_registration,
-                    "page_transforms_supplied": has_explicit_registration,
+                    # Whether the caller supplied transforms, even when the
+                    # per-drawing assignment later fell back to best effort.
+                    "page_transforms_supplied": page_transforms is not None,
                     "registration_mode": registration_mode,
                     "registered_frame_id": frame_id,
                     **(

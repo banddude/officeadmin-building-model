@@ -235,3 +235,11 @@ with the unplaced points listed in `drawing_region_assignment`), and convergence
 refuses it. When every point is placed, convergence accepts the document like
 any registered one; each device carries its `drawing_region_bbox_pt`, and its Z
 comes from its own drawing's level.
+
+These placements appear under the `pdf_electrical` lane keys:
+`registration_mode: explicit-page-and-drawing-transforms` marks a document
+placed by supplied page and per-drawing transforms, and
+`drawing_region_transforms` lists, per page, each drawing's scope and
+`PdfPageTransform` as `DrawingRegionTransform.to_attributes()`.
+`page_transforms_supplied` records that the caller supplied transforms even
+when the per-drawing assignment later fell back to best effort.

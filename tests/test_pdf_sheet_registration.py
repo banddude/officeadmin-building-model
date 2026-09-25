@@ -65,6 +65,9 @@ MAIN = Room(0.0, 0.0, 354.0, 236.0, "ROOM: BEDROOM")
 # A wall stub off the east wall breaks the room's symmetry.
 STUB = (((354.0, 60.0), (474.0, 60.0)), ((354.0, 69.0), (474.0, 69.0)))
 GRID = (("A", -60.0, -60.0), ("B", 414.0, -60.0), ("1", -60.0, 296.0), ("2", 414.0, 296.0))
+# The same grid inside the room extents, so per-drawing scopes hold the
+# bubbles of the drawing that printed them.
+TIGHT = (("A", 30.0, 30.0), ("B", 324.0, 30.0), ("1", 30.0, 206.0), ("2", 324.0, 206.0))
 EVSE_AT = (330.0, 120.0)  # just inside the east wall
 
 
@@ -856,6 +859,8 @@ def test_a_point_outside_every_drawing_keeps_the_document_pending(tmp_path: Path
     )
     lane = electrical.attributes["pdf_electrical"]
     assert lane["registration_pending"] is True
+    # The transforms were supplied even though the assignment fell back.
+    assert lane["page_transforms_supplied"] is True
     assert lane["registration_mode"] == "drawing-region-transforms-unresolved"
     assignment = lane["drawing_region_assignment"]
     assert assignment["status"] == "unresolved"
@@ -918,6 +923,99 @@ def test_drawing_region_transforms_are_validated(tmp_path: Path) -> None:
                 DrawingRegionTransform((600.0, 0.0, 900.0, 500.0), replace(transform, frame_id="frame:other")),
             )},
         )
+
+
+def test_a_drawing_without_bubbles_of_its_own_does_not_borrow_the_others(
+    tmp_path: Path,
+) -> None:
+    # Grid bubbles count only inside their drawing's own scope. Drawing 2 has
+    # no bubbles and walls that match no floor, so it must stay pending; it
+    # must not register to a floor through drawing 1's bubbles, which would
+    # silently place its device far from the building.
+    third = Drawing(
+        THIRD_ORIGIN, rooms=(THIRD_ROOM,), grid=TIGHT, title="THIRD FLOOR PLAN", notes=("ELEVATION: 20'-0\"",),
+    )
+    _, source, architecture = _architecture(
+        tmp_path, Sheet((replace(SECOND, grid=TIGHT), third)), options=ImportOptions(registrations=(_floor_hint(),)),
+    )
+    storage = Drawing(
+        UPPER.origin,
+        rooms=(
+            Room(0.0, 0.0, 250.0, 420.0, "ROOM: STORAGE"),
+            Room(250.0, 0.0, 180.0, 150.0, "ROOM: CLOSET"),
+        ),
+        stub=False,
+        evse=True,
+        evse_tag="EVSE-2",
+        evse_at=(200.0, 100.0),
+    )
+    electrical_path = _electrical(tmp_path, _e_sheet(replace(LOWER, grid=TIGHT), storage))
+    result = _register(architecture, source, electrical_path)
+
+    [page] = result.pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.transform is None
+    assert page.drawing_transforms == ()
+    assert result.page_transforms() is None
+    lower, upper = page.record["drawings"]
+    # Drawing 1's own bubbles are the only ones in its scope.
+    assert lower["grid_labels"] == ["1", "2", "A", "B"]
+    assert lower["status"] == REGISTERED
+    # Drawing 2 has no bubbles in its scope and walls that match no floor.
+    assert upper["grid_labels"] == []
+    assert upper["status"] == REGISTRATION_PENDING
+    assert "insufficient_matched_evidence" in upper["reason_codes"]
+    assert page.reason_codes == ("insufficient_matched_evidence",)
+
+    # The pending page offers no transforms, so convergence refuses instead of
+    # placing drawing 2's device somewhere unflagged.
+    electrical = ElectricalPdfImporter().import_pdf(
+        electrical_path, source_id="fixture:electrical",
+    )
+    lane = electrical.attributes["pdf_electrical"]
+    assert lane["registration_pending"] is True
+    assert "drawing_region_transforms" not in lane
+    with pytest.raises(PdfConvergenceError):
+        converge_pdf_models(architecture, electrical)
+
+
+def test_each_drawing_registers_with_the_bubbles_in_its_own_scope(tmp_path: Path) -> None:
+    # Both drawings carry the same grid inside their own extents: each must
+    # register with its own four bubbles, not a page-wide set.
+    third = Drawing(
+        THIRD_ORIGIN, rooms=(THIRD_ROOM,), grid=TIGHT, title="THIRD FLOOR PLAN", notes=("ELEVATION: 20'-0\"",),
+    )
+    _, source, architecture = _architecture(
+        tmp_path, Sheet((replace(SECOND, grid=TIGHT), third)), options=ImportOptions(registrations=(_floor_hint(),)),
+    )
+    [page] = _register(
+        architecture,
+        source,
+        _electrical(tmp_path, _e_sheet(replace(LOWER, grid=TIGHT), replace(UPPER, grid=TIGHT))),
+    ).pages
+    assert page.status == REGISTERED
+    lower, upper = page.record["drawings"]
+    assert [lower["grid_labels"], upper["grid_labels"]] == [["1", "2", "A", "B"]] * 2
+
+
+def test_drawing_region_scopes_may_not_overlap(tmp_path: Path) -> None:
+    # Two drawings placed so their scopes (each wall extent plus its annotation
+    # margin) overlap cannot say which drawing a point between them belongs
+    # to, even though both drawings registered on their own: the page stays
+    # pending instead of offering ambiguous region transforms.
+    southeast = replace(
+        ELECTRICAL, origin=(ELECTRICAL.origin[0] + 560.0, ELECTRICAL.origin[1] + 250.0),
+    )
+    _, source, architecture = _architecture(tmp_path)
+    result = _register(architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL, southeast)))
+    [page] = result.pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("drawing_regions_overlap",)
+    assert page.transform is None
+    assert page.drawing_transforms == ()
+    assert result.page_transforms() is None
+    lower, upper = page.record["drawings"]
+    assert [lower["status"], upper["status"]] == [REGISTERED, REGISTERED]
 
 
 def test_per_drawing_registration_is_deterministic(tmp_path: Path) -> None:

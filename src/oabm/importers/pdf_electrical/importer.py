@@ -4019,13 +4019,26 @@ def _legend_label_blocks(
         if not anchors:
             blocks.extend((line,) for line in chain)
             continue
-        # Split midway between neighbouring glyph lines so every block keeps
-        # the line its own glyph sits beside; one glyph owns the whole chain.
+        # Between two neighbouring glyph lines the rows part at the widest
+        # line gap: a row gap is drawn at least as wide as the pitch inside a
+        # wrapped label, and a glyph need not sit beside its label's middle
+        # line. Equal gaps part nearest the midpoint, then at the upper gap.
+        # Every block keeps the line its own glyph sits beside; one glyph owns
+        # the whole chain.
         starts = sorted(anchors)
         bounds = [0]
-        bounds.extend(
-            (first + second + 1) // 2 for first, second in zip(starts, starts[1:])
-        )
+        for first, second in zip(starts, starts[1:]):
+            middle = (first + second) / 2.0
+            bounds.append(
+                min(
+                    range(first + 1, second + 1),
+                    key=lambda index: (
+                        -round(chain[index - 1].y_pt - chain[index].y_pt, 3),
+                        abs(index - 0.5 - middle),
+                        index,
+                    ),
+                )
+            )
         bounds.append(len(chain))
         for index, start in enumerate(bounds[:-1]):
             stop = bounds[index + 1]

@@ -6395,3 +6395,83 @@ def test_dashed_arc_filter_never_chains_dashes_across_pages(
     assert len(
         pdf_electrical_importer._dashed_arc_train_vector_ids(single.vectors)
     ) == 6
+
+
+def _legend_glyph_circle_slash(x: float, y: float) -> list[str]:
+    radius = 5.5
+    points = tuple(
+        (
+            x + radius * math.cos(index * math.pi / 6.0),
+            y + radius * math.sin(index * math.pi / 6.0),
+        )
+        for index in range(12)
+    )
+    return [
+        _cad_path_command(points, close=True),
+        _cad_path_command(((x - 3.9, y - 3.9), (x + 3.9, y + 3.9)), close=False),
+    ]
+
+
+def test_wrapped_legend_labels_split_at_the_row_gap_not_the_midpoint(
+    tmp_path: Path,
+) -> None:
+    # One column of wrapped labels at a 8.5 pt line pitch. The smoke/CO row
+    # wraps onto five lines with its glyph beside the SECOND line; the next
+    # row starts one 10 pt row gap lower, close enough that both labels chain
+    # into one column run. Each glyph must keep its own whole label: the
+    # split belongs at the wider row gap, not midway between the glyph lines.
+    font = 7.0
+    sca_lines = (
+        "COMBINATION SMOKE/CARBON",
+        "MONOXIDE ALARM",
+        "HARD WIRED WITH",
+        "BATTERY BACKUP",
+        "INTERCONNECTED",
+    )
+    sa_lines = ("SMOKE ALARM HARD", "WIRED")
+    top = 650.0
+    pitch = 8.5
+    sca_ys = [top - pitch * index for index in range(len(sca_lines))]
+    sa_top = sca_ys[-1] - 10.0
+    sa_ys = [sa_top - pitch * index for index in range(len(sa_lines))]
+    visual_offset = 0.35 * font
+    content = [
+        _cad_rect_command(36.0, 36.0, 1128.0, 720.0),
+        _cad_rect_command(72.0, 392.0, 448.0, 328.0),
+        _cad_path_command(((72.0, 700.0), (520.0, 700.0)), close=False),
+        _cad_path_command(((72.0, 702.0), (520.0, 702.0)), close=False),
+        _cad_text_command(84.0, 712.0, "ELECTRICAL SYMBOL LEGEND", 9.0),
+        _cad_text_command(84.0, 686.0, "FIXTURES", 8.5),
+    ]
+    content.extend(_legend_glyph_ceiling_light(100.0, 668.0 + visual_offset))
+    content.append(_cad_text_command(136.0, 668.0, "SURFACE MOUNTED CEILING LIGHT", font))
+    content.extend(_legend_glyph_smoke_alarm(100.0, sca_ys[1] + visual_offset))
+    for y, text in zip(sca_ys, sca_lines):
+        content.append(_cad_text_command(136.0, y, text, font))
+    content.extend(_legend_glyph_circle_slash(100.0, sa_ys[0] + visual_offset))
+    for y, text in zip(sa_ys, sa_lines):
+        content.append(_cad_text_command(136.0, y, text, font))
+    content.extend(_legend_glyph_recessed_light(100.0, 560.0 + visual_offset))
+    content.append(_cad_text_command(136.0, 560.0, "RECESSED LIGHT", font))
+    content.extend(_legend_glyph_smoke_alarm(850.0, 600.0))
+    content.extend(_legend_glyph_circle_slash(850.0, 500.0))
+    pdf_path = tmp_path / "wrapped-legend-labels.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:wrapped-legend-labels")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    labels = {
+        device.device_type: device.attributes["pdf_electrical"][
+            "shape_recognition"
+        ]["legend_row_label"]
+        for device in model.electrical_devices
+    }
+    assert labels == {
+        "smoke_co_alarm": " ".join(sca_lines),
+        "smoke_alarm": " ".join(sa_lines),
+    }
+    assert model.to_dict() == ElectricalPdfImporter().import_document(
+        extract_pdf(pdf_path, source_id="test:wrapped-legend-labels")
+    ).to_dict()
+    validate_model(model)

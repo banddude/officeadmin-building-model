@@ -1264,19 +1264,33 @@ def _probe_hexagon(radius: float) -> tuple[tuple[float, float], ...]:
     )
 
 
-def _probe_pentagon(radius: float) -> tuple[tuple[float, float], ...]:
+def _probe_star(
+    outer_radius: float,
+    inner_radius: float,
+    *,
+    points: int = 4,
+) -> tuple[tuple[float, float], ...]:
+    """A concave star: no legend row in these probes resembles it.
+
+    A convex regular polygon is not a safe "never matches" glyph: a pentagon
+    scores 0.756 against a hexagon prototype, above the strong-score
+    threshold, and silently matches that row. An even point count keeps the
+    bbox centred on the placement point.
+    """
     return tuple(
         (
             round(
-                radius * math.cos(-math.pi / 2.0 + 2.0 * math.pi * index / 5.0),
+                (outer_radius if index % 2 == 0 else inner_radius)
+                * math.cos(-math.pi / 2.0 + math.pi * index / points),
                 3,
             ),
             round(
-                radius * math.sin(-math.pi / 2.0 + 2.0 * math.pi * index / 5.0),
+                (outer_radius if index % 2 == 0 else inner_radius)
+                * math.sin(-math.pi / 2.0 + math.pi * index / points),
                 3,
             ),
         )
-        for index in range(5)
+        for index in range(2 * points)
     )
 
 
@@ -4019,10 +4033,10 @@ def _annotation_tag_legend_commands() -> list[str]:
 
 
 def _annotation_tag_field_commands() -> list[str]:
-    """Field glyphs: legend-matched instances plus never-matching pentagons."""
+    """Field glyphs: legend-matched instances plus two below-threshold stars."""
     return [
-        _probe_path(500.0, 450.0, _probe_pentagon(5.0)),
-        _probe_path(760.0, 450.0, _probe_pentagon(5.0)),
+        _probe_path(500.0, 450.0, _probe_star(6.0, 2.0)),
+        _probe_path(760.0, 450.0, _probe_star(6.0, 2.0)),
         _probe_path(560.0, 450.0, _probe_circle(6.0)),
         _probe_path(620.0, 450.0, _probe_circle(6.0)),
         _probe_path(680.0, 450.0, _probe_circle(6.0)),
@@ -4047,7 +4061,7 @@ def _annotation_tag_probe_annotations() -> list[tuple[float, float, str]]:
         (117.0, 528.0, "HD"),
         (117.0, 500.0, "HD"),  # second HD row: the ambiguity negative
         # Field tags.
-        (500.0, 450.0, "F5"),  # beside the unresolved pentagon: resolves it
+        (500.0, 450.0, "F5"),  # on the unresolved star: resolves it
         (760.0, 450.0, "HD"),  # ambiguous tag: two legend rows carry HD
         (900.0, 200.0, "SCA"),  # no glyph nearby: must not become a device
         (572.0, 442.0, "LED"),  # luminaire modifier
@@ -4201,7 +4215,7 @@ def test_annotation_modifier_tags_qualify_adjacent_legend_glyphs(tmp_path) -> No
 
 
 def test_annotation_letter_tag_resolves_unresolved_field_glyph(tmp_path) -> None:
-    """F5 beside a below-threshold pentagon resolves that glyph, fail-closed.
+    """F5 on a below-threshold star glyph resolves that glyph, fail-closed.
 
     The resolution records the method, the legend row, the letter tag, and the
     annotation source element id; the annotation joins the resolved device
@@ -4256,7 +4270,7 @@ def test_annotation_ambiguous_tag_and_tag_without_glyph_fail_closed(
 ) -> None:
     """A tag naming two rows, or naming no nearby glyph, resolves nothing.
 
-    The ambiguous ``HD`` tag leaves its pentagon unresolved with the precise
+    The ambiguous ``HD`` tag leaves its star glyph unresolved with the precise
     outcome recorded, and the stray ``SCA`` square stays an unresolved
     annotation that never becomes a device.
     """
@@ -4265,7 +4279,9 @@ def test_annotation_ambiguous_tag_and_tag_without_glyph_fail_closed(
         source_id="fixture:annotation-tag-fail-closed",
     )
     lane = model.attributes["pdf_electrical"]
-    assert len(model.electrical_devices) == 9
+    # Nine legend-matched glyphs plus the one star the F5 tag resolved: the
+    # ambiguous tag, the stray tag and the modifier tags add no device.
+    assert len(model.electrical_devices) == 10
 
     ambiguous_rows = [
         item
@@ -4325,9 +4341,6 @@ def test_annotation_ambiguous_tag_and_tag_without_glyph_fail_closed(
             if provenance.source_element_id == element_id
         ][0]
         assert record.method in {"annotation-modifier", "annotation-tag"}
-
-    # The ambiguous tag and the stray still leave exactly ten devices.
-    assert len(model.electrical_devices) == 10
 
 
 def test_annotation_tag_probe_is_deterministic_across_runs(tmp_path) -> None:

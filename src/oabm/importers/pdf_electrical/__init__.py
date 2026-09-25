@@ -3,6 +3,7 @@
 from .importer import (
     DEFAULT_SYMBOL_RULES,
     POINT_TO_M,
+    DrawingRegionTransform,
     ElectricalPdfError,
     ElectricalInstanceHint,
     ElectricalPdfImporter,
@@ -20,6 +21,7 @@ from .importer import (
 __all__ = [
     "DEFAULT_SYMBOL_RULES",
     "POINT_TO_M",
+    "DrawingRegionTransform",
     "ElectricalPdfError",
     "ElectricalInstanceHint",
     "ElectricalPdfImporter",

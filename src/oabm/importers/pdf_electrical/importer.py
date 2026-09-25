@@ -10,7 +10,7 @@ import numpy as np
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 from oabm.model import (
     DERIVATION_INFERRED,
@@ -252,6 +252,46 @@ class PdfPageTransform:
         if self.registration is not None:
             attributes["registration"] = dict(self.registration)
         return attributes
+
+
+@dataclass(frozen=True, slots=True)
+class DrawingRegionTransform:
+    """Registered transform for one drawing of a page, with the extents it places.
+
+    A page carrying several separately drawn floor plans needs one transform per
+    drawing. A recognized source point uses the transform of the unique region
+    whose ``source_bbox_pt`` (displayed page points, bottom-left origin) contains
+    it. A point outside every region, or inside two, cannot be placed, so the
+    whole document keeps its registration pending.
+    """
+
+    source_bbox_pt: tuple[float, float, float, float]
+    transform: PdfPageTransform
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.transform, PdfPageTransform):
+            raise ElectricalPdfError("drawing region transform needs a PdfPageTransform")
+        box = tuple(float(value) for value in self.source_bbox_pt)
+        if len(box) != 4 or not all(math.isfinite(value) for value in box):
+            raise ElectricalPdfError("drawing region transform needs a finite source bbox")
+        if box[0] >= box[2] or box[1] >= box[3]:
+            raise ElectricalPdfError(
+                "drawing region transform source bbox must be ordered x0 < x1, y0 < y1"
+            )
+        object.__setattr__(self, "source_bbox_pt", box)
+
+    def contains(self, x_pt: float, y_pt: float) -> bool:
+        x0, y0, x1, y1 = self.source_bbox_pt
+        return x0 <= x_pt <= x1 and y0 <= y_pt <= y1
+
+    def to_attributes(self) -> dict[str, Any]:
+        return {
+            "source_bbox_pt": list(self.source_bbox_pt),
+            "page_transform": self.transform.to_attributes(),
+        }
+
+
+PageTransformInput = Union[PdfPageTransform, Sequence[DrawingRegionTransform]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -4821,27 +4861,19 @@ def _resolve_explicit_legend_references(
 
 def _resolve_page_transforms(
     document: PdfElectricalDocument,
-    page_transforms: Mapping[int, PdfPageTransform] | None,
-) -> tuple[dict[int, PdfPageTransform], bool]:
-    if page_transforms is None:
-        if document.page_count == 1:
-            frame_id = stable_id(
-                "frame",
-                f"pdf-electrical:{document.source_id}:page-local:1",
-            )
-            return {1: PdfPageTransform(frame_id=frame_id)}, False
+    page_transforms: Mapping[int, PageTransformInput] | None,
+) -> tuple[dict[int, PdfPageTransform], dict[int, tuple[DrawingRegionTransform, ...]], bool]:
+    """Validate caller transforms: one per page, or one per drawing of a page.
 
-        frame_id = stable_id(
-            "frame",
-            f"pdf-electrical:{document.source_id}:page-local-best-effort",
-        )
-        return {
-            page: PdfPageTransform(
-                frame_id=frame_id,
-                tx_m=(page - 1) * _UNREGISTERED_PAGE_TILE_OFFSET_M,
-            )
-            for page in range(1, document.page_count + 1)
-        }, False
+    Returns ``(page_transforms, drawing_transforms, explicit)``. Every PDF page
+    must be covered exactly once, by a ``PdfPageTransform`` or by a non-empty
+    sequence of ``DrawingRegionTransform``; every transform targets one
+    canonical frame. Whether each recognized point lies in exactly one drawing
+    region is decided once the points are known.
+    """
+
+    if page_transforms is None:
+        return _best_effort_page_transforms(document), {}, False
 
     transforms = dict(page_transforms)
     expected_pages = set(range(1, document.page_count + 1))
@@ -4857,14 +4889,100 @@ def _resolve_page_transforms(
         raise ElectricalPdfError(
             "page_transforms must cover every PDF page exactly: " + ", ".join(details)
         )
-    if not all(isinstance(transform, PdfPageTransform) for transform in transforms.values()):
-        raise ElectricalPdfError("page_transforms values must be PdfPageTransform instances")
-    frame_ids = {transform.frame_id for transform in transforms.values()}
+    single: dict[int, PdfPageTransform] = {}
+    regions: dict[int, tuple[DrawingRegionTransform, ...]] = {}
+    for page, value in sorted(transforms.items()):
+        if isinstance(value, PdfPageTransform):
+            single[page] = value
+            continue
+        items = (
+            tuple(value)
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+            else ()
+        )
+        if not items or not all(isinstance(item, DrawingRegionTransform) for item in items):
+            raise ElectricalPdfError(
+                "page_transforms values must be PdfPageTransform instances or non-empty "
+                "sequences of DrawingRegionTransform"
+            )
+        regions[page] = tuple(sorted(items, key=lambda item: item.source_bbox_pt))
+    frame_ids = {transform.frame_id for transform in single.values()} | {
+        item.transform.frame_id for items in regions.values() for item in items
+    }
     if len(frame_ids) != 1:
         raise ElectricalPdfError(
             "all page transforms must target the same canonical coordinate frame"
         )
-    return transforms, True
+    return single, regions, True
+
+
+def _best_effort_page_transforms(document: PdfElectricalDocument) -> dict[int, PdfPageTransform]:
+    """Page-local placement used when no registration is supplied or usable."""
+
+    if document.page_count == 1:
+        frame_id = stable_id(
+            "frame",
+            f"pdf-electrical:{document.source_id}:page-local:1",
+        )
+        return {1: PdfPageTransform(frame_id=frame_id)}
+
+    frame_id = stable_id(
+        "frame",
+        f"pdf-electrical:{document.source_id}:page-local-best-effort",
+    )
+    return {
+        page: PdfPageTransform(
+            frame_id=frame_id,
+            tx_m=(page - 1) * _UNREGISTERED_PAGE_TILE_OFFSET_M,
+        )
+        for page in range(1, document.page_count + 1)
+    }
+
+
+def _drawing_region_assignment(
+    candidates: Iterable[Any],
+    regions: Mapping[int, tuple[DrawingRegionTransform, ...]],
+) -> tuple[dict[str, DrawingRegionTransform], dict[str, Any]]:
+    """Assign each recognized point on a multi-drawing page to its drawing.
+
+    Returns the assignment by candidate key and a deterministic record. A point
+    outside every drawing region, or inside two, is listed as unplaced.
+    """
+
+    assigned: dict[str, DrawingRegionTransform] = {}
+    unplaced: list[dict[str, Any]] = []
+    counts: dict[int, dict[str, int]] = {
+        page: {"assigned": 0, "outside_drawing_regions": 0, "in_multiple_drawing_regions": 0}
+        for page in regions
+    }
+    for candidate in sorted(candidates, key=lambda item: item.key):
+        page_regions = regions.get(candidate.page)
+        if page_regions is None:
+            continue
+        containing = [
+            region for region in page_regions if region.contains(candidate.x_pt, candidate.y_pt)
+        ]
+        if len(containing) == 1:
+            assigned[candidate.key] = containing[0]
+            counts[candidate.page]["assigned"] += 1
+            continue
+        reason = "outside_drawing_regions" if not containing else "in_multiple_drawing_regions"
+        counts[candidate.page][reason] += 1
+        unplaced.append(
+            {
+                "page": candidate.page,
+                "reason": reason,
+                "source_position_pt": {"x": candidate.x_pt, "y": candidate.y_pt},
+                "source_element_ids": sorted(set(candidate.source_element_ids)),
+            }
+        )
+    record: dict[str, Any] = {
+        "status": "resolved" if not unplaced else "unresolved",
+        "pages": {str(page): counts[page] for page in sorted(counts)},
+    }
+    if unplaced:
+        record["unplaced_points"] = unplaced
+    return assigned, record
 
 
 def _provenance(
@@ -7420,7 +7538,7 @@ class ElectricalPdfImporter:
         path: str | Path,
         *,
         source_id: str | None = None,
-        page_transforms: Mapping[int, PdfPageTransform] | None = None,
+        page_transforms: Mapping[int, PageTransformInput] | None = None,
     ) -> BuildingModel:
         return self.import_document(
             extract_pdf(path, source_id=source_id),
@@ -7431,13 +7549,17 @@ class ElectricalPdfImporter:
         self,
         document: PdfElectricalDocument,
         *,
-        page_transforms: Mapping[int, PdfPageTransform] | None = None,
+        page_transforms: Mapping[int, PageTransformInput] | None = None,
     ) -> BuildingModel:
-        transforms, has_explicit_registration = _resolve_page_transforms(
+        transforms, region_transforms, has_explicit_registration = _resolve_page_transforms(
             document,
             page_transforms,
         )
-        frame_id = next(iter(transforms.values())).frame_id
+        frame_id = (
+            next(iter(transforms.values())).frame_id
+            if transforms
+            else next(iter(region_transforms.values()))[0].transform.frame_id
+        )
         if has_explicit_registration:
             spatial_status = "registered-to-canonical-frame"
         elif document.page_count > 1:
@@ -8184,6 +8306,29 @@ class ElectricalPdfImporter:
         entity_identity_text_owner: dict[str, str] = {}
         identity_owners: dict[str, str] = {}
 
+        region_assignment: dict[str, Any] | None = None
+        assigned_regions: dict[str, DrawingRegionTransform] = {}
+        if region_transforms:
+            # Every recognized point on a multi-drawing page must lie in exactly
+            # one drawing region. A point outside every region, or inside two,
+            # cannot be placed, so the whole document stays registration
+            # pending: every pose falls back to the page-local best-effort
+            # placement and convergence refuses the document.
+            assigned_regions, region_assignment = _drawing_region_assignment(
+                candidates.values(), region_transforms,
+            )
+            if region_assignment["status"] != "resolved":
+                transforms = _best_effort_page_transforms(document)
+                region_transforms = {}
+                assigned_regions = {}
+                has_explicit_registration = False
+                frame_id = next(iter(transforms.values())).frame_id
+                spatial_status = (
+                    "multi-page-local-best-effort-unregistered"
+                    if document.page_count > 1
+                    else "single-page-local-unregistered"
+                )
+
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
             if candidate.identity_key is None:
                 raise ElectricalPdfError(
@@ -8206,7 +8351,11 @@ class ElectricalPdfImporter:
             hosts = _host_hints(all_texts)
             rated_voltage_v, system = _extract_voltage(all_texts)
 
-            transform = transforms[candidate.page]
+            drawing_region = assigned_regions.get(candidate.key)
+            transform = (
+                drawing_region.transform if drawing_region is not None
+                else transforms[candidate.page]
+            )
             lane_attributes: dict[str, Any] = {
                 "spatial_status": spatial_status,
                 "source_page": candidate.page,
@@ -8214,6 +8363,11 @@ class ElectricalPdfImporter:
                 "source_element_ids": sorted(set(candidate.source_element_ids)),
                 "stable_identity_key": candidate.identity_key,
                 "page_transform": transform.to_attributes(),
+                **(
+                    {"drawing_region_bbox_pt": list(drawing_region.source_bbox_pt)}
+                    if drawing_region is not None
+                    else {}
+                ),
                 "pose_interpretation": (
                     "source-page position transformed into the canonical frame"
                     if has_explicit_registration
@@ -9929,25 +10083,35 @@ class ElectricalPdfImporter:
             )
         if has_explicit_registration:
             for page in range(1, document.page_count + 1):
-                registration = transforms[page].registration
-                if registration is None:
-                    continue
-                # The page's positions are observed; the transform that places
-                # them in the building frame is a proposal from matched evidence.
-                model_provenance.append(
-                    Provenance(
-                        source_kind="pdf-electrical",
-                        source_id=document.source_id,
-                        page=page,
-                        method=str(registration.get("method", "sheet registration")),
-                        confidence=float(registration.get("confidence", 0.5)),
-                        derivation=DERIVATION_INFERRED,
-                        attributes={
-                            "registration_status": "registered-from-matched-evidence",
-                            "page_transform": transforms[page].to_attributes(),
-                        },
-                    )
+                registered: list[tuple[PdfPageTransform, tuple[float, float, float, float] | None]] = (
+                    [(region.transform, region.source_bbox_pt) for region in region_transforms[page]]
+                    if page in region_transforms
+                    else [(transforms[page], None)]
                 )
+                for transform, bbox_pt in registered:
+                    registration = transform.registration
+                    if registration is None:
+                        continue
+                    # The page's positions are observed; the transform that places
+                    # them in the building frame is a proposal from matched evidence.
+                    model_provenance.append(
+                        Provenance(
+                            source_kind="pdf-electrical",
+                            source_id=document.source_id,
+                            page=page,
+                            method=str(registration.get("method", "sheet registration")),
+                            confidence=float(registration.get("confidence", 0.5)),
+                            derivation=DERIVATION_INFERRED,
+                            attributes={
+                                "registration_status": "registered-from-matched-evidence",
+                                **(
+                                    {"drawing_region_bbox_pt": list(bbox_pt)}
+                                    if bbox_pt is not None else {}
+                                ),
+                                "page_transform": transform.to_attributes(),
+                            },
+                        )
+                    )
         if not has_explicit_registration and document.page_count > 1:
             for page in range(1, document.page_count + 1):
                 model_provenance.append(
@@ -9970,12 +10134,20 @@ class ElectricalPdfImporter:
                 )
 
         registration_mode = (
-            "explicit-page-transforms"
+            (
+                "explicit-page-and-drawing-transforms"
+                if region_transforms
+                else "explicit-page-transforms"
+            )
             if has_explicit_registration
             else (
-                "deterministic-separated-page-local-best-effort"
-                if document.page_count > 1
-                else "single-page-local"
+                "drawing-region-transforms-unresolved"
+                if region_assignment is not None
+                else (
+                    "deterministic-separated-page-local-best-effort"
+                    if document.page_count > 1
+                    else "single-page-local"
+                )
             )
         )
 
@@ -9996,9 +10168,29 @@ class ElectricalPdfImporter:
                     "canonicalized_length_unit": "m",
                     "spatial_status": spatial_status,
                     "registration_pending": not has_explicit_registration,
-                    "page_transforms_supplied": has_explicit_registration,
+                    # Whether the caller supplied transforms, even when the
+                    # per-drawing assignment later fell back to best effort.
+                    "page_transforms_supplied": page_transforms is not None,
                     "registration_mode": registration_mode,
                     "registered_frame_id": frame_id,
+                    **(
+                        {"drawing_region_assignment": region_assignment}
+                        if region_assignment is not None
+                        else {}
+                    ),
+                    **(
+                        {
+                            "drawing_region_transforms": {
+                                str(page): [
+                                    region.to_attributes()
+                                    for region in region_transforms[page]
+                                ]
+                                for page in sorted(region_transforms)
+                            },
+                        }
+                        if region_transforms
+                        else {}
+                    ),
                     **(
                         {
                             "page_provenance": {
@@ -10071,7 +10263,7 @@ def import_pdf(
     path: str | Path,
     *,
     source_id: str | None = None,
-    page_transforms: Mapping[int, PdfPageTransform] | None = None,
+    page_transforms: Mapping[int, PageTransformInput] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints).import_pdf(
@@ -10084,7 +10276,7 @@ def import_pdf(
 def import_document(
     document: PdfElectricalDocument,
     *,
-    page_transforms: Mapping[int, PdfPageTransform] | None = None,
+    page_transforms: Mapping[int, PageTransformInput] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints).import_document(
@@ -10096,6 +10288,7 @@ def import_document(
 __all__ = [
     "DEFAULT_SYMBOL_RULES",
     "POINT_TO_M",
+    "DrawingRegionTransform",
     "ElectricalPdfError",
     "ElectricalPdfImporter",
     "ElectricalInstanceHint",

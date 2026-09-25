@@ -4704,6 +4704,12 @@ class SheetWallEvidence:
     meters_per_point: float | None
     evidence_kind: str
     drawings: tuple[tuple[tuple[float, float, float, float], tuple[RegionEvidence, ...]], ...]
+    # Parallel to ``drawings``: the extents each drawing owns on the sheet
+    # (its wall extents plus the #103 annotation margin on a split sheet), and
+    # the level names printed with it (text uniquely nearest to it on a split
+    # sheet, the whole sheet's otherwise).
+    drawing_scopes: tuple[tuple[float, float, float, float], ...] = ()
+    drawing_level_names: tuple[tuple[str, ...], ...] = ()
 
 
 def drawing_level_names(page: PdfPageObservation) -> tuple[str, ...]:
@@ -4746,7 +4752,15 @@ def sheet_wall_evidence(
     drawings: tuple[tuple[tuple[float, float, float, float], tuple[RegionEvidence, ...]], ...]
     if split.regions:
         drawings = tuple((region.bbox_pt, region.evidence) for region in split.regions)
-    elif split.single_region_bbox_pt is not None:
+        return SheetWallEvidence(
+            page_number=page.page_number,
+            meters_per_point=meters_per_point,
+            evidence_kind=evidence_kind,
+            drawings=drawings,
+            drawing_scopes=tuple(region.scope_bbox_pt for region in split.regions),
+            drawing_level_names=tuple(drawing_level_names(region.page) for region in split.regions),
+        )
+    if split.single_region_bbox_pt is not None:
         drawings = ((split.single_region_bbox_pt, split.single_region_evidence),)
     elif evidence:
         drawings = ((
@@ -4765,6 +4779,8 @@ def sheet_wall_evidence(
         meters_per_point=meters_per_point,
         evidence_kind=evidence_kind,
         drawings=drawings,
+        drawing_scopes=tuple(bbox for bbox, _ in drawings),
+        drawing_level_names=tuple(drawing_level_names(page) for _ in drawings),
     )
 
 

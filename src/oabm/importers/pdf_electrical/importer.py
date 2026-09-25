@@ -3677,15 +3677,15 @@ def _glyph_cluster_vectors(
     return tuple(vector for vector in kept if vector.element_id not in tag_ids)
 
 
-# Short one-word SHX labels (two to four characters: GFI, AFCI, LED, HE, F5,
-# SCA) drawn beside a glyph are tags. Their strokes chain into the glyph's
-# cluster across the glyph gap and distort its shape, so they are removed
-# before glyph clustering, in the legend and the field alike. A label drawn
-# inside the glyph's own outline (a letter in a circle) or crossed by a
-# switch bar (DS, OS) is part of the symbol and stays. Single characters
-# always stay: S, D and V are switch glyphs and 3 and 4 their subscripts.
-_SHX_TAG_LABEL_MIN_CHARS = 2
-_SHX_TAG_LABEL_MAX_CHARS = 4
+# Short SHX modifier labels (GFI, AFCI, LED, HE, WP, USB) drawn beside a
+# glyph qualify it. Their strokes chain into the glyph's cluster across the
+# glyph gap and distort its shape, so they are removed before glyph
+# clustering, in the legend and the field alike. (GFI/AFCI and HE/WP are
+# already multi-character SHX text.) Legend-row letter tags (F5, SA, SCA, HD)
+# stay: rows such as smoke alarm and smoke/CO alarm share one glyph and differ
+# only by that tag. A label drawn inside the glyph's own outline, crossed by
+# a switch bar, or filled by one stroke is part of the symbol and stays.
+_SHX_MODIFIER_LABELS = frozenset({"GFI", "AFCI", "LED", "HE", "WP", "USB"})
 _SWITCH_BAR_MIN_LENGTH_PT = 10.0
 
 
@@ -3697,9 +3697,7 @@ def _shx_tag_label_boxes(
         if not _is_shx_text_annotation(symbol):
             continue
         contents = " ".join(str(symbol.metadata.get("contents") or "").split())
-        if " " in contents or not (
-            _SHX_TAG_LABEL_MIN_CHARS <= len(contents) <= _SHX_TAG_LABEL_MAX_CHARS
-        ):
+        if contents.upper() not in _SHX_MODIFIER_LABELS:
             continue
         rect = symbol.metadata.get("rect_pt")
         if not isinstance(rect, (list, tuple)) or len(rect) != 4:
@@ -3710,9 +3708,9 @@ def _shx_tag_label_boxes(
     return {page: tuple(sorted(boxes[page])) for page in sorted(boxes)}
 
 
-# One letter of a two-to-four character label spans a fraction of the label
-# along its reading direction; a single stroke that fills the box both ways
-# is a drawn symbol inside the box, not one of its letters.
+# One letter of a short label spans a fraction of the label along its
+# reading direction; a single stroke that fills the box both ways is a drawn
+# symbol inside the box, not one of its letters.
 _LABEL_BOX_FILL_RATIO = 0.75
 
 
@@ -3752,7 +3750,7 @@ def _shx_tag_label_vector_ids(
     symbols: Sequence[PdfSymbolObservation],
     vectors: Sequence[PdfVectorPathObservation],
 ) -> set[str]:
-    """Element ids of short SHX tag-label strokes drawn beside (not in) a glyph."""
+    """Element ids of SHX modifier-label strokes drawn beside (not in) a glyph."""
 
     boxes_by_page = _shx_tag_label_boxes(symbols)
     if not boxes_by_page:

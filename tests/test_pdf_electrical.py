@@ -4628,15 +4628,17 @@ def _vector_ids_inside(document, box: tuple[float, float, float, float]) -> set[
     }
 
 
-def test_shx_tag_label_strokes_beside_a_glyph_leave_glyph_clustering(
+def test_shx_modifier_label_strokes_beside_a_glyph_leave_glyph_clustering(
     tmp_path,
 ) -> None:
-    """Short SHX tag labels beside a glyph are text; letters in a glyph stay.
+    """SHX modifier labels beside a glyph are text; symbol parts stay.
 
-    ``LED`` touching a circle is removed from clustering. ``TV`` drawn inside
-    a circle's outline, ``DS`` crossed by a 14.7 pt switch bar, a
-    single-character ``S`` and a star that fills an ``F5`` box are symbol
-    parts and stay.
+    ``LED`` touching a circle is removed from clustering. A ``GFI`` label
+    drawn inside a circle's outline, a ``WP`` label crossed by a 14.7 pt
+    switch bar, and an ``HE`` box filled by one star stroke are symbol parts
+    and stay. A legend-row letter tag such as ``F5`` beside a glyph and a
+    single-character ``S`` also stay: rows can share a glyph and differ only
+    by that tag.
     """
     path = tmp_path / "shx-tag-labels.pdf"
     commands = [
@@ -4649,22 +4651,8 @@ def test_shx_tag_label_strokes_beside_a_glyph_leave_glyph_clustering(
             ((700.5, 302.5), (702.5, 297.5), (704.5, 302.5)),
         ),
         *_probe_strokes(
-            (
-                (801.0, 304.0),
-                (804.0, 303.0),
-                (805.0, 300.0),
-                (804.0, 297.0),
-                (801.0, 296.0),
-                (801.0, 304.0),
-            ),
-            (
-                (809.0, 304.0),
-                (806.0, 304.0),
-                (806.0, 300.0),
-                (809.0, 300.0),
-                (809.0, 296.0),
-                (806.0, 296.0),
-            ),
+            ((801.0, 304.0), (802.0, 296.0), (803.0, 300.0), (804.0, 296.0)),
+            ((806.0, 296.0), (806.0, 304.0), (809.0, 304.0), (809.0, 300.0)),
             ((805.0, 292.65), (805.0, 307.35)),
         ),
         _probe_path(1000.0, 300.0, _probe_star(6.0, 2.0)),
@@ -4679,29 +4667,45 @@ def test_shx_tag_label_strokes_beside_a_glyph_leave_glyph_clustering(
                 (906.0, 296.0),
             ),
         ),
+        _probe_path(1080.0, 300.0, _probe_circle(6.0)),
+        *_probe_strokes(
+            ((1088.0, 296.0), (1088.0, 304.0), (1091.0, 304.0)),
+            ((1088.0, 300.0), (1090.5, 300.0)),
+            (
+                (1096.0, 304.0),
+                (1093.0, 304.0),
+                (1093.0, 300.0),
+                (1096.0, 300.0),
+                (1096.0, 296.0),
+                (1093.0, 296.0),
+            ),
+        ),
     ]
     _write_probe_pdf(
         path,
         commands,
         annotations=[
             _LED_LABEL_BOX,
-            (700.0, 300.0, "TV", 10.0, 6.0),
-            (805.0, 300.0, "DS", 10.0, 10.0),
+            (700.0, 300.0, "GFI", 10.0, 6.0),
+            (805.0, 300.0, "WP", 10.0, 10.0),
             (907.5, 300.0, "S", 5.0, 10.0),
-            (1000.0, 300.0, "F5", 12.0, 12.0),
+            (1000.0, 300.0, "HE", 12.0, 12.0),
+            (1092.0, 300.0, "F5", 10.0, 10.0),
         ],
     )
     document = extract_pdf(path, source_id="fixture:shx-tag-labels")
     led_ids = _vector_ids_inside(document, (566.5, 436.5, 583.5, 447.5))
-    tv_ids = _vector_ids_inside(document, (694.5, 296.5, 705.5, 303.5))
-    ds_ids = _vector_ids_inside(document, (799.5, 294.5, 810.5, 305.5))
+    gfi_ids = _vector_ids_inside(document, (694.5, 296.5, 705.5, 303.5))
+    wp_ids = _vector_ids_inside(document, (799.5, 294.5, 810.5, 305.5))
     s_ids = _vector_ids_inside(document, (904.5, 294.5, 910.5, 305.5))
     star_ids = _vector_ids_inside(document, (993.5, 293.5, 1006.5, 306.5))
-    assert len(star_ids) == 1
+    f5_ids = _vector_ids_inside(document, (1086.5, 294.5, 1097.5, 305.5))
     assert len(led_ids) == 4
-    assert len(tv_ids) == 3
-    assert len(ds_ids) == 2
+    assert len(gfi_ids) == 3
+    assert len(wp_ids) == 2
     assert len(s_ids) == 1
+    assert len(star_ids) == 1
+    assert len(f5_ids) == 3
 
     kept = {
         vector.element_id
@@ -4711,17 +4715,19 @@ def test_shx_tag_label_strokes_beside_a_glyph_leave_glyph_clustering(
         )
     }
     assert not led_ids & kept
-    assert tv_ids <= kept
-    assert ds_ids <= kept
+    assert gfi_ids <= kept
+    assert wp_ids <= kept
     assert s_ids <= kept
-    # A symbol that fills a short label's box is not one of its letters.
+    # A symbol that fills a modifier label's box is not one of its letters.
     assert star_ids <= kept
+    assert f5_ids <= kept
     assert len(kept) == len(document.vectors) - len(led_ids)
+    again = extract_pdf(path, source_id="fixture:shx-tag-labels")
     assert kept == {
         vector.element_id
         for vector in pdf_electrical_importer._glyph_cluster_vectors(
-            extract_pdf(path, source_id="fixture:shx-tag-labels"),
-            extract_pdf(path, source_id="fixture:shx-tag-labels").vectors,
+            again,
+            again.vectors,
         )
     }
 

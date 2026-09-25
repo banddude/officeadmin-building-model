@@ -30,7 +30,11 @@ from pypdf.generic import (
     NumberObject,
 )
 
-from oabm.importers.pdf_electrical import ElectricalPdfImporter, extract_pdf
+from oabm.importers.pdf_electrical import (
+    POINT_TO_M,
+    ElectricalPdfImporter,
+    extract_pdf,
+)
 from oabm.model import validate_model
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,7 +117,10 @@ class _RcpContent:
                 _SYMBOL_X + length / 2.0,
                 cy - width / 2.0,
                 cy + width / 2.0,
-            )
+            ),
+            # The commercial sheets draw outlines as stroked polylines that
+            # return to their start point without a closepath operator.
+            repeat_start=True,
         )
 
 
@@ -147,7 +154,7 @@ def _draw_standard_legend(content: _RcpContent) -> None:
         size=7.0,
     )
     # The fixture rows sit 400 to 500 points below the legend title.
-    content.path(_square_closed(_SYMBOL_X, 300.0, 12.0))
+    content.path(_square_closed(_SYMBOL_X, 300.0, 12.0), repeat_start=True)
     content.text(_LABEL_X, 300.0, "LF-2")
     content.text(_DESCRIPTION_X, 300.0, "RECESSED LIGHT FIXTURE", size=7.0)
     content.legend_bar(250.0, 60.0, 6.0)
@@ -170,23 +177,23 @@ def _draw_field_fixtures(content: _RcpContent) -> None:
 
     # Unclosed fixture squares drawn to their start point, no closepath.
     for cx, cy in ((120.0, 560.0), (260.0, 480.0), (180.0, 350.0)):
-        content.path(_square_closed(cx, cy, 12.0))
+        content.path(_square_closed(cx, cy, 12.0), repeat_start=True)
         content.text(cx + 18.0, cy, "LF-2")
     # Linear runs drawn to scale, tags printed along the run. One tag's
     # anchor deliberately sits 1.1 pt from a ceiling-grid double line while
     # its run is under the far end of the printed text.
-    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0))
+    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0), repeat_start=True)
     content.text(110.0, 632.0, "LF-3")
-    content.path(_bar_rect(300.0, 396.0, 560.0, 564.0))
+    content.path(_bar_rect(300.0, 396.0, 560.0, 564.0), repeat_start=True)
     content.text(320.0, 570.0, "LF-5A")
     content.path(((321.1, 540.0), (321.1, 600.0)))
     content.path(((322.3, 540.0), (322.3, 600.0)))
     # A run whose width matches no legend bar stays unresolved.
-    content.path(_bar_rect(80.0, 146.0, 240.0, 250.0))
+    content.path(_bar_rect(80.0, 146.0, 240.0, 250.0), repeat_start=True)
     content.text(90.0, 256.0, "LF-3")
     # A tag printed between two runs at the same distance stays unresolved.
-    content.path(_bar_rect(200.0, 320.0, 300.0, 306.0))
-    content.path(_bar_rect(200.0, 320.0, 330.0, 336.0))
+    content.path(_bar_rect(200.0, 320.0, 300.0, 306.0), repeat_start=True)
+    content.path(_bar_rect(200.0, 320.0, 330.0, 336.0), repeat_start=True)
     content.text(230.0, 315.2, "LF-3")
     # A tag whose printed size is not a plausible drawn size fails closed.
     content.commands.append(
@@ -296,8 +303,15 @@ def _full_page_content() -> _RcpContent:
 
 
 def _minimal_linear_legend(content: _RcpContent, *rows: tuple[str, float, float]) -> None:
-    """Heading plus linear fixture rows: (tag, bar length, bar width)."""
+    """Heading plus at least two linear fixture rows.
 
+    Rows are (tag, bar length, bar width). A legend needs two confirmed
+    rows before its entries count, so a lone row is paired with an
+    unrelated second fixture row that has no field instances.
+    """
+
+    if len(rows) < 2:
+        rows = (*rows, ("LF-6", 48.0, 5.0))
     content.text(_HEADING_X, _HEADING_Y, _HEADING, size=11.0)
     y = 660.0
     for tag, length, width in rows:
@@ -382,7 +396,8 @@ def test_reflected_ceiling_legend_recovers_fixture_rows_and_linear_runs(
         assert run["printed_width_pt"] == width
         assert recognition["tag_is_primary_type_evidence"] is True
         assert recognition["legend"]["prototype_geometry_key"]
-        assert (device.x_pt, device.y_pt) == (x, y)
+        assert device.pose.position.x == pytest.approx(x * POINT_TO_M)
+        assert device.pose.position.y == pytest.approx(y * POINT_TO_M)
         methods = {item.method for item in device.provenance}
         assert {
             "pdf-lighting-fixture-geometry",
@@ -431,6 +446,11 @@ def test_reflected_ceiling_legend_recovers_fixture_rows_and_linear_runs(
     assert region["tags"] == ["LF-2", "LF-3", "LF-5A"]
     assert region["linear_tags"] == ["LF-3", "LF-5A"]
     assert region["body_span_pt"] == 555.0
+    assert region["heading_x_pt"] == 700.0
+    assert region["grid_rows_y_pt"] == [
+        655.0, 605.0, 555.0, 505.0, 455.0, 405.0,
+        355.0, 300.0, 250.0, 200.0, 150.0,
+    ]
     assert lighting["fixture_schedules"][0]["row_count"] == 2
 
     validate_model(model)
@@ -458,7 +478,7 @@ def test_tiny_font_linear_tag_fails_closed(tmp_path: Path) -> None:
     pdf_path = tmp_path / "commercial-rcp-tiny-font.pdf"
     content = _RcpContent()
     _minimal_linear_legend(content, ("LF-3", 60.0, 6.0))
-    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0))
+    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0), repeat_start=True)
     content.commands.append(
         "BT /F1 0.250 Tf 1 0 0 1 110.000 632.000 Tm (LF-3) Tj ET"
     )
@@ -467,6 +487,8 @@ def test_tiny_font_linear_tag_fails_closed(tmp_path: Path) -> None:
     model = ElectricalPdfImporter().import_document(
         extract_pdf(pdf_path, source_id="fixture:commercial-rcp-tiny-font")
     )
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert [region["row_count"] for region in lighting["legend_regions"]] == [2]
     assert _luminaires(model) == []
     unresolved = _lighting_unresolved(model)
     assert [item["reason_code"] for item in unresolved] == [
@@ -479,14 +501,16 @@ def test_linear_tag_between_two_equal_runs_fails_closed(tmp_path: Path) -> None:
     pdf_path = tmp_path / "commercial-rcp-ambiguous.pdf"
     content = _RcpContent()
     _minimal_linear_legend(content, ("LF-3", 60.0, 6.0))
-    content.path(_bar_rect(200.0, 320.0, 300.0, 306.0))
-    content.path(_bar_rect(200.0, 320.0, 330.0, 336.0))
+    content.path(_bar_rect(200.0, 320.0, 300.0, 306.0), repeat_start=True)
+    content.path(_bar_rect(200.0, 320.0, 330.0, 336.0), repeat_start=True)
     content.text(230.0, 315.2, "LF-3")
     _write_rcp_pdf(pdf_path, content)
 
     model = ElectricalPdfImporter().import_document(
         extract_pdf(pdf_path, source_id="fixture:commercial-rcp-ambiguous")
     )
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert [region["row_count"] for region in lighting["legend_regions"]] == [2]
     assert _luminaires(model) == []
     unresolved = _lighting_unresolved(model)
     assert [item["reason_code"] for item in unresolved] == [
@@ -499,13 +523,15 @@ def test_linear_run_of_wrong_width_fails_closed(tmp_path: Path) -> None:
     pdf_path = tmp_path / "commercial-rcp-width.pdf"
     content = _RcpContent()
     _minimal_linear_legend(content, ("LF-3", 60.0, 6.0))
-    content.path(_bar_rect(80.0, 146.0, 240.0, 250.0))
+    content.path(_bar_rect(80.0, 146.0, 240.0, 250.0), repeat_start=True)
     content.text(90.0, 256.0, "LF-3")
     _write_rcp_pdf(pdf_path, content)
 
     model = ElectricalPdfImporter().import_document(
         extract_pdf(pdf_path, source_id="fixture:commercial-rcp-width")
     )
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert [region["row_count"] for region in lighting["legend_regions"]] == [2]
     assert _luminaires(model) == []
     unresolved = _lighting_unresolved(model)
     assert [item["reason_code"] for item in unresolved] == [
@@ -523,7 +549,7 @@ def test_two_tags_on_one_linear_run_fail_closed(tmp_path: Path) -> None:
         ("LF-3", 60.0, 6.0),
         ("LF-4", 72.0, 4.0),
     )
-    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0))
+    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0), repeat_start=True)
     content.text(110.0, 632.0, "LF-3")
     content.text(150.0, 610.0, "LF-4")
     _write_rcp_pdf(pdf_path, content)
@@ -531,6 +557,8 @@ def test_two_tags_on_one_linear_run_fail_closed(tmp_path: Path) -> None:
     model = ElectricalPdfImporter().import_document(
         extract_pdf(pdf_path, source_id="fixture:commercial-rcp-two-tags")
     )
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert [region["row_count"] for region in lighting["legend_regions"]] == [2]
     assert _luminaires(model) == []
     unresolved = _lighting_unresolved(model)
     assert [item["reason_code"] for item in unresolved] == [
@@ -545,13 +573,15 @@ def test_linear_tag_printed_away_from_any_run_is_not_evidence(
     pdf_path = tmp_path / "commercial-rcp-tag-far.pdf"
     content = _RcpContent()
     _minimal_linear_legend(content, ("LF-3", 60.0, 6.0))
-    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0))
+    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0), repeat_start=True)
     content.text(110.0, 650.0, "LF-3")
     _write_rcp_pdf(pdf_path, content)
 
     model = ElectricalPdfImporter().import_document(
         extract_pdf(pdf_path, source_id="fixture:commercial-rcp-tag-far")
     )
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert [region["row_count"] for region in lighting["legend_regions"]] == [2]
     assert _luminaires(model) == []
     assert _lighting_unresolved(model) == []
 
@@ -564,13 +594,15 @@ def test_short_legend_bar_recognizes_its_scaled_field_run(
     pdf_path = tmp_path / "commercial-rcp-short-bar.pdf"
     content = _RcpContent()
     _minimal_linear_legend(content, ("LF-4", 40.0, 6.0))
-    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0))
+    content.path(_bar_rect(80.0, 200.0, 620.0, 626.0), repeat_start=True)
     content.text(110.0, 632.0, "LF-4")
     _write_rcp_pdf(pdf_path, content)
 
     model = ElectricalPdfImporter().import_document(
         extract_pdf(pdf_path, source_id="fixture:commercial-rcp-short-bar")
     )
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert [region["row_count"] for region in lighting["legend_regions"]] == [2]
     luminaires = _luminaires(model)
     assert [device.name for device in luminaires] == ["LF-4"]
     recognition = luminaires[0].attributes["pdf_electrical"][
@@ -597,6 +629,13 @@ def test_closepath_with_repeated_start_recognized_as_rectangle(
     content.text(_LABEL_X, 660.0, "LF-3")
     content.text(_DESCRIPTION_X, 660.0, "LINEAR LIGHT FIXTURE", size=7.0)
     content.path(
+        _bar_rect(_SYMBOL_X - 24.0, _SYMBOL_X + 24.0, 597.0, 603.0),
+        close=True,
+        repeat_start=True,
+    )
+    content.text(_LABEL_X, 600.0, "LF-6")
+    content.text(_DESCRIPTION_X, 600.0, "LINEAR LIGHT FIXTURE", size=7.0)
+    content.path(
         _bar_rect(80.0, 200.0, 620.0, 626.0),
         close=True,
         repeat_start=True,
@@ -607,6 +646,8 @@ def test_closepath_with_repeated_start_recognized_as_rectangle(
     model = ElectricalPdfImporter().import_document(
         extract_pdf(pdf_path, source_id="fixture:commercial-rcp-repeat-start")
     )
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert [region["row_count"] for region in lighting["legend_regions"]] == [2]
     luminaires = _luminaires(model)
     assert [device.name for device in luminaires] == ["LF-3"]
     recognition = luminaires[0].attributes["pdf_electrical"][

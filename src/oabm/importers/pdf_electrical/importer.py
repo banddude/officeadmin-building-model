@@ -5942,6 +5942,14 @@ def _detect_lighting_legend_entries(
                         "heading_kind": "general-legend",
                         "row_confirmation": "row description names a luminaire",
                         "body_span_pt": round(vertical_span, 3),
+                        # The legend table's own geometry, so rows read as
+                        # part of this legend stay out of field-miss
+                        # reporting even when their symbols are never
+                        # claimed as fixture prototypes.
+                        "heading_x_pt": round(heading.x_pt, 3),
+                        "grid_rows_y_pt": [
+                            round(row_y, 3) for row_y in row_grid
+                        ],
                     }
                     if general_legend
                     else {"heading_kind": "lighting-legend"}
@@ -6234,6 +6242,38 @@ def _lighting_fixture_candidate(
                 )
             )
     return candidate
+
+
+def _cluster_inside_general_legend_table(
+    cluster: _VectorCluster,
+    legend_metadata: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Whether a cluster sits beside a confirmed general legend's own rows.
+
+    A general legend keeps its non-luminaire rows (ceiling finishes, exit
+    signs, status markers) unclaimed, so their symbols stay in the field
+    set. Those symbols are legend table geometry, never untagged field
+    fixtures, and must not be reported as tagless lighting misses.
+    """
+
+    for region in legend_metadata:
+        if (
+            region.get("heading_kind") != "general-legend"
+            or region.get("page") != cluster.page
+        ):
+            continue
+        if (
+            abs(cluster.center_pt[0] - float(region["heading_x_pt"]))
+            > _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT
+        ):
+            continue
+        if any(
+            abs(cluster.center_pt[1] - row_y)
+            <= _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT
+            for row_y in region["grid_rows_y_pt"]
+        ):
+            return True
+    return False
 
 
 def _recognize_linear_lighting_fixtures(
@@ -6938,6 +6978,8 @@ def _recognize_lighting(
             for observation in texts
         )
         if nearby_switch_code:
+            continue
+        if _cluster_inside_general_legend_table(cluster, legend_metadata):
             continue
         entry, score, _shape_guard = _lighting_shape_support(
             cluster,

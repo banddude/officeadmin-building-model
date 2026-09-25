@@ -527,6 +527,31 @@ def _transform_text_point(cm: Sequence[float], tm: Sequence[float]) -> tuple[flo
     return x, y
 
 
+def _rendered_font_size(
+    font_size: float | None,
+    cm: Sequence[float],
+    tm: Sequence[float],
+) -> float | None:
+    """Font size as drawn on the page, not the raw ``Tf`` operand.
+
+    CAD exports often set a large ``Tf`` size and shrink it with the text
+    matrix (or the reverse). The drawn glyph height is the ``Tf`` size times the
+    length of the text-space y axis after the text and graphics matrices.
+    """
+
+    if font_size is None:
+        return None
+    # Text-space y axis (0, 1) through Tm, then through the CTM.
+    tx = float(tm[2])
+    ty = float(tm[3])
+    x = float(cm[0]) * tx + float(cm[2]) * ty
+    y = float(cm[1]) * tx + float(cm[3]) * ty
+    scale = math.hypot(x, y)
+    if not math.isfinite(scale) or scale <= 0.0:
+        return float(font_size)
+    return float(font_size) * scale
+
+
 def _transform_graphics_point(
     cm: Sequence[float],
     x: float,
@@ -627,7 +652,7 @@ def _make_page_visitors(
                 text=cleaned,
                 x_pt=x_pt,
                 y_pt=y_pt,
-                font_size_pt=float(font_size) if font_size is not None else None,
+                font_size_pt=_rendered_font_size(font_size, cm, tm),
             )
         )
 

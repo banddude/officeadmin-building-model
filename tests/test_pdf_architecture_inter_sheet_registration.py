@@ -515,7 +515,12 @@ def test_walls_repeated_by_a_registered_sheet_are_emitted_once(
         [kept] = first_only.spaces
         [added] = [space for space in model.spaces if space.id != kept.id]
         assert added.name != kept.name
-        assert added.footprint.points == pytest.approx(kept.footprint.points)
+        # Each sheet's transform rounds the shared geometry differently in the
+        # last bits, so the footprints agree to the lane's rounding, not bitwise.
+        def footprint(space):
+            return [(round(point.x, 6), round(point.y, 6)) for point in space.footprint.points]
+
+        assert footprint(added) == footprint(kept)
         [renamed] = _ambiguities(model, "repeated_space_name_conflict")
         assert renamed["page"] == 2
         assert renamed["space_ids"] == [kept.id, added.id]

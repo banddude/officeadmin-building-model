@@ -352,7 +352,8 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         1.0,
     ),
     SymbolRule(
-        r"\b(?:CABLE\s+TV|CATV)\b.*\bOUTLET\b",
+        # "CABLE TV", "CABLE T.V." and "CATV" all name the same outlet.
+        r"\b(?:CABLE\s+T\.?\s?V\b|CATV\b).*\bOUTLET\b",
         "device",
         "catv_outlet",
         1.0,
@@ -386,6 +387,7 @@ class _EntityCandidate:
     shape_recognition: dict[str, Any] | None = None
     annotation_recognition: dict[str, Any] | None = None
     lighting_recognition: dict[str, Any] | None = None
+    adjacent_count: dict[str, Any] | None = None
 
     def merge_source(
         self,
@@ -440,6 +442,10 @@ class _LegendRow:
     orientation: int
     horizontal_gap_pt: float
     label_source_element_ids: tuple[str, ...] = ()
+    # Text drawn inside the row's SYMBOL cell beside the glyph, such as the
+    # "CR" in a card-reader box. Field annotations carrying the same code name
+    # this row.
+    symbol_code_texts: tuple[PdfTextObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -478,6 +484,7 @@ class _LegendEntry:
     label: PdfTextObservation
     region: _LegendRegion
     label_source_element_ids: tuple[str, ...] = ()
+    symbol_code_texts: tuple[PdfTextObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1671,6 +1678,9 @@ _GLYPH_MATCH_NEAR_TIE_MARGIN = _GLYPH_MATCH_MARGIN_MIN
 _GLYPH_RESAMPLE_STEP = 0.04
 _GLYPH_CHAMFER_DISTANCE_SCALE = 0.30
 _ANNOTATION_CODE_MAX_CHARS = 16
+# A square annotation code is drawn on the glyph it names, so it may join an
+# already recognized instance only as close as a field status tag may be.
+_ANNOTATION_CODE_INSTANCE_RADIUS_PT = _FIELD_STATUS_RADIUS_PT
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
 _LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
 _LEGEND_REJECTED_HEADING_WORDS = frozenset(
@@ -1702,6 +1712,21 @@ _FIELD_HEIGHT_TAG_RE = re.compile(
     re.IGNORECASE,
 )
 _FIELD_CIRCUIT_COUNT_RE = re.compile(r"^\s*#?\s*\d+\s*$")
+# A count written against its status marker in one token, such as "2E" beside
+# a J-box: two, existing to remain.
+_FIELD_COUNT_STATUS_RE = re.compile(
+    r"^\s*#?\s*(?P<count>\d{1,3})\s*(?P<status>[ENR])\s*$",
+    re.IGNORECASE,
+)
+# A legend row that says the number beside its symbol is a count, e.g.
+# "NUMBER ADJACENT TO SYMBOL INDICATES NUMBER OF LINES SERVED". The
+# unit is the word after "NUMBER OF"; nothing else in the row is parsed.
+_ADJACENT_COUNT_LEGEND_RE = re.compile(
+    r"\bNUMBER\s+ADJACENT\b(?:\s+TO\s+(?:THE\s+)?SYMBOL)?\s+INDICATES\s+"
+    r"(?:THE\s+)?NUMBER\s+OF\s+(?P<unit>[A-Z]+)",
+    re.IGNORECASE,
+)
+_ADJACENT_COUNT_MAX = 999
 _FIELD_STATUS_MEANINGS: Mapping[str, str] = {
     "E": "existing_to_remain",
     "N": "new",
@@ -3074,7 +3099,40 @@ def _field_modifier_text(value: str) -> tuple[str, str] | None:
         return "height", cleaned
     if _FIELD_CIRCUIT_COUNT_RE.fullmatch(cleaned):
         return "circuit_count", cleaned
+    if _FIELD_COUNT_STATUS_RE.fullmatch(cleaned):
+        return "count_status", cleaned
     return None
+
+
+def _field_status_letter(value: str) -> str | None:
+    """Status marker letter carried by one field text, bare or after a count."""
+
+    cleaned = " ".join(value.split())
+    status_match = _FIELD_STATUS_RE.fullmatch(cleaned)
+    if status_match:
+        return status_match.group("status").upper()
+    count_status = _FIELD_COUNT_STATUS_RE.fullmatch(cleaned)
+    if count_status:
+        return count_status.group("status").upper()
+    return None
+
+
+def _field_count_value(value: str) -> int | None:
+    """Count carried by one field text: a bare number or a count+status token."""
+
+    cleaned = " ".join(value.split())
+    match = _FIELD_CIRCUIT_COUNT_RE.fullmatch(cleaned)
+    if match:
+        digits = re.sub(r"\D", "", cleaned)
+    else:
+        count_status = _FIELD_COUNT_STATUS_RE.fullmatch(cleaned)
+        if count_status is None:
+            return None
+        digits = count_status.group("count")
+    count = int(digits)
+    if count < 1 or count > _ADJACENT_COUNT_MAX:
+        return None
+    return count
 
 
 def _field_status_for_point(
@@ -3088,8 +3146,8 @@ def _field_status_for_point(
     for observation in texts:
         if observation.page != page:
             continue
-        modifier = _field_modifier_text(observation.text)
-        if modifier is None or modifier[0] != "status":
+        status = _field_status_letter(observation.text)
+        if status is None:
             continue
         distance = _distance_pt(
             x_pt,
@@ -3099,7 +3157,7 @@ def _field_status_for_point(
         )
         if distance > _FIELD_STATUS_RADIUS_PT:
             continue
-        candidates.append((distance, modifier[1], observation))
+        candidates.append((distance, status, observation))
     if not candidates:
         return None
 
@@ -3128,12 +3186,194 @@ def _field_status_for_cluster(
     )
 
 
-def _annotation_code(
-    symbol: PdfSymbolObservation,
-) -> tuple[str, str] | None:
+def _candidate_legend_row_label(candidate: _EntityCandidate) -> str | None:
+    for recognition in (candidate.shape_recognition, candidate.annotation_recognition):
+        if recognition and recognition.get("legend_row_label"):
+            return str(recognition["legend_row_label"])
+    return None
+
+
+def _ring_bboxes_by_page(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> dict[int, list[tuple[str, tuple[float, float, float, float]]]]:
+    """Small closed outlines (bubbles, boxed room numbers) that can enclose text."""
+
+    rings: dict[int, list[tuple[str, tuple[float, float, float, float]]]] = {}
+    for vector in vectors:
+        points = vector.points_pt
+        ends_meet = len(points) >= 4 and math.isclose(
+            points[0][0], points[-1][0], abs_tol=0.5
+        ) and math.isclose(points[0][1], points[-1][1], abs_tol=0.5)
+        if not (vector.closed or ends_meet):
+            continue
+        bbox = _vector_bbox(vector)
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        if not (
+            2.0 <= width <= _GLYPH_PATH_MAX_EXTENT_PT
+            and 2.0 <= height <= _GLYPH_PATH_MAX_EXTENT_PT
+        ):
+            continue
+        rings.setdefault(vector.page, []).append((vector.element_id, bbox))
+    return rings
+
+
+def _adjacent_count_bindings(
+    candidates: Sequence[_EntityCandidate],
+    *,
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+) -> dict[str, tuple[dict[str, Any], tuple[PdfTextObservation, ...]]]:
+    """Read the number a legend row says is written beside its symbol.
+
+    Only a device whose own legend row says "NUMBER ADJACENT ... INDICATES
+    NUMBER OF <UNIT>" reads one. A number binds to a device only when that
+    device is the unique nearest recognized instance of any type within the
+    field-tag radius, so a receptacle's circuit number never becomes a J-box
+    count. A number enclosed by a small outline (a keynote bubble, a boxed room
+    number) is not "adjacent". The count is recorded as an attribute; it never
+    multiplies the device.
+    """
+
+    count_units: dict[str, tuple[str, str]] = {}
+    for candidate in candidates:
+        label = _candidate_legend_row_label(candidate)
+        if label is None:
+            continue
+        match = _ADJACENT_COUNT_LEGEND_RE.search(label)
+        if match is not None:
+            count_units[candidate.key] = (
+                match.group("unit").lower(),
+                " ".join(match.group(0).split()),
+            )
+    if not count_units:
+        return {}
+
+    count_pages = {
+        candidate.page for candidate in candidates if candidate.key in count_units
+    }
+    rings = _ring_bboxes_by_page(
+        [vector for vector in vectors if vector.page in count_pages]
+    )
+    by_page: dict[int, list[_EntityCandidate]] = {}
+    for candidate in candidates:
+        by_page.setdefault(candidate.page, []).append(candidate)
+
+    bound: dict[str, list[tuple[PdfTextObservation, int]]] = {}
+    contested: dict[str, list[tuple[PdfTextObservation, int]]] = {}
+    for observation in texts:
+        if observation.page not in count_pages:
+            continue
+        value = _field_count_value(observation.text)
+        if value is None:
+            continue
+        nearby = sorted(
+            (
+                (
+                    _distance_pt(
+                        candidate.x_pt,
+                        candidate.y_pt,
+                        observation.x_pt,
+                        observation.y_pt,
+                    ),
+                    candidate.key,
+                    candidate,
+                )
+                for candidate in by_page.get(observation.page, ())
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        nearby = [item for item in nearby if item[0] <= _FIELD_STATUS_RADIUS_PT]
+        if not nearby:
+            continue
+        nearest = [
+            item
+            for item in nearby
+            if item[0] <= nearby[0][0] + _FIELD_STATUS_AMBIGUITY_PT
+        ]
+        if not any(item[1] in count_units for item in nearest):
+            continue
+        own_sources = {
+            element_id
+            for _distance, _key, candidate in nearest
+            for element_id in candidate.source_element_ids
+        }
+        if any(
+            element_id not in own_sources
+            and bbox[0] < observation.x_pt < bbox[2]
+            and bbox[1] < observation.y_pt < bbox[3]
+            for element_id, bbox in rings.get(observation.page, ())
+        ):
+            continue
+        if len(nearest) == 1:
+            bound.setdefault(nearest[0][1], []).append((observation, value))
+        else:
+            for _distance, key, _candidate in nearest:
+                if key in count_units:
+                    contested.setdefault(key, []).append((observation, value))
+
+    results: dict[str, tuple[dict[str, Any], tuple[PdfTextObservation, ...]]] = {}
+    for key, (unit, legend_text) in sorted(count_units.items()):
+        attributes: dict[str, Any] = {
+            "adjacent_count_unit": unit,
+            "adjacent_count_legend_text": legend_text,
+        }
+        readings = sorted(
+            bound.get(key, ()), key=lambda item: item[0].element_id
+        )
+        ties = sorted(contested.get(key, ()), key=lambda item: item[0].element_id)
+        if len(readings) == 1 and not ties:
+            observation, value = readings[0]
+            attributes.update(
+                {
+                    "adjacent_count": value,
+                    "adjacent_count_status": "read",
+                    "adjacent_count_source_element_id": observation.element_id,
+                }
+            )
+            results[key] = (attributes, (observation,))
+            continue
+        if not readings and not ties:
+            attributes["adjacent_count_status"] = "no_adjacent_number"
+            results[key] = (attributes, ())
+            continue
+        attributes["adjacent_count_status"] = "ambiguous"
+        attributes["adjacent_count_candidates"] = [
+            {
+                "count": value,
+                "source_element_id": observation.element_id,
+                "shared_with_another_instance": (observation, value) in ties,
+            }
+            for observation, value in sorted(
+                (*readings, *ties), key=lambda item: item[0].element_id
+            )
+        ]
+        results[key] = (attributes, ())
+    return results
+
+
+def _annotation_status_marker(symbol: PdfSymbolObservation) -> str | None:
+    """Status marker letter carried by a square annotation, if that is all it is.
+
+    A square annotation whose whole contents is a bare E/N/R is a field status
+    marker, exactly like the same letter printed beside a glyph. It never names
+    a legend row, so it is not an annotation code; its contents text stays with
+    the page text where status lookup reads it.
+    """
+
     if symbol.source_kind != "annotation:square":
         return None
     raw = " ".join(str(symbol.metadata.get("contents") or "").split())
+    status_match = _FIELD_STATUS_RE.fullmatch(raw)
+    if status_match is None:
+        return None
+    return status_match.group("status").upper()
+
+
+def _normalized_annotation_code(value: str) -> str | None:
+    """Uppercase alphanumeric words of a short code, or None if it is not one."""
+
+    raw = " ".join(str(value or "").split())
     normalized = re.sub(r"[^A-Z0-9]+", " ", raw.upper()).strip()
     if (
         not raw
@@ -3142,7 +3382,25 @@ def _annotation_code(
         or len(normalized.split()) > 3
     ):
         return None
+    return normalized
+
+
+def _annotation_code(
+    symbol: PdfSymbolObservation,
+) -> tuple[str, str] | None:
+    if symbol.source_kind != "annotation:square":
+        return None
+    if _annotation_status_marker(symbol) is not None:
+        return None
+    raw = " ".join(str(symbol.metadata.get("contents") or "").split())
+    normalized = _normalized_annotation_code(raw)
+    if normalized is None:
+        return None
     return raw, normalized
+
+
+def _legend_entry_rank(entry: _LegendEntry) -> tuple[float, str, str]:
+    return (-entry.confidence, entry.label.element_id, entry.prototype.geometry_key)
 
 
 def _annotation_code_legend_match(
@@ -3153,6 +3411,64 @@ def _annotation_code_legend_match(
     if code is None:
         return None
     raw_code, normalized_code = code
+
+    # Strongest evidence first: the legend draws this very code inside the
+    # row's SYMBOL cell (a "CR" box, a "TV" box, the "J" in a J-box circle).
+    symbol_code_matches = [
+        (entry, observation)
+        for entry in entries
+        for observation in entry.symbol_code_texts
+        if _normalized_annotation_code(observation.text) == normalized_code
+    ]
+    symbol_code_candidates = [
+        {
+            "canonical_type": entry.canonical_type,
+            "legend_row_label": entry.label.text,
+            "legend_symbol_code_element_id": observation.element_id,
+        }
+        for entry, observation in sorted(
+            symbol_code_matches,
+            key=lambda item: (
+                item[0].canonical_type,
+                item[0].label.element_id,
+                item[1].element_id,
+            ),
+        )
+    ]
+    symbol_code_classifications = {
+        (entry.entity_kind, entry.canonical_type)
+        for entry, _observation in symbol_code_matches
+    }
+    if len(symbol_code_classifications) == 1:
+        entry, observation = sorted(
+            symbol_code_matches,
+            key=lambda item: (*_legend_entry_rank(item[0]), item[1].element_id),
+        )[0]
+        return entry, {
+            "annotation_code": raw_code,
+            "normalized_code": normalized_code,
+            "match_kind": "legend-symbol-code",
+            "canonical_type": entry.canonical_type,
+            "legend_page": entry.label.page,
+            "legend_row_label": entry.label.text,
+            "legend_symbol_code_element_id": observation.element_id,
+            "legend_symbol_code_text": observation.text,
+            "classification_candidates": symbol_code_candidates,
+        }
+    if len(symbol_code_classifications) > 1:
+        # The sheet's own legend gives this code to rows of different types.
+        # No abbreviation vocabulary or label wording may break that tie.
+        return None, {
+            "annotation_code": raw_code,
+            "normalized_code": normalized_code,
+            "match_kind": None,
+            "canonical_type": None,
+            "classification_candidates": symbol_code_candidates,
+            "reason": (
+                "annotation code is drawn in the symbol cell of legend rows "
+                "with different types"
+            ),
+        }
 
     by_type: dict[str, list[_LegendEntry]] = {}
     for entry in entries:
@@ -3170,14 +3486,7 @@ def _annotation_code_legend_match(
     for canonical_type in alias_targets.get(normalized_code, ()):
         matching = by_type.get(canonical_type, ())
         if matching:
-            entry = sorted(
-                matching,
-                key=lambda item: (
-                    -item.confidence,
-                    item.label.element_id,
-                    item.prototype.geometry_key,
-                ),
-            )[0]
+            entry = sorted(matching, key=_legend_entry_rank)[0]
             return entry, {
                 "annotation_code": raw_code,
                 "normalized_code": normalized_code,
@@ -3212,15 +3521,21 @@ def _annotation_code_legend_match(
         (entry.entity_kind, entry.canonical_type)
         for entry in verbatim
     }
-    if len(classifications) == 1:
-        entry = sorted(
+    verbatim_candidates = [
+        {
+            "canonical_type": candidate.canonical_type,
+            "legend_row_label": candidate.label.text,
+        }
+        for candidate in sorted(
             verbatim,
             key=lambda item: (
-                -item.confidence,
+                item.canonical_type,
                 item.label.element_id,
-                item.prototype.geometry_key,
             ),
-        )[0]
+        )
+    ]
+    if len(classifications) == 1:
+        entry = sorted(verbatim, key=_legend_entry_rank)[0]
         return entry, {
             "annotation_code": raw_code,
             "normalized_code": normalized_code,
@@ -3228,19 +3543,7 @@ def _annotation_code_legend_match(
             "canonical_type": entry.canonical_type,
             "legend_page": entry.label.page,
             "legend_row_label": entry.label.text,
-            "classification_candidates": [
-                {
-                    "canonical_type": candidate.canonical_type,
-                    "legend_row_label": candidate.label.text,
-                }
-                for candidate in sorted(
-                    verbatim,
-                    key=lambda item: (
-                        item.canonical_type,
-                        item.label.element_id,
-                    ),
-                )
-            ],
+            "classification_candidates": verbatim_candidates,
         }
 
     return None, {
@@ -3248,21 +3551,11 @@ def _annotation_code_legend_match(
         "normalized_code": normalized_code,
         "match_kind": None,
         "canonical_type": None,
-        "classification_candidates": [
-            {
-                "canonical_type": candidate.canonical_type,
-                "legend_row_label": candidate.label.text,
-            }
-            for candidate in sorted(
-                verbatim,
-                key=lambda item: (
-                    item.canonical_type,
-                    item.label.element_id,
-                ),
-            )
-        ],
+        "classification_candidates": verbatim_candidates,
         "reason": (
             "annotation code does not uniquely match a classified legend row"
+            if verbatim
+            else "annotation code matches no classified legend row"
         ),
     }
 
@@ -4206,6 +4499,27 @@ def _symbol_function_legend_regions(
                     rules,
                     ambiguity_margin=ambiguity_margin,
                 )
+                symbol_code_texts = tuple(
+                    sorted(
+                        (
+                            observation
+                            for observation in texts
+                            if observation.page == page
+                            and observation.element_id
+                            not in {
+                                symbol_header.element_id,
+                                function_header.element_id,
+                            }
+                            and table_left - 1.0
+                            <= observation.x_pt
+                            < split_x - 1.0
+                            and lower_y + 1.0 <= observation.y_pt <= upper_y - 1.0
+                            and _normalized_annotation_code(observation.text)
+                            is not None
+                        ),
+                        key=lambda observation: observation.element_id,
+                    )
+                )
                 cluster = row_clusters[0]
                 used_clusters.add((page, cluster.geometry_key))
                 table_rows.append(
@@ -4223,6 +4537,7 @@ def _symbol_function_legend_regions(
                             observation.element_id
                             for observation in label_parts
                         ),
+                        symbol_code_texts=symbol_code_texts,
                     )
                 )
 
@@ -6378,6 +6693,7 @@ def _recognize_legend_shapes(
                 label_source_element_ids=(
                     row.label_source_element_ids or (label.element_id,)
                 ),
+                symbol_code_texts=row.symbol_code_texts,
             )
             entries_by_signature.setdefault(
                 (prototype.page, prototype.shape_signature), []
@@ -7489,13 +7805,63 @@ class ElectricalPdfImporter:
                     method="pdf-text-pattern",
                 )
 
+        # Annotation codes are matched up front so each one can see the others
+        # of the same type: one annotation code names one instance, so a glyph
+        # is bound only to the annotation nearest to it.
+        annotation_matches: dict[
+            tuple[int, str],
+            tuple[_LegendEntry | None, dict[str, Any]],
+        ] = {}
+        annotation_instances_by_type: dict[
+            tuple[int, str, str],
+            list[PdfSymbolObservation],
+        ] = {}
+        status_marker_annotations: list[tuple[PdfSymbolObservation, str]] = []
         for symbol in symbols:
             if (symbol.page, symbol.element_id) in claimed_source_ids:
                 continue
-
-            annotation_match = _annotation_code_legend_match(
+            marker = _annotation_status_marker(symbol)
+            if marker is not None:
+                status_marker_annotations.append((symbol, marker))
+                continue
+            match = _annotation_code_legend_match(
                 symbol,
                 annotation_legend_entries.get(symbol.page, ()),
+            )
+            if match is None:
+                continue
+            annotation_matches[(symbol.page, symbol.element_id)] = match
+            if match[0] is not None:
+                annotation_instances_by_type.setdefault(
+                    (symbol.page, match[0].entity_kind, match[0].canonical_type),
+                    [],
+                ).append(symbol)
+
+        def nearest_annotation_instance(
+            candidate: _EntityCandidate,
+        ) -> PdfSymbolObservation | None:
+            instances = annotation_instances_by_type.get(
+                (candidate.page, candidate.entity_kind, candidate.canonical_type),
+                (),
+            )
+            return min(
+                instances,
+                key=lambda item: (
+                    _distance_pt(item.x_pt, item.y_pt, candidate.x_pt, candidate.y_pt),
+                    item.element_id,
+                ),
+                default=None,
+            )
+
+        for symbol in symbols:
+            if (symbol.page, symbol.element_id) in claimed_source_ids:
+                continue
+            if _annotation_status_marker(symbol) is not None:
+                # A status letter is page text for status lookup, not a device.
+                continue
+
+            annotation_match = annotation_matches.get(
+                (symbol.page, symbol.element_id)
             )
             if annotation_match is not None:
                 legend_entry, annotation_recognition = annotation_match
@@ -7522,12 +7888,24 @@ class ElectricalPdfImporter:
                 kind = legend_entry.entity_kind
                 canonical_type = legend_entry.canonical_type
                 confidence = min(0.96, legend_entry.confidence)
+                # The code sits on the glyph it names. It joins an already
+                # recognized instance only within the field-tag adjacency
+                # radius, never one another code already named, and only when
+                # no other code of the same type sits closer to that instance.
                 compatible = [
                     candidate
                     for candidate in candidates.values()
                     if candidate.page == symbol.page
                     and candidate.entity_kind == kind
                     and candidate.canonical_type == canonical_type
+                    and candidate.annotation_recognition is None
+                    and _distance_pt(
+                        candidate.x_pt,
+                        candidate.y_pt,
+                        symbol.x_pt,
+                        symbol.y_pt,
+                    )
+                    <= _ANNOTATION_CODE_INSTANCE_RADIUS_PT
                 ]
                 compatible.sort(
                     key=lambda item: (
@@ -7540,17 +7918,13 @@ class ElectricalPdfImporter:
                         item.key,
                     )
                 )
-                candidate = (
-                    compatible[0]
-                    if compatible
-                    and _distance_pt(
-                        compatible[0].x_pt,
-                        compatible[0].y_pt,
-                        symbol.x_pt,
-                        symbol.y_pt,
-                    )
-                    <= self.symbol_label_radius_pt
-                    else None
+                candidate = next(
+                    (
+                        item
+                        for item in compatible
+                        if nearest_annotation_instance(item) is symbol
+                    ),
+                    None,
                 )
                 if candidate is None:
                     candidate = _EntityCandidate(
@@ -7889,6 +8263,38 @@ class ElectricalPdfImporter:
         entity_identity_text_owner: dict[str, str] = {}
         identity_owners: dict[str, str] = {}
 
+        adjacent_counts = _adjacent_count_bindings(
+            sorted(candidates.values(), key=lambda item: item.key),
+            texts=texts,
+            vectors=vectors,
+        )
+        for key, (count_attributes, count_sources) in adjacent_counts.items():
+            candidate = candidates[key]
+            candidate.adjacent_count = count_attributes
+            for observation in count_sources:
+                if observation.element_id in candidate.source_element_ids:
+                    continue
+                candidate.source_element_ids.append(observation.element_id)
+                candidate.provenance.append(
+                    _provenance(
+                        document,
+                        element_id=observation.element_id,
+                        page=observation.page,
+                        method="pdf-field-adjacent-count",
+                        confidence=0.9,
+                        attributes={
+                            "source_text": observation.text,
+                            "adjacent_count": count_attributes["adjacent_count"],
+                            "adjacent_count_unit": count_attributes[
+                                "adjacent_count_unit"
+                            ],
+                            "adjacent_count_legend_text": count_attributes[
+                                "adjacent_count_legend_text"
+                            ],
+                        },
+                    )
+                )
+
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
             if candidate.identity_key is None:
                 raise ElectricalPdfError(
@@ -8007,6 +8413,8 @@ class ElectricalPdfImporter:
                     scope_legends,
                 )
             )
+            if candidate.adjacent_count is not None:
+                lane_attributes.update(candidate.adjacent_count)
             if mounting:
                 if len(mounting) == 1:
                     lane_attributes["mounting_height_m"] = mounting[0]
@@ -8067,6 +8475,33 @@ class ElectricalPdfImporter:
                 entity_identity_text_owner.setdefault(source_element_id, entity.id)
             if candidate.tag:
                 entity_by_page_tag[(candidate.page, candidate.tag)] = entity
+
+        # A status-marker annotation that marks no recognized instance is kept
+        # as evidence: it usually sits beside a glyph that was not recognized.
+        bound_status_source_ids = {
+            entity.attributes["pdf_electrical"].get("scope_marker_source_element_id")
+            for entity in (*devices, *equipment)
+        }
+        for symbol, marker in status_marker_annotations:
+            if f"{symbol.element_id}:text" in bound_status_source_ids:
+                continue
+            unresolved_observations.append(
+                {
+                    "kind": "symbol",
+                    "page": symbol.page,
+                    "source_element_id": symbol.element_id,
+                    "name": symbol.name,
+                    "source_kind": symbol.source_kind,
+                    "position_pt": {"x": symbol.x_pt, "y": symbol.y_pt},
+                    "field_status_marker": marker,
+                    "metadata": dict(symbol.metadata),
+                    "status": "unbound_status_marker",
+                    "reason": (
+                        "status marker annotation is not adjacent to a "
+                        "recognized device"
+                    ),
+                }
+            )
 
         ports_by_owner_role: dict[tuple[str, str], Port] = {}
         circuit_evidence: dict[str, dict[str, Any]] = {}

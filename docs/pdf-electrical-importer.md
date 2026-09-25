@@ -474,11 +474,64 @@ failure reason, its point-space bounding-box size, and stroke count. The
 earlier detailed prototype diagnostics remain present for compatibility.
 
 Short `/Square` annotation contents are also treated as sheet-legend code
-evidence. Known abbreviations such as `CR`, `TV`, `J`/`JB`, and `D`/`DATA` resolve only
-through classified rows on that sheet, and a short code appearing verbatim in
-one legend row can resolve the same way. Successful evidence uses the
-`annotation-code` provenance method and preserves an adjacent `E`/`N`/`R` status;
-unknown or non-unique codes remain unresolved with the source code recorded.
+evidence, in this order:
+
+1. `legend-symbol-code`: the sheet's own legend draws the same code as text
+   inside a classified row's SYMBOL cell (a `CR` box, a `TV` box, the `J` in a
+   J-box circle). If rows of different types draw the same code, the annotation
+   stays unresolved (`annotation code is drawn in the symbol cell of legend rows
+   with different types`); no later rule may break that tie.
+2. `legend-abbreviation`: known abbreviations such as `CR`, `TV`, `J`/`JB` and
+   `D`/`DATA`, resolving only through classified rows on that sheet.
+3. `legend-verbatim-code`: a short code appearing verbatim in one legend row.
+
+Successful evidence uses the `annotation-code` provenance method and preserves
+an adjacent `E`/`N`/`R` status. Codes remain unresolved with the source code
+recorded: `annotation code matches no classified legend row` when nothing
+matches (room names and other markup), and `annotation code does not uniquely
+match a classified legend row` when verbatim matches disagree.
+
+One annotation code names one instance. A code joins an already recognized
+instance of the same type only within the field status radius (28 pt), never an
+instance another code already named, and only when no other code of that type
+sits closer to that instance. Otherwise it is its own device, so two coded
+J-boxes 40 pt apart stay two devices.
+
+A square annotation whose whole contents is a bare `E`, `N` or `R` is a field
+status marker, not a code. Its contents text is read by status lookup and by the
+#105 scope classification exactly like the printed letter, through the page's
+own status legend. A status-marker annotation that no recognized device uses is
+kept as an `unbound_status_marker` observation (`status marker annotation is not
+adjacent to a recognized device`); it usually sits beside a glyph that was not
+recognized.
+
+`CABLE TV`, `CABLE T.V.` and `CATV` outlet rows all classify as `catv_outlet`.
 Long legend descriptions remain semantic labels in full, so an explanatory
 trailing sentence does not prevent a leading tele/data J-box phrase from
 classifying as `junction_box_data`.
+
+### Adjacent counts
+
+A legend row may say that a number beside its symbol is a count, for example
+`NUMBER ADJACENT TO SYMBOL INDICATES NUMBER OF LINES SERVED` on a
+J-box. Only devices whose own legend row says so read one, and
+they record:
+
+- `adjacent_count_unit`: the word after `NUMBER OF`, lowercased (`circuits`,
+  `lines`);
+- `adjacent_count_legend_text`: the legend phrase;
+- `adjacent_count_status`: `read`, `no_adjacent_number` or `ambiguous`;
+- when read, `adjacent_count` (an integer) and
+  `adjacent_count_source_element_id`, with `pdf-field-adjacent-count`
+  provenance;
+- when ambiguous, `adjacent_count_candidates`.
+
+A number is a bare `3` or `#3`, or a count written against its status letter
+(`2E`: two, existing to remain; the letter also serves as the status marker).
+It binds to a device only when that device is the unique nearest recognized
+instance of any type within the field status radius, so a receptacle's circuit
+number never becomes a J-box count. A number enclosed by a small closed outline
+(a keynote bubble or a boxed room number) is not adjacent. The count is an
+attribute only. It never multiplies the device count: a comparison that wants
+lines or drops rather than boxes can sum `adjacent_count` for the unit it
+needs.

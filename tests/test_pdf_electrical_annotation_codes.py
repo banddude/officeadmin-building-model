@@ -384,3 +384,226 @@ def test_annotation_and_count_results_are_deterministic(tmp_path: Path) -> None:
         ElectricalPdfImporter().import_document(first).to_dict()
         == ElectricalPdfImporter().import_document(second).to_dict()
     )
+
+
+# The CATV row's symbol cell redrawn as a text symbol: a dash and a rectangle
+# boxing in the letters CTV, the letters being real text.
+CATV_ROW_GLYPH = (
+    b"n 620 162 m\n"
+    b"620 164.7614 617.7614 167 615 167 c\n"
+    b"612.2386 167 610 164.7614 610 162 c\n"
+    b"610 159.2386 612.2386 157 615 157 c\n"
+    b"617.7614 157 620 159.2386 620 162 c\n"
+    b"S\n"
+    b"n 612 162 m 618 162 l S\n"
+    b"n 615 162 m 618 165 l S\n"
+)
+CATV_FIELD_GLYPH = (
+    b"n 303 170 m\n"
+    b"303 172.7614 300.7614 175 298 175 c\n"
+    b"295.2386 175 293 172.7614 293 170 c\n"
+    b"293 167.2386 295.2386 165 298 165 c\n"
+    b"300.7614 165 303 167.2386 303 170 c\n"
+    b"S\n"
+    b"n 295 170 m 301 170 l S\n"
+    b"n 298 170 m 301 173 l S\n"
+)
+CARD_READER_ROW_GLYPH = (
+    b"n 615 203 m\n620 198 l\n615 193 l\n610 198 l\nh\nS\n"
+    b"n 615 195 m 615 201 l S\n"
+    b"n 613 198 m 617 198 l S\n"
+)
+
+
+def _boxed_code(x: float, y: float, code: str | None, *, dash: bool = True) -> bytes:
+    """A 20 x 12 pt rectangle, optionally boxing in a code, with a dash at left."""
+
+    out = f".9 w n {x} {y} m {x + 20} {y} l {x + 20} {y + 12} l {x} {y + 12} l h S\n"
+    if dash:
+        out += f"n {x - 12} {y + 6} m {x - 2} {y + 6} l S\n"
+    encoded = out.encode("ascii")
+    if code:
+        encoded += _text(x + 3, y + 4, code, size=5.2)
+    return encoded
+
+
+def _leader_duplex(x: float, y: float, leader_pt: float) -> bytes:
+    """A duplex glyph as the legend draws it, plus a leader line touching it."""
+
+    return (
+        _ring(x, y, 5.0)
+        + (
+            f"n {x - 2.5} {y - 1.4} m {x + 2.5} {y - 1.4} l S\n"
+            f"n {x - 2.5} {y + 1.4} m {x + 2.5} {y + 1.4} l S\n"
+            f"n {x - 5 - leader_pt} {y} m {x - 5} {y} l S\n"
+        ).encode("ascii")
+    )
+
+
+def _catv_text_symbol_variant(tmp_path: Path, name: str, label: bytes) -> Path:
+    return _variant(
+        tmp_path,
+        name,
+        (CATV_LABEL, CATV_LABEL.replace(b"cable TV outlet", label)),
+        (CATV_ROW_GLYPH, _boxed_code(614.0, 156.0, "CTV")[len(b".9 w ") :]),
+        # The fixture's old CATV field glyph would no longer be drawn.
+        (CATV_FIELD_GLYPH, b""),
+        append=(
+            _leader_duplex(120.0, 440.0, 22.0)
+            + _leader_duplex(230.0, 440.0, 30.0)
+            + _boxed_code(140.0, 330.0, None)
+            + _boxed_code(260.0, 330.0, None, dash=False)
+            + _boxed_code(380.0, 330.0, "CTV")
+            + _boxed_code(480.0, 330.0, "CTX")
+        ),
+        annotations=(("CR", 84.0, 170.0),),
+    )
+
+
+def _vector_rows_near(model, x: float, y: float) -> list[dict]:
+    return [
+        row
+        for row in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if row.get("kind") == "vector_cluster"
+        and abs(row["position_pt"]["x"] - x) <= 12.0
+        and abs(row["position_pt"]["y"] - y) <= 8.0
+    ]
+
+
+def test_boxed_text_legend_glyph_only_names_glyphs_boxing_its_code(
+    tmp_path: Path,
+) -> None:
+    model = _model(
+        _catv_text_symbol_variant(tmp_path, "boxed-text-symbol", b"cable T.V. outlet")
+    )
+    region = model.attributes["pdf_electrical"]["legend_recognition"]["regions"][0]
+    assert region["classified_row_count"] == 8
+
+    # Only the field glyph boxing in CTV is a CATV outlet.
+    catv = [d for d in model.electrical_devices if d.device_type == "catv_outlet"]
+    assert len(catv) == 1
+    coded = _lane(_at(model, "catv_outlet", 384.0, 336.0))
+    shape = coded["shape_recognition"]
+    assert shape["boxed_text_code"] == "CTV"
+    assert len(shape["boxed_text_element_ids"]) == 1
+    assert len(shape["legend_boxed_text_element_ids"]) == 1
+    assert shape["boxed_text_element_ids"][0] in coded["source_element_ids"]
+    assert any(
+        record.method == "pdf-boxed-text-code"
+        and record.attributes["boxed_text_code"] == "CTV"
+        for record in _at(model, "catv_outlet", 384.0, 336.0).provenance
+    )
+
+    # Leader-attached duplex glyphs stay duplex: the text symbol's larger frame
+    # neither claims them nor stops their leader lines from being cut away.
+    for x in (120.0, 230.0):
+        duplex = _lane(_at(model, "receptacle_duplex", x, 440.0))
+        diagnostics = duplex["shape_recognition"]["match_diagnostics"]
+        assert diagnostics["score"] == 1.0
+        assert "removed-leader-lines" in diagnostics["cleanup_actions"]
+        assert diagnostics["boxed_text_gate"]["excluded_prototypes"] == [
+            {
+                "canonical_type": "catv_outlet",
+                "legend_label": "cable T.V. outlet",
+                "boxed_text_code": "CTV",
+            }
+        ]
+
+    # Boxes with no code, or another code, fail closed instead of becoming CATV.
+    for x, codes in ((150.0, []), (270.0, []), (490.0, ["CTX"])):
+        rows = _vector_rows_near(model, x, 336.0)
+        assert len(rows) == 1, (x, rows)
+        gate = rows[0]["match_diagnostics"]["boxed_text_gate"]
+        assert gate["glyph_boxed_text_codes"] == codes
+        assert [item["canonical_type"] for item in gate["excluded_prototypes"]] == [
+            "catv_outlet"
+        ]
+        assert rows[0]["match_diagnostics"]["nearest_type"] != "catv_outlet"
+
+
+def test_boxed_text_row_leaves_every_other_glyph_as_if_absent(tmp_path: Path) -> None:
+    # The same sheet with the CATV row unclassified (its prototype is only
+    # legend evidence) is the no-text-symbol baseline: classifying the row may
+    # add the one coded CATV glyph and change nothing else.
+    def outcome(label: bytes) -> tuple[list[tuple], list[tuple], set[str]]:
+        model = _model(_catv_text_symbol_variant(tmp_path, label.decode(), label))
+        coded_vectors = {
+            element_id
+            for device in model.electrical_devices
+            if device.device_type == "catv_outlet"
+            for element_id in _lane(device)["shape_recognition"]["source_element_ids"]
+        }
+        devices = sorted(
+            (
+                device.device_type,
+                round(_lane(device)["source_position_pt"]["x"], 3),
+                round(_lane(device)["source_position_pt"]["y"], 3),
+                (_lane(device).get("shape_recognition") or {})
+                .get("match_diagnostics", {})
+                .get("score"),
+            )
+            for device in model.electrical_devices
+        )
+        clusters = sorted(
+            (
+                tuple(row["source_element_ids"]),
+                row["match_diagnostics"].get("nearest_type"),
+                row["match_diagnostics"].get("nearest_score"),
+            )
+            for row in model.attributes["pdf_electrical"]["unresolved_observations"]
+            if row.get("kind") == "vector_cluster"
+        )
+        return devices, clusters, coded_vectors
+
+    with_row, with_row_clusters, coded_vectors = outcome(b"cable T.V. outlet")
+    without_row, without_row_clusters, no_vectors = outcome(b"cable T.V. widget")
+    assert no_vectors == set()
+    assert [item for item in with_row if item[0] == "catv_outlet"] == [
+        ("catv_outlet", 384.0, 336.0, 1.0)
+    ]
+    assert [item for item in with_row if item[0] != "catv_outlet"] == without_row
+    # Every unresolved glyph is untouched. The only glyph that differs is the
+    # coded one: with no row to name it, its box and dash stay two unresolved
+    # fragments, cut apart at the textless glyph scale.
+    assert set(with_row_clusters) < set(without_row_clusters)
+    fragments = set(without_row_clusters) - set(with_row_clusters)
+    assert len(coded_vectors) == 2
+    assert {ids for ids, _type, _score in fragments} == {
+        (element_id,) for element_id in coded_vectors
+    }
+
+
+def test_text_symbols_sharing_a_frame_are_told_apart_by_their_code(
+    tmp_path: Path,
+) -> None:
+    # The card reader row also becomes a dashed box, boxing in CRD. Same
+    # frame, different codes: two symbols, not a legend conflict. (Codes of
+    # one or two letters in a field box read as lighting fixture tags, a
+    # separate lane, so both codes here are three letters.)
+    path = _variant(
+        tmp_path,
+        "shared-frame",
+        (CATV_LABEL, CATV_LABEL.replace(b"cable TV outlet", b"cable T.V. outlet")),
+        (CATV_ROW_GLYPH, _boxed_code(614.0, 156.0, "CTV")[len(b".9 w ") :]),
+        (CARD_READER_ROW_GLYPH, _boxed_code(614.0, 192.0, "CRD")[len(b".9 w ") :]),
+        (CATV_FIELD_GLYPH, b""),
+        append=_boxed_code(380.0, 330.0, "CTV") + _boxed_code(480.0, 330.0, "CRD"),
+        annotations=(),
+    )
+    model = _model(path)
+    lane = model.attributes["pdf_electrical"]
+    assert not any(
+        row.get("kind") == "legend_glyph" for row in lane["unresolved_observations"]
+    )
+    catv = _lane(_at(model, "catv_outlet", 384.0, 336.0))["shape_recognition"]
+    reader = _lane(_at(model, "access_control_device", 484.0, 336.0))[
+        "shape_recognition"
+    ]
+    assert (catv["boxed_text_code"], reader["boxed_text_code"]) == ("CTV", "CRD")
+    assert catv["match_diagnostics"]["boxed_text_gate"]["excluded_prototypes"] == [
+        {
+            "canonical_type": "access_control_device",
+            "legend_label": "card reader electric lock release with electric hinge",
+            "boxed_text_code": "CRD",
+        }
+    ]

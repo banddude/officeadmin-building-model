@@ -506,6 +506,34 @@ adjacent to a recognized device`); it usually sits beside a glyph that was not
 recognized.
 
 `CABLE TV`, `CABLE T.V.` and `CATV` outlet rows all classify as `catv_outlet`.
+
+### Boxed-text legend glyphs
+
+Some legend rows draw their symbol as a short text code inside a rectangle
+(for example a dash and a box around `CTV`). The frame is generic, since boxes
+also frame room numbers, tags and markup, so the code is the symbol. A legend
+prototype is a boxed-text prototype when straight, axis-aligned strokes of its
+glyph enclose a code-like text (letters, at most 16 characters and three words,
+and not an `E`/`N`/`R` status letter, count or height). The code is compared
+in compact form, so `CTV`, `C.T.V.` and `C TV` are the same code. Letters in a
+circle (the `J` of a J-box) are not boxed text and are not gated.
+
+- A boxed-text prototype is a match candidate only for a field glyph whose own
+  straight strokes enclose the same code. For every other glyph it is not a
+  candidate at all, and the exclusion is recorded as
+  `match_diagnostics.boxed_text_gate` (the glyph's boxed codes and the excluded
+  prototypes). A textless box therefore stays unresolved rather than becoming
+  the text symbol.
+- The largest prototype extent sets the scale at which leader lines and
+  touching neighbours are cut away from field glyphs. A boxed-text prototype
+  sets that scale only for glyphs that box in its code, so every other glyph is
+  prepared exactly as if the row were not classified.
+- Two boxed-text rows that share a frame but box different codes are two
+  symbols, not a shape conflict.
+- A glyph matched to a boxed-text prototype records `boxed_text_code`,
+  `legend_boxed_text_element_ids` and `boxed_text_element_ids` in its shape
+  recognition, and its boxed text carries `pdf-boxed-text-code` provenance.
+
 Long legend descriptions remain semantic labels in full, so an explanatory
 trailing sentence does not prevent a leading tele/data J-box phrase from
 classifying as `junction_box_data`.

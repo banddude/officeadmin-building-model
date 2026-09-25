@@ -705,3 +705,61 @@ def test_status_marker_row_never_becomes_a_fixture_prototype(
     lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
     assert lighting["recognized_fixture_count"] == 0
     assert "E" not in lighting["fixture_tags"]
+
+
+def _power_legend_content(*, field_triangles: tuple[tuple[float, float, bool], ...]) -> _RcpContent:
+    """A geometry-only power sheet: a symbol legend plus field triangles.
+
+    Each field triangle is (x, y, closed). A closed one is drawn with the
+    closepath operator; an open one is a stroked polyline that returns to its
+    start point without it.
+    """
+
+    def triangle(cx: float, cy: float) -> tuple[tuple[float, float], ...]:
+        return ((cx, cy + 7.0), (cx + 7.0, cy - 7.0), (cx - 7.0, cy - 7.0))
+
+    content = _RcpContent()
+    content.text(370.0, 365.0, "ELECTRICAL SYMBOL LEGEND", size=11.0)
+    # GFCI: a square with a centre line.
+    content.path(_square_closed(395.0, 320.0, 10.0), close=True)
+    content.path(((388.0, 320.0), (402.0, 320.0)))
+    content.text(425.0, 317.0, "GFCI", size=9.0)
+    # JBOX: one closed triangle.
+    content.path(triangle(395.0, 272.0), close=True)
+    content.text(425.0, 269.0, "JBOX", size=9.0)
+    for x, y, closed in field_triangles:
+        content.path(triangle(x, y), close=closed, repeat_start=not closed)
+    return content
+
+
+def test_power_legend_path_keeps_unclosed_outlines_out_of_glyphs(
+    tmp_path: Path,
+) -> None:
+    """Unclosed outlines are glyphs only where a readable tag types them.
+
+    On the power-device path the legend geometry alone assigns the type, so a
+    stroked polyline that merely returns to its start stays out of glyph
+    matching exactly as before; only the tag-confirmed lighting path reads it
+    as an outline. The closed triangle is the positive control.
+    """
+
+    pdf_path = tmp_path / "power-unclosed-outline.pdf"
+    content = _power_legend_content(
+        field_triangles=((120.0, 200.0, True), (220.0, 200.0, False)),
+    )
+    _write_rcp_pdf(pdf_path, content)
+
+    model = ElectricalPdfImporter().import_document(
+        extract_pdf(pdf_path, source_id="fixture:power-unclosed-outline")
+    )
+    devices = [
+        device
+        for device in model.electrical_devices
+        if device.attributes["pdf_electrical"]
+        .get("shape_recognition", {})
+        .get("method")
+        == "sheet-legend-geometry-match"
+    ]
+    assert [device.device_type for device in devices] == ["junction_box"]
+    assert devices[0].pose.position.x == pytest.approx(120.0 * POINT_TO_M)
+    assert _luminaires(model) == []

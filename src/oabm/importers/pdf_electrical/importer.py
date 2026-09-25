@@ -2682,7 +2682,7 @@ def _is_leader_vector(
     glyph_extent_pt: float,
 ) -> bool:
     if (
-        _vector_is_closed_outline(vector)
+        vector.closed
         or _vector_contains_bezier(vector)
         or _paint_family(vector) != "stroke"
     ):
@@ -3168,13 +3168,27 @@ def _cluster_small_vector_glyphs(
     )
 
 
-def _is_glyph_cluster(cluster: _VectorCluster) -> bool:
-    # A single open stroke is drafting or wiring, never a glyph; a single
-    # outline is a glyph whether or not the source closed it with ``h``.
+def _is_glyph_cluster(
+    cluster: _VectorCluster,
+    *,
+    accept_unclosed_outlines: bool = False,
+) -> bool:
+    """Whether a small vector cluster can be a drawn symbol.
+
+    A single open stroke is drafting or wiring, never a glyph. A single
+    stroked polyline that returns to its start without ``h`` outlines a
+    region like a closed path, but it is read as a glyph only where a readable
+    fixture tag supplies the type (``accept_unclosed_outlines``, the lighting
+    path). On the power-device path the legend geometry alone assigns the
+    type, and admitting such outlines there turns unrelated drafting into
+    typed devices, so that path keeps requiring an explicitly closed path.
+    """
+
     return bool(
         len(cluster.vectors) > 1
         or any(
-            _vector_is_closed_outline(vector)
+            vector.closed
+            or (accept_unclosed_outlines and _vector_is_closed_outline(vector))
             or _vector_contains_bezier(vector)
             or _paint_family(vector) != "stroke"
             for vector in cluster.vectors
@@ -6533,10 +6547,13 @@ def _recognize_lighting(
     list[dict[str, Any]],
     dict[str, Any],
 ]:
+    # A fixture's readable tag is its type evidence, so an unclosed outline
+    # (a fixture square stroked back to its start without ``h``) is a glyph
+    # here; the power-device path keeps requiring closed paths.
     clusters = tuple(
         cluster
         for cluster in _cluster_small_vector_glyphs(vectors)
-        if _is_glyph_cluster(cluster)
+        if _is_glyph_cluster(cluster, accept_unclosed_outlines=True)
     )
     (
         schedules,

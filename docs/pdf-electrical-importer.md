@@ -505,6 +505,11 @@ kept as an `unbound_status_marker` observation (`status marker annotation is not
 adjacent to a recognized device`); it usually sits beside a glyph that was not
 recognized.
 
+Annotation contents are markup laid over the sheet, not ink in its content
+stream, and an annotation's position is its rectangle's centre. They are never
+evidence for field-glyph text stripping, so a status-marker square dropped
+right on the glyph it marks leaves that glyph's inner strokes intact.
+
 `CABLE TV`, `CABLE T.V.` and `CATV` outlet rows all classify as `catv_outlet`.
 
 ### Boxed-text legend glyphs

@@ -5097,6 +5097,13 @@ def _footprints_coincide(first: Space, second: Space, tolerance_m: float) -> boo
     b = second.footprint.points
     if len(a) != len(b):
         return False
+    # Vertices within the tolerance imply bounding boxes within it on every side.
+    if any(
+        abs(value(point.x for point in a) - value(point.x for point in b)) > tolerance_m
+        or abs(value(point.y for point in a) - value(point.y for point in b)) > tolerance_m
+        for value in (min, max)
+    ):
+        return False
 
     def covered(points: tuple[Point3, ...], others: tuple[Point3, ...]) -> bool:
         return all(

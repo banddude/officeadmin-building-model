@@ -132,7 +132,11 @@ Evidence is deterministic and compared like with like:
 Matching uses the ratio of the two printed scales and no rotation. Translation
 candidates come from same-orientation, same-length segment pairs; each candidate
 is verified by counting electrical segments whose endpoints both land on one
-architectural segment within `tolerance_m` (default 0.05 m), then refined.
+architectural segment within `tolerance_m` (default 0.05 m), then refined. The
+wall matcher (voting, verification, uniqueness, and the orientation guard) lives
+in `oabm.importers.pdf_architecture.wall_registration` and is shared with the
+architecture importer, which registers later architectural sheets to resolved
+same-level regions with it (#72).
 
 A page is `registered` only when all of these hold:
 

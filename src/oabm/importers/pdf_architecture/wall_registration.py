@@ -353,6 +353,71 @@ def best_alternative_orientation(
     return best
 
 
+@dataclass(frozen=True, slots=True)
+class WallRegistration:
+    """One source-to-target wall comparison under every declared check.
+
+    ``match`` is the best identity-orientation translation; ``reason_codes`` is
+    empty only when it passes the evidence, residual, and spread thresholds,
+    no competing translation explains nearly as many segments, and no mirrored
+    or turned placement explains as many. ``orientation_alternative`` reports
+    the strongest mirrored or turned placement whenever it was checked.
+    """
+
+    match: WallMatch | None
+    reason_codes: tuple[str, ...]
+    runner_up: WallMatch | None
+    orientation_alternative: dict[str, object] | None
+
+    @property
+    def accepted(self) -> bool:
+        return self.match is not None and not self.reason_codes
+
+
+def register_walls(
+    source: tuple[MatchSegment, ...],
+    target: tuple[MatchSegment, ...],
+    *,
+    scale: float,
+    target_meters_per_point: float,
+    options: WallMatchOptions = DEFAULT_WALL_MATCH_OPTIONS,
+) -> WallRegistration:
+    """Match source walls onto target walls and apply the orientation guard.
+
+    A mirrored or turned placement that explains more source wall segments than
+    the identity is ``orientation_incompatible``; one that explains exactly as
+    many is ``ambiguous_orientation`` (symmetric walls). Either refuses the
+    identity match; callers may resolve a tie only with independent evidence.
+    """
+
+    match, reasons, runner_up = match_walls(
+        source,
+        target,
+        scale=scale,
+        target_meters_per_point=target_meters_per_point,
+        options=options,
+    )
+    alternative: dict[str, object] | None = None
+    if match is not None and not reasons:
+        count, mirrored, quarter_turns = best_alternative_orientation(
+            source,
+            target,
+            scale=scale,
+            target_meters_per_point=target_meters_per_point,
+            options=options,
+        )
+        alternative = {
+            "mirrored": mirrored,
+            "rotation_degrees": 90 * quarter_turns,
+            "wall_inlier_count": count,
+        }
+        if count > len(match.inliers):
+            reasons = ["orientation_incompatible"]
+        elif count == len(match.inliers):
+            reasons = ["ambiguous_orientation"]
+    return WallRegistration(match, tuple(reasons), runner_up, alternative)
+
+
 def composed_frame(
     target_meters_per_point: float,
     target_rotation_radians: float,
@@ -374,4 +439,24 @@ def composed_frame(
         target_rotation_radians,
         target_meters_per_point * (c * tx - s * ty) + target_translation_m[0],
         target_meters_per_point * (s * tx + c * ty) + target_translation_m[1],
+    )
+
+
+def placements_agree(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+    bbox_pt: tuple[float, float, float, float],
+    tolerance_m: float,
+) -> bool:
+    """Do two composed frames put every corner of ``bbox_pt`` at the same place?"""
+
+    def place(placement: tuple[float, float, float, float], point: tuple[float, float]) -> tuple[float, float]:
+        mpp, rotation, tx, ty = placement
+        c, s = math.cos(rotation), math.sin(rotation)
+        return (mpp * (c * point[0] - s * point[1]) + tx, mpp * (s * point[0] + c * point[1]) + ty)
+
+    x0, y0, x1, y1 = bbox_pt
+    return all(
+        math.dist(place(first, corner), place(second, corner)) <= tolerance_m
+        for corner in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
     )

@@ -43,9 +43,9 @@ from oabm.importers.pdf_architecture.wall_registration import (
     MatchSegment,
     WallMatch,
     WallMatchOptions,
-    best_alternative_orientation,
     composed_frame,
     match_walls,
+    register_walls,
     segments_from_evidence,
 )
 from oabm.importers.pdf_electrical import PdfPageTransform
@@ -487,30 +487,15 @@ def _evaluate_target(
     runner_up: WallMatch | None = None
     orientation_alternative: dict[str, Any] | None = None
     if walls and architecture_walls:
-        wall_match, wall_reasons, runner_up = match_walls(
+        compared = register_walls(
             walls,
             architecture_walls,
             scale=scale,
             target_meters_per_point=target.meters_per_point,
             options=options.wall_options,
         )
-        if wall_match is not None and not wall_reasons:
-            count, mirrored, quarter_turns = best_alternative_orientation(
-                walls,
-                architecture_walls,
-                scale=scale,
-                target_meters_per_point=target.meters_per_point,
-                options=options.wall_options,
-            )
-            orientation_alternative = {
-                "mirrored": mirrored,
-                "rotation_degrees": 90 * quarter_turns,
-                "wall_inlier_count": count,
-            }
-            if count > len(wall_match.inliers):
-                wall_reasons = ["orientation_incompatible"]
-            elif count == len(wall_match.inliers):
-                wall_reasons = ["ambiguous_orientation"]
+        wall_match, wall_reasons = compared.match, list(compared.reason_codes)
+        runner_up, orientation_alternative = compared.runner_up, compared.orientation_alternative
     grid_translation, grid_shared, grid_residual, grid_reasons = _match_grid(
         electrical_labels, target, scale, options,
     )

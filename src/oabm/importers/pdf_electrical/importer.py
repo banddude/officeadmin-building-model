@@ -3280,6 +3280,20 @@ def _shx_text_boxes(
     }
 
 
+def _points_inside_box_pt(
+    points: Sequence[tuple[float, float]],
+    box: tuple[float, float, float, float],
+    *,
+    tolerance_pt: float,
+) -> bool:
+    x0, y0, x1, y1 = box
+    return all(
+        x0 - tolerance_pt <= x <= x1 + tolerance_pt
+        and y0 - tolerance_pt <= y <= y1 + tolerance_pt
+        for x, y in points
+    )
+
+
 _DASH_ARC_MIN_DASHES = 4
 _DASH_ARC_MIN_SEGMENT_PT = 2.0
 _DASH_ARC_MAX_SEGMENT_PT = 34.0
@@ -3620,12 +3634,12 @@ def _glyph_cluster_vectors(
         boxes: Mapping[int, tuple[tuple[float, float, float, float], ...]],
     ) -> bool:
         x0, y0, x1, y1 = bboxes[vector.element_id]
-        tolerance = _SHX_TEXT_BOX_TOLERANCE_PT
         return any(
-            box[0] - tolerance <= x0
-            and box[1] - tolerance <= y0
-            and x1 <= box[2] + tolerance
-            and y1 <= box[3] + tolerance
+            _points_inside_box_pt(
+                ((x0, y0), (x1, y1)),
+                box,
+                tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
+            )
             for box in boxes.get(vector.page, ())
         )
 

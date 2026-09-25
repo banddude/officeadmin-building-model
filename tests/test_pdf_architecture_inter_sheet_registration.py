@@ -512,6 +512,25 @@ def test_walls_repeated_by_a_registered_sheet_are_emitted_once(
     validate_model(model)
 
 
+def test_a_repeated_wall_of_another_height_keeps_the_first_and_records_the_conflict(tmp_path: Path) -> None:
+    # The two sheets draw the same room walls but scope different ceiling
+    # heights to them. The first wall is kept as it was; the disagreement is
+    # recorded instead of being resolved silently.
+    first_plan = replace(FIRST, texts=((60.0, 95.0, "OFFICE CEILING HEIGHT 10'-0\""),))
+    second_plan = replace(SECOND_COPY, texts=((60.0, 95.0, "STUDY CEILING HEIGHT 8'-0\""),))
+    model = _import(_write(tmp_path / "plans.pdf", ("A101", (first_plan,)), ("A102", (second_plan,))))
+    first_only = _import(_write(tmp_path / "first.pdf", ("A101", (first_plan,))))
+
+    assert _wall_geometry(model) == _wall_geometry(first_only)
+    assert [wall.height_m for wall in model.walls] == pytest.approx([10 * 12 * 0.0254] * 4)
+    first, second = _regions(model)
+    [conflict] = _ambiguities(model, "repeated_wall_dimension_conflict")
+    assert conflict["page"] == 2
+    assert conflict["source_region_ids"] == [first["region_id"]]
+    assert conflict["wall_ids"] == sorted(wall.id for wall in first_only.walls)
+    assert second["repeated_wall_count"] == 4
+
+
 def test_a_door_drawn_only_on_the_repeating_sheet_is_hosted_by_the_kept_wall(tmp_path: Path) -> None:
     door = (120.0, 45.0, "DOOR D1 3'-0\" X 7'-0\"")  # inside the room, by the south wall
     model = _import(_write(

@@ -365,6 +365,24 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         "data_outlet",
         1.0,
     ),
+    SymbolRule(
+        r"\bSPECIAL\s+PURPOSE\s+(?:OUTLET|RECEPTACLE)\b",
+        "device",
+        "special_purpose_outlet",
+        0.98,
+    ),
+    # A bare TELEPHONE legend row is the telephone outlet; the telephone
+    # junction-box rule above keeps precedence for junction boxes.
+    SymbolRule(r"\bTELEPHONE\b", "device", "data_outlet", 0.95),
+    SymbolRule(r"\bSPEAKER\b", "device", "speaker", 0.95),
+    SymbolRule(
+        r"\bSMOKE\s*/\s*(?:CARBON\s+)?MONOXIDE\b",
+        "device",
+        "smoke_co_alarm",
+        0.95,
+    ),
+    SymbolRule(r"\bSMOKE\s+ALARM\b", "device", "smoke_alarm", 0.95),
+    SymbolRule(r"\bHEAT\s+DETECTOR\b", "device", "heat_detector", 0.95),
     # The generic receptacle yields to the specific duplex and quad rules, and
     # "RECESSED" is not a receptacle abbreviation.
     SymbolRule(
@@ -1008,7 +1026,19 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             subject = _clean_pdf_string(annotation.get("/Subj"))
             contents = _clean_pdf_string(annotation.get("/Contents"))
             native_id = _clean_pdf_string(annotation.get("/NM"))
+            title = _clean_pdf_string(annotation.get("/T"))
             element_root = f"p{page_number}:annotation:{annotation_index:04d}"
+            # CAD text keeps its drawn string outline in /Rect (AutoCAD SHX
+            # text annotations). Keep the displayed rectangle so letter
+            # strokes drawn inside it can be told from device glyphs.
+            corner_first = display_transform.apply(float(rect[0]), float(rect[1]))
+            corner_second = display_transform.apply(float(rect[2]), float(rect[3]))
+            rect_pt = [
+                min(corner_first[0], corner_second[0]),
+                min(corner_first[1], corner_second[1]),
+                max(corner_first[0], corner_second[0]),
+                max(corner_first[1], corner_second[1]),
+            ]
 
             if contents:
                 texts.append(
@@ -1036,6 +1066,8 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                                 "subject": subject,
                                 "contents": contents,
                                 "native_id": native_id,
+                                "title": title,
+                                "rect_pt": rect_pt,
                             }.items()
                             if value is not None
                         },
@@ -3068,6 +3100,308 @@ def _cluster_small_vector_glyphs(
     )
 
 
+_SHX_TEXT_AUTHOR = "AutoCAD SHX Text"
+# Letter strokes are drawn inside their string's outline; a hairline of slack
+# absorbs stroke width without reaching outside the drawn text.
+_SHX_TEXT_BOX_TOLERANCE_PT = 0.5
+
+
+def _is_shx_text_annotation(symbol: PdfSymbolObservation) -> bool:
+    """Whether one symbol observation is an AutoCAD SHX drawn-text annotation."""
+
+    return (
+        symbol.source_kind == "annotation:square"
+        and str(symbol.metadata.get("title") or "") == _SHX_TEXT_AUTHOR
+    )
+
+
+def _is_multi_character_shx_text(contents: str) -> bool:
+    """Whether drawn SHX text reads as words rather than a glyph code.
+
+    Multi-word or five-or-more character strings are sheet text (titles,
+    view names, wrapped legend labels). Short unspaced strings stay glyphs:
+    on CAD electrical sheets the switch symbols themselves are the single
+    letters S, D, V and the digit subscripts drawn beside them.
+    """
+
+    cleaned = " ".join(contents.split())
+    return " " in cleaned or len(cleaned) >= 5
+
+
+def _shx_text_boxes(
+    symbols: Sequence[PdfSymbolObservation],
+) -> dict[int, tuple[tuple[float, float, float, float], ...]]:
+    """Displayed rectangles of the multi-character SHX text on each page."""
+
+    boxes: dict[int, list[tuple[float, float, float, float]]] = {}
+    for symbol in symbols:
+        if not _is_shx_text_annotation(symbol):
+            continue
+        rect = symbol.metadata.get("rect_pt")
+        contents = str(symbol.metadata.get("contents") or "")
+        if not isinstance(rect, (list, tuple)) or len(rect) != 4:
+            continue
+        if not _is_multi_character_shx_text(contents):
+            continue
+        boxes.setdefault(symbol.page, []).append(
+            (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+        )
+    return {
+        page: tuple(boxes[page]) for page in sorted(boxes)
+    }
+
+
+def _points_inside_box_pt(
+    points: Sequence[tuple[float, float]],
+    box: tuple[float, float, float, float],
+    *,
+    tolerance_pt: float,
+) -> bool:
+    x0, y0, x1, y1 = box
+    return all(
+        x0 - tolerance_pt <= x <= x1 + tolerance_pt
+        and y0 - tolerance_pt <= y <= y1 + tolerance_pt
+        for x, y in points
+    )
+
+
+_DASH_ARC_MIN_DASHES = 4
+_DASH_ARC_MIN_SEGMENT_PT = 2.0
+_DASH_ARC_MAX_SEGMENT_PT = 34.0
+_DASH_ARC_CHAIN_GAP_PT = 30.0
+_DASH_ARC_MAX_RADIUS_PT = 200.0
+_DASH_ARC_FIT_TOLERANCE_PT = 2.0
+_DASH_ARC_TANGENT_TOLERANCE_RAD = 0.61
+
+
+def _dash_segment(
+    vector: PdfVectorPathObservation,
+) -> tuple[tuple[float, float], tuple[float, float], float] | None:
+    """Return the straight segment of one short open dash, when it is one."""
+
+    if vector.closed or len(vector.points_pt) != 2:
+        return None
+    (x0, y0), (x1, y1) = vector.points_pt
+    length = math.hypot(x1 - x0, y1 - y0)
+    if not (
+        _DASH_ARC_MIN_SEGMENT_PT
+        <= length
+        <= _DASH_ARC_MAX_SEGMENT_PT
+    ):
+        return None
+    return (x0, y0), (x1, y1), length
+
+
+def _fit_circle(
+    points: Sequence[tuple[float, float]],
+) -> tuple[float, float, float] | None:
+    """Least-squares circle through points, as (x, y, radius), or None."""
+
+    count = len(points)
+    sum_x = sum(x for x, _ in points)
+    sum_y = sum(y for _, y in points)
+    sum_x2 = sum(x * x for x, _ in points)
+    sum_y2 = sum(y * y for _, y in points)
+    sum_xy = sum(x * y for x, y in points)
+    sum_xz = sum(x * (x * x + y * y) for x, y in points)
+    sum_yz = sum(y * (x * x + y * y) for x, y in points)
+    sum_z = sum(x * x + y * y for x, y in points)
+    matrix = (
+        (sum_x2, sum_xy, sum_x),
+        (sum_xy, sum_y2, sum_y),
+        (sum_x, sum_y, float(count)),
+    )
+    rhs = (-sum_xz, -sum_yz, -sum_z)
+
+    def determinant3(m: tuple[tuple[float, ...], ...]) -> float:
+        return (
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        )
+
+    det = determinant3(matrix)
+    if abs(det) <= 1e-9:
+        return None
+    swapped = tuple(
+        tuple(rhs[index] if column == 0 else matrix[index][column] for column in range(3))
+        for index in range(3)
+    )
+    a = determinant3(swapped) / det
+    swapped = tuple(
+        tuple(rhs[index] if column == 1 else matrix[index][column] for column in range(3))
+        for index in range(3)
+    )
+    b = determinant3(swapped) / det
+    swapped = tuple(
+        tuple(rhs[index] if column == 2 else matrix[index][column] for column in range(3))
+        for index in range(3)
+    )
+    c = determinant3(swapped) / det
+    center_x = -a / 2.0
+    center_y = -b / 2.0
+    radius_squared = center_x * center_x + center_y * center_y - c
+    if radius_squared <= 0.0:
+        return None
+    return center_x, center_y, math.sqrt(radius_squared)
+
+
+def _dashed_arc_train_vector_ids(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> set[str]:
+    """Element ids of dashes that lie on a common short-radius arc.
+
+    Circuit arcs are drawn as chains of separate short straight dashes. A
+    chain of four or more such dashes whose midpoints share one circle, each
+    dash running along its tangent, is wiring, not glyph strokes; letters do
+    not form evenly curved dash trains. Chains that fit no circle (a dashed
+    straight leader, mixed crossings) are left untouched.
+    """
+
+    dashes: list[
+        tuple[
+            PdfVectorPathObservation,
+            tuple[float, float],
+            tuple[float, float],
+            float,
+        ]
+    ] = []
+    for vector in vectors:
+        segment = _dash_segment(vector)
+        if segment is None:
+            continue
+        (x0, y0), (x1, y1) = segment[0], segment[1]
+        dashes.append((vector, (x0, y0), (x1, y1), min(x0, x1)))
+    if len(dashes) < _DASH_ARC_MIN_DASHES:
+        return set()
+    dashes.sort(key=lambda item: (item[3], item[0].element_id))
+
+    parent = list(range(len(dashes)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root = find(first)
+        second_root = find(second)
+        if first_root == second_root:
+            return
+        if first_root < second_root:
+            parent[second_root] = first_root
+        else:
+            parent[first_root] = second_root
+
+    for first in range(len(dashes)):
+        _, first_start, first_end, first_x = dashes[first]
+        for second in range(first + 1, len(dashes)):
+            candidate = dashes[second]
+            if candidate[3] > first_x + _DASH_ARC_CHAIN_GAP_PT:
+                break
+            second_start, second_end = candidate[1], candidate[2]
+            gap = min(
+                math.hypot(first_start[0] - second_start[0], first_start[1] - second_start[1]),
+                math.hypot(first_start[0] - second_end[0], first_start[1] - second_end[1]),
+                math.hypot(first_end[0] - second_start[0], first_end[1] - second_start[1]),
+                math.hypot(first_end[0] - second_end[0], first_end[1] - second_end[1]),
+            )
+            if gap <= _DASH_ARC_CHAIN_GAP_PT:
+                union(first, second)
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(dashes)):
+        groups.setdefault(find(index), []).append(index)
+
+    matched: set[str] = set()
+    for members in groups.values():
+        if len(members) < _DASH_ARC_MIN_DASHES:
+            continue
+        midpoints = [
+            (
+                (dashes[index][1][0] + dashes[index][2][0]) / 2.0,
+                (dashes[index][1][1] + dashes[index][2][1]) / 2.0,
+            )
+            for index in members
+        ]
+        circle = _fit_circle(midpoints)
+        if circle is None:
+            continue
+        center_x, center_y, radius = circle
+        if radius > _DASH_ARC_MAX_RADIUS_PT:
+            continue
+        tolerance = _DASH_ARC_FIT_TOLERANCE_PT + 0.02 * radius
+        on_arc = True
+        for index, midpoint in zip(members, midpoints):
+            radial = math.hypot(
+                midpoint[0] - center_x,
+                midpoint[1] - center_y,
+            )
+            if abs(radial - radius) > tolerance:
+                on_arc = False
+                break
+            _, start, end = dashes[index]
+            direction = (end[0] - start[0], end[1] - start[1])
+            tangent = (-(midpoint[1] - center_y), midpoint[0] - center_x)
+            dot = (
+                direction[0] * tangent[0] + direction[1] * tangent[1]
+            )
+            if not math.isfinite(dot):
+                on_arc = False
+                break
+            norm = math.hypot(*direction) * math.hypot(*tangent)
+            if norm <= 1e-9:
+                on_arc = False
+                break
+            if abs(dot) / norm < math.cos(_DASH_ARC_TANGENT_TOLERANCE_RAD):
+                on_arc = False
+                break
+        if on_arc:
+            matched.update(dashes[index][0].element_id for index in members)
+    return matched
+
+
+def _glyph_cluster_vectors(
+    document: PdfElectricalDocument,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[PdfVectorPathObservation, ...]:
+    """Vector paths that may take part in device-glyph clustering.
+
+    Letter strokes inside a drawn SHX text string are text, and the separate
+    dashes of a circuit arc are wiring; neither may chain real glyphs into
+    oversized clusters or pose as glyph strokes itself.
+    """
+
+    text_boxes = _shx_text_boxes(document.symbols)
+    arc_ids = (
+        _dashed_arc_train_vector_ids(vectors)
+        if text_boxes or vectors
+        else set()
+    )
+    if not text_boxes and not arc_ids:
+        return tuple(vectors)
+    excluded = arc_ids
+    for vector in vectors:
+        if vector.element_id in excluded:
+            continue
+        boxes = text_boxes.get(vector.page)
+        if not boxes:
+            continue
+        if any(
+            _points_inside_box_pt(
+                vector.points_pt,
+                box,
+                tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
+            )
+            for box in boxes
+        ):
+            excluded.add(vector.element_id)
+    return tuple(
+        vector for vector in vectors if vector.element_id not in excluded
+    )
+
+
 def _is_glyph_cluster(cluster: _VectorCluster) -> bool:
     return bool(
         len(cluster.vectors) > 1
@@ -3179,7 +3513,7 @@ def _annotation_code_legend_match(
     for entry in entries:
         by_type.setdefault(entry.canonical_type, []).append(entry)
 
-    alias_targets: Mapping[str, tuple[str, ...]] = {
+    alias_targets: dict[str, tuple[str, ...]] = {
         "CR": ("access_control_device",),
         "TV": ("catv_outlet",),
         "CATV": ("catv_outlet",),
@@ -3188,6 +3522,14 @@ def _annotation_code_legend_match(
         "D": ("data_outlet",),
         "DATA": ("data_outlet",),
     }
+    # A legend that lists a dimmer switch draws its dimmer glyph as a bare
+    # "D"; on such a sheet D is never a data-outlet abbreviation.
+    if any(
+        entry.canonical_type == "switch"
+        and "DIMMER" in entry.label.text.upper()
+        for entry in entries
+    ):
+        alias_targets.pop("D", None)
     for canonical_type in alias_targets.get(normalized_code, ()):
         matching = by_type.get(canonical_type, ())
         if matching:
@@ -3398,6 +3740,7 @@ def _nearest_section_heading(
     vectors: Sequence[PdfVectorPathObservation],
     *,
     allow_beside: bool,
+    require_legend_title: bool = False,
 ) -> PdfTextObservation | None:
     if not rows:
         return None
@@ -3413,6 +3756,8 @@ def _nearest_section_heading(
         if observation.page != page or observation.element_id in row_label_ids:
             continue
         if not _looks_like_section_heading(observation):
+            continue
+        if require_legend_title and not _is_legend_heading(observation):
             continue
         distance = _heading_distance_to_group(
             observation,
@@ -3571,9 +3916,10 @@ def _legend_label_blocks(
     one of those lines, not necessarily the first, so pairing each line with
     its nearest glyph splits one label into pieces and gives the glyph the
     wrong words. Lines are first chained by column and pitch; a chain beside
-    several glyphs is then split at each glyph's own line, so wrapped lines
-    stay with the glyph above them and lines above the first glyph belong to
-    it. A chain with no glyph beside it stays as single lines.
+    several glyphs is then split midway between neighbouring glyphs, so each
+    glyph's block spans the wrapped lines around its own line. A chain beside
+    one glyph is that row's whole label. A chain with no glyph beside it
+    stays as single lines.
     """
 
     ordered = sorted(
@@ -3660,11 +4006,18 @@ def _legend_label_blocks(
         if not anchors:
             blocks.extend((line,) for line in chain)
             continue
+        # Split midway between neighbouring glyph lines so every block keeps
+        # the line its own glyph sits beside; one glyph owns the whole chain.
         starts = sorted(anchors)
-        starts[0] = 0
-        for index, start in enumerate(starts):
-            stop = starts[index + 1] if index + 1 < len(starts) else len(chain)
-            blocks.append(tuple(chain[start:stop]))
+        bounds = [0]
+        bounds.extend(
+            (first + second + 1) // 2 for first, second in zip(starts, starts[1:])
+        )
+        bounds.append(len(chain))
+        for index, start in enumerate(bounds[:-1]):
+            stop = bounds[index + 1]
+            if start < stop:
+                blocks.append(tuple(chain[start:stop]))
     return tuple(
         sorted(
             blocks,
@@ -5878,7 +6231,9 @@ def _recognize_lighting(
 ]:
     clusters = tuple(
         cluster
-        for cluster in _cluster_small_vector_glyphs(vectors)
+        for cluster in _cluster_small_vector_glyphs(
+            _glyph_cluster_vectors(document, vectors)
+        )
         if _is_glyph_cluster(cluster)
     )
     (
@@ -6680,10 +7035,13 @@ def _recognize_legend_shapes(
     list[dict[str, Any]],
     dict[str, Any],
     dict[int, tuple[_LegendEntry, ...]],
+    dict[int, tuple[float, float, float, float]],
 ]:
     clusters = tuple(
         cluster
-        for cluster in _cluster_small_vector_glyphs(vectors)
+        for cluster in _cluster_small_vector_glyphs(
+            _glyph_cluster_vectors(document, vectors)
+        )
         if _is_glyph_cluster(cluster)
     )
     glyph_vector_ids = {
@@ -7379,6 +7737,7 @@ def _recognize_legend_shapes(
             )
             for page, entries in sorted(classified_entries_by_page.items())
         },
+        legend_boxes,
     )
 
 def _extract_voltage(texts: Iterable[str]) -> tuple[float | None, str | None]:
@@ -7672,6 +8031,7 @@ class ElectricalPdfImporter:
             unresolved_shape_rows,
             legend_recognition,
             annotation_legend_entries,
+            legend_frame_boxes,
         ) = _recognize_legend_shapes(
             document,
             texts=generic_legend_texts,
@@ -7970,6 +8330,16 @@ class ElectricalPdfImporter:
 
         for symbol in symbols:
             if (symbol.page, symbol.element_id) in claimed_source_ids:
+                continue
+
+            # A legend glyph often carries a letter code annotation of its own
+            # (the dimmer "D", a "$" drawn as "S"). Codes are only read on the
+            # field side; inside the legend frame the symbol is a sample.
+            frame_box = legend_frame_boxes.get(symbol.page)
+            if frame_box is not None and (
+                frame_box[0] <= symbol.x_pt <= frame_box[2]
+                and frame_box[1] <= symbol.y_pt <= frame_box[3]
+            ):
                 continue
 
             annotation_match = _annotation_code_legend_match(

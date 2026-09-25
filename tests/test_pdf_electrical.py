@@ -13,6 +13,7 @@ from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
     DictionaryObject,
+    FloatObject,
     NameObject,
     NumberObject,
     TextStringObject,
@@ -5813,4 +5814,2038 @@ def test_topology_conflict_does_not_taint_ports_for_independent_circuit() -> Non
     assert unresolved[0]["reason"] == "load_callout_conflict"
     assert unresolved[0]["circuit_callout_ids"] == ["p1:text:0050"]
     assert len(unresolved[0]["suppressed_circuit_ids"]) == 1
+    validate_model(model)
+
+
+# --- CAD legends drawn with scaled text, framed columns and SHX letters ---
+
+
+def _cad_text_command(x: float, y: float, text: str, size: float) -> str:
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    return f"BT /F1 {size:.3f} Tf 1 0 0 1 {x:.3f} {y:.3f} Tm ({escaped}) Tj ET"
+
+
+def _cad_scaled_text_command(
+    x: float,
+    y: float,
+    text: str,
+    *,
+    tf_size: float,
+    tm_scale: float,
+) -> str:
+    escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    return (
+        f"BT /F1 {tf_size:.3f} Tf {tm_scale:.6f} 0 0 {tm_scale:.6f} "
+        f"{x:.3f} {y:.3f} Tm ({escaped}) Tj ET"
+    )
+
+
+def _cad_path_command(points: tuple[tuple[float, float], ...], *, close: bool) -> str:
+    parts = [f"{points[0][0]:.3f} {points[0][1]:.3f} m"]
+    parts.extend(f"{x:.3f} {y:.3f} l" for x, y in points[1:])
+    parts.append("h S" if close else "S")
+    return " ".join(parts)
+
+
+def _cad_rect_command(x: float, y: float, w: float, h: float) -> str:
+    return f"{x:.3f} {y:.3f} {w:.3f} {h:.3f} re S"
+
+
+_DUPLEX_HALF_WIDTH_PT = 7.5
+
+
+def _legend_glyph_duplex(x: float, y: float) -> list[str]:
+    half = _DUPLEX_HALF_WIDTH_PT
+    return [
+        _cad_rect_command(x - half, y - 3.5, 2.0 * half, 7.0),
+        _cad_path_command(((x - half, y), (x + half, y)), close=False),
+    ]
+
+
+def _legend_glyph_fourplex(x: float, y: float) -> list[str]:
+    return [
+        _cad_rect_command(x - 10.0, y - 4.0, 20.0, 8.0),
+        _cad_path_command(((x - 10.0, y), (x + 10.0, y)), close=False),
+        _cad_path_command(((x, y - 4.0), (x, y + 4.0)), close=False),
+    ]
+
+
+def _legend_glyph_toggle(x: float, y: float) -> list[str]:
+    return [
+        _cad_rect_command(x - 3.5, y - 3.5, 7.0, 7.0),
+        _cad_path_command(((x + 3.5, y), (x + 9.0, y)), close=False),
+    ]
+
+
+def _legend_glyph_dimmer(x: float, y: float) -> list[str]:
+    return [
+        _cad_rect_command(x - 3.5, y - 3.5, 7.0, 7.0),
+        _cad_path_command(((x, y - 5.5), (x, y + 5.5)), close=False),
+    ]
+
+
+def _legend_glyph_ceiling_light(x: float, y: float) -> list[str]:
+    radius = 8.0
+    angles = [index * math.pi / 4.0 + math.pi / 8.0 for index in range(8)]
+    points = tuple(
+        (x + radius * math.cos(angle), y + radius * math.sin(angle))
+        for angle in angles
+    )
+    return [
+        _cad_path_command(points, close=True),
+        _cad_rect_command(x - 0.8, y - 0.8, 1.6, 1.6),
+    ]
+
+
+def _legend_glyph_smoke_alarm(x: float, y: float) -> list[str]:
+    return [
+        _cad_rect_command(x - 5.0, y - 5.0, 10.0, 10.0),
+        _cad_path_command(((x - 2.5, y - 5.0), (x - 2.5, y + 5.0)), close=False),
+        _cad_path_command(((x + 2.5, y - 5.0), (x + 2.5, y + 5.0)), close=False),
+    ]
+
+
+def _legend_glyph_recessed_light(x: float, y: float) -> list[str]:
+    return [
+        _cad_rect_command(x - 6.0, y - 6.0, 12.0, 12.0),
+        _cad_path_command(((x - 6.0, y - 6.0), (x + 6.0, y + 6.0)), close=False),
+        _cad_path_command(((x - 6.0, y + 6.0), (x + 6.0, y - 6.0)), close=False),
+    ]
+
+
+def _legend_glyph_abbreviation_letters(x: float, y: float) -> list[str]:
+    return [
+        _cad_path_command(
+            ((x - 5.0, y - 4.0), (x + 5.0, y - 4.0), (x - 5.0, y + 4.0), (x + 5.0, y + 4.0)),
+            close=True,
+        )
+    ]
+
+
+def _write_annotation_dictionary(
+    writer: PdfWriter,
+    *,
+    rect: tuple[float, float, float, float],
+    contents: str,
+    title: str | None = None,
+) -> object:
+    annotation = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Annot"),
+            NameObject("/Subtype"): NameObject("/Square"),
+            NameObject("/Rect"): ArrayObject(
+                [NumberObject(value) for value in rect]
+            ),
+            NameObject("/F"): NumberObject(64),
+            NameObject("/Border"): ArrayObject(
+                [NumberObject(0), NumberObject(0), NumberObject(0)]
+            ),
+            NameObject("/Contents"): TextStringObject(contents),
+        }
+    )
+    if title is not None:
+        annotation[NameObject("/T")] = TextStringObject(title)
+    return writer._add_object(annotation)
+
+
+def _write_pdf_with_content(
+    path: Path,
+    content: list[str],
+    *,
+    annotations: tuple[dict[str, object], ...] = (),
+    width: float = 612.0,
+    height: float = 792.0,
+) -> None:
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=width, height=height)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject(
+        {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+    )
+    stream = DecodedStreamObject()
+    stream.set_data("\n".join(content).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    if annotations:
+        refs = []
+        for annotation in annotations:
+            annotation_copy = DictionaryObject()
+            for key, value in annotation.items():
+                if key == "__rect__":
+                    continue
+                annotation_copy[NameObject(key)] = (
+                    TextStringObject(str(value))
+                    if isinstance(value, str)
+                    else value
+                )
+            rect = annotation["__rect__"]
+            assert isinstance(rect, tuple)
+            annotation_copy[NameObject("/Rect")] = ArrayObject(
+                [NumberObject(value) for value in rect]
+            )
+            annotation_copy.setdefault(
+                NameObject("/Subtype"), NameObject("/Square")
+            )
+            annotation_copy.setdefault(
+                NameObject("/Type"), NameObject("/Annot")
+            )
+            refs.append(writer._add_object(annotation_copy))
+        page[NameObject("/Annots")] = ArrayObject(refs)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+_LEGEND_FRAME_BBOX = (72.0, 392.0, 720.0, 720.0)
+_FIELD_DUPLEX_POSITION_PT = (850.0, 600.0)
+_FIELD_DIMMER_POSITION_PT = (850.0, 560.0)
+
+
+_LEGEND_TITLE = "WIRING DEVICE LEGEND"
+_TITLE_RULE_YS_PT = (699.0, 702.0)
+
+
+def _title_double_rule(right_x: float) -> list[str]:
+    return [
+        _cad_path_command(((72.0, y), (right_x, y)), close=False)
+        for y in _TITLE_RULE_YS_PT
+    ]
+
+
+def _cad_text_legend_content(*, frame_mode: str) -> list[str]:
+    """A CAD-style sheet: ruled two-column legend plus two field glyphs.
+
+    The title column holds LUMINAIRES and, below it, PLAN ABBREVIATIONS,
+    whose rows pair vector-drawn letters with their meaning. The second
+    column (CONTROLS, then CONVENIENCE POWER) sits farther from the title
+    than the title-matching radius, so only the ruled frame around the
+    title can pull it into the legend. The smoke/CO label wraps onto two
+    lines with its glyph beside the lower one.
+    """
+
+    content = [_cad_rect_command(36.0, 36.0, 1128.0, 720.0)]
+    if frame_mode == "closed":
+        content.append(_cad_rect_command(*_LEGEND_FRAME_BBOX[:2], 648.0, 328.0))
+    elif frame_mode == "open_top":
+        content.extend(
+            [
+                _cad_path_command(((72.0, 392.0), (72.0, 720.0)), close=False),
+                _cad_path_command(((720.0, 392.0), (720.0, 720.0)), close=False),
+                _cad_path_command(((72.0, 392.0), (720.0, 392.0)), close=False),
+            ]
+        )
+    content.extend(_title_double_rule(720.0))
+    content.append(_cad_text_command(84.0, 712.0, _LEGEND_TITLE, 9.0))
+    # (label y, text, glyph); a heading has no glyph and a wrapped label's
+    # other lines carry the "line" marker instead of a glyph.
+    title_column = [
+        (686.0, "LUMINAIRES", None),
+        (669.0, "CEILING SMOKE/", "line"),
+        (664.0, "CARBON MONOXIDE UNIT", _legend_glyph_smoke_alarm),
+        (644.0, "DRUM CEILING LIGHT", _legend_glyph_ceiling_light),
+        (624.0, "4 IN RECESSED DOWNLIGHT", _legend_glyph_recessed_light),
+        (600.0, "PLAN ABBREVIATIONS", None),
+        (582.0, "WEATHER RESISTANT", _legend_glyph_abbreviation_letters),
+        (564.0, "LOW VOLTAGE SWITCH", _legend_glyph_abbreviation_letters),
+    ]
+    second_column = [
+        (686.0, "CONTROLS", None),
+        (668.0, "SLIDE DIMMER, 3-WAY", _legend_glyph_dimmer),
+        (646.0, "OCCUPANCY TOGGLE", _legend_glyph_toggle),
+        (600.0, "CONVENIENCE POWER", None),
+        (582.0, "QUAD RECEPTACLE", _legend_glyph_fourplex),
+        (564.0, "DUPLEX CONVENIENCE RECEPTACLE", _legend_glyph_duplex),
+    ]
+    for rows, heading_x, glyph_x, label_x in (
+        (title_column, 84.0, 116.0, 152.0),
+        (second_column, 580.0, 584.0, 608.0),
+    ):
+        for label_y, text, glyph in rows:
+            if glyph is None:
+                content.append(_cad_text_command(heading_x, label_y, text, 7.0))
+                continue
+            if glyph != "line":
+                content.extend(glyph(glyph_x, label_y))  # type: ignore[operator]
+            content.append(_cad_text_command(label_x, label_y, text, 4.0))
+    content.extend(_legend_glyph_duplex(*_FIELD_DUPLEX_POSITION_PT))
+    content.extend(_legend_glyph_dimmer(*_FIELD_DIMMER_POSITION_PT))
+    return content
+
+
+def _legend_frame_region(model: BuildingModel) -> dict:
+    regions = model.attributes["pdf_electrical"]["legend_recognition"]["regions"]
+    assert len(regions) == 1
+    return regions[0]
+
+
+def test_framed_two_column_cad_legend_joins_columns_and_drops_abbreviations(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "cad-text-legend.pdf"
+    _write_pdf_with_content(
+        pdf_path,
+        _cad_text_legend_content(frame_mode="closed"),
+        annotations=(
+            {
+                "/Subtype": "/Square",
+                "__rect__": (106.0, 636.0, 126.0, 652.0),
+                "/Contents": "LAMP",
+            },
+            {
+                "/Subtype": "/Square",
+                "__rect__": (840.0, 554.0, 860.0, 566.0),
+                "/Contents": "D",
+            },
+        ),
+        width=1200.0,
+    )
+    extracted = extract_pdf(pdf_path, source_id="test:cad-text-legend")
+    repeated = extract_pdf(pdf_path, source_id="test:cad-text-legend")
+    assert extracted == repeated
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert model.to_dict() == ElectricalPdfImporter().import_document(
+        extracted
+    ).to_dict()
+    region = _legend_frame_region(model)
+    assert region["heading_text"] == _LEGEND_TITLE
+    assert region["classified_row_count"] == 7
+    legend_frame = region["legend_frame"]
+    assert legend_frame["bbox_pt"] == list(_LEGEND_FRAME_BBOX)
+    assert legend_frame["rows_dropped_in_rejected_sections"] == 2
+    assert legend_frame["joined_row_groups"] == 1
+    assert legend_frame["inframe_glyph_clusters_excluded"] >= 8
+
+    types = Counter(device.device_type for device in model.electrical_devices)
+    assert types == Counter({"receptacle_duplex": 1, "switch": 1})
+    labels = {
+        device.device_type: device.attributes["pdf_electrical"][
+            "shape_recognition"
+        ]["legend_row_label"]
+        for device in model.electrical_devices
+    }
+    assert labels["switch"] == "SLIDE DIMMER, 3-WAY"
+    assert labels["receptacle_duplex"] == "DUPLEX CONVENIENCE RECEPTACLE"
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert any(
+        row.get("annotation_code") == "D" for row in unresolved
+    )
+    assert not any(
+        row["kind"] == "vector_cluster"
+        and _LEGEND_FRAME_BBOX[0] <= row["position_pt"]["x"] <= _LEGEND_FRAME_BBOX[2]
+        and _LEGEND_FRAME_BBOX[1] <= row["position_pt"]["y"] <= _LEGEND_FRAME_BBOX[3]
+        for row in unresolved
+    )
+    validate_model(model)
+
+
+@pytest.mark.parametrize("frame_mode", ["sheet_border", "open_top"])
+def test_legend_join_is_gated_on_a_real_legend_frame(
+    tmp_path: Path, frame_mode: str
+) -> None:
+    pdf_path = tmp_path / f"cad-text-legend-{frame_mode}.pdf"
+    _write_pdf_with_content(
+        pdf_path,
+        _cad_text_legend_content(frame_mode=frame_mode),
+        width=1200.0,
+    )
+    extracted = extract_pdf(pdf_path, source_id=f"test:cad-text-legend:{frame_mode}")
+
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    region = _legend_frame_region(model)
+    assert region["heading_text"] == _LEGEND_TITLE
+    assert "legend_frame" not in region
+    # Only the title column: its three luminaire rows plus the LOW VOLTAGE
+    # SWITCH abbreviation row, which only a real frame's section drop removes.
+    assert region["classified_row_count"] == 4
+    assert model.electrical_devices == ()
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert any(
+        row["kind"] == "vector_cluster"
+        and abs(row["position_pt"]["x"] - _FIELD_DUPLEX_POSITION_PT[0]) <= 5.0
+        and abs(row["position_pt"]["y"] - _FIELD_DUPLEX_POSITION_PT[1]) <= 5.0
+        for row in unresolved
+    )
+    validate_model(model)
+
+
+def test_scaled_text_matrix_and_ctm_render_size_and_legend(tmp_path: Path) -> None:
+    assert math.isclose(
+        pdf_electrical_importer._rendered_font_size(
+            50.0,
+            (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            (0.13, 0.0, 0.0, 0.13, 152.0, 668.0),
+        ),
+        6.5,
+    )
+    assert math.isclose(
+        pdf_electrical_importer._rendered_font_size(
+            50.0,
+            (1.25, 0.0, 0.0, 1.25, 0.0, 0.0),
+            (0.13, 0.0, 0.0, 0.13, 152.0, 668.0),
+        ),
+        8.125,
+    )
+    assert (
+        pdf_electrical_importer._rendered_font_size(
+            -12.0,
+            (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+        )
+        == 12.0
+    )
+
+    content = [_cad_rect_command(36.0, 36.0, 1128.0, 720.0)]
+    content.append(_cad_rect_command(*_LEGEND_FRAME_BBOX[:2], 288.0, 328.0))
+    content.append(_cad_text_command(600.0, 48.0, "E-201", 8.0))
+    content.append(
+        _cad_scaled_text_command(
+            84.0, 712.0, _LEGEND_TITLE, tf_size=100.0, tm_scale=0.13
+        )
+    )
+    content.append(
+        _cad_scaled_text_command(
+            84.0, 686.0, "POWER OUTLETS", tf_size=50.0, tm_scale=0.13
+        )
+    )
+    for offset, text in (
+        (612.0, "QUAD RECEPTACLE"),
+        (594.0, "DUPLEX TAMPER-RESISTANT RECEPTACLE"),
+        (576.0, "DUPLEX SPLIT-WIRED RECEPTACLE"),
+    ):
+        content.extend(_legend_glyph_duplex(244.0, offset))
+        content.append(
+            _cad_scaled_text_command(268.0, offset, text, tf_size=50.0, tm_scale=0.13)
+        )
+    content.append(
+        "q 1.25 0 0 1.25 0 0 cm "
+        + _cad_scaled_text_command(
+            214.4, 460.8, "RANGE SPECIAL PURPOSE OUTLET", tf_size=50.0, tm_scale=0.13
+        )
+        + " Q"
+    )
+    content.extend(_legend_glyph_duplex(214.4, 478.0))
+    pdf_path = tmp_path / "cad-scaled-text-legend.pdf"
+    _write_pdf_with_content(pdf_path, content)
+
+    extracted = extract_pdf(pdf_path, source_id="test:cad-scaled-text-legend")
+    plain_label = next(
+        text for text in extracted.texts if text.text == "QUAD RECEPTACLE"
+    )
+    assert plain_label.font_size_pt is not None
+    assert math.isclose(plain_label.font_size_pt, 6.5, rel_tol=1e-6)
+    ctm_label = next(
+        text for text in extracted.texts if text.text == "RANGE SPECIAL PURPOSE OUTLET"
+    )
+    assert ctm_label.font_size_pt is not None
+    assert math.isclose(ctm_label.font_size_pt, 8.125, rel_tol=1e-6)
+    title = next(
+        text
+        for text in extracted.texts
+        if text.text == _LEGEND_TITLE
+    )
+    assert title.font_size_pt is not None
+    assert math.isclose(title.font_size_pt, 13.0, rel_tol=1e-6)
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    region = _legend_frame_region(model)
+    assert region["heading_text"] == _LEGEND_TITLE
+    # The ruled frame around the title is real: the sheet border bounds the
+    # page, so the frame is a legend block, not the sheet itself.
+    assert region["legend_frame"]["bbox_pt"] == list(_LEGEND_FRAME_BBOX[:2]) + [
+        _LEGEND_FRAME_BBOX[0] + 288.0,
+        _LEGEND_FRAME_BBOX[1] + 328.0,
+    ]
+    # Exactly the three receptacle rows join the title column; the unpaired
+    # in-frame glyph stays unresolved evidence and claims no device.
+    assert region["classified_row_count"] == 3
+    assert model.electrical_devices == ()
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert any(
+        row["kind"] == "vector_cluster"
+        and abs(row["position_pt"]["x"] - 214.4) <= 5.0
+        and abs(row["position_pt"]["y"] - 478.0) <= 5.0
+        for row in unresolved
+    )
+    validate_model(model)
+
+
+def test_vocabulary_cases_for_cad_legend_words() -> None:
+    rules = pdf_electrical_importer.DEFAULT_SYMBOL_RULES
+
+    def classify(text: str) -> tuple[object, list[dict]]:
+        return pdf_electrical_importer._classify_semantic_text(
+            text, rules, ambiguity_margin=0.08
+        )
+
+    expected = {
+        "DUPLEX CONVENIENCE RECEPTACLE": "receptacle_duplex",
+        "DUPLEX SPLIT-WIRED RECEPTACLE": "receptacle_duplex",
+        "FOURPLEX COUNTER RECEPTACLE": "receptacle_quad",
+        "FOUR-PLEX FLOOR RECEPTACLE": "receptacle_quad",
+        "QUAD RECEPTACLE": "receptacle_quad",
+        "DUPLEX TAMPER-RESISTANT RECEPTACLE": "receptacle_duplex",
+        "TELEVISION COAX OUTLET": "catv_outlet",
+        "CAT-5E NETWORK HOOKUP": "data_outlet",
+        "CAT6 NETWORK JACK": "data_outlet",
+        "RANGE SPECIAL PURPOSE OUTLET": "special_purpose_outlet",
+        "TELEPHONE WALL JACK": "data_outlet",
+        "IN-WALL SPEAKER": "speaker",
+        "PHOTOELECTRIC SMOKE ALARM": "smoke_alarm",
+        "FIXED TEMP HEAT DETECTOR": "heat_detector",
+        "PADDLE TOGGLE, 1-POLE": "switch",
+        "3-WAY ROCKER TOGGLE": "switch",
+        "4-WAY ROCKER TOGGLE": "switch",
+        "SLIDE DIMMER, 1-POLE": "switch",
+        "SLIDE DIMMER, 3-WAY": "switch",
+        "CLOSET JAMB SWITCH": "switch",
+        "OCCUPANCY TOGGLE": "switch",
+        "DRUM CEILING LIGHT": "luminaire",
+        "CHAIN HUNG FIXTURE": "luminaire",
+        "CORD PENDANT": "luminaire",
+        "VANITY SCONCE": "luminaire",
+        "TWIN HEAD FLOODLIGHT": "luminaire",
+        "EXHAUST FAN 80 CFM": None,
+    }
+    for text, canonical_type in expected.items():
+        classification, _ranked = classify(text)
+        assert (classification[1] if classification else None) == canonical_type, text
+
+    combined = "SMOKE/CARBON MONOXIDE COMBINATION DETECTOR, SEALED 10 YEAR CELL"
+    classification, _ranked = classify(combined)
+    assert classification is not None
+    assert classification[1] == "smoke_co_alarm"
+
+    recessed_classification, recessed_ranked = classify(
+        "4 IN RECESSED DOWNLIGHT"
+    )
+    assert recessed_classification is not None
+    assert recessed_classification[1] == "luminaire"
+    assert all(
+        row["canonical_type"] != "receptacle" for row in recessed_ranked
+    )
+    duplex_classification, duplex_ranked = classify("DUPLEX CONVENIENCE RECEPTACLE")
+    assert duplex_classification is not None
+    assert duplex_classification[1] == "receptacle_duplex"
+    assert [row["canonical_type"] for row in duplex_ranked] == [
+        "receptacle_duplex"
+    ]
+
+    # The broad words must not swallow the equipment and appliances that
+    # merely contain them.
+    negatives = {
+        "TELEPHONE DISTRIBUTION BOARD": {"data_outlet"},
+        "TELEPHONE CROSS-CONNECT CABINET": {"data_outlet"},
+        "TELEPHONE RACK": {"data_outlet"},
+        "TELEPHONE RISER CONDUIT": {"data_outlet"},
+        "PENDANT STATION": {"luminaire"},
+        "PENDANT CONTROL": {"luminaire"},
+        "PENDANT MOUNTED": {"luminaire"},
+        "DIMMER EQUIPMENT RACK": {"switch"},
+        "SPEAKER LEVEL CONTROL": {"speaker"},
+        "FIRE ALARM HORN/SPEAKER": {"speaker"},
+    }
+    for text, forbidden in negatives.items():
+        classification, _ranked = classify(text)
+        assert classification is None or classification[1] not in forbidden, text
+    # Panel wording stays equipment even next to a dimmer word.
+    for text in ("DIMMER PANEL", "LIGHTING CONTROL PANEL", "DIMMER RACK PANEL"):
+        classification, _ranked = classify(text)
+        assert classification is not None and classification[1] == "panelboard", text
+
+
+def test_multi_character_shx_annotation_boxes_are_text_not_glyphs(
+    tmp_path: Path,
+) -> None:
+    title_strokes = [
+        _cad_path_command(((120.0, 705.0), (120.0, 719.0)), close=False),
+        _cad_path_command(((120.0, 719.0), (132.0, 719.0)), close=False),
+        _cad_path_command(((120.0, 712.0), (130.0, 712.0)), close=False),
+        _cad_path_command(((120.0, 705.0), (132.0, 705.0)), close=False),
+        _cad_path_command(((140.0, 705.0), (140.0, 719.0)), close=False),
+        _cad_path_command(((140.0, 705.0), (150.0, 719.0)), close=False),
+        _cad_path_command(((150.0, 719.0), (150.0, 712.0)), close=False),
+        _cad_path_command(((150.0, 712.0), (140.0, 712.0)), close=False),
+        _cad_path_command(((158.0, 705.0), (158.0, 719.0)), close=False),
+        _cad_path_command(((158.0, 705.0), (168.0, 705.0)), close=False),
+        _cad_path_command(((158.0, 712.0), (168.0, 712.0)), close=False),
+        _cad_path_command(((158.0, 719.0), (168.0, 719.0)), close=False),
+        _cad_path_command(((176.0, 705.0), (176.0, 719.0)), close=False),
+        _cad_path_command(((176.0, 719.0), (186.0, 719.0)), close=False),
+    ]
+    switch_glyph_strokes = [
+        _cad_rect_command(402.0, 396.0, 12.0, 14.0),
+        _cad_path_command(((404.0, 398.0), (412.0, 402.0)), close=False),
+        _cad_path_command(((412.0, 402.0), (404.0, 406.0)), close=False),
+        _cad_path_command(((404.0, 406.0), (412.0, 410.0)), close=False),
+    ]
+    pdf_path = tmp_path / "shx-annotations.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612.0, height=792.0)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): writer._add_object(font)}
+            )
+        }
+    )
+    stream = DecodedStreamObject()
+    stream.set_data("\n".join(title_strokes + switch_glyph_strokes).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    page[NameObject("/Annots")] = ArrayObject(
+        [
+            writer._add_object(
+                DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/Annot"),
+                        NameObject("/Subtype"): NameObject("/Square"),
+                        NameObject("/Rect"): ArrayObject(
+                            [
+                                NumberObject(112.0),
+                                NumberObject(699.0),
+                                NumberObject(194.0),
+                                NumberObject(725.0),
+                            ]
+                        ),
+                        NameObject("/T"): TextStringObject("AutoCAD SHX Text"),
+                        NameObject("/F"): NumberObject(64),
+                        NameObject("/Border"): ArrayObject(
+                            [NumberObject(0), NumberObject(0), NumberObject(0)]
+                        ),
+                        NameObject("/Contents"): TextStringObject(
+                            "LEVEL TWO PLAN"
+                        ),
+                    }
+                )
+            ),
+            writer._add_object(
+                DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/Annot"),
+                        NameObject("/Subtype"): NameObject("/Square"),
+                        NameObject("/Rect"): ArrayObject(
+                            [
+                                NumberObject(400.0),
+                                NumberObject(394.0),
+                                NumberObject(416.0),
+                                NumberObject(412.0),
+                            ]
+                        ),
+                        NameObject("/T"): TextStringObject("AutoCAD SHX Text"),
+                        NameObject("/F"): NumberObject(64),
+                        NameObject("/Border"): ArrayObject(
+                            [NumberObject(0), NumberObject(0), NumberObject(0)]
+                        ),
+                        NameObject("/Contents"): TextStringObject("S"),
+                    }
+                ),
+            ),
+        ]
+    )
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    extracted = extract_pdf(pdf_path, source_id="test:shx-annotations")
+
+    shx_symbols = [
+        symbol
+        for symbol in extracted.symbols
+        if symbol.metadata.get("cad_shx_text") is True
+    ]
+    # The annotation author string is not carried into the model; only the
+    # fact that the annotation carries CAD SHX text is.
+    assert all("title" not in symbol.metadata for symbol in extracted.symbols)
+    assert {
+        symbol.metadata.get("contents") for symbol in shx_symbols
+    } == {"LEVEL TWO PLAN", "S"}
+    assert all(
+        isinstance(symbol.metadata.get("rect_pt"), list)
+        and len(symbol.metadata["rect_pt"]) == 4
+        for symbol in shx_symbols
+    )
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert model.electrical_devices == ()
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    title_box_clusters = [
+        row
+        for row in unresolved
+        if row["kind"] == "vector_cluster"
+        and 112.0 <= row["position_pt"]["x"] <= 194.0
+        and 699.0 <= row["position_pt"]["y"] <= 725.0
+    ]
+    assert title_box_clusters == []
+    switch_box_clusters = [
+        row
+        for row in unresolved
+        if row["kind"] == "vector_cluster"
+        and 400.0 <= row["position_pt"]["x"] <= 416.0
+        and 394.0 <= row["position_pt"]["y"] <= 412.0
+    ]
+    assert len(switch_box_clusters) == 1
+    validate_model(model)
+
+
+def test_dashed_circuit_arc_dashes_do_not_form_glyph_clusters(
+    tmp_path: Path,
+) -> None:
+    # A circuit-sized arc: six 15 pt dashes with 6 pt gaps on a 60 pt radius.
+    center = (300.0, 300.0)
+    radius = 60.0
+    arc_dashes: list[str] = []
+    arc_ids: list[str] = []
+    for index in range(6):
+        start_angle = index * 0.35
+        sweep = 0.25
+        points = (
+            (
+                center[0] + radius * math.cos(start_angle),
+                center[1] + radius * math.sin(start_angle),
+            ),
+            (
+                center[0] + radius * math.cos(start_angle + sweep),
+                center[1] + radius * math.sin(start_angle + sweep),
+            ),
+        )
+        arc_dashes.append(_cad_path_command(points, close=False))
+        arc_ids.append(f"p1:vector:{len(arc_ids) + 1:05d}")
+    straight_dashes = [
+        _cad_path_command(((500.0 + offset, 300.0), (512.0 + offset, 300.0)), close=False)
+        for offset in (0.0, 20.0, 40.0, 60.0)
+    ]
+    content = arc_dashes + straight_dashes
+    pdf_path = tmp_path / "dashed-arc.pdf"
+    _write_pdf_with_content(pdf_path, content)
+    extracted = extract_pdf(pdf_path, source_id="test:dashed-arc")
+
+    arc_train_ids = pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    )
+    assert arc_train_ids == set(arc_ids)
+
+    filtered = pdf_electrical_importer._glyph_cluster_vectors(
+        extracted, extracted.vectors
+    )
+    filtered_ids = {vector.element_id for vector in filtered}
+    assert set(arc_ids).isdisjoint(filtered_ids)
+    straight_ids = {
+        vector.element_id
+        for vector in extracted.vectors
+        if vector.points_pt[0][0] >= 499.0
+    }
+    assert straight_ids <= filtered_ids
+
+    clusters = pdf_electrical_importer._cluster_small_vector_glyphs(filtered)
+    assert not any(
+        set(arc_ids)
+        & {
+            element_id
+            for cluster in clusters
+            for element_id in cluster.source_element_ids
+        }
+    )
+
+
+def _arc_dash_commands(
+    center: tuple[float, float],
+    radius: float,
+    *,
+    start_angle: float,
+    dash_angle: float,
+    gap_angle: float,
+    count: int,
+) -> list[str]:
+    commands: list[str] = []
+    angle = start_angle
+    for _ in range(count):
+        commands.append(
+            _cad_path_command(
+                (
+                    (
+                        center[0] + radius * math.cos(angle),
+                        center[1] + radius * math.sin(angle),
+                    ),
+                    (
+                        center[0] + radius * math.cos(angle + dash_angle),
+                        center[1] + radius * math.sin(angle + dash_angle),
+                    ),
+                ),
+                close=False,
+            )
+        )
+        angle += dash_angle + gap_angle
+    return commands
+
+
+def test_dashed_arc_filter_chains_long_dashes_along_a_flat_arc(
+    tmp_path: Path,
+) -> None:
+    # Near the top of a wide arc each 30 pt dash runs almost horizontally, so
+    # consecutive dashes start more than the chain gap apart in x even though
+    # their facing ends are only a few points apart.
+    content = _arc_dash_commands(
+        (300.0, 300.0),
+        80.0,
+        start_angle=math.pi / 2.0 - 0.9,
+        dash_angle=0.375,
+        gap_angle=0.1,
+        count=4,
+    )
+    # The four dashes encircle one duplex receptacle at the arc's centre.
+    # Through the real importer, the chained dashes are wiring: no device may
+    # materialize from them, and the receptacle they surround keeps its own
+    # recognition.
+    content.extend(_simple_legend_content(
+        [
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+            (_legend_glyph_fourplex, "FOURPLEX COUNTER RECEPTACLE"),
+        ]
+    ))
+    content.extend(_legend_glyph_duplex(300.0, 300.0))
+    pdf_path = tmp_path / "flat-dashed-arc.pdf"
+    _write_pdf_with_content(pdf_path, content)
+    extracted = extract_pdf(pdf_path, source_id="test:flat-dashed-arc")
+
+    assert len(extracted.vectors) == 4 + 7 + 2
+    # The four dashes lie on the arc's circle; nothing drawn for the legend
+    # or the receptacle does.
+    arc_ids = {
+        vector.element_id
+        for vector in extracted.vectors
+        if all(
+            math.isclose(
+                math.hypot(point[0] - 300.0, point[1] - 300.0),
+                80.0,
+                abs_tol=0.2,
+            )
+            for point in vector.points_pt
+        )
+    }
+    assert len(arc_ids) == 4
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == arc_ids
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert [
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"]),
+        )
+        for device in model.electrical_devices
+    ] == [("receptacle_duplex", 300, 300)]
+
+
+def test_dashed_arc_filter_never_chains_dashes_across_pages(
+    tmp_path: Path,
+) -> None:
+    # Three dashes of one arc on page 1 and the other three, at the same
+    # coordinates, on page 2: neither page holds an arc train of four.
+    dashes = _arc_dash_commands(
+        (300.0, 300.0),
+        60.0,
+        start_angle=0.0,
+        dash_angle=0.25,
+        gap_angle=0.1,
+        count=6,
+    )
+    writer = PdfWriter()
+    for page_dashes in (dashes[:3], dashes[3:]):
+        page = writer.add_blank_page(width=612.0, height=792.0)
+        stream = DecodedStreamObject()
+        stream.set_data("\n".join(page_dashes).encode("ascii"))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    pdf_path = tmp_path / "two-page-dashes.pdf"
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+    extracted = extract_pdf(pdf_path, source_id="test:two-page-dashes")
+
+    assert Counter(vector.page for vector in extracted.vectors) == Counter(
+        {1: 3, 2: 3}
+    )
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == set()
+    # The same six dashes on one page are one arc train.
+    single_path = tmp_path / "one-page-dashes.pdf"
+    _write_pdf_with_content(single_path, dashes)
+    single = extract_pdf(single_path, source_id="test:one-page-dashes")
+    assert len(
+        pdf_electrical_importer._dashed_arc_train_vector_ids(single.vectors)
+    ) == 6
+
+
+def _legend_glyph_circle_bar(x: float, y: float) -> list[str]:
+    radius = 4.5
+    points = tuple(
+        (
+            x + radius * math.cos(index * math.pi / 6.0),
+            y + radius * math.sin(index * math.pi / 6.0),
+        )
+        for index in range(12)
+    )
+    return [
+        _cad_path_command(points, close=True),
+        _cad_path_command(((x - radius, y), (x + radius, y)), close=False),
+    ]
+
+
+_SMALL_LEGEND_FRAME_BBOX = (72.0, 400.0, 502.0, 720.0)
+
+
+def _small_legend_frame() -> list[str]:
+    x0, y0, x1, y1 = _SMALL_LEGEND_FRAME_BBOX
+    return [
+        _cad_rect_command(36.0, 36.0, 1128.0, 720.0),
+        _cad_rect_command(x0, y0, x1 - x0, y1 - y0),
+        *_title_double_rule(x1),
+        _cad_text_command(84.0, 712.0, _LEGEND_TITLE, 9.0),
+    ]
+
+
+def test_wrapped_legend_labels_split_at_the_row_gap_not_the_midpoint(
+    tmp_path: Path,
+) -> None:
+    # One column of wrapped labels at a 7 pt line pitch. The smoke alarm row
+    # wraps onto four lines with its glyph beside the FIRST line; the smoke/CO
+    # row below wraps onto three with its glyph beside the SECOND. The rows
+    # sit one 9 pt row gap apart, close enough that both labels chain into
+    # one column run. Midway between the two glyph lines falls above the
+    # smoke alarm's last line, so each glyph keeps its own whole label only
+    # when the split lands at the wider row gap.
+    font = 6.5
+    pitch = 7.0
+    row_gap = 9.0
+    sa_lines = ("IONIZATION SMOKE", "ALARM, 120 VAC", "WITH SEALED", "LITHIUM CELL")
+    sca_lines = ("DUAL SENSOR SMOKE/", "CARBON MONOXIDE", "DETECTOR")
+    sa_top = 648.0
+    sa_ys = [sa_top - pitch * index for index in range(len(sa_lines))]
+    sca_top = sa_ys[-1] - row_gap
+    sca_ys = [sca_top - pitch * index for index in range(len(sca_lines))]
+    visual_offset = 0.35 * font
+    sa_glyph_y = sa_ys[0] + visual_offset
+    sca_glyph_y = sca_ys[1] + visual_offset
+    assert sa_ys[-1] < (sa_glyph_y + sca_glyph_y) / 2.0
+    content = [
+        *_small_legend_frame(),
+        _cad_text_command(84.0, 686.0, "LIFE SAFETY AND LIGHTING", 8.0),
+    ]
+    content.extend(_legend_glyph_recessed_light(116.0, 668.0 + visual_offset))
+    content.append(_cad_text_command(152.0, 668.0, "4 IN RECESSED DOWNLIGHT", font))
+    content.extend(_legend_glyph_circle_bar(116.0, sa_glyph_y))
+    for y, text in zip(sa_ys, sa_lines):
+        content.append(_cad_text_command(152.0, y, text, font))
+    content.extend(_legend_glyph_smoke_alarm(116.0, sca_glyph_y))
+    for y, text in zip(sca_ys, sca_lines):
+        content.append(_cad_text_command(152.0, y, text, font))
+    content.extend(_legend_glyph_ceiling_light(116.0, 584.0 + visual_offset))
+    content.append(_cad_text_command(152.0, 584.0, "DRUM CEILING LIGHT", font))
+    content.extend(_legend_glyph_smoke_alarm(850.0, 600.0))
+    content.extend(_legend_glyph_circle_bar(850.0, 500.0))
+    pdf_path = tmp_path / "wrapped-legend-labels.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:wrapped-legend-labels")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    labels = {
+        device.device_type: device.attributes["pdf_electrical"][
+            "shape_recognition"
+        ]["legend_row_label"]
+        for device in model.electrical_devices
+    }
+    assert labels == {
+        "smoke_co_alarm": " ".join(sca_lines),
+        "smoke_alarm": " ".join(sa_lines),
+    }
+    assert model.to_dict() == ElectricalPdfImporter().import_document(
+        extract_pdf(pdf_path, source_id="test:wrapped-legend-labels")
+    ).to_dict()
+    validate_model(model)
+
+
+def _legend_glyph_triangle(x: float, y: float) -> list[str]:
+    return [
+        _cad_path_command(
+            ((x - 6.0, y - 5.0), (x + 6.0, y - 5.0), (x, y + 6.0)),
+            close=True,
+        )
+    ]
+
+
+@pytest.mark.parametrize("dimmer_row", [False, True])
+def test_annotation_codes_are_read_only_outside_the_legend_frame(
+    tmp_path: Path, dimmer_row: bool
+) -> None:
+    # A framed legend with a CAT 6 row: a "D" code in the field reads as that
+    # data outlet, while the same code on the legend's own sample does not.
+    # When the legend also lists a dimmer, "D" is the dimmer glyph and never
+    # a data outlet.
+    font = 6.5
+    rows = [
+        (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+        (_legend_glyph_triangle, "CAT6 NETWORK JACK"),
+        (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+    ]
+    if dimmer_row:
+        rows.append((_legend_glyph_dimmer, "SLIDE DIMMER, 1-POLE"))
+    content = [
+        *_small_legend_frame(),
+        _cad_text_command(84.0, 686.0, "DEVICES", 8.0),
+    ]
+    for index, (glyph, label) in enumerate(rows):
+        y = 664.0 - 22.0 * index
+        content.extend(glyph(100.0, y))
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    pdf_path = tmp_path / f"annotation-codes-in-frame-{dimmer_row}.pdf"
+    _write_pdf_with_content(
+        pdf_path,
+        content,
+        annotations=(
+            {
+                "/T": "AutoCAD SHX Text",
+                "__rect__": (95.0, 636.0, 105.0, 648.0),
+                "/Contents": "D",
+            },
+            {
+                "/T": "AutoCAD SHX Text",
+                "__rect__": (845.0, 494.0, 855.0, 506.0),
+                "/Contents": "D",
+            },
+        ),
+        width=1200.0,
+    )
+
+    extracted = extract_pdf(pdf_path, source_id="test:annotation-codes-in-frame")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    region = _legend_frame_region(model)
+    assert region["legend_frame"]["bbox_pt"] == list(_SMALL_LEGEND_FRAME_BBOX)
+    assert region["legend_frame"]["inframe_symbols_skipped"] == 1
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert not any(
+        row.get("annotation_code") == "D"
+        and row["position_pt"]["x"] < _SMALL_LEGEND_FRAME_BBOX[2]
+        for row in unresolved
+    )
+    if dimmer_row:
+        assert model.electrical_devices == ()
+        assert [
+            row["position_pt"]
+            for row in unresolved
+            if row.get("annotation_code") == "D"
+        ] == [{"x": 850.0, "y": 500.0}]
+    else:
+        assert [
+            (device.device_type, device.attributes["pdf_electrical"]["source_position_pt"])
+            for device in model.electrical_devices
+        ] == [("data_outlet", {"x": 850.0, "y": 500.0})]
+    validate_model(model)
+
+
+def _write_pdf_with_graphics_states(
+    path: Path,
+    content: list[str],
+    *,
+    states: dict[str, float],
+    form: tuple[str, list[str], dict[str, float]] | None = None,
+    width: float = 612.0,
+    height: float = 792.0,
+) -> None:
+    """One page whose content may select /CA+/ca graphics states by name."""
+
+    def ext_gstates(values: dict[str, float]) -> DictionaryObject:
+        return DictionaryObject(
+            {
+                NameObject(f"/{name}"): DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/ExtGState"),
+                        NameObject("/CA"): FloatObject(alpha),
+                        NameObject("/ca"): FloatObject(alpha),
+                    }
+                )
+                for name, alpha in values.items()
+            }
+        )
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=width, height=height)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    resources = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): writer._add_object(font)}
+            ),
+            NameObject("/ExtGState"): ext_gstates(states),
+        }
+    )
+    if form is not None:
+        form_name, form_content, form_states = form
+        form_stream = DecodedStreamObject()
+        form_stream.set_data("\n".join(form_content).encode("ascii"))
+        form_stream.update(
+            {
+                NameObject("/Type"): NameObject("/XObject"),
+                NameObject("/Subtype"): NameObject("/Form"),
+                NameObject("/BBox"): ArrayObject(
+                    [NumberObject(0), NumberObject(0), NumberObject(width), NumberObject(height)]
+                ),
+                NameObject("/Resources"): DictionaryObject(
+                    {NameObject("/ExtGState"): ext_gstates(form_states)}
+                ),
+            }
+        )
+        resources[NameObject("/XObject")] = DictionaryObject(
+            {NameObject(f"/{form_name}"): writer._add_object(form_stream)}
+        )
+    page[NameObject("/Resources")] = resources
+    stream = DecodedStreamObject()
+    stream.set_data("\n".join(content).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def test_extractor_records_translucent_paint_through_q_q_and_forms(
+    tmp_path: Path,
+) -> None:
+    content = [
+        _cad_path_command(((10.0, 10.0), (60.0, 10.0)), close=False),
+        "q /GS0 gs",
+        _cad_path_command(((10.0, 20.0), (60.0, 20.0)), close=False),
+        "10 30 20 20 re f",
+        "Q",
+        _cad_path_command(((10.0, 60.0), (60.0, 60.0)), close=False),
+        # The form sets its own translucent state without q/Q; the implicit
+        # q/Q around a form keeps that state from leaking onto the page.
+        "/Fm0 Do",
+        _cad_path_command(((10.0, 80.0), (60.0, 80.0)), close=False),
+    ]
+    pdf_path = tmp_path / "translucent-paint.pdf"
+    _write_pdf_with_graphics_states(
+        pdf_path,
+        content,
+        states={"GS0": 0.3},
+        form=(
+            "Fm0",
+            ["/GSF gs", _cad_path_command(((10.0, 70.0), (60.0, 70.0)), close=False)],
+            {"GSF": 0.5},
+        ),
+    )
+    extracted = extract_pdf(pdf_path, source_id="test:translucent-paint")
+    repeated = extract_pdf(pdf_path, source_id="test:translucent-paint")
+    assert extracted == repeated
+
+    by_y = {
+        round(vector.points_pt[0][1]): vector.metadata for vector in extracted.vectors
+    }
+    assert "stroke_alpha" not in by_y[10] and "fill_alpha" not in by_y[10]
+    assert by_y[20]["stroke_alpha"] == 0.3
+    assert "fill_alpha" not in by_y[20]
+    assert by_y[30]["fill_alpha"] == 0.3
+    assert "stroke_alpha" not in by_y[30]
+    assert "stroke_alpha" not in by_y[60]
+    assert by_y[70]["stroke_alpha"] == 0.5
+    assert "stroke_alpha" not in by_y[80]
+
+
+def test_screened_architecture_does_not_chain_into_device_glyphs(
+    tmp_path: Path,
+) -> None:
+    # A duplex receptacle drawn opaque against a wall traced translucent: the
+    # wall strokes touch the glyph and, chained with it, would make one
+    # cluster far over the glyph size limit.
+    font = 6.5
+    content = [
+        _cad_text_command(84.0, 712.0, _LEGEND_TITLE, 9.0),
+    ]
+    for index, (glyph, label) in enumerate(
+        (
+            (_legend_glyph_fourplex, "QUAD RECEPTACLE"),
+            (_legend_glyph_toggle, "OCCUPANCY TOGGLE"),
+            (_legend_glyph_duplex, "DUPLEX SPLIT-WIRED RECEPTACLE"),
+        )
+    ):
+        y = 680.0 - 24.0 * index
+        content.extend(glyph(116.0, y))
+        content.append(_cad_text_command(152.0, y - 0.35 * font, label, font))
+    wall = []
+    for step in range(12):
+        x = 380.0 + 12.0 * step
+        wall.append(_cad_path_command(((x, 405.5), (x + 11.0, 405.5)), close=False))
+        wall.append(_cad_path_command(((x, 409.0), (x + 11.0, 409.0)), close=False))
+    content.extend(["q /GS0 gs", *wall, "Q"])
+    content.extend(_legend_glyph_duplex(450.0, 400.0))
+    # The same wall with its own receptacle, all painted opaque, stays one
+    # oversized cluster: only the screened paint is set apart.
+    opaque_wall = [
+        command.replace("405.500", "205.500").replace("409.000", "209.000")
+        for command in wall
+    ]
+    content.extend(opaque_wall)
+    content.extend(_legend_glyph_duplex(450.0, 200.0))
+    pdf_path = tmp_path / "screened-architecture.pdf"
+    _write_pdf_with_graphics_states(pdf_path, content, states={"GS0": 0.3})
+
+    extracted = extract_pdf(pdf_path, source_id="test:screened-architecture")
+    screened = pdf_electrical_importer._screened_background_vector_ids(
+        extracted.vectors
+    )
+    assert len(screened) == 24
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    devices = [
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"]),
+        )
+        for device in model.electrical_devices
+    ]
+    assert devices == [("receptacle_duplex", 450, 400)]
+    assert model.to_dict() == ElectricalPdfImporter().import_document(
+        extract_pdf(pdf_path, source_id="test:screened-architecture")
+    ).to_dict()
+    validate_model(model)
+
+
+def test_an_entirely_translucent_page_keeps_its_paths_for_glyphs(
+    tmp_path: Path,
+) -> None:
+    content = ["/GS0 gs", *_legend_glyph_duplex(300.0, 300.0)]
+    pdf_path = tmp_path / "all-translucent.pdf"
+    _write_pdf_with_graphics_states(pdf_path, content, states={"GS0": 0.3})
+    extracted = extract_pdf(pdf_path, source_id="test:all-translucent")
+    assert all(
+        vector.metadata.get("stroke_alpha") == 0.3 for vector in extracted.vectors
+    )
+    assert pdf_electrical_importer._screened_background_vector_ids(
+        extracted.vectors
+    ) == set()
+    # Through the real importer the page's only cluster stays evidence: with
+    # nothing opaque on the page the translucent paint is not screened
+    # architecture, so the cluster is kept and reported, never dropped.
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert model.electrical_devices == ()
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert any(
+        row["kind"] == "vector_cluster"
+        and abs(row["position_pt"]["x"] - 300.0) <= 5.0
+        and abs(row["position_pt"]["y"] - 300.0) <= 5.0
+        for row in unresolved
+    )
+    validate_model(model)
+
+
+def _simple_legend_content(
+    rows: list[tuple[object, str]],
+) -> list[str]:
+    font = 6.5
+    content = [_cad_text_command(84.0, 712.0, _LEGEND_TITLE, 9.0)]
+    for index, (glyph, label) in enumerate(rows):
+        y = 680.0 - 26.0 * index
+        content.extend(glyph(116.0, y))  # type: ignore[operator]
+        content.append(_cad_text_command(152.0, y - 0.35 * font, label, font))
+    return content
+
+
+def test_dashed_arcs_leaving_a_device_do_not_swallow_its_glyph(
+    tmp_path: Path,
+) -> None:
+    # Two circuit arcs leave one duplex receptacle at 45 degrees, each drawn
+    # as 10 pt dashes with 2 pt gaps: inside the glyph clustering gap, so
+    # without the arc filter the glyph and both arcs chain into one cluster
+    # far over the glyph size limit. The glyph's own bar is a dash-sized
+    # straight stroke touching both arcs, and the two arcs meet at the glyph.
+    content = _simple_legend_content(
+        [
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+            (_legend_glyph_fourplex, "FOURPLEX COUNTER RECEPTACLE"),
+        ]
+    )
+    radius = 80.0
+    dash = 10.0 / radius
+    step = 12.0 / radius
+    count = 8
+    offset = radius / math.sqrt(2.0)
+    # The right arc runs clockwise up and away from the glyph's right end,
+    # the left arc counter-clockwise from its left end.
+    right_arc = _arc_dash_commands(
+        (450.0 + _DUPLEX_HALF_WIDTH_PT + offset, 400.0 - offset),
+        radius,
+        start_angle=3.0 * math.pi / 4.0 - dash - (count - 1) * step,
+        dash_angle=dash,
+        gap_angle=step - dash,
+        count=count,
+    )
+    left_arc = _arc_dash_commands(
+        (450.0 - _DUPLEX_HALF_WIDTH_PT - offset, 400.0 - offset),
+        radius,
+        start_angle=math.pi / 4.0,
+        dash_angle=dash,
+        gap_angle=step - dash,
+        count=count,
+    )
+    content.extend(right_arc + left_arc)
+    content.extend(_legend_glyph_duplex(450.0, 400.0))
+    pdf_path = tmp_path / "arcs-at-device.pdf"
+    _write_pdf_with_content(pdf_path, content)
+
+    extracted = extract_pdf(pdf_path, source_id="test:arcs-at-device")
+    arc_vectors = {
+        vector.element_id
+        for vector in extracted.vectors
+        if len(vector.points_pt) == 2
+        and vector.points_pt[0][0] > 300.0
+        and min(vector.points_pt[0][1], vector.points_pt[-1][1]) > 399.5
+        and abs(vector.points_pt[0][1] - vector.points_pt[-1][1]) > 0.01
+    }
+    assert len(arc_vectors) == 2 * count
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == arc_vectors
+
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert [
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"]["source_position_pt"],
+        )
+        for device in model.electrical_devices
+    ] == [("receptacle_duplex", {"x": 450.0, "y": 400.0})]
+    validate_model(model)
+
+
+def _legend_glyph_chord_circle(x: float, y: float) -> list[str]:
+    radius = 9.5
+    corners = [
+        (
+            x + radius * math.cos(index * math.pi / 4.0),
+            y + radius * math.sin(index * math.pi / 4.0),
+        )
+        for index in range(8)
+    ]
+    return [
+        _cad_path_command((corners[index], corners[(index + 1) % 8]), close=False)
+        for index in range(8)
+    ]
+
+
+def test_a_glyph_outline_drawn_as_separate_chords_is_not_an_arc(
+    tmp_path: Path,
+) -> None:
+    # A recessed light whose circle is exported as eight separate touching
+    # chords: its chords fit one circle, but a circle that small closes inside
+    # the glyph size limit, so it stays a glyph in the legend and the field.
+    content = _simple_legend_content(
+        [
+            (_legend_glyph_duplex, "DUPLEX TAMPER-RESISTANT RECEPTACLE"),
+            (_legend_glyph_toggle, "3-WAY ROCKER TOGGLE"),
+            (_legend_glyph_chord_circle, "4 IN RECESSED DOWNLIGHT"),
+        ]
+    )
+    content.extend(_legend_glyph_chord_circle(450.0, 400.0))
+    pdf_path = tmp_path / "chord-circle.pdf"
+    _write_pdf_with_content(pdf_path, content)
+
+    extracted = extract_pdf(pdf_path, source_id="test:chord-circle")
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == set()
+    model = ElectricalPdfImporter().import_document(extracted)
+    assert [
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"]["source_position_pt"],
+        )
+        for device in model.electrical_devices
+    ] == [("luminaire", {"x": 450.0, "y": 400.0})]
+    validate_model(model)
+
+
+_HEXAGON_KEYNOTE_GLYPH_XS = tuple(
+    index * math.pi / 6.0 for index in range(6)
+)
+
+
+def _legend_glyph_hexagon(x: float, y: float) -> list[str]:
+    radius = 7.0
+    points = tuple(
+        (x + radius * math.cos(angle), y + radius * math.sin(angle))
+        for angle in _HEXAGON_KEYNOTE_GLYPH_XS
+    )
+    return [_cad_path_command(points, close=True)]
+
+
+def test_a_keynotes_column_beside_an_unframed_legend_does_not_become_it(
+    tmp_path: Path,
+) -> None:
+    # An unframed three-row legend sits beside a four-row keynote column of
+    # hexagons. The keynote group belongs to its KEYNOTES heading; a legend
+    # title within reach must not pull the group in, or the sheet's keynote
+    # geometry takes over the legend region and the legend's own field device
+    # has no row left to match.
+    font = 6.5
+    content = [_cad_text_command(392.0, 712.0, _LEGEND_TITLE, 9.0)]
+    for index, (glyph, label) in enumerate(
+        (
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+            (_legend_glyph_ceiling_light, "DRUM CEILING LIGHT"),
+        )
+    ):
+        y = 680.0 - 26.0 * index
+        content.extend(glyph(400.0, y))
+        content.append(_cad_text_command(436.0, y - 0.35 * font, label, font))
+    content.append(_cad_text_command(84.0, 712.0, "KEYNOTES", 8.0))
+    for index in range(4):
+        y = 676.0 - 22.0 * index
+        content.extend(_legend_glyph_hexagon(116.0, y))
+        content.append(
+            _cad_text_command(140.0, y - 0.35 * font, f"NOTE {index + 1} HEX MARK", font)
+        )
+    content.extend(_legend_glyph_duplex(850.0, 500.0))
+    pdf_path = tmp_path / "keynotes-beside-legend.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:keynotes-beside-legend")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    regions = model.attributes["pdf_electrical"]["legend_recognition"]["regions"]
+    assert len(regions) == 1
+    assert regions[0]["heading_text"] == _LEGEND_TITLE
+    assert regions[0]["row_count"] == 3
+    assert [
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+        )
+        for device in model.electrical_devices
+    ] == [("receptacle_duplex", 850)]
+    validate_model(model)
+
+
+def test_an_abbreviations_column_beside_an_unframed_legend_leaves_it_intact(
+    tmp_path: Path,
+) -> None:
+    # A four-row abbreviation column stands beside an unframed legend. The
+    # abbreviation rows are their own rejected section: they must not become
+    # the sheet's legend region even when they are the larger group, and the
+    # legend's field receptacle must keep its row.
+    font = 6.5
+    content = [_cad_text_command(392.0, 712.0, _LEGEND_TITLE, 9.0)]
+    for index, (glyph, label) in enumerate(
+        (
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+            (_legend_glyph_ceiling_light, "DRUM CEILING LIGHT"),
+        )
+    ):
+        y = 680.0 - 26.0 * index
+        content.extend(glyph(400.0, y))
+        content.append(_cad_text_command(436.0, y - 0.35 * font, label, font))
+    content.append(_cad_text_command(84.0, 706.0, "PLAN ABBREVIATIONS", 8.0))
+    for index in range(4):
+        y = 676.0 - 22.0 * index
+        content.extend(_legend_glyph_abbreviation_letters(116.0, y))
+        content.append(
+            _cad_text_command(
+                140.0,
+                y - 0.35 * font,
+                f"GANGED WEATHER PROOF ITEM {index + 1}",
+                font,
+            )
+        )
+    content.extend(_legend_glyph_duplex(850.0, 500.0))
+    pdf_path = tmp_path / "abbrev-beside-legend.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:abbrev-beside-legend")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    regions = model.attributes["pdf_electrical"]["legend_recognition"]["regions"]
+    assert len(regions) == 1
+    assert regions[0]["heading_text"] == _LEGEND_TITLE
+    assert regions[0]["row_count"] == 3
+    assert [
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+        )
+        for device in model.electrical_devices
+    ] == [("receptacle_duplex", 850)]
+    validate_model(model)
+
+
+def test_wrapped_chaining_does_not_merge_rows_whose_words_conflict(
+    tmp_path: Path,
+) -> None:
+    # A dense legend draws one row's sample as an oversized strip-light
+    # outline, so that row's label line has no glyph of its own and sits one
+    # line pitch above the toggle row. Merging the two lines would classify
+    # the toggle glyph as a luminaire from the row above's words; the merged
+    # words conflict with the anchored line's own words, so the row must stay
+    # ambiguous instead of typing the field toggle.
+    font = 6.5
+    content = [_cad_text_command(84.0, 712.0, _LEGEND_TITLE, 9.0)]
+    # The strip light's sample is an oversized outline, so its label line has
+    # no glyph; it sits exactly one 9 pt line pitch above the toggle row.
+    content.append(_cad_text_command(152.0, 668.0, "STRIP LIGHT", font))
+    content.extend(_legend_glyph_toggle(116.0, 659.0))
+    content.append(_cad_text_command(152.0, 659.0, "SINGLE POLE SWITCH", font))
+    content.extend(_legend_glyph_toggle(850.0, 500.0))
+    pdf_path = tmp_path / "wrapped-conflict.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:wrapped-conflict")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert model.electrical_devices == ()
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert any(
+        row["kind"] == "legend_label"
+        and row["status"] == "unresolved_legend_classification"
+        and "STRIP LIGHT" in row["text"]
+        and "SINGLE POLE SWITCH" in row["text"]
+        for row in unresolved
+    )
+    validate_model(model)
+
+
+def test_wrapped_label_chaining_stops_at_column_font_and_pitch_gates(
+    tmp_path: Path,
+) -> None:
+    # Three single-line rows far enough apart that no line is a continuation
+    # of its neighbour: each row keeps its own words and its own field match.
+    font = 6.5
+    content = [_cad_text_command(84.0, 712.0, _LEGEND_TITLE, 9.0)]
+    rows = (
+        (680.0, _legend_glyph_fourplex, "FOURPLEX COUNTER RECEPTACLE", font),
+        # A larger-font heading line above a label is a heading, not a wrap.
+        (664.0, _legend_glyph_duplex, "KITCHEN APPLIANCES", 2.0 * font),
+        (650.0, _legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE", font),
+    )
+    for y, glyph, label, size in rows:
+        content.extend(glyph(116.0, y))
+        content.append(_cad_text_command(152.0, y - 0.35 * font, label, size))
+    content.extend(_legend_glyph_fourplex(850.0, 520.0))
+    content.extend(_legend_glyph_toggle(890.0, 480.0))
+    pdf_path = tmp_path / "wrapped-gates.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:wrapped-gates")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    # The toggle glyph's cluster centre sits a couple of points right of the
+    # glyph's insertion x, so compare with a tolerance, not exact rounding.
+    by_type = {
+        device.device_type: device.attributes["pdf_electrical"][
+            "source_position_pt"
+        ]
+        for device in model.electrical_devices
+    }
+    assert set(by_type) == {"receptacle_quad", "switch"}
+    assert abs(by_type["receptacle_quad"]["x"] - 850.0) <= 3.5
+    assert abs(by_type["receptacle_quad"]["y"] - 520.0) <= 3.5
+    assert abs(by_type["switch"]["x"] - 890.0) <= 4.0
+    assert abs(by_type["switch"]["y"] - 480.0) <= 3.5
+    validate_model(model)
+
+
+def test_framed_legend_drops_rows_under_a_small_rejected_heading(
+    tmp_path: Path,
+) -> None:
+    # Inside the frame a PLAN ABBREVIATIONS heading is drawn just over the
+    # label size, below the size gate the section drop uses on its own. The
+    # rows it heads, including a letter-drawn "door switch" sample, must still
+    # leave the legend: the heading the column join found decides, so the
+    # letter group in the field cannot become a switch device through it.
+    font = 6.5
+    content = _small_legend_frame()
+    rows = (
+        (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+        (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+        (_legend_glyph_fourplex, "FOURPLEX COUNTER RECEPTACLE"),
+    )
+    for index, (glyph, label) in enumerate(rows):
+        y = 664.0 - 22.0 * index
+        content.extend(glyph(100.0, y))
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    content.append(_cad_text_command(84.0, 596.0, "PLAN ABBREVIATIONS", 1.1 * font))
+    for index, label in enumerate(("DOOR SWITCH POSITION", "WEATHER PROOF LENS")):
+        y = 576.0 - 16.0 * index
+        content.extend(_legend_glyph_abbreviation_letters(100.0, y))
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    content.extend(_legend_glyph_duplex(850.0, 520.0))
+    content.extend(_legend_glyph_toggle(850.0, 480.0))
+    content.extend(_legend_glyph_fourplex(890.0, 440.0))
+    content.extend(_legend_glyph_abbreviation_letters(810.0, 400.0))
+    pdf_path = tmp_path / "small-rejected-heading.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:small-rejected-heading")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    region = _legend_frame_region(model)
+    assert region["legend_frame"]["rows_dropped_in_rejected_sections"] == 2
+    assert sorted(
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"]),
+        )
+        for device in model.electrical_devices
+    ) == [
+        ("receptacle_duplex", 850, 520),
+        ("receptacle_quad", 890, 440),
+        ("switch", 853, 480),
+    ]
+    assert not any(
+        device.attributes["pdf_electrical"]["shape_recognition"]["legend_row_label"]
+        == "DOOR SWITCH POSITION"
+        for device in model.electrical_devices
+    )
+    validate_model(model)
+
+
+def test_shx_text_boxes_do_not_exclude_field_glyph_strokes(
+    tmp_path: Path,
+) -> None:
+    # Two drawn-text boxes must not swallow the field devices they happen to
+    # overlap: a room name drawn at an angle gets a squarish box far bigger
+    # than its letters, and a tag box can hold nothing but one stroke of a
+    # duplex. Only letter-sized strokes inside run-in text boxes are text.
+    font = 6.5
+    content = _simple_legend_content(
+        [
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+            (_legend_glyph_fourplex, "FOURPLEX COUNTER RECEPTACLE"),
+        ]
+    )
+    content.extend(_legend_glyph_toggle(850.0, 600.0))
+    content.extend(_legend_glyph_duplex(850.0, 450.0))
+    pdf_path = tmp_path / "shx-boxes-over-field.pdf"
+    _write_pdf_with_content(
+        pdf_path,
+        content,
+        annotations=(
+            {
+                "/T": "AutoCAD SHX Text",
+                "__rect__": (820.0, 570.0, 880.0, 630.0),
+                "/Contents": "ELECTRICAL ROOM TWO",
+            },
+            {
+                "/T": "AutoCAD SHX Text",
+                "__rect__": (835.0, 445.0, 862.0, 455.0),
+                "/Contents": "WP GFI",
+            },
+        ),
+        width=1200.0,
+    )
+
+    extracted = extract_pdf(pdf_path, source_id="test:shx-boxes-over-field")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert sorted(
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"]),
+        )
+        for device in model.electrical_devices
+    ) == [("receptacle_duplex", 850, 450), ("switch", 853, 600)]
+    validate_model(model)
+
+
+def test_a_ruled_viewport_frame_does_not_swallow_field_devices(
+    tmp_path: Path,
+) -> None:
+    # One viewport of a four-viewport grid holds an unframed legend, so its
+    # whole ruled viewport closes around the title and passes the sheet
+    # fraction check. The viewport is still not a legend: only row samples
+    # near their rows leave the field, devices elsewhere in the viewport keep
+    # their rows, and an in-frame cluster matching no row stays unresolved
+    # evidence instead of a silent count.
+    content = [
+        _cad_rect_command(36.0, 412.0, 540.0, 344.0),
+        _cad_rect_command(612.0, 412.0, 552.0, 344.0),
+        _cad_rect_command(36.0, 36.0, 540.0, 360.0),
+        _cad_rect_command(612.0, 36.0, 552.0, 360.0),
+    ]
+    font = 6.5
+    content.append(_cad_text_command(84.0, 736.0, _LEGEND_TITLE, 9.0))
+    for index, (glyph, label) in enumerate(
+        (
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+            (_legend_glyph_ceiling_light, "DRUM CEILING LIGHT"),
+        )
+    ):
+        y = 700.0 - 16.0 * index
+        content.extend(glyph(116.0, y))
+        content.append(_cad_text_command(152.0, y - 0.35 * font, label, font))
+    content.extend(_legend_glyph_duplex(480.0, 600.0))
+    content.extend(_legend_glyph_toggle(480.0, 560.0))
+    content.extend(_legend_glyph_ceiling_light(480.0, 520.0))
+    # A stray mark drawn inside the frame but near the legend rows is legend
+    # linework: kept out of the field and reported, not deleted silently.
+    content.extend(_legend_glyph_hexagon(160.0, 662.0))
+    pdf_path = tmp_path / "viewport-grid.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0, height=792.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:viewport-grid")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    region = _legend_frame_region(model)
+    assert region["legend_frame"]["bbox_pt"] == [36.0, 412.0, 576.0, 756.0]
+    assert sorted(
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"]),
+        )
+        for device in model.electrical_devices
+    ) == [
+        ("luminaire", 480, 520),
+        ("receptacle_duplex", 480, 600),
+        ("switch", 483, 560),
+    ]
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert any(
+        row["kind"] == "vector_cluster"
+        and abs(row["position_pt"]["x"] - 160.0) <= 5.0
+        and abs(row["position_pt"]["y"] - 662.0) <= 5.0
+        and "legend frame" in row["reason"]
+        for row in unresolved
+    )
+    validate_model(model)
+
+
+def test_a_screened_field_device_is_recognized_when_the_page_has_opaque_paint(
+    tmp_path: Path,
+) -> None:
+    # A field receptacle plotted at the sheet's screened alpha keeps its own
+    # cluster: screened paths cluster among themselves, so the device still
+    # matches its legend row while the screened wall cannot chain into it.
+    content = _simple_legend_content(
+        [
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+            (_legend_glyph_fourplex, "FOURPLEX COUNTER RECEPTACLE"),
+        ]
+    )
+    wall = [
+        _cad_path_command(((700.0 + 24.0 * step, 700.0), (722.0 + 24.0 * step, 700.0)), close=False)
+        for step in range(3)
+    ]
+    content.extend(wall)
+    content.extend(["q /GS0 gs", *_legend_glyph_duplex(450.0, 400.0), "Q"])
+    pdf_path = tmp_path / "screened-field-device.pdf"
+    _write_pdf_with_graphics_states(pdf_path, content, states={"GS0": 0.3})
+
+    extracted = extract_pdf(pdf_path, source_id="test:screened-field-device")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert [
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"]),
+        )
+        for device in model.electrical_devices
+    ] == [("receptacle_duplex", 450, 400)]
+    lane = model.attributes["pdf_electrical"]
+    assert lane["legend_recognition"]["screened_background"]["vector_count"] == 2
+    assert lane["legend_recognition"]["screened_background"]["pages"] == [1]
+    assert model.to_dict() == ElectricalPdfImporter().import_document(
+        extract_pdf(pdf_path, source_id="test:screened-field-device")
+    ).to_dict()
+    validate_model(model)
+
+
+def test_symbols_inside_a_legend_table_stay_unresolved_not_deleted(
+    tmp_path: Path,
+) -> None:
+    # Two annotation codes sit inside the symbol-function table of the
+    # checked-in notes-column fixture. They are legend-table samples: they
+    # must stay out of the field, but as unresolved evidence with the reason
+    # and the region's count, not deleted from the output.
+    reader = PdfReader(INNER_VIEW_BORDER_LEGEND_FIXTURE)
+    writer = PdfWriter()
+    writer.append(reader)
+    page = writer.pages[0]
+    annots = page.get("/Annots")
+    if annots is None:
+        page[NameObject("/Annots")] = ArrayObject()
+        annots = page[NameObject("/Annots")]
+    for rect, contents in (
+        ((608.0, 198.0, 620.0, 210.0), "1"),
+        ((608.0, 244.0, 620.0, 256.0), "2"),
+    ):
+        annots.append(
+            writer._add_object(
+                DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/Annot"),
+                        NameObject("/Subtype"): NameObject("/Square"),
+                        NameObject("/Rect"): ArrayObject(
+                            [NumberObject(value) for value in rect]
+                        ),
+                        NameObject("/F"): NumberObject(64),
+                        NameObject("/Border"): ArrayObject(
+                            [NumberObject(0), NumberObject(0), NumberObject(0)]
+                        ),
+                        NameObject("/Contents"): TextStringObject(contents),
+                    }
+                )
+            )
+        )
+    pdf_path = tmp_path / "notes-column-table-symbols.pdf"
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+
+    extracted = extract_pdf(pdf_path, source_id="test:notes-column-table-symbols")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    region = model.attributes["pdf_electrical"]["legend_recognition"]["regions"][0]
+    assert region["method"] == "symbol-function-table"
+    assert region["inframe_symbols_skipped"] == 2
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    skipped = [
+        row
+        for row in unresolved
+        if row.get("reason") == "legend sample inside a legend frame or table"
+    ]
+    assert [(row["position_pt"]["x"], row["position_pt"]["y"]) for row in skipped] == [
+        (614.0, 204.0),
+        (614.0, 250.0),
+    ]
+    validate_model(model)
+
+
+def test_frame_join_does_not_take_groups_outside_the_frame(
+    tmp_path: Path,
+) -> None:
+    # The ruled frame joins the legend's own columns; a glyph-and-label group
+    # outside the frame stays out of the region even though it is a well
+    # formed row group.
+    font = 6.5
+    content = _small_legend_frame()
+    for index, (glyph, label) in enumerate(
+        (
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+        )
+    ):
+        y = 664.0 - 22.0 * index
+        content.extend(glyph(100.0, y))
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    content.extend(_legend_glyph_fourplex(600.0, 600.0))
+    content.append(
+        _cad_text_command(636.0, 600.0 - 0.35 * font, "FOURPLEX COUNTER RECEPTACLE", font)
+    )
+    pdf_path = tmp_path / "group-outside-frame.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:group-outside-frame")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    region = _legend_frame_region(model)
+    # Only the two title-column rows are in the region; the outside group is
+    # not joined, so the region count pins the frame-containment gate.
+    assert region["legend_frame"]["joined_row_groups"] == 0
+    assert region["row_count"] == 2
+    assert region["classified_row_count"] == 2
+    validate_model(model)
+
+
+def test_unclaimed_tag_text_inside_a_legend_frame_is_unresolved(
+    tmp_path: Path,
+) -> None:
+    # Text inside the legend frame that no row claimed cannot claim a device
+    # identity through the text rules either: no device materializes and the
+    # text stays one unresolved row.
+    font = 6.5
+    content = _small_legend_frame()
+    for index, (glyph, label) in enumerate(
+        (
+            (_legend_glyph_toggle, "PADDLE TOGGLE, 1-POLE"),
+            (_legend_glyph_duplex, "DUPLEX CONVENIENCE RECEPTACLE"),
+        )
+    ):
+        y = 664.0 - 22.0 * index
+        content.extend(glyph(100.0, y))
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    content.append(_cad_text_command(300.0, 480.0, "EVSE-1", 7.0))
+    pdf_path = tmp_path / "inframe-tag.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:inframe-tag")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert model.electrical_devices == ()
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    inframe_tags = [
+        row
+        for row in unresolved
+        if row["kind"] == "text" and row["text"] == "EVSE-1"
+    ]
+    assert len(inframe_tags) == 1
+    assert inframe_tags[0]["status"] == "unresolved_identity"
+    assert inframe_tags[0]["reason"].startswith("text inside a legend frame")
+    validate_model(model)
+
+
+def test_shx_box_lookup_stays_indexed_at_scale() -> None:
+    # The drawn-text containment check is vectors times boxes unless the
+    # boxes are indexed; two thousand boxes over twenty thousand strokes must
+    # resolve through the index and agree with a direct scan on a sample.
+    symbols = [
+        PdfSymbolObservation(
+            element_id=f"p1:annotation:{index:05d}",
+            page=1,
+            name="SHX",
+            x_pt=10.0 * index + 4.0,
+            y_pt=6.0,
+            source_kind="annotation:square",
+            metadata={
+                "cad_shx_text": True,
+                "contents": "CONDUIT",
+                "rect_pt": [
+                    10.0 * index,
+                    0.0,
+                    10.0 * index + 64.0,
+                    12.0,
+                ],
+            },
+        )
+        for index in range(2000)
+    ]
+    index = pdf_electrical_importer._ShxTextBoxIndex(
+        symbols, multi_character_only=True
+    )
+    sample_rows = list(range(0, 20000, 97))
+    for row in sample_rows:
+        x0 = float(row)
+        x1 = x0 + 14.0
+        brute = any(
+            box[0] <= x1 + 0.5 and box[2] >= x0 - 0.5
+            for box in (
+                (10.0 * item, 0.0, 10.0 * item + 64.0, 12.0)
+                for item in range(2000)
+            )
+        )
+        got = bool(index.candidates(1, x0, x1))
+        assert got == brute, (row, got, brute)
+    count = sum(
+        bool(
+            index.candidates(
+                1,
+                float(row),
+                float(row) + 14.0,
+            )
+        )
+        for row in range(20000)
+    )
+    assert count > 0
+    # A rotated (squarish) drawn-text box is dropped from the index at build
+    # time, and a stroke longer than a box is tall is never a letter.
+    rotated = PdfSymbolObservation(
+        element_id="p1:annotation:09000",
+        page=1,
+        name="SHX",
+        x_pt=48.0,
+        y_pt=48.0,
+        source_kind="annotation:square",
+        metadata={
+            "cad_shx_text": True,
+            "contents": "ELECTRICAL ROOM TWO",
+            "rect_pt": [0.0, 0.0, 60.0, 60.0],
+        },
+    )
+    rotated_index = pdf_electrical_importer._ShxTextBoxIndex(
+        [rotated], multi_character_only=True
+    )
+    assert rotated_index.candidates(1, 10.0, 20.0) == ()
+    assert not pdf_electrical_importer._stroke_is_letter_sized(
+        (0.0, 0.0, 15.0, 0.0),
+        (835.0, 445.0, 862.0, 455.0),
+    )
+    assert pdf_electrical_importer._stroke_is_letter_sized(
+        (0.0, 0.0, 0.0, 7.0),
+        (835.0, 445.0, 862.0, 455.0),
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="track 6 tag stripping; see PR body overlap notes")
+def test_tag_letters_touching_a_recessed_light_do_not_retype_it(
+    tmp_path: Path,
+) -> None:
+    # A recessed downlight carries its own circuit tag letters touching the
+    # glyph. The tagged smoke/CO legend sample carries letters too, so shape
+    # matching can prefer the tagged row and over-count a smoke/CO alarm
+    # where the floor plan put a light. Correct behaviour is the luminaire.
+    font = 6.5
+    content = _simple_legend_content(
+        [
+            (_legend_glyph_duplex, "DUPLEX TAMPER-RESISTANT RECEPTACLE"),
+            (_legend_glyph_toggle, "3-WAY ROCKER TOGGLE"),
+            (_legend_glyph_chord_circle, "4 IN RECESSED DOWNLIGHT"),
+            (_legend_glyph_smoke_alarm, "SMOKE/ CARBON MONOXIDE UNIT"),
+        ]
+    )
+    # Tag letters drawn beside the smoke/CO legend sample, whose glyph is the
+    # fourth row of _simple_legend_content at (116, 602).
+    content.extend(
+        _cad_path_command(
+            ((123.5 + offset, 600.0 + offset), (125.5 + offset, 602.0 + offset)),
+            close=False,
+        )
+        for offset in (0.0, 3.0, 6.0)
+    )
+    # The field recessed light with its own tag letters touching the glyph.
+    content.extend(_legend_glyph_chord_circle(850.0, 500.0))
+    content.extend(
+        _cad_path_command(
+            ((858.5 + offset, 498.0 + offset), (860.5 + offset, 500.0 + offset)),
+            close=False,
+        )
+        for offset in (0.0, 3.0, 6.0)
+    )
+    pdf_path = tmp_path / "tagged-recessed-light.pdf"
+    _write_pdf_with_content(pdf_path, content, width=1200.0)
+
+    extracted = extract_pdf(pdf_path, source_id="test:tagged-recessed-light")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert [
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+        )
+        for device in model.electrical_devices
+    ] == [("luminaire", 850)]
     validate_model(model)

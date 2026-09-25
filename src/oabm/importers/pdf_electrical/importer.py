@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import hashlib
 from collections import Counter
 from functools import lru_cache
@@ -353,13 +354,14 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
     SymbolRule(r"\b(?:XFMR|TRANSFORMER)\b", "equipment", "transformer", 0.97),
     SymbolRule(r"\b(?:EVSE|CHARGER)[A-Z0-9]*\b", "device", "evse", 0.98),
     SymbolRule(
-        r"^(?!.*\bCOMBINATION\b).*\bDUPLEX\b.*\b(?:ELECTRICAL\s+)?OUTLET\b",
+        r"^(?!.*\bCOMBINATION\b).*\bDUPLEX\b.*\b(?:(?:ELECTRICAL\s+)?OUTLET|RECEPTACLE)\b",
         "device",
         "receptacle_duplex",
         1.0,
     ),
     SymbolRule(
-        r"^(?!.*\bCOMBINATION\b).*\b(?:QUADRUPLEX|QUADRUPLE|QUAD)\b.*\b(?:ELECTRICAL\s+)?OUTLET\b",
+        r"^(?!.*\bCOMBINATION\b).*\b(?:QUADRUPLEX|QUADRUPLE|QUAD|FOURPLEX|FOUR-PLEX)\b"
+        r".*\b(?:(?:ELECTRICAL\s+)?OUTLET|RECEPTACLE)\b",
         "device",
         "receptacle_quad",
         1.0,
@@ -395,16 +397,82 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         1.0,
     ),
     SymbolRule(
-        r"\b(?:CABLE\s+TV|CATV)\b.*\bOUTLET\b",
+        r"\b(?:CABLE\s+TV|CATV|TELEVISION)\b.*\bOUTLET\b",
         "device",
         "catv_outlet",
         1.0,
     ),
-    SymbolRule(r"^(?!.*\bCOMBINATION\b)(?!.*\bDUPLEX\b.*\b(?:ELECTRICAL\s+)?OUTLET\b).*\b(?:GFCI|GFI|RECEPTACLE|RECEPT|DUPLEX|REC)[A-Z0-9]*\b", "device", "receptacle", 0.94),
+    SymbolRule(
+        r"^(?!.*\bCOMBINATION\b).*\bCAT\s*-?\s*[56]E?\b.*\b(?:OUTLET|HOOK-?UP|JACK|DROP)\b",
+        "device",
+        "data_outlet",
+        1.0,
+    ),
+    SymbolRule(
+        r"\bSPECIAL\s+PURPOSE\s+(?:OUTLET|RECEPTACLE)\b",
+        "device",
+        "special_purpose_outlet",
+        0.98,
+    ),
+    # A bare TELEPHONE legend row is the telephone outlet; the telephone
+    # junction-box rule above keeps precedence for junction boxes. Longer
+    # telephone words name backboards, terminal boards and cabinets, so the
+    # outlet rule is anchored to jack/outlet wording or a row-alone label.
+    SymbolRule(
+        r"^(?!.*\b(?:BACKBOARD|BOARD|CABINET|RACK|CONDUIT|PANEL|STATION|CONTROL)\b)"
+        r".*\bTELEPHONE\b.*\b(?:OUTLET|JACK|RECEPTACLE|DROP)\b",
+        "device",
+        "data_outlet",
+        0.95,
+    ),
+    SymbolRule(r"^\s*TELEPHONE\s*$", "device", "data_outlet", 0.95),
+    # FIRE ALARM speakers are notification appliances, and a volume control
+    # is not the speaker device itself.
+    SymbolRule(
+        r"^(?!.*\b(?:FIRE\s+ALARM|VOLUME|CONTROL|STATION|PANEL|RACK|BOARD|CABINET)\b)"
+        r".*\bSPEAKER\b",
+        "device",
+        "speaker",
+        0.95,
+    ),
+    SymbolRule(
+        r"\bSMOKE\s*/\s*(?:CARBON\s+)?MONOXIDE\b",
+        "device",
+        "smoke_co_alarm",
+        0.95,
+    ),
+    SymbolRule(r"\bSMOKE\s+ALARM\b", "device", "smoke_alarm", 0.95),
+    SymbolRule(r"\bHEAT\s+DETECTOR\b", "device", "heat_detector", 0.95),
+    # The generic receptacle yields to the specific duplex and quad rules, and
+    # "RECESSED" is not a receptacle abbreviation.
+    SymbolRule(
+        r"^(?!.*\bCOMBINATION\b)"
+        r"(?!.*\b(?:DUPLEX|QUADRUPLEX|QUADRUPLE|QUAD|FOURPLEX|FOUR-PLEX)\b.*\b(?:(?:ELECTRICAL\s+)?OUTLET|RECEPTACLE)\b)"
+        r".*\b(?:GFCI|GFI|RECEPTACLE|RECEPT|DUPLEX|REC(?!ESS))[A-Z0-9]*\b",
+        "device",
+        "receptacle",
+        0.94,
+    ),
     SymbolRule(r"^(?!.*\b(?:ELECTRICAL|POWER|DATA|TELE|TELEPHONE)\b.*\b(?:JBOX|J-?BOX|JUNCTION\s+BOX)\b).*\b(?:(?:JBOX|J-?BOX|JB)[A-Z0-9]*|JUNCTION\s+BOX)\b", "device", "junction_box", 0.94),
-    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE)\b", "device", "luminaire", 0.91),
+    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE|SCONCE|FLOODLIGHT|DOWNLIGHT)\b", "device", "luminaire", 0.91),
+    # A pendant control station is not a luminaire.
+    SymbolRule(
+        r"^(?!.*\b(?:STATION|CONTROL|MOUNTED|PANEL|RACK|BOARD|CABINET)\b)"
+        r".*\bPENDANT\b",
+        "device",
+        "luminaire",
+        0.91,
+    ),
     SymbolRule(r"\b(?:DISCONNECT|DISC)\b", "device", "disconnect", 0.92),
     SymbolRule(r"\b(?:SWITCH|SW)\b", "device", "switch", 0.75),
+    # Dimmer racks and panels are equipment, not switch legend rows.
+    SymbolRule(
+        r"^(?!.*\b(?:RACK|PANEL|BOARD|CABINET|CONTROL|STATION)\b)"
+        r".*\b(?:TOGGLE|DIMMER)\b",
+        "device",
+        "switch",
+        0.9,
+    ),
     # Bare "SW" is intentionally ambiguous without a legend.
     SymbolRule(r"\bSW\b", "equipment", "switchboard", 0.75),
 )
@@ -483,6 +551,8 @@ class _LegendRow:
     orientation: int
     horizontal_gap_pt: float
     label_source_element_ids: tuple[str, ...] = ()
+    # The wrapped source lines of a multi-line label, first line first.
+    label_lines: tuple[PdfTextObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -495,6 +565,10 @@ class _LegendRegion:
     header_element_ids: tuple[str, ...] = ()
     table_bbox_pt: tuple[float, float, float, float] | None = None
     frame_provenance: tuple[Mapping[str, Any], ...] = ()
+    legend_frame: Mapping[str, Any] | None = None
+    # Rows dropped with a rejected section inside the frame. They are no
+    # legend rows, but their glyphs stay frame samples: never field devices.
+    dropped_rows: tuple[_LegendRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -643,6 +717,66 @@ def _flatten_cubic_bezier(
     return tuple(samples)
 
 
+_STROKING_PAINT_OPERATORS = frozenset({b"S", b"s", b"B", b"B*", b"b", b"b*"})
+_FILLING_PAINT_OPERATORS = frozenset({b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"})
+
+
+def _resolved_pdf_object(value: Any) -> Any:
+    try:
+        return value.get_object()
+    except AttributeError:
+        return value
+
+
+def _ext_gstate_alpha(
+    resources: Any,
+    name: str,
+) -> tuple[float | None, float | None]:
+    """Stroke (/CA) and fill (/ca) constant alpha of one named graphics state.
+
+    A value the state does not set, or cannot be read, is None and leaves the
+    current alpha unchanged.
+    """
+
+    if not isinstance(resources, Mapping):
+        return None, None
+    states = _resolved_pdf_object(resources.get("/ExtGState"))
+    if not isinstance(states, Mapping):
+        return None, None
+    state = _resolved_pdf_object(states.get(name))
+    if not isinstance(state, Mapping):
+        return None, None
+
+    def alpha(key: str) -> float | None:
+        raw = state.get(key)
+        if raw is None:
+            return None
+        try:
+            value = float(_resolved_pdf_object(raw))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        return min(1.0, max(0.0, value))
+
+    return alpha("/CA"), alpha("/ca")
+
+
+def _form_xobject_resources(resources: Any, name: str) -> Any | None:
+    """The resources a named form XObject paints with, or None for no form."""
+
+    if not isinstance(resources, Mapping):
+        return None
+    xobjects = _resolved_pdf_object(resources.get("/XObject"))
+    if not isinstance(xobjects, Mapping):
+        return None
+    xobject = _resolved_pdf_object(xobjects.get(name))
+    if not isinstance(xobject, Mapping) or str(xobject.get("/Subtype")) != "/Form":
+        return None
+    own = _resolved_pdf_object(xobject.get("/Resources"))
+    return own if isinstance(own, Mapping) else resources
+
+
 def _make_page_visitors(
     *,
     page_number: int,
@@ -651,6 +785,7 @@ def _make_page_visitors(
     texts: list[PdfTextObservation],
     symbols: list[PdfSymbolObservation],
     vectors: list[PdfVectorPathObservation],
+    resources: Any = None,
 ):
     text_counter = 0
     operator_counter = 0
@@ -667,6 +802,13 @@ def _make_page_visitors(
             tuple[dict[str, Any], ...],
         ]
     ] = []
+    # Constant stroke and fill alpha from ExtGState (/CA, /ca), saved by q/Q
+    # and around each form XObject, which paints with its own resources.
+    stroke_alpha = 1.0
+    fill_alpha = 1.0
+    alpha_stack: list[tuple[float, float]] = []
+    resource_stack: list[Any] = [_resolved_pdf_object(resources)]
+    form_frames: list[tuple[bool, float, float, int]] = []
 
     def displayed_graphics_point(
         cm: Sequence[float],
@@ -745,6 +887,12 @@ def _make_page_visitors(
                 continue
             vector_counter += 1
             metadata: dict[str, Any] = {"paint_operator": paint_operator}
+            # Only a translucent paint is recorded; opaque paths keep their
+            # metadata unchanged.
+            if operator in _STROKING_PAINT_OPERATORS and stroke_alpha < 1.0:
+                metadata["stroke_alpha"] = round(stroke_alpha, 6)
+            if operator in _FILLING_PAINT_OPERATORS and fill_alpha < 1.0:
+                metadata["fill_alpha"] = round(fill_alpha, 6)
             if curve_commands:
                 metadata.update(
                     {
@@ -772,7 +920,36 @@ def _make_page_visitors(
         tm: Sequence[float],
     ) -> None:
         nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
+        nonlocal stroke_alpha, fill_alpha
         operator_counter += 1
+
+        if operator == b"q":
+            alpha_stack.append((stroke_alpha, fill_alpha))
+            return
+        if operator == b"Q":
+            if alpha_stack:
+                stroke_alpha, fill_alpha = alpha_stack.pop()
+            return
+        if operator == b"gs" and operands:
+            new_stroke, new_fill = _ext_gstate_alpha(
+                resource_stack[-1], str(operands[0])
+            )
+            if new_stroke is not None:
+                stroke_alpha = new_stroke
+            if new_fill is not None:
+                fill_alpha = new_fill
+            return
+        if operator == b"Do":
+            form_resources = (
+                _form_xobject_resources(resource_stack[-1], str(operands[0]))
+                if operands
+                else None
+            )
+            form_frames.append(
+                (form_resources is not None, stroke_alpha, fill_alpha, len(alpha_stack))
+            )
+            if form_resources is not None:
+                resource_stack.append(form_resources)
 
         if operator == b"Do" and operands:
             name = str(operands[0])
@@ -910,7 +1087,25 @@ def _make_page_visitors(
         if operator == b"n":
             clear_paths()
 
-    return visitor_text, visitor_operand_before
+    def visitor_operand_after(
+        operator: bytes,
+        operands: Sequence[Any],
+        cm: Sequence[float],
+        tm: Sequence[float],
+    ) -> None:
+        nonlocal stroke_alpha, fill_alpha
+        if operator != b"Do" or not form_frames:
+            return
+        is_form, saved_stroke, saved_fill, depth = form_frames.pop()
+        if not is_form:
+            return
+        # A form XObject paints inside an implicit q/Q with its own resources.
+        if len(resource_stack) > 1:
+            resource_stack.pop()
+        stroke_alpha, fill_alpha = saved_stroke, saved_fill
+        del alpha_stack[depth:]
+
+    return visitor_text, visitor_operand_before, visitor_operand_after
 
 
 def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectricalDocument:
@@ -981,13 +1176,14 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                         if str(xobject.get("/Subtype")) == "/Form":
                             form_names.add(str(raw_name))
 
-        visitor_text, visitor_operand_before = _make_page_visitors(
+        visitor_text, visitor_operand_before, visitor_operand_after = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),
             display_transform=display_transform,
             texts=texts,
             symbols=symbols,
             vectors=vectors,
+            resources=resources,
         )
 
         temporary_font_resource = False
@@ -1005,6 +1201,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             page.extract_text(
                 visitor_text=visitor_text,
                 visitor_operand_before=visitor_operand_before,
+                visitor_operand_after=visitor_operand_after,
             )
         except Exception as exc:
             raise ElectricalPdfError(
@@ -1030,7 +1227,19 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             subject = _clean_pdf_string(annotation.get("/Subj"))
             contents = _clean_pdf_string(annotation.get("/Contents"))
             native_id = _clean_pdf_string(annotation.get("/NM"))
+            title = _clean_pdf_string(annotation.get("/T"))
             element_root = f"p{page_number}:annotation:{annotation_index:04d}"
+            # CAD text keeps its drawn string outline in /Rect (AutoCAD SHX
+            # text annotations). Keep the displayed rectangle so letter
+            # strokes drawn inside it can be told from device glyphs.
+            corner_first = display_transform.apply(float(rect[0]), float(rect[1]))
+            corner_second = display_transform.apply(float(rect[2]), float(rect[3]))
+            rect_pt = [
+                min(corner_first[0], corner_second[0]),
+                min(corner_first[1], corner_second[1]),
+                max(corner_first[0], corner_second[0]),
+                max(corner_first[1], corner_second[1]),
+            ]
 
             if contents:
                 texts.append(
@@ -1058,8 +1267,13 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                                 "subject": subject,
                                 "contents": contents,
                                 "native_id": native_id,
+                                # Only the fact that this annotation carries
+                                # CAD SHX text matters downstream; the author
+                                # string itself is not copied into the model.
+                                "cad_shx_text": title == _SHX_TEXT_AUTHOR,
+                                "rect_pt": rect_pt,
                             }.items()
-                            if value is not None
+                            if value
                         },
                     )
                 )
@@ -3349,6 +3563,585 @@ def _cluster_small_vector_glyphs(
     )
 
 
+_SHX_TEXT_AUTHOR = "AutoCAD SHX Text"
+# Letter strokes are drawn inside their string's outline; a hairline of slack
+# absorbs stroke width without reaching outside the drawn text.
+_SHX_TEXT_BOX_TOLERANCE_PT = 0.5
+
+
+def _is_shx_text_annotation(symbol: PdfSymbolObservation) -> bool:
+    """Whether one symbol observation is an AutoCAD SHX drawn-text annotation."""
+
+    return (
+        symbol.source_kind == "annotation:square"
+        and bool(symbol.metadata.get("cad_shx_text"))
+    )
+
+
+def _is_multi_character_shx_text(contents: str) -> bool:
+    """Whether drawn SHX text reads as words rather than a glyph code.
+
+    Multi-word or five-or-more character strings are sheet text (titles,
+    view names, wrapped legend labels). Short unspaced strings stay glyphs:
+    on CAD electrical sheets the switch symbols themselves are the single
+    letters S, D, V and the digit subscripts drawn beside them.
+    """
+
+    cleaned = " ".join(contents.split())
+    return " " in cleaned or len(cleaned) >= 5
+
+
+def _box_is_rotated_text_box(
+    box: tuple[float, float, float, float],
+    contents_length: int,
+) -> bool:
+    """Whether a drawn-text rectangle encloses rotated rather than run-in text.
+
+    A run-in string's box is one letter tall: its long side grows with the
+    string while its short side stays at the letter height. Text drawn at
+    about forty-five degrees gets a bounding box that grows in both
+    directions, so a long string whose box is squarish means rotated text.
+    Such a box must not exclude letter strokes: it covers glyphs the string
+    does not actually enclose.
+    """
+
+    if contents_length < 4:
+        return False
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    if width <= 0.0 or height <= 0.0:
+        return False
+    return min(width, height) > 0.8 * max(width, height)
+
+
+def _stroke_is_letter_sized(
+    vector_bbox: tuple[float, float, float, float],
+    box: tuple[float, float, float, float],
+) -> bool:
+    """Whether one stroke is small enough to be a letter inside a text box.
+
+    A letter stroke is at most one line tall. A tag box that happens to hold
+    a piece of a device glyph (a duplex's centre line crossing a ``GFI`` box)
+    must not exclude that stroke from clustering: the stroke is longer than
+    the box is tall, so it is not a letter.
+    """
+
+    extent = max(
+        vector_bbox[2] - vector_bbox[0],
+        vector_bbox[3] - vector_bbox[1],
+    )
+    return extent <= (box[3] - box[1]) + 2.0 * _SHX_TEXT_BOX_TOLERANCE_PT
+
+
+class _ShxTextBoxIndex:
+    """Per-page interval index over drawn SHX text boxes.
+
+    Testing every vector against every box is vectors times boxes and ran
+    twice per import; sorting the boxes by left edge and bisecting keeps each
+    lookup to the boxes whose x range overlaps the vector's. Boxes of rotated
+    text are dropped at build time: their rectangles cover glyphs the text
+    does not actually enclose.
+    """
+
+    def __init__(
+        self,
+        symbols: Sequence[PdfSymbolObservation],
+        *,
+        multi_character_only: bool,
+    ) -> None:
+        boxes_by_page: dict[int, list[tuple[tuple[float, float, float, float], int]]] = {}
+        for symbol in symbols:
+            if not _is_shx_text_annotation(symbol):
+                continue
+            rect = symbol.metadata.get("rect_pt")
+            contents = str(symbol.metadata.get("contents") or "")
+            if not isinstance(rect, (list, tuple)) or len(rect) != 4:
+                continue
+            box = (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+            if multi_character_only and not _is_multi_character_shx_text(contents):
+                continue
+            if _box_is_rotated_text_box(box, len(" ".join(contents.split()))):
+                continue
+            boxes_by_page.setdefault(symbol.page, []).append(
+                (box, len(" ".join(contents.split())))
+            )
+        self._entries_by_page: dict[int, list[tuple[tuple[float, float, float, float], int]]] = {
+            page: sorted(boxes, key=lambda item: (item[0][0], item[0][2]))
+            for page, boxes in boxes_by_page.items()
+        }
+        self._starts_by_page: dict[int, list[float]] = {
+            page: [box[0] for box, _length in entries]
+            for page, entries in self._entries_by_page.items()
+        }
+
+    def candidates(
+        self,
+        page: int,
+        x0: float,
+        x1: float,
+    ) -> tuple[tuple[tuple[float, float, float, float], int], ...]:
+        entries = self._entries_by_page.get(page, ())
+        if not entries:
+            return ()
+        starts = self._starts_by_page[page]
+        high = bisect.bisect_right(starts, x1 + _SHX_TEXT_BOX_TOLERANCE_PT)
+        return tuple(
+            entry
+            for entry in entries[:high]
+            if entry[0][2] >= x0 - _SHX_TEXT_BOX_TOLERANCE_PT
+        )
+
+
+def _points_inside_box_pt(
+    points: Sequence[tuple[float, float]],
+    box: tuple[float, float, float, float],
+    *,
+    tolerance_pt: float,
+) -> bool:
+    x0, y0, x1, y1 = box
+    return all(
+        x0 - tolerance_pt <= x <= x1 + tolerance_pt
+        and y0 - tolerance_pt <= y <= y1 + tolerance_pt
+        for x, y in points
+    )
+
+
+_DASH_ARC_MIN_DASHES = 4
+_DASH_ARC_MIN_SEGMENT_PT = 2.0
+_DASH_ARC_MAX_SEGMENT_PT = 34.0
+_DASH_ARC_CHAIN_GAP_PT = 30.0
+# A circuit arc's circle is larger than any device glyph: an arc that could
+# close inside the glyph size limit may be a glyph outline drawn in pieces.
+_DASH_ARC_MIN_RADIUS_PT = _GLYPH_PATH_MAX_EXTENT_PT / 2.0
+_DASH_ARC_MAX_RADIUS_PT = 600.0
+_DASH_ARC_FIT_TOLERANCE_PT = 1.0
+_DASH_ARC_FIT_TOLERANCE_RATIO = 0.01
+_DASH_ARC_TANGENT_TOLERANCE_RAD = 0.61
+# A curved dash bends away from its chord by at most this share of the chord.
+_DASH_CURVE_MAX_SAGITTA_RATIO = 0.25
+
+
+@dataclass(frozen=True, slots=True)
+class _Dash:
+    vector: PdfVectorPathObservation
+    start: tuple[float, float]
+    end: tuple[float, float]
+    middle: tuple[float, float]
+
+
+def _dash_segment(vector: PdfVectorPathObservation) -> _Dash | None:
+    """One short open dash, straight or gently curved, or None.
+
+    A dash runs one way along its chord: every point projects forward along
+    the chord and stays within a small bend of it. Its middle is the point
+    halfway along the drawn path, which lies on the arc a curved dash follows.
+    """
+
+    points = vector.points_pt
+    if vector.closed or len(points) < 2:
+        return None
+    start, end = points[0], points[-1]
+    chord = math.hypot(end[0] - start[0], end[1] - start[1])
+    if not _DASH_ARC_MIN_SEGMENT_PT <= chord <= _DASH_ARC_MAX_SEGMENT_PT:
+        return None
+    if len(points) == 2:
+        return _Dash(
+            vector,
+            start,
+            end,
+            ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0),
+        )
+    unit = ((end[0] - start[0]) / chord, (end[1] - start[1]) / chord)
+    bend_limit = _DASH_CURVE_MAX_SAGITTA_RATIO * chord
+    previous = 0.0
+    for x, y in points:
+        along = (x - start[0]) * unit[0] + (y - start[1]) * unit[1]
+        across = (x - start[0]) * unit[1] - (y - start[1]) * unit[0]
+        if abs(across) > bend_limit or along < previous - 1e-6:
+            return None
+        previous = along
+    lengths = [
+        math.hypot(second[0] - first[0], second[1] - first[1])
+        for first, second in zip(points, points[1:])
+    ]
+    remaining = sum(lengths) / 2.0
+    middle = end
+    for (first, second), length in zip(zip(points, points[1:]), lengths):
+        if remaining <= length:
+            share = remaining / length if length > 0.0 else 0.0
+            middle = (
+                first[0] + share * (second[0] - first[0]),
+                first[1] + share * (second[1] - first[1]),
+            )
+            break
+        remaining -= length
+    return _Dash(vector, start, end, middle)
+
+
+def _fit_circle(
+    points: Sequence[tuple[float, float]],
+) -> tuple[float, float, float] | None:
+    """Least-squares circle through points, as (x, y, radius), or None."""
+
+    count = len(points)
+    sum_x = sum(x for x, _ in points)
+    sum_y = sum(y for _, y in points)
+    sum_x2 = sum(x * x for x, _ in points)
+    sum_y2 = sum(y * y for _, y in points)
+    sum_xy = sum(x * y for x, y in points)
+    sum_xz = sum(x * (x * x + y * y) for x, y in points)
+    sum_yz = sum(y * (x * x + y * y) for x, y in points)
+    sum_z = sum(x * x + y * y for x, y in points)
+    matrix = (
+        (sum_x2, sum_xy, sum_x),
+        (sum_xy, sum_y2, sum_y),
+        (sum_x, sum_y, float(count)),
+    )
+    rhs = (-sum_xz, -sum_yz, -sum_z)
+
+    def determinant3(m: tuple[tuple[float, ...], ...]) -> float:
+        return (
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        )
+
+    det = determinant3(matrix)
+    if abs(det) <= 1e-9:
+        return None
+    swapped = tuple(
+        tuple(rhs[index] if column == 0 else matrix[index][column] for column in range(3))
+        for index in range(3)
+    )
+    a = determinant3(swapped) / det
+    swapped = tuple(
+        tuple(rhs[index] if column == 1 else matrix[index][column] for column in range(3))
+        for index in range(3)
+    )
+    b = determinant3(swapped) / det
+    swapped = tuple(
+        tuple(rhs[index] if column == 2 else matrix[index][column] for column in range(3))
+        for index in range(3)
+    )
+    c = determinant3(swapped) / det
+    center_x = -a / 2.0
+    center_y = -b / 2.0
+    radius_squared = center_x * center_x + center_y * center_y - c
+    if radius_squared <= 0.0:
+        return None
+    return center_x, center_y, math.sqrt(radius_squared)
+
+
+def _dashed_arc_train_vector_ids(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> set[str]:
+    """Element ids of dashes that run along a common circuit-sized arc.
+
+    Circuit arcs are drawn as chains of separate short dashes, straight or
+    gently curved. Dashes are linked end to end into chains (each dash end to
+    the nearest end of another dash, when that link is mutual), so a device
+    glyph, a tag or a second arc meeting a chain cannot pull it apart. Any
+    four consecutive dashes of a chain whose middles share one circle, larger
+    than a glyph and each dash running along its tangent, are wiring, not
+    glyph strokes. Straight dashed runs fit no such circle and are left
+    untouched.
+    """
+
+    by_page: dict[int, list[PdfVectorPathObservation]] = {}
+    for vector in vectors:
+        by_page.setdefault(vector.page, []).append(vector)
+    matched: set[str] = set()
+    for page in sorted(by_page):
+        matched.update(_page_dashed_arc_train_vector_ids(by_page[page]))
+    return matched
+
+
+def _dash_window_on_arc(window: Sequence[_Dash]) -> bool:
+    """Whether consecutive dashes lie along one circuit-sized circle."""
+
+    circle = _fit_circle([dash.middle for dash in window])
+    if circle is None:
+        return False
+    center_x, center_y, radius = circle
+    if not _DASH_ARC_MIN_RADIUS_PT <= radius <= _DASH_ARC_MAX_RADIUS_PT:
+        return False
+    tolerance = _DASH_ARC_FIT_TOLERANCE_PT + _DASH_ARC_FIT_TOLERANCE_RATIO * radius
+    alignment = math.cos(_DASH_ARC_TANGENT_TOLERANCE_RAD)
+    for dash in window:
+        offset = (dash.middle[0] - center_x, dash.middle[1] - center_y)
+        if abs(math.hypot(*offset) - radius) > tolerance:
+            return False
+        direction = (dash.end[0] - dash.start[0], dash.end[1] - dash.start[1])
+        tangent = (-offset[1], offset[0])
+        norm = math.hypot(*direction) * math.hypot(*tangent)
+        if norm <= 1e-9:
+            return False
+        dot = direction[0] * tangent[0] + direction[1] * tangent[1]
+        if not math.isfinite(dot) or abs(dot) / norm < alignment:
+            return False
+    return True
+
+
+def _page_dashed_arc_train_vector_ids(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> set[str]:
+    """Dashed-arc dash ids among the vectors of one page."""
+
+    dashes = sorted(
+        (
+            dash
+            for dash in (_dash_segment(vector) for vector in vectors)
+            if dash is not None
+        ),
+        key=lambda dash: dash.vector.element_id,
+    )
+    if len(dashes) < _DASH_ARC_MIN_DASHES:
+        return set()
+
+    # Every dash end, bucketed on a grid one chain gap wide.
+    ends: list[tuple[float, float]] = []
+    for dash in dashes:
+        ends.extend((dash.start, dash.end))
+    cell = _DASH_ARC_CHAIN_GAP_PT
+    grid: dict[tuple[int, int], list[int]] = {}
+    for index, (x, y) in enumerate(ends):
+        grid.setdefault((math.floor(x / cell), math.floor(y / cell)), []).append(index)
+
+    nearest: dict[int, int] = {}
+    for index, (x, y) in enumerate(ends):
+        cell_x, cell_y = math.floor(x / cell), math.floor(y / cell)
+        best: tuple[float, int] | None = None
+        for neighbour_x in (cell_x - 1, cell_x, cell_x + 1):
+            for neighbour_y in (cell_y - 1, cell_y, cell_y + 1):
+                for other in grid.get((neighbour_x, neighbour_y), ()):
+                    if other // 2 == index // 2:
+                        continue
+                    distance = math.hypot(ends[other][0] - x, ends[other][1] - y)
+                    if distance > _DASH_ARC_CHAIN_GAP_PT:
+                        continue
+                    key = (distance, other)
+                    if best is None or key < best:
+                        best = key
+        if best is not None:
+            nearest[index] = best[1]
+
+    # Mutual nearest ends link two dashes; each dash end links at most once,
+    # so the links form simple chains.
+    links: dict[int, list[int]] = {}
+    for index, other in nearest.items():
+        if nearest.get(other) == index and index < other:
+            links.setdefault(index // 2, []).append(other // 2)
+            links.setdefault(other // 2, []).append(index // 2)
+
+    matched: set[str] = set()
+    visited: set[int] = set()
+    for first in range(len(dashes)):
+        if first in visited or len(links.get(first, ())) == 2:
+            continue
+        chain = [first]
+        visited.add(first)
+        while True:
+            following = [
+                other for other in sorted(links.get(chain[-1], ()))
+                if other not in visited
+            ]
+            if not following:
+                break
+            chain.append(following[0])
+            visited.add(following[0])
+        for offset in range(len(chain) - _DASH_ARC_MIN_DASHES + 1):
+            window = [dashes[index] for index in chain[offset:offset + _DASH_ARC_MIN_DASHES]]
+            if _dash_window_on_arc(window):
+                matched.update(dash.vector.element_id for dash in window)
+    # Closed loops of dashes (every dash linked on both ends).
+    for first in range(len(dashes)):
+        if first in visited:
+            continue
+        chain = [first]
+        visited.add(first)
+        while True:
+            following = [
+                other for other in sorted(links.get(chain[-1], ()))
+                if other not in visited
+            ]
+            if not following:
+                break
+            chain.append(following[0])
+            visited.add(following[0])
+        if len(chain) < _DASH_ARC_MIN_DASHES:
+            continue
+        loop = chain + chain[: _DASH_ARC_MIN_DASHES - 1]
+        for offset in range(len(chain)):
+            window = [dashes[index] for index in loop[offset:offset + _DASH_ARC_MIN_DASHES]]
+            if len(window) == _DASH_ARC_MIN_DASHES and _dash_window_on_arc(window):
+                matched.update(dash.vector.element_id for dash in window)
+    return matched
+
+
+# A path painted at or below this constant alpha is a screened background
+# layer (architecture traced under the electrical work), not device linework.
+_SCREENED_BACKGROUND_ALPHA_MAX = 0.5
+
+
+def _painted_alpha(vector: PdfVectorPathObservation) -> float:
+    """The most opaque alpha among the components the path actually paints."""
+
+    operator = str(vector.metadata.get("paint_operator") or "").encode("ascii", "replace")
+    alphas: list[float] = []
+    if operator in _STROKING_PAINT_OPERATORS:
+        alphas.append(float(vector.metadata.get("stroke_alpha", 1.0)))
+    if operator in _FILLING_PAINT_OPERATORS:
+        alphas.append(float(vector.metadata.get("fill_alpha", 1.0)))
+    return max(alphas) if alphas else 1.0
+
+
+def _screened_background_vector_ids(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> set[str]:
+    """Paths painted translucent on a page that also paints opaque paths.
+
+    CAD sheets trace the architecture under the electrical work through a
+    low constant alpha while the devices stay opaque. Those screened strokes
+    are not device glyph strokes, and chaining them into device clusters
+    makes the clusters too large to match. A page painted entirely
+    translucent keeps every path, since nothing there sets the devices apart.
+    """
+
+    alphas = {vector.element_id: _painted_alpha(vector) for vector in vectors}
+    opaque_pages = {
+        vector.page
+        for vector in vectors
+        if alphas[vector.element_id] > _SCREENED_BACKGROUND_ALPHA_MAX
+    }
+    return {
+        vector.element_id
+        for vector in vectors
+        if vector.page in opaque_pages
+        and alphas[vector.element_id] <= _SCREENED_BACKGROUND_ALPHA_MAX
+    }
+
+
+def _glyph_cluster_groups(
+    document: PdfElectricalDocument,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[tuple[PdfVectorPathObservation, ...], tuple[PdfVectorPathObservation, ...]]:
+    """Split the page vectors into opaque and screened glyph-candidate groups.
+
+    Letter strokes inside a drawn SHX text string are text, and the separate
+    dashes of a circuit arc are wiring; neither may chain real glyphs into
+    oversized clusters or pose as glyph strokes itself. Translucent strokes on
+    a sheet that paints its devices opaque are the screened architecture: they
+    are kept as their own group so they cluster only among themselves and can
+    still be recognized or reported unresolved, instead of being deleted with
+    no trace.
+    """
+
+    all_text_index = _ShxTextBoxIndex(document.symbols, multi_character_only=False)
+    word_text_index = _ShxTextBoxIndex(document.symbols, multi_character_only=True)
+    screened_ids = _screened_background_vector_ids(vectors)
+    # A path lies wholly inside an axis-aligned text box exactly when its
+    # bounding box does. Letter-sized containment is computed once per
+    # document: a stroke in any drawn-text box is excluded from the arc
+    # search, and a stroke in a word box is text and never a glyph stroke.
+    letter_in_any_box: set[str] = set()
+    letter_in_word_box: set[str] = set()
+    for vector in vectors:
+        vbbox = _vector_bbox(vector)
+        in_any = False
+        in_word = False
+        for box, _length in all_text_index.candidates(vector.page, vbbox[0], vbbox[2]):
+            if not _points_inside_box_pt(
+                ((vbbox[0], vbbox[1]), (vbbox[2], vbbox[3])),
+                box,
+                tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
+            ):
+                continue
+            if not _stroke_is_letter_sized(vbbox, box):
+                continue
+            in_any = True
+            break
+        if in_any:
+            for box, _length in word_text_index.candidates(vector.page, vbbox[0], vbbox[2]):
+                if not _points_inside_box_pt(
+                    ((vbbox[0], vbbox[1]), (vbbox[2], vbbox[3])),
+                    box,
+                    tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
+                ):
+                    continue
+                if not _stroke_is_letter_sized(vbbox, box):
+                    continue
+                in_word = True
+                break
+        if in_any:
+            letter_in_any_box.add(vector.element_id)
+        if in_word:
+            letter_in_word_box.add(vector.element_id)
+
+    # Arc dashes are looked for among the opaque linework outside any drawn
+    # SHX string: letter strokes, even of one-letter glyph codes, are never
+    # dashes, and screened architecture would chain unrelated strokes in.
+    arc_ids = _dashed_arc_train_vector_ids(
+        [
+            vector
+            for vector in vectors
+            if vector.element_id not in screened_ids
+            and vector.element_id not in letter_in_any_box
+        ]
+    )
+    remaining = [
+        vector
+        for vector in vectors
+        if vector.element_id not in arc_ids
+        and vector.element_id not in letter_in_word_box
+    ]
+    opaque = tuple(
+        vector for vector in remaining if vector.element_id not in screened_ids
+    )
+    screened = tuple(
+        vector for vector in remaining if vector.element_id in screened_ids
+    )
+    return opaque, screened
+
+
+def _glyph_cluster_vectors(
+    document: PdfElectricalDocument,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[PdfVectorPathObservation, ...]:
+    """Vector paths that may take part in device-glyph clustering."""
+
+    opaque, screened = _glyph_cluster_groups(document, vectors)
+    return (*opaque, *screened)
+
+
+def _glyph_clusters(
+    document: PdfElectricalDocument,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[_VectorCluster, ...]:
+    """Glyph clusters over the candidate vectors, screened paths kept apart.
+
+    Screened paths cluster only among themselves, so screened architecture
+    still cannot chain into an opaque glyph — but a screened device glyph
+    forms its own cluster and keeps its chance to match a legend row or be
+    reported unresolved instead of vanishing.
+    """
+
+    opaque, screened = _glyph_cluster_groups(document, vectors)
+    clusters = (
+        *_cluster_small_vector_glyphs(opaque),
+        *_cluster_small_vector_glyphs(screened),
+    )
+    return tuple(
+        sorted(
+            clusters,
+            key=lambda cluster: (
+                cluster.page,
+                cluster.bbox_pt,
+                cluster.geometry_key,
+            ),
+        )
+    )
+
+
 def _is_glyph_cluster(cluster: _VectorCluster) -> bool:
     return bool(
         len(cluster.vectors) > 1
@@ -3460,7 +4253,7 @@ def _annotation_code_legend_match(
     for entry in entries:
         by_type.setdefault(entry.canonical_type, []).append(entry)
 
-    alias_targets: Mapping[str, tuple[str, ...]] = {
+    alias_targets: dict[str, tuple[str, ...]] = {
         "CR": ("access_control_device",),
         "TV": ("catv_outlet",),
         "CATV": ("catv_outlet",),
@@ -3469,6 +4262,14 @@ def _annotation_code_legend_match(
         "D": ("data_outlet",),
         "DATA": ("data_outlet",),
     }
+    # A legend that lists a dimmer switch draws its dimmer glyph as a bare
+    # "D"; on such a sheet D is never a data-outlet abbreviation.
+    if any(
+        entry.canonical_type == "switch"
+        and "DIMMER" in entry.label.text.upper()
+        for entry in entries
+    ):
+        alias_targets.pop("D", None)
     for canonical_type in alias_targets.get(normalized_code, ()):
         matching = by_type.get(canonical_type, ())
         if matching:
@@ -3679,11 +4480,17 @@ def _nearest_section_heading(
     vectors: Sequence[PdfVectorPathObservation],
     *,
     allow_beside: bool,
+    require_legend_title: bool = False,
 ) -> PdfTextObservation | None:
     if not rows:
         return None
     page = rows[0].cluster.page
-    row_label_ids = {row.label.element_id for row in rows}
+    # Every line of a wrapped row label is label text, never the group's heading.
+    row_label_ids = {
+        element_id
+        for row in rows
+        for element_id in (row.label_source_element_ids or (row.label.element_id,))
+    }
     candidates: list[tuple[float, float, str, PdfTextObservation]] = []
     for observation in texts:
         if observation.page != page or observation.element_id in row_label_ids:
@@ -3708,7 +4515,42 @@ def _nearest_section_heading(
         )
     if not candidates:
         return None
-    return min(candidates, key=lambda item: item[:3])[3]
+    nearest = min(candidates, key=lambda item: item[:3])
+    if require_legend_title:
+        # A legend title farther away cannot rescue a group that belongs to a
+        # rejected section: when every row of the group sits under a rejected
+        # heading in its own column (a keynote column, a notes column beside
+        # the legend), the group is that section and is rejected, so its rows
+        # never take the legend's identity and its field tags stay tags.
+        # Rows above such a heading head their own legend section, so a
+        # legend column that merely continues below into abbreviations or
+        # notes survives here; its rejected rows are dropped by the section
+        # step once a frame joins the column.
+        rejected = [
+            candidate[3]
+            for candidate in candidates
+            if _heading_has_rejected_legend_context(candidate[3])
+        ]
+        if rejected and not any(
+            not any(
+                heading.y_pt > row.label.y_pt
+                and row.cluster.bbox_pt[0] - 40.0 <= heading.x_pt <= row.label.x_pt + 40.0
+                for heading in rejected
+            )
+            for row in rows
+        ):
+            return None
+        # Ordinary subheadings inside a legend (LUMINAIRES, CONTROLS) only
+        # head sections of the legend itself, so look past them for the title.
+        titled = [
+            candidate
+            for candidate in candidates
+            if _is_legend_heading(candidate[3])
+        ]
+        if not titled:
+            return None
+        return min(titled, key=lambda item: item[:3])[3]
+    return nearest[3]
 
 
 def _dense_legend_group_is_valid(
@@ -3718,7 +4560,10 @@ def _dense_legend_group_is_valid(
     if len(rows) < _LEGEND_TABLE_MIN_ROWS:
         return False
     if not all(
-        _is_glyph_cluster(row.cluster) and _is_short_legend_label(row.label)
+        _is_glyph_cluster(row.cluster)
+        and _is_short_legend_label(
+            row.label_lines[0] if row.label_lines else row.label
+        )
         for row in rows
     ):
         return False
@@ -3748,7 +4593,11 @@ def _dense_legend_group_is_valid(
     if numeric_rows * 2 >= len(nearby_text):
         return False
 
-    paired_label_ids = {row.label.element_id for row in rows}
+    paired_label_ids = {
+        element_id
+        for row in rows
+        for element_id in (row.label_source_element_ids or (row.label.element_id,))
+    }
     if len(paired_label_ids) * 2 <= len(nearby_text):
         return False
     return True
@@ -3793,6 +4642,176 @@ def _heading_is_explicitly_referenced_from_other_page(
     return False
 
 
+_LEGEND_CONTINUATION_X_TOLERANCE_PT = 1.5
+_LEGEND_CONTINUATION_MAX_PITCH_RATIO = 1.5
+_LEGEND_CONTINUATION_FONT_RATIO = 1.2
+# A baseline sits below the visual middle of a capital line by about a third of
+# the rendered size; glyphs are drawn centred on that middle, not the baseline.
+_TEXT_VISUAL_CENTER_RATIO = 0.35
+
+
+def _is_continuation_pair(
+    upper: PdfTextObservation,
+    lower: PdfTextObservation,
+) -> bool:
+    """Whether ``lower`` can be the next wrapped line of the label ``upper``."""
+
+    if upper.page != lower.page:
+        return False
+    if not upper.font_size_pt or not lower.font_size_pt:
+        return False
+    if upper.font_size_pt <= 0.0 or lower.font_size_pt <= 0.0:
+        return False
+    ratio = max(upper.font_size_pt, lower.font_size_pt) / min(
+        upper.font_size_pt,
+        lower.font_size_pt,
+    )
+    if ratio > _LEGEND_CONTINUATION_FONT_RATIO:
+        return False
+    if abs(upper.x_pt - lower.x_pt) > _LEGEND_CONTINUATION_X_TOLERANCE_PT:
+        return False
+    pitch = upper.y_pt - lower.y_pt
+    return (
+        0.0
+        < pitch
+        <= _LEGEND_CONTINUATION_MAX_PITCH_RATIO * upper.font_size_pt
+    )
+
+
+def _legend_label_blocks(
+    labels: Sequence[PdfTextObservation],
+    clusters: Sequence[_VectorCluster],
+) -> tuple[tuple[PdfTextObservation, ...], ...]:
+    """Group the wrapped lines of legend labels into one block per legend row.
+
+    CAD legends wrap long labels onto several lines that share the label's
+    left edge and sit one line pitch apart. The row's glyph is drawn beside
+    one of those lines, not necessarily the first, so pairing each line with
+    its nearest glyph splits one label into pieces and gives the glyph the
+    wrong words. Lines are first chained by column and pitch; a chain beside
+    several glyphs is then split midway between neighbouring glyphs, so each
+    glyph's block spans the wrapped lines around its own line. A chain beside
+    one glyph is that row's whole label. A chain with no glyph beside it
+    stays as single lines.
+    """
+
+    ordered = sorted(
+        labels,
+        key=lambda item: (item.page, item.x_pt, -item.y_pt, item.element_id),
+    )
+    keys = [(item.page, item.x_pt) for item in ordered]
+    predecessor: dict[str, PdfTextObservation] = {}
+    for lower in ordered:
+        low = bisect.bisect_left(
+            keys,
+            (lower.page, lower.x_pt - _LEGEND_CONTINUATION_X_TOLERANCE_PT),
+        )
+        high = bisect.bisect_right(
+            keys,
+            (lower.page, lower.x_pt + _LEGEND_CONTINUATION_X_TOLERANCE_PT),
+        )
+        above = [
+            upper
+            for upper in ordered[low:high]
+            if upper.element_id != lower.element_id
+            and _is_continuation_pair(upper, lower)
+        ]
+        if above:
+            predecessor[lower.element_id] = min(
+                above,
+                key=lambda item: (item.y_pt - lower.y_pt, item.element_id),
+            )
+    successor: dict[str, PdfTextObservation] = {}
+    for lower in ordered:
+        upper = predecessor.get(lower.element_id)
+        if upper is None:
+            continue
+        current = successor.get(upper.element_id)
+        if current is None or (
+            upper.y_pt - lower.y_pt,
+            lower.element_id,
+        ) < (upper.y_pt - current.y_pt, current.element_id):
+            successor[upper.element_id] = lower
+    heads = [
+        label
+        for label in ordered
+        if label.element_id not in predecessor
+        or successor.get(predecessor[label.element_id].element_id) is not label
+    ]
+
+    blocks: list[tuple[PdfTextObservation, ...]] = []
+    for head in heads:
+        chain = [head]
+        while chain[-1].element_id in successor:
+            chain.append(successor[chain[-1].element_id])
+        if len(chain) == 1:
+            blocks.append((head,))
+            continue
+        top = chain[0]
+        bottom = chain[-1]
+
+        def visual_center(line: PdfTextObservation) -> float:
+            return line.y_pt + _TEXT_VISUAL_CENTER_RATIO * float(line.font_size_pt or 0.0)
+
+        anchors: set[int] = set()
+        for cluster in clusters:
+            if cluster.page != top.page:
+                continue
+            gap = top.x_pt - cluster.bbox_pt[2]
+            if not 0.0 <= gap <= _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT:
+                continue
+            center_y = cluster.center_pt[1]
+            if not (
+                bottom.y_pt - _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+                <= center_y
+                <= top.y_pt + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+            ):
+                continue
+            anchors.add(
+                min(
+                    range(len(chain)),
+                    key=lambda index: (
+                        abs(visual_center(chain[index]) - center_y),
+                        index,
+                    ),
+                )
+            )
+        if not anchors:
+            blocks.extend((line,) for line in chain)
+            continue
+        # Between two neighbouring glyph lines the rows part at the widest
+        # line gap: a row gap is drawn at least as wide as the pitch inside a
+        # wrapped label, and a glyph need not sit beside its label's middle
+        # line. Equal gaps part nearest the midpoint, then at the upper gap.
+        # Every block keeps the line its own glyph sits beside; one glyph owns
+        # the whole chain.
+        starts = sorted(anchors)
+        bounds = [0]
+        for first, second in zip(starts, starts[1:]):
+            middle = (first + second) / 2.0
+            bounds.append(
+                min(
+                    range(first + 1, second + 1),
+                    key=lambda index: (
+                        -round(chain[index - 1].y_pt - chain[index].y_pt, 3),
+                        abs(index - 0.5 - middle),
+                        index,
+                    ),
+                )
+            )
+        bounds.append(len(chain))
+        for index, start in enumerate(bounds[:-1]):
+            stop = bounds[index + 1]
+            if start < stop:
+                blocks.append(tuple(chain[start:stop]))
+    return tuple(
+        sorted(
+            blocks,
+            key=lambda block: (block[0].page, -block[0].y_pt, block[0].x_pt, block[0].element_id),
+        )
+    )
+
+
 def _legend_row_candidates(
     clusters: Sequence[_VectorCluster],
     texts: Sequence[PdfTextObservation],
@@ -3810,20 +4829,54 @@ def _legend_row_candidates(
             PdfTextObservation,
             tuple[str, str, float] | None,
             tuple[Mapping[str, Any], ...],
+            tuple[PdfTextObservation, ...],
         ]
     ] = []
-    for label in texts:
-        if not _is_short_legend_label(label):
-            continue
+    blocks = _legend_label_blocks(
+        [label for label in texts if _is_short_legend_label(label)],
+        clusters,
+    )
+    for block in blocks:
+        first = block[0]
+        # A wrapped label is classified and reported as its whole text; the
+        # row keeps the first line's position.
+        label = (
+            first
+            if len(block) == 1
+            else replace(first, text=" ".join(line.text for line in block))
+        )
         classification, ranked = _classify_semantic_text(
             label.text,
             rules,
             ambiguity_margin=ambiguity_margin,
         )
+        if len(block) > 1 and classification is not None:
+            # Wrapped label lines are fragments that classify to nothing on
+            # their own. When a line classifies by itself to a different type
+            # than the merged text, the chain joined separate rows (a row
+            # whose sample is an open stroke or an oversized glyph has no
+            # anchor of its own and its label leaks onto the row below); the
+            # merged words then invent a type neither row has. Keep the row
+            # ambiguous and let it fail closed as unresolved legend evidence.
+            for line in block:
+                line_classification, _line_ranked = _classify_semantic_text(
+                    line.text,
+                    rules,
+                    ambiguity_margin=ambiguity_margin,
+                )
+                if line_classification is not None and (
+                    line_classification[0],
+                    line_classification[1],
+                ) != (classification[0], classification[1]):
+                    classification = None
+                    break
         for cluster in clusters:
             if cluster.page != label.page:
                 continue
-            vertical_delta = abs(label.y_pt - cluster.center_pt[1])
+            vertical_delta = min(
+                abs(line.y_pt - cluster.center_pt[1])
+                for line in block
+            )
             if vertical_delta > _LEGEND_ROW_VERTICAL_TOLERANCE_PT:
                 continue
             horizontal_gap = label.x_pt - cluster.bbox_pt[2]
@@ -3839,6 +4892,7 @@ def _legend_row_candidates(
                     label,
                     classification,
                     tuple(ranked),
+                    block,
                 )
             )
 
@@ -3855,6 +4909,7 @@ def _legend_row_candidates(
         label,
         classification,
         ranked,
+        block,
     ) in possible:
         cluster_key = (cluster.page, cluster.geometry_key)
         if label.element_id in used_labels or cluster_key in used_clusters:
@@ -3869,6 +4924,12 @@ def _legend_row_candidates(
                 classification_candidates=ranked,
                 orientation=1,
                 horizontal_gap_pt=horizontal_gap,
+                label_source_element_ids=(
+                    tuple(line.element_id for line in block)
+                    if len(block) > 1
+                    else ()
+                ),
+                label_lines=block if len(block) > 1 else (),
             )
         )
     return tuple(
@@ -4598,6 +5659,238 @@ def _symbol_function_legend_regions(
     return tuple(best_by_page[page] for page in sorted(best_by_page))
 
 
+_LEGEND_FRAME_MAX_PAGE_FRACTION = 0.6
+_LEGEND_FRAME_MIN_SIDE_PT = 72.0
+
+
+def _legend_frame_around(
+    heading: PdfTextObservation,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[float, float, float, float] | None:
+    """The ruled rectangle that encloses a legend title, when the sheet draws one.
+
+    A frame needs a vertical rule on each side of the title that spans the
+    title's baseline, and horizontal rules closing the top and bottom between
+    them. A frame covering most of the sheet is the sheet border, not a legend.
+    """
+
+    horizontal, vertical = _rule_segments(vectors, page=heading.page)
+    font = float(heading.font_size_pt or 8.0)
+    title_end = heading.x_pt + 0.5 * len(heading.text) * font
+    tolerance = 2.0 * _LEGEND_RULE_AXIS_TOLERANCE_PT
+    spanning = [
+        rule for rule in vertical
+        if rule[1] - tolerance <= heading.y_pt <= rule[2] + tolerance
+    ]
+    left = max((rule for rule in spanning if rule[0] <= heading.x_pt), default=None)
+    right = min((rule for rule in spanning if rule[0] >= title_end), default=None)
+    if left is None or right is None:
+        return None
+    bottom = max(left[1], right[1])
+    top = min(left[2], right[2])
+    if right[0] - left[0] < _LEGEND_FRAME_MIN_SIDE_PT or top - bottom < _LEGEND_FRAME_MIN_SIDE_PT:
+        return None
+
+    def closed_at(y: float) -> bool:
+        return any(
+            abs(rule[1] - y) <= tolerance
+            and rule[0] <= left[0] + tolerance
+            and rule[2] >= right[0] - tolerance
+            for rule in horizontal
+        )
+
+    if not (closed_at(bottom) and closed_at(top)):
+        return None
+    xs = [value for rule in horizontal for value in (rule[0], rule[2])]
+    xs.extend(rule[0] for rule in vertical)
+    ys = [value for rule in vertical for value in (rule[1], rule[2])]
+    ys.extend(rule[1] for rule in horizontal)
+    sheet_width = (max(xs) - min(xs)) if xs else 0.0
+    sheet_height = (max(ys) - min(ys)) if ys else 0.0
+    if (
+        sheet_width > 0
+        and (right[0] - left[0]) > _LEGEND_FRAME_MAX_PAGE_FRACTION * sheet_width
+    ) or (
+        sheet_height > 0
+        and (top - bottom) > _LEGEND_FRAME_MAX_PAGE_FRACTION * sheet_height
+    ):
+        return None
+    return (left[0], bottom, right[0], top)
+
+
+_LEGEND_ROW_FRAME_TOLERANCE_PT = 3.0
+# A legend sample sits at its row, within a row pitch or two; a device
+# elsewhere under the same ruled frame is farther away.
+_LEGEND_FRAME_SAMPLE_RADIUS_PT = 60.0
+
+
+def _row_inside(row: _LegendRow, bbox: tuple[float, float, float, float]) -> bool:
+    """Whether one legend row sits inside a ruled frame.
+
+    CAD glyphs and labels are often drawn touching the frame rules, so a small
+    tolerance keeps a frame from being rejected over a stroke that grazes its
+    edge; the frame itself is still derived from the rules.
+    """
+
+    x0, y0, x1, y1 = bbox
+    cx0, cy0, cx1, cy1 = row.cluster.bbox_pt
+    tolerance = _LEGEND_ROW_FRAME_TOLERANCE_PT
+    return (
+        x0 - tolerance <= cx0 and cx1 <= x1 + tolerance
+        and y0 - tolerance <= cy0 and cy1 <= y1 + tolerance
+        and x0 - tolerance <= row.label.x_pt <= x1 + tolerance
+        and y0 - tolerance <= row.label.y_pt <= y1 + tolerance
+    )
+
+
+def _drop_rows_in_rejected_sections(
+    rows: Sequence[_LegendRow],
+    frame: tuple[float, float, float, float],
+    texts: Sequence[PdfTextObservation],
+    *,
+    extra_headings: Sequence[PdfTextObservation] = (),
+) -> tuple[list[_LegendRow], list[_LegendRow], list[str]]:
+    """Inside a legend frame, keep rows out of sections such as ABBREVIATIONS.
+
+    A section heading is larger text inside the frame. Each row belongs to the
+    nearest heading above it in its own column; rows under a heading with a
+    rejected legend context (abbreviations, notes, schedules) are not symbols.
+    Headings already found at join time are passed in ``extra_headings`` so
+    both steps decide with one definition: a heading just over the label size
+    that the size gate below misses still drops its rows.
+    """
+
+    sizes = sorted(row.label.font_size_pt for row in rows if row.label.font_size_pt)
+    if not sizes:
+        return list(rows), [], []
+    base = sizes[len(sizes) // 2]
+    page = rows[0].cluster.page
+    x0, y0, x1, y1 = frame
+    headings_by_id = {
+        text.element_id: text
+        for text in texts
+        if text.page == page
+        and x0 <= text.x_pt <= x1
+        and y0 <= text.y_pt <= y1
+        and (text.font_size_pt or 0.0) >= 1.15 * base
+        and _looks_like_section_heading(text)
+    }
+    for heading in extra_headings:
+        headings_by_id.setdefault(heading.element_id, heading)
+    headings = list(headings_by_id.values())
+    kept: list[_LegendRow] = []
+    dropped: list[_LegendRow] = []
+    for row in rows:
+        above = [
+            heading for heading in headings
+            if heading.y_pt > row.label.y_pt
+            and row.cluster.bbox_pt[0] - 40.0 <= heading.x_pt <= row.label.x_pt + 40.0
+        ]
+        section = min(
+            above,
+            key=lambda heading: (heading.y_pt - row.label.y_pt, heading.element_id),
+            default=None,
+        )
+        if section is not None and _heading_has_rejected_legend_context(section):
+            dropped.append(row)
+            continue
+        kept.append(row)
+    return kept, dropped, sorted({" ".join(heading.text.split()) for heading in headings})
+
+
+def _join_framed_legend_columns(
+    region: _LegendRegion,
+    page_groups: Sequence[tuple[_LegendRow, ...]],
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+) -> _LegendRegion:
+    """Add the other columns of a ruled legend block to its title-matched region.
+
+    A legend often runs in columns, and only one sits under the title; the
+    others sit under their own section headings (power, controls). Row
+    groups entirely inside the same ruled frame as the title belong to that
+    legend. A group headed as notes, keynotes or a schedule does not.
+    """
+
+    if region.heading is None:
+        return region
+    frame = _legend_frame_around(region.heading, vectors)
+    if frame is None or not all(_row_inside(row, frame) for row in region.rows):
+        return region
+    present = {(row.cluster.geometry_key, row.label.element_id) for row in region.rows}
+    joined: list[_LegendRow] = list(region.rows)
+    joined_groups = 0
+    joined_rejected_headings: list[PdfTextObservation] = []
+    # The title-matched rows themselves can run into a rejected section part
+    # way down their own column; the heading found for them decides here, the
+    # same as for every group joined below.
+    own_heading = _nearest_section_heading(
+        list(region.rows),
+        texts,
+        vectors,
+        allow_beside=True,
+    )
+    if (
+        own_heading is not None
+        and _heading_has_rejected_legend_context(own_heading)
+        and frame[0] <= own_heading.x_pt <= frame[2]
+        and frame[1] <= own_heading.y_pt <= frame[3]
+    ):
+        joined_rejected_headings.append(own_heading)
+    for group in page_groups:
+        if any((row.cluster.geometry_key, row.label.element_id) in present for row in group):
+            continue
+        if not all(_row_inside(row, frame) for row in group):
+            continue
+        heading = _nearest_section_heading(group, texts, vectors, allow_beside=True)
+        if heading is not None and _heading_has_rejected_legend_context(heading):
+            # A rejected section heading is only fatal for the whole group when
+            # it sits outside the legend frame (a notes column beside the
+            # legend). ABBREVIATIONS inside a legend frame heads one section of
+            # a shared ruled block: join the group and let the per-row section
+            # drop below remove just its rows. The heading found here is the
+            # one the drop step uses for these rows, whatever its font size.
+            heading_inside_frame = (
+                frame[0] <= heading.x_pt <= frame[2]
+                and frame[1] <= heading.y_pt <= frame[3]
+            )
+            if not heading_inside_frame:
+                continue
+            joined_rejected_headings.append(heading)
+        joined.extend(group)
+        joined_groups += 1
+        present.update((row.cluster.geometry_key, row.label.element_id) for row in group)
+    joined, dropped_rows, sections = _drop_rows_in_rejected_sections(
+        joined,
+        frame,
+        texts,
+        extra_headings=joined_rejected_headings,
+    )
+    return replace(
+        region,
+        rows=tuple(
+            sorted(
+                joined,
+                key=lambda row: (
+                    row.cluster.page,
+                    -row.cluster.center_pt[1],
+                    row.cluster.center_pt[0],
+                    row.label.element_id,
+                ),
+            )
+        ),
+        table_bbox_pt=frame,
+        dropped_rows=tuple(dropped_rows),
+        legend_frame={
+            "method": "ruled frame around the legend title",
+            "bbox_pt": list(frame),
+            "joined_row_groups": joined_groups,
+            "section_headings": sections,
+            "rows_dropped_in_rejected_sections": len(dropped_rows),
+        },
+    )
+
+
 def _detect_legend_regions(
     *,
     texts: Sequence[PdfTextObservation],
@@ -4629,8 +5922,9 @@ def _detect_legend_regions(
                 texts,
                 vectors,
                 allow_beside=True,
+                require_legend_title=True,
             )
-            if heading is None or not _is_legend_heading(heading):
+            if heading is None:
                 continue
             candidates.append(
                 _LegendRegion(
@@ -4642,14 +5936,19 @@ def _detect_legend_regions(
                 )
             )
         if candidates:
-            regions_by_page[page] = max(
-                candidates,
-                key=lambda region: (
-                    len(region.rows),
-                    sum(row.classification is not None for row in region.rows),
-                    (region.heading.font_size_pt or 0.0) if region.heading else 0.0,
-                    region.heading.element_id if region.heading else "",
+            regions_by_page[page] = _join_framed_legend_columns(
+                max(
+                    candidates,
+                    key=lambda region: (
+                        len(region.rows),
+                        sum(row.classification is not None for row in region.rows),
+                        (region.heading.font_size_pt or 0.0) if region.heading else 0.0,
+                        region.heading.element_id if region.heading else "",
+                    ),
                 ),
+                page_groups,
+                texts,
+                vectors,
             )
 
     signature_counts: dict[tuple[int, str], int] = {}
@@ -5886,7 +7185,7 @@ def _recognize_lighting(
 ]:
     clusters = tuple(
         cluster
-        for cluster in _cluster_small_vector_glyphs(vectors)
+        for cluster in _glyph_clusters(document, vectors)
         if _is_glyph_cluster(cluster)
     )
     (
@@ -6688,10 +7987,11 @@ def _recognize_legend_shapes(
     list[dict[str, Any]],
     dict[str, Any],
     dict[int, tuple[_LegendEntry, ...]],
+    dict[int, tuple[float, float, float, float]],
 ]:
     clusters = tuple(
         cluster
-        for cluster in _cluster_small_vector_glyphs(vectors)
+        for cluster in _glyph_clusters(document, vectors)
         if _is_glyph_cluster(cluster)
     )
     glyph_vector_ids = {
@@ -6732,6 +8032,11 @@ def _recognize_legend_shapes(
                 row.label_source_element_ids or (row.label.element_id,)
             )
     prototype_geometry_keys: set[tuple[int, str]] = set()
+    # Rows a frame's rejected section dropped keep their glyphs out of the
+    # field too: the glyphs are frame samples, not installed devices.
+    for region in regions:
+        for row in region.dropped_rows:
+            prototype_geometry_keys.add((row.cluster.page, row.cluster.geometry_key))
     entries_by_signature: dict[tuple[int, str], list[_LegendEntry]] = {}
     classified_entries_by_page: dict[int, list[_LegendEntry]] = {}
     unresolved: list[dict[str, Any]] = []
@@ -6854,14 +8159,128 @@ def _recognize_legend_shapes(
     for reference in references:
         references_by_page.setdefault(reference.page, []).append(reference)
 
+    # Glyphs drawn inside a legend frame or legend table are legend samples,
+    # never installed devices. A glyph straddling a frame rule is treated as
+    # inside too: only its center inside would let a sample drawn over the
+    # bottom rule leak out as an installed device. A frame can still be far
+    # larger than the legend's own rows (a ruled viewport around an unframed
+    # legend), so the exclusion follows the rows: a row prototype, or a
+    # cluster of a known row's shape near that row, is a sample; a cluster
+    # near the rows but matching none is legend linework, kept out of the
+    # field and reported as unresolved; a cluster far from every row stays a
+    # field candidate and keeps its own chance to match or fail closed.
+    legend_boxes = {
+        region.page: region.table_bbox_pt
+        for region in regions
+        if region.table_bbox_pt is not None
+    }
+
+    def cluster_inside_legend_frame(
+        cluster: _VectorCluster,
+    ) -> bool:
+        box = legend_boxes.get(cluster.page)
+        if box is None:
+            return False
+        x0, y0, x1, y1 = box
+        cx0, cy0, cx1, cy1 = cluster.bbox_pt
+        if not (cx0 <= x1 and cx1 >= x0 and cy0 <= y1 and cy1 >= y0):
+            return False
+        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
+            return True
+        page_entries = legend_entries_by_page.get(cluster.page, ())
+        near_rows = [
+            entry
+            for entry in page_entries
+            if _distance_pt(
+                cluster.center_pt[0],
+                cluster.center_pt[1],
+                entry.prototype.center_pt[0],
+                entry.prototype.center_pt[1],
+            )
+            <= _LEGEND_FRAME_SAMPLE_RADIUS_PT
+        ]
+        if not near_rows:
+            return False
+        if any(
+            entry.prototype.shape_signature == cluster.shape_signature
+            for entry in near_rows
+        ):
+            return True
+        if (cluster.page, cluster.geometry_key) not in inframe_unpaired_reported:
+            inframe_unpaired_reported.add((cluster.page, cluster.geometry_key))
+            unresolved.append(
+                {
+                    "kind": "vector_cluster",
+                    "page": cluster.page,
+                    "source_element_id": cluster.source_element_ids[0],
+                    "source_element_ids": list(cluster.source_element_ids),
+                    "position_pt": {
+                        "x": cluster.center_pt[0],
+                        "y": cluster.center_pt[1],
+                    },
+                    "bbox_pt": list(cluster.bbox_pt),
+                    "shape_signature": cluster.shape_signature,
+                    "status": "unresolved_identity",
+                    "reason": (
+                        "cluster inside a legend frame is no legend row and no "
+                        "sample of a legend row; it cannot claim a device identity"
+                    ),
+                }
+            )
+        return True
+
+    inframe_unpaired_reported: set[tuple[int, str]] = set()
+    inframe_excluded_counts: dict[int, int] = {}
+    for cluster in clusters:
+        if cluster_inside_legend_frame(cluster):
+            inframe_excluded_counts[cluster.page] = (
+                inframe_excluded_counts.get(cluster.page, 0) + 1
+            )
+
+    # Text inside a legend frame that no legend row claimed (a stray note, a
+    # leftover annotation) must not claim a device identity through the text
+    # rules either. Keep it as unresolved evidence instead.
+    for text in texts:
+        if text.element_id in legend_text_ids or text.page not in legend_boxes:
+            continue
+        box = legend_boxes[text.page]
+        if not (
+            box[0] <= text.x_pt <= box[2] and box[1] <= text.y_pt <= box[3]
+        ):
+            continue
+        if _field_modifier_text(" ".join(text.text.split())) is not None:
+            continue
+        if not _text_entity_hits(text.text):
+            continue
+        legend_text_ids.add(text.element_id)
+        unresolved.append(
+            {
+                "kind": "text",
+                "page": text.page,
+                "source_element_id": text.element_id,
+                "text": text.text,
+                "position_pt": {"x": text.x_pt, "y": text.y_pt},
+                "status": "unresolved_identity",
+                "reason": (
+                    "text inside a legend frame did not join a legend row and "
+                    "cannot claim a device identity"
+                ),
+            }
+        )
+
     field_clusters = _prepare_field_clusters(
-        clusters,
+        tuple(
+            cluster
+            for cluster in clusters
+            if not cluster_inside_legend_frame(cluster)
+        ),
         prototype_geometry_keys=prototype_geometry_keys,
         legend_entries_by_page=legend_entries_by_page,
         references_by_page=references_by_page,
         texts=texts,
     )
 
+    screened_vector_ids = _screened_background_vector_ids(vectors)
     legend_recognition = {
         "regions": [
             {
@@ -6898,6 +8317,18 @@ def _recognize_legend_shapes(
                     if region.frame_provenance
                     else {}
                 ),
+                **(
+                    {
+                        "legend_frame": {
+                            **dict(region.legend_frame),
+                            "inframe_glyph_clusters_excluded": (
+                                inframe_excluded_counts.get(region.page, 0)
+                            ),
+                        }
+                    }
+                    if region.legend_frame is not None
+                    else {}
+                ),
             }
             for region in regions
         ],
@@ -6919,6 +8350,24 @@ def _recognize_legend_shapes(
             }
             for reference in references
         ],
+        # Screened (translucent) paths cluster among themselves and stay in
+        # play; say how many there are so the split stays visible.
+        **(
+            {
+                "screened_background": {
+                    "vector_count": len(screened_vector_ids),
+                    "pages": sorted(
+                        {
+                            vector.page
+                            for vector in vectors
+                            if vector.element_id in screened_vector_ids
+                        }
+                    ),
+                }
+            }
+            if screened_vector_ids
+            else {}
+        ),
     }
 
     candidates: dict[str, _EntityCandidate] = {}
@@ -7313,6 +8762,7 @@ def _recognize_legend_shapes(
             )
             for page, entries in sorted(classified_entries_by_page.items())
         },
+        legend_boxes,
     )
 
 def _extract_voltage(texts: Iterable[str]) -> tuple[float | None, str | None]:
@@ -7610,6 +9060,7 @@ class ElectricalPdfImporter:
             unresolved_shape_rows,
             legend_recognition,
             annotation_legend_entries,
+            legend_frame_boxes,
         ) = _recognize_legend_shapes(
             document,
             texts=generic_legend_texts,
@@ -7906,8 +9357,37 @@ class ElectricalPdfImporter:
                     method="pdf-text-pattern",
                 )
 
+        inframe_symbols_skipped: dict[int, int] = {}
         for symbol in symbols:
             if (symbol.page, symbol.element_id) in claimed_source_ids:
+                continue
+
+            # A legend glyph often carries a letter code annotation of its own
+            # (the dimmer "D", a "$" drawn as "S"). Codes are only read on the
+            # field side; inside the legend frame the symbol is a sample. The
+            # skip is recorded as unresolved evidence, not deleted silently.
+            frame_box = legend_frame_boxes.get(symbol.page)
+            if frame_box is not None and (
+                frame_box[0] <= symbol.x_pt <= frame_box[2]
+                and frame_box[1] <= symbol.y_pt <= frame_box[3]
+            ):
+                inframe_symbols_skipped[symbol.page] = (
+                    inframe_symbols_skipped.get(symbol.page, 0) + 1
+                )
+                unresolved_observations.append(
+                    {
+                        "kind": "symbol",
+                        "page": symbol.page,
+                        "source_element_id": symbol.element_id,
+                        "name": symbol.name,
+                        "source_kind": symbol.source_kind,
+                        "position_pt": {"x": symbol.x_pt, "y": symbol.y_pt},
+                        "status": "unresolved_identity",
+                        "reason": (
+                            "legend sample inside a legend frame or table"
+                        ),
+                    }
+                )
                 continue
 
             annotation_match = _annotation_code_legend_match(
@@ -10064,6 +11544,15 @@ class ElectricalPdfImporter:
                     attributes=dict(document.page_provenance[page]),
                 )
             )
+        # Symbols inside a legend frame or table are legend samples; say how
+        # many were kept out of the field so the skip stays visible in
+        # provenance, for framed regions and symbol-table regions alike.
+        for region_record in legend_recognition.get("regions", ()):
+            skipped = inframe_symbols_skipped.get(int(region_record["page"]), 0)
+            if "legend_frame" in region_record:
+                region_record["legend_frame"]["inframe_symbols_skipped"] = skipped
+            elif skipped:
+                region_record["inframe_symbols_skipped"] = skipped
         for note in legend_recognition.get("frame_rederivations", ()):
             model_provenance.append(
                 Provenance(

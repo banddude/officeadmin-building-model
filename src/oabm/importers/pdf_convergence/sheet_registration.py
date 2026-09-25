@@ -28,7 +28,6 @@ from statistics import median
 from typing import Any, Mapping
 
 from oabm.importers.pdf_architecture import (
-    RegionEvidence,
     drawing_level_names,
     printed_sheet_scale,
     region_wall_evidence,
@@ -38,6 +37,16 @@ from oabm.importers.pdf_architecture.extract import extract_pdf as extract_sheet
 from oabm.importers.pdf_architecture.types import (
     PdfDocumentObservation,
     PdfPageObservation,
+)
+from oabm.importers.pdf_architecture.wall_registration import (
+    ALTERNATIVE_ORIENTATIONS,
+    MatchSegment,
+    WallMatch,
+    WallMatchOptions,
+    best_alternative_orientation,
+    composed_frame,
+    match_walls,
+    segments_from_evidence,
 )
 from oabm.importers.pdf_electrical import PdfPageTransform
 from oabm.model import DERIVATION_INFERRED, BuildingModel
@@ -104,6 +113,20 @@ class SheetRegistrationOptions:
             if page < 1 or not math.isfinite(meters_per_point) or meters_per_point <= 0:
                 raise ValueError("electrical scale overrides need a 1-based page and a positive scale")
 
+    @property
+    def wall_options(self) -> WallMatchOptions:
+        """The shared wall matcher's thresholds, as declared here."""
+
+        return WallMatchOptions(
+            tolerance_m=self.tolerance_m,
+            min_inliers=self.min_inliers,
+            min_coverage=self.min_coverage,
+            min_span_m=self.min_span_m,
+            min_span_fraction=self.min_span_fraction,
+            max_residual_m=self.max_residual_m,
+            competing_ratio=self.competing_ratio,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PageRegistration:
@@ -161,286 +184,6 @@ class _Target:
     source_page: PdfPageObservation
     bbox_pt: tuple[float, float, float, float]
     grid_labels: Mapping[str, tuple[float, float]]
-
-
-@dataclass(frozen=True, slots=True)
-class _Segment:
-    start: tuple[float, float]
-    end: tuple[float, float]
-    element_id: str
-
-    @property
-    def midpoint(self) -> tuple[float, float]:
-        return ((self.start[0] + self.end[0]) / 2.0, (self.start[1] + self.end[1]) / 2.0)
-
-    @property
-    def length(self) -> float:
-        return math.dist(self.start, self.end)
-
-    @property
-    def angle_bucket(self) -> int:
-        angle = math.degrees(math.atan2(self.end[1] - self.start[1], self.end[0] - self.start[0])) % 180.0
-        return int(angle // 2.0) % 90
-
-
-@dataclass(frozen=True, slots=True)
-class _WallMatch:
-    translation_pt: tuple[float, float]
-    inliers: tuple[tuple[str, str], ...]
-    evidence_count: int
-    residual_rms_pt: float
-    span_pt: tuple[float, float]
-
-    @property
-    def coverage(self) -> float:
-        return len(self.inliers) / self.evidence_count if self.evidence_count else 0.0
-
-
-def _segments(evidence: tuple[RegionEvidence, ...]) -> tuple[_Segment, ...]:
-    return tuple(
-        _Segment(item.start_pt, item.end_pt, "+".join(item.source_element_ids))
-        for item in evidence
-        if math.dist(item.start_pt, item.end_pt) > 1e-6
-    )
-
-
-def _map_point(
-    point: tuple[float, float],
-    scale: float,
-    quarter_turns: int,
-    mirrored: bool = False,
-) -> tuple[float, float]:
-    x, y = point
-    if mirrored:
-        x = -x
-    for _ in range(quarter_turns % 4):
-        x, y = -y, x
-    return (x * scale, y * scale)
-
-
-def _map_segments(
-    segments: tuple[_Segment, ...],
-    scale: float,
-    quarter_turns: int,
-    mirrored: bool = False,
-) -> tuple[_Segment, ...]:
-    return tuple(
-        _Segment(
-            _map_point(item.start, scale, quarter_turns, mirrored),
-            _map_point(item.end, scale, quarter_turns, mirrored),
-            item.element_id,
-        )
-        for item in segments
-    )
-
-
-# Every mirror and quarter-turn configuration other than the identity.
-_ALTERNATIVE_ORIENTATIONS: tuple[tuple[bool, int], ...] = tuple(
-    (mirrored, quarter_turns)
-    for mirrored in (False, True)
-    for quarter_turns in range(4)
-    if (mirrored, quarter_turns) != (False, 0)
-)
-
-
-def _vote(
-    electrical: tuple[_Segment, ...],
-    architecture: tuple[_Segment, ...],
-    tolerance_pt: float,
-    *,
-    limit: int = 8,
-) -> list[tuple[float, float]]:
-    """Candidate translations from same-orientation, same-length segment pairs."""
-
-    by_bucket: dict[int, list[_Segment]] = {}
-    for item in architecture:
-        by_bucket.setdefault(item.angle_bucket, []).append(item)
-    votes: dict[tuple[int, int], set[int]] = {}
-    for index, item in enumerate(electrical):
-        length = item.length
-        mid = item.midpoint
-        for bucket in {(item.angle_bucket + offset) % 90 for offset in (-1, 0, 1)}:
-            for other in by_bucket.get(bucket, ()):
-                if abs(other.length - length) > 2.0 * tolerance_pt + 0.02 * other.length:
-                    continue
-                other_mid = other.midpoint
-                key = (
-                    round((other_mid[0] - mid[0]) / tolerance_pt),
-                    round((other_mid[1] - mid[1]) / tolerance_pt),
-                )
-                votes.setdefault(key, set()).add(index)
-    ranked = sorted(votes.items(), key=lambda item: (-len(item[1]), item[0]))
-    chosen: list[tuple[int, int]] = []
-    for key, _ in ranked:
-        if any(abs(key[0] - other[0]) <= 2 and abs(key[1] - other[1]) <= 2 for other in chosen):
-            continue
-        chosen.append(key)
-        if len(chosen) >= limit:
-            break
-    return [(key[0] * tolerance_pt, key[1] * tolerance_pt) for key in chosen]
-
-
-def _verify(
-    electrical: tuple[_Segment, ...],
-    architecture: tuple[_Segment, ...],
-    translation: tuple[float, float],
-    tolerance_pt: float,
-) -> _WallMatch:
-    """Count electrical segments whose two endpoints land on one architectural segment."""
-
-    def run(shift: tuple[float, float]) -> tuple[list[tuple[str, str]], list[tuple[float, float]], list[tuple[float, float]]]:
-        cell = 2.0 * tolerance_pt
-        endpoints: dict[tuple[int, int], list[int]] = {}
-        for index, item in enumerate(architecture):
-            for point in (item.start, item.end):
-                endpoints.setdefault((math.floor(point[0] / cell), math.floor(point[1] / cell)), []).append(index)
-        inliers: list[tuple[str, str]] = []
-        residuals: list[tuple[float, float]] = []
-        points: list[tuple[float, float]] = []
-        for item in electrical:
-            a = (item.start[0] + shift[0], item.start[1] + shift[1])
-            b = (item.end[0] + shift[0], item.end[1] + shift[1])
-            cx, cy = math.floor(a[0] / cell), math.floor(a[1] / cell)
-            candidates = sorted({
-                index
-                for dx in (-1, 0, 1)
-                for dy in (-1, 0, 1)
-                for index in endpoints.get((cx + dx, cy + dy), ())
-            })
-            best: tuple[float, str, tuple[float, float], tuple[float, float], tuple[float, float], tuple[float, float]] | None = None
-            for index in candidates:
-                other = architecture[index]
-                for first, second in ((other.start, other.end), (other.end, other.start)):
-                    da, db = math.dist(a, first), math.dist(b, second)
-                    if da <= tolerance_pt and db <= tolerance_pt:
-                        key = (da + db, other.element_id, first, second, a, b)
-                        if best is None or key[:2] < best[:2]:
-                            best = key
-            if best is None:
-                continue
-            _, element_id, first, second, a_point, b_point = best
-            inliers.append((item.element_id, element_id))
-            residuals.extend((
-                (first[0] - a_point[0], first[1] - a_point[1]),
-                (second[0] - b_point[0], second[1] - b_point[1]),
-            ))
-            points.extend((first, second))
-        return inliers, residuals, points
-
-    inliers, residuals, _ = run(translation)
-    if residuals:
-        translation = (
-            translation[0] + sum(item[0] for item in residuals) / len(residuals),
-            translation[1] + sum(item[1] for item in residuals) / len(residuals),
-        )
-        inliers, residuals, points = run(translation)
-    else:
-        points = []
-    rms = math.sqrt(sum(dx * dx + dy * dy for dx, dy in residuals) / len(residuals)) if residuals else math.inf
-    span = (
-        (max(p[0] for p in points) - min(p[0] for p in points), max(p[1] for p in points) - min(p[1] for p in points))
-        if points else (0.0, 0.0)
-    )
-    return _WallMatch(
-        translation_pt=translation,
-        inliers=tuple(sorted(inliers)),
-        evidence_count=len(electrical),
-        residual_rms_pt=rms,
-        span_pt=span,
-    )
-
-
-def _wall_failures(
-    match: _WallMatch,
-    target: _Target,
-    target_span_pt: tuple[float, float],
-    options: SheetRegistrationOptions,
-) -> list[str]:
-    reasons: list[str] = []
-    if len(match.inliers) < options.min_inliers or match.coverage < options.min_coverage:
-        reasons.append("insufficient_matched_evidence")
-        return reasons
-    if match.residual_rms_pt * target.meters_per_point > options.max_residual_m:
-        reasons.append("excessive_residual")
-    for axis in (0, 1):
-        needed_m = max(options.min_span_m, options.min_span_fraction * target_span_pt[axis] * target.meters_per_point)
-        if match.span_pt[axis] * target.meters_per_point < needed_m:
-            reasons.append("evidence_clustered")
-            break
-    return reasons
-
-
-def _span(segments: tuple[_Segment, ...]) -> tuple[float, float]:
-    if not segments:
-        return (0.0, 0.0)
-    xs = [value for item in segments for value in (item.start[0], item.end[0])]
-    ys = [value for item in segments for value in (item.start[1], item.end[1])]
-    return (max(xs) - min(xs), max(ys) - min(ys))
-
-
-def _match_walls(
-    electrical: tuple[_Segment, ...],
-    architecture: tuple[_Segment, ...],
-    target: _Target,
-    scale: float,
-    quarter_turns: int,
-    options: SheetRegistrationOptions,
-    mirrored: bool = False,
-) -> tuple[_WallMatch | None, list[str], _WallMatch | None]:
-    """Best accepted wall match, its failure reasons, and a competing runner-up."""
-
-    tolerance_pt = options.tolerance_m / target.meters_per_point
-    mapped = _map_segments(electrical, scale, quarter_turns, mirrored)
-    candidates = [
-        _verify(mapped, architecture, translation, tolerance_pt)
-        for translation in _vote(mapped, architecture, tolerance_pt)
-    ]
-    if not candidates:
-        return None, ["insufficient_matched_evidence"], None
-    target_span = _span(architecture)
-    ranked = sorted(
-        candidates,
-        key=lambda item: (-len(item.inliers), item.residual_rms_pt, item.translation_pt),
-    )
-    best = ranked[0]
-    failures = _wall_failures(best, target, target_span, options)
-    runner_up = next(
-        (
-            item for item in ranked[1:]
-            if math.dist(item.translation_pt, best.translation_pt) > 2.0 * tolerance_pt
-            and not _wall_failures(item, target, target_span, options)
-            and len(item.inliers) >= options.competing_ratio * len(best.inliers)
-        ),
-        None,
-    )
-    if not failures and runner_up is not None:
-        failures = ["competing_transforms"]
-    return best, failures, runner_up
-
-
-def _best_alternative_orientation(
-    electrical: tuple[_Segment, ...],
-    architecture: tuple[_Segment, ...],
-    target: _Target,
-    scale: float,
-    options: SheetRegistrationOptions,
-) -> tuple[int, bool, int]:
-    """Most wall segments any mirrored or rotated placement explains.
-
-    Symmetric walls can match a flipped or turned sheet almost as well as the
-    true placement. The identity match is trusted only when every alternative
-    explains strictly fewer electrical wall segments.
-    """
-
-    tolerance_pt = options.tolerance_m / target.meters_per_point
-    best = (0, False, 0)
-    for mirrored, quarter_turns in _ALTERNATIVE_ORIENTATIONS:
-        mapped = _map_segments(electrical, scale, quarter_turns, mirrored)
-        for translation in _vote(mapped, architecture, tolerance_pt):
-            count = len(_verify(mapped, architecture, translation, tolerance_pt).inliers)
-            if count > best[0]:
-                best = (count, mirrored, quarter_turns)
-    return best
 
 
 def _grid_labels_against(
@@ -558,16 +301,21 @@ def _match_grid(
 def _compose(target: _Target, scale: float, translation_pt: tuple[float, float]) -> dict[str, float]:
     """Electrical displayed point -> architecture sheet point -> canonical frame."""
 
-    c, s = math.cos(target.rotation_radians), math.sin(target.rotation_radians)
-    m = target.meters_per_point
-    tx, ty = translation_pt
+    mpp, rotation, tx_m, ty_m = composed_frame(
+        target.meters_per_point,
+        target.rotation_radians,
+        target.translation_m,
+        scale,
+        translation_pt,
+    )
+    c, s = math.cos(rotation), math.sin(rotation)
     return {
-        "m11_m_per_pt": m * scale * c,
-        "m12_m_per_pt": -m * scale * s,
-        "m21_m_per_pt": m * scale * s,
-        "m22_m_per_pt": m * scale * c,
-        "tx_m": m * (c * tx - s * ty) + target.translation_m[0],
-        "ty_m": m * (s * tx + c * ty) + target.translation_m[1],
+        "m11_m_per_pt": mpp * c,
+        "m12_m_per_pt": -mpp * s,
+        "m21_m_per_pt": mpp * s,
+        "m22_m_per_pt": mpp * c,
+        "tx_m": tx_m,
+        "ty_m": ty_m,
         "z_m": target.level_elevation_m,
     }
 
@@ -678,10 +426,10 @@ class _EvidenceCache:
     def __init__(self, electrical_page: PdfPageObservation, electrical_mpp: float) -> None:
         self.electrical_page = electrical_page
         self.electrical_mpp = electrical_mpp
-        self._electrical: dict[bool, tuple[str, tuple[tuple[tuple[float, float, float, float], tuple[_Segment, ...]], ...]]] = {}
-        self._architecture: dict[tuple[str, bool], tuple[str, tuple[_Segment, ...]]] = {}
+        self._electrical: dict[bool, tuple[str, tuple[tuple[tuple[float, float, float, float], tuple[MatchSegment, ...]], ...]]] = {}
+        self._architecture: dict[tuple[str, bool], tuple[str, tuple[MatchSegment, ...]]] = {}
 
-    def electrical(self, use_layers: bool) -> tuple[str, tuple[tuple[tuple[float, float, float, float], tuple[_Segment, ...]], ...]]:
+    def electrical(self, use_layers: bool) -> tuple[str, tuple[tuple[tuple[float, float, float, float], tuple[MatchSegment, ...]], ...]]:
         if use_layers not in self._electrical:
             view = sheet_wall_evidence(
                 self.electrical_page,
@@ -690,17 +438,17 @@ class _EvidenceCache:
             )
             self._electrical[use_layers] = (
                 view.evidence_kind,
-                tuple((bbox, _segments(items)) for bbox, items in view.drawings),
+                tuple((bbox, segments_from_evidence(items)) for bbox, items in view.drawings),
             )
         return self._electrical[use_layers]
 
-    def architecture(self, target: _Target, use_layers: bool) -> tuple[str, tuple[_Segment, ...]]:
+    def architecture(self, target: _Target, use_layers: bool) -> tuple[str, tuple[MatchSegment, ...]]:
         key = (target.region_id, use_layers)
         if key not in self._architecture:
             kind, evidence = region_wall_evidence(
                 target.source_page, target.bbox_pt, target.meters_per_point, use_wall_layers=use_layers,
             )
-            self._architecture[key] = (kind, _segments(evidence))
+            self._architecture[key] = (kind, segments_from_evidence(evidence))
         return self._architecture[key]
 
 
@@ -715,8 +463,8 @@ def _evaluate_target(
     """Match one electrical drawing against one architectural region."""
 
     scale = cache.electrical_mpp / target.meters_per_point
-    walls: tuple[_Segment, ...] = ()
-    architecture_walls: tuple[_Segment, ...] = ()
+    walls: tuple[MatchSegment, ...] = ()
+    architecture_walls: tuple[MatchSegment, ...] = ()
     evidence_kind = None
     if drawing_index is not None:
         # Compare like with like: wall-layer faces on both sheets when both have
@@ -734,17 +482,25 @@ def _evaluate_target(
                 architecture_walls = architecture_segments
                 evidence_kind = architecture_kind
                 break
-    wall_match: _WallMatch | None = None
+    wall_match: WallMatch | None = None
     wall_reasons = ["missing_wall_evidence"]
-    runner_up: _WallMatch | None = None
+    runner_up: WallMatch | None = None
     orientation_alternative: dict[str, Any] | None = None
     if walls and architecture_walls:
-        wall_match, wall_reasons, runner_up = _match_walls(
-            walls, architecture_walls, target, scale, 0, options,
+        wall_match, wall_reasons, runner_up = match_walls(
+            walls,
+            architecture_walls,
+            scale=scale,
+            target_meters_per_point=target.meters_per_point,
+            options=options.wall_options,
         )
         if wall_match is not None and not wall_reasons:
-            count, mirrored, quarter_turns = _best_alternative_orientation(
-                walls, architecture_walls, target, scale, options,
+            count, mirrored, quarter_turns = best_alternative_orientation(
+                walls,
+                architecture_walls,
+                scale=scale,
+                target_meters_per_point=target.meters_per_point,
+                options=options.wall_options,
             )
             orientation_alternative = {
                 "mirrored": mirrored,
@@ -857,15 +613,21 @@ def _diagnose(
     """Would the walls match under a rotation or another scale? Diagnostics only."""
 
     target: _Target = best["_target"]
-    walls: tuple[_Segment, ...] = best["_walls"]
-    architecture_walls: tuple[_Segment, ...] = best["_architecture_walls"]
+    walls: tuple[MatchSegment, ...] = best["_walls"]
+    architecture_walls: tuple[MatchSegment, ...] = best["_architecture_walls"]
     scale = float(best["scale_ratio"])
     if not walls or not architecture_walls:
         return [], {}
     rotations = []
-    for mirrored, quarter_turns in _ALTERNATIVE_ORIENTATIONS:
-        match, failures, _ = _match_walls(
-            walls, architecture_walls, target, scale, quarter_turns, options, mirrored,
+    for mirrored, quarter_turns in ALTERNATIVE_ORIENTATIONS:
+        match, failures, _ = match_walls(
+            walls,
+            architecture_walls,
+            scale=scale,
+            target_meters_per_point=target.meters_per_point,
+            options=options.wall_options,
+            quarter_turns=quarter_turns,
+            mirrored=mirrored,
         )
         if match is not None and not failures:
             rotations.append((-len(match.inliers), mirrored, quarter_turns))
@@ -877,7 +639,13 @@ def _diagnose(
         }
     ratios = []
     for ratio in options.diagnostic_scale_ratios:
-        match, failures, _ = _match_walls(walls, architecture_walls, target, scale * ratio, 0, options)
+        match, failures, _ = match_walls(
+            walls,
+            architecture_walls,
+            scale=scale * ratio,
+            target_meters_per_point=target.meters_per_point,
+            options=options.wall_options,
+        )
         if match is not None and not failures:
             ratios.append((-len(match.inliers), ratio))
     if ratios:
@@ -1033,7 +801,7 @@ def _register_page(
         return PageRegistration(page.page_number, REGISTRATION_PENDING, ("competing_targets",), None, record)
 
     target: _Target = chosen["_target"]
-    wall_match: _WallMatch | None = chosen["_wall_match"]
+    wall_match: WallMatch | None = chosen["_wall_match"]
     confidence = round(min(target.confidence, _METHOD_CONFIDENCE[chosen["method"]]), 6)
     registration = {
         "method": f"sheet registration by {chosen['method'].replace('_', ' ')}",

@@ -4519,6 +4519,10 @@ def _resolve_unresolved_glyphs_from_annotation_tags(
         if contents is None:
             continue
         raw_code, normalized_code = contents
+        if not any(character.isalpha() for character in normalized_code):
+            # A bare number (a three-way subscript, a circuit number) never
+            # names a device type by itself.
+            continue
         entries = tag_index.get(symbol.page, {}).get(normalized_code, ())
         if not entries:
             continue

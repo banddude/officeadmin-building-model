@@ -3258,6 +3258,20 @@ def _dashed_arc_train_vector_ids(
     straight leader, mixed crossings) are left untouched.
     """
 
+    by_page: dict[int, list[PdfVectorPathObservation]] = {}
+    for vector in vectors:
+        by_page.setdefault(vector.page, []).append(vector)
+    matched: set[str] = set()
+    for page in sorted(by_page):
+        matched.update(_page_dashed_arc_train_vector_ids(by_page[page]))
+    return matched
+
+
+def _page_dashed_arc_train_vector_ids(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> set[str]:
+    """Dashed-arc dash ids among the vectors of one page."""
+
     dashes: list[
         tuple[
             PdfVectorPathObservation,
@@ -3295,10 +3309,13 @@ def _dashed_arc_train_vector_ids(
             parent[first_root] = second_root
 
     for first in range(len(dashes)):
-        _, first_start, first_end, first_x = dashes[first]
+        _, first_start, first_end, _first_x = dashes[first]
+        # Candidates are sorted by their left end; one whose left end lies
+        # beyond this dash's right end plus the gap cannot be within the gap.
+        reach_x = max(first_start[0], first_end[0]) + _DASH_ARC_CHAIN_GAP_PT
         for second in range(first + 1, len(dashes)):
             candidate = dashes[second]
-            if candidate[3] > first_x + _DASH_ARC_CHAIN_GAP_PT:
+            if candidate[3] > reach_x:
                 break
             second_start, second_end = candidate[1], candidate[2]
             gap = min(

@@ -6301,3 +6301,97 @@ def test_dashed_circuit_arc_dashes_do_not_form_glyph_clusters(
             for element_id in cluster.source_element_ids
         }
     )
+
+
+def _arc_dash_commands(
+    center: tuple[float, float],
+    radius: float,
+    *,
+    start_angle: float,
+    dash_angle: float,
+    gap_angle: float,
+    count: int,
+) -> list[str]:
+    commands: list[str] = []
+    angle = start_angle
+    for _ in range(count):
+        commands.append(
+            _cad_path_command(
+                (
+                    (
+                        center[0] + radius * math.cos(angle),
+                        center[1] + radius * math.sin(angle),
+                    ),
+                    (
+                        center[0] + radius * math.cos(angle + dash_angle),
+                        center[1] + radius * math.sin(angle + dash_angle),
+                    ),
+                ),
+                close=False,
+            )
+        )
+        angle += dash_angle + gap_angle
+    return commands
+
+
+def test_dashed_arc_filter_chains_long_dashes_along_a_flat_arc(
+    tmp_path: Path,
+) -> None:
+    # Near the top of a wide arc each 30 pt dash runs almost horizontally, so
+    # consecutive dashes start more than the chain gap apart in x even though
+    # their facing ends are only a few points apart.
+    content = _arc_dash_commands(
+        (300.0, 300.0),
+        80.0,
+        start_angle=math.pi / 2.0 - 0.9,
+        dash_angle=0.375,
+        gap_angle=0.1,
+        count=4,
+    )
+    pdf_path = tmp_path / "flat-dashed-arc.pdf"
+    _write_pdf_with_content(pdf_path, content)
+    extracted = extract_pdf(pdf_path, source_id="test:flat-dashed-arc")
+
+    assert len(extracted.vectors) == 4
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == {vector.element_id for vector in extracted.vectors}
+
+
+def test_dashed_arc_filter_never_chains_dashes_across_pages(
+    tmp_path: Path,
+) -> None:
+    # Three dashes of one circle on page 1 and the other three, at the same
+    # coordinates, on page 2: neither page holds an arc train of four.
+    dashes = _arc_dash_commands(
+        (300.0, 300.0),
+        25.0,
+        start_angle=0.0,
+        dash_angle=0.5,
+        gap_angle=2.0 * math.pi / 6.0 - 0.5,
+        count=6,
+    )
+    writer = PdfWriter()
+    for page_dashes in (dashes[:3], dashes[3:]):
+        page = writer.add_blank_page(width=612.0, height=792.0)
+        stream = DecodedStreamObject()
+        stream.set_data("\n".join(page_dashes).encode("ascii"))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    pdf_path = tmp_path / "two-page-dashes.pdf"
+    with pdf_path.open("wb") as handle:
+        writer.write(handle)
+    extracted = extract_pdf(pdf_path, source_id="test:two-page-dashes")
+
+    assert Counter(vector.page for vector in extracted.vectors) == Counter(
+        {1: 3, 2: 3}
+    )
+    assert pdf_electrical_importer._dashed_arc_train_vector_ids(
+        extracted.vectors
+    ) == set()
+    # The same six dashes on one page are one arc train.
+    single_path = tmp_path / "one-page-dashes.pdf"
+    _write_pdf_with_content(single_path, dashes)
+    single = extract_pdf(single_path, source_id="test:one-page-dashes")
+    assert len(
+        pdf_electrical_importer._dashed_arc_train_vector_ids(single.vectors)
+    ) == 6

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
+from functools import lru_cache
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
@@ -1643,6 +1644,15 @@ _GLYPH_MATCH_STRONG_SCORE = 0.75
 _GLYPH_MATCH_NEAR_TIE_MARGIN = _GLYPH_MATCH_MARGIN_MIN
 _GLYPH_RESAMPLE_STEP = 0.04
 _GLYPH_CHAMFER_DISTANCE_SCALE = 0.30
+# Below this covariance eigenvalue ratio a cloud has no principal axis:
+# circles, squares, regular hexagons, equilateral triangles, and plus or X
+# glyphs all sit near 1.0 there, and the axis formula returns resampling
+# noise instead of an orientation. Such comparisons de-rotate by sweep.
+_CLOUD_ISOTROPIC_EIGENVALUE_RATIO = 1.1
+# Coarse de-rotation sweep for isotropic clouds: fixed 5-degree order over
+# the full turn, ties keeping the smallest angle.
+_CLOUD_ROTATION_SWEEP_STEP_DEGREES = 5
+_CLOUD_SWEEP_SAMPLE_POINTS = 64
 _ANNOTATION_CODE_MAX_CHARS = 16
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
 _LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
@@ -1829,12 +1839,14 @@ _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT = 220.0
 _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT = 18.0
 # Legend rows are read as table structure. The heading anchors the table's
 # row grid over its own column; a further printed column joins the table
-# only when it starts within one inch past where the admitted table's
-# printed descriptions are estimated to end, every one of its labels
-# continues the grid on a distinct row, and each of its rows carries
-# description text to the right the way a legend row does. A vertical run
-# of tagged field fixtures on the grid rows must not be mistaken for a
-# legend column, so no one of these signals admits alone.
+# only when it starts right of the admitted table's tags (max label x plus
+# one label width -- printed geometry, not the font-sensitive estimate),
+# within one inch past where the admitted table's printed descriptions are
+# estimated to end, every one of its labels continues the grid on a
+# distinct row, and each of its rows carries description text to the right
+# the way a legend row does. A vertical run of tagged field fixtures on the
+# grid rows must not be mistaken for a legend column, so no one of these
+# signals admits alone.
 _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT = 220.0
 _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT = 48.0
 _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT = 10.0
@@ -2105,9 +2117,13 @@ def _cloud_principal_angle(
 ) -> float | None:
     """Orientation of a cloud's major axis, defined only up to half a turn.
 
-    Second-moment principal-axis angle. Radially uniform clouds such as
-    circles have a degenerate axis; any orientation matches them anyway, so
-    the arbitrary zero the formula returns there is harmless.
+    Second-moment principal-axis angle. Returns None when no such axis
+    exists: every near-isotropic covariance -- circles, but equally
+    squares, hexagons, equilateral triangles, and plus or X glyphs -- sits
+    at an eigenvalue ratio under
+    `_CLOUD_ISOTROPIC_EIGENVALUE_RATIO`, where the formula returns
+    resampling noise rather than an orientation. The caller de-rotates
+    such clouds with the coarse rotation sweep instead.
     """
     count = len(cloud)
     if count < 2:
@@ -2119,18 +2135,29 @@ def _cloud_principal_angle(
     covariance_xy = sum((x - mean_x) * (y - mean_y) for x, y in cloud) / count
     if not math.isfinite(covariance_xx + covariance_yy + covariance_xy):
         return None
+    mean_eigenvalue = (covariance_xx + covariance_yy) / 2.0
+    spread = math.hypot(
+        (covariance_xx - covariance_yy) / 2.0,
+        covariance_xy,
+    )
+    minor_eigenvalue = mean_eigenvalue - spread
+    if (
+        minor_eigenvalue > 1e-12
+        and mean_eigenvalue / minor_eigenvalue
+        < _CLOUD_ISOTROPIC_EIGENVALUE_RATIO
+    ):
+        return None
     return 0.5 * math.atan2(2.0 * covariance_xy, covariance_xx - covariance_yy)
 
 
-def _principal_axis_aligned_cloud(
+def _centroid_radius_normalized_cloud(
     cloud: Sequence[tuple[float, float]],
 ) -> tuple[tuple[float, float], ...] | None:
-    """Re-express a resampled cloud in a rotation-invariant canonical frame.
+    """Remove translation and uniform scale from a resampled cloud.
 
-    Centroid and root-mean-square radius remove translation and uniform
-    scale; aligning the principal axis removes in-plane rotation. Both
-    clouds of a comparison land in the same frame only up to half a turn,
-    so the caller keeps the half-turn variant as an explicit alternative.
+    The result lives at centroid zero and root-mean-square radius 1, the
+    common frame in which rotation is removed by axis alignment or, for
+    isotropic clouds, by the coarse rotation sweep.
     """
     count = len(cloud)
     if count < 2:
@@ -2142,13 +2169,85 @@ def _principal_axis_aligned_cloud(
     )
     if radius <= 1e-9 or not math.isfinite(radius):
         return None
-    centered = tuple(
+    return tuple(
         ((x - mean_x) / radius, (y - mean_y) / radius) for x, y in cloud
     )
-    angle = _cloud_principal_angle(centered)
+
+
+def _principal_axis_aligned_cloud(
+    cloud: Sequence[tuple[float, float]],
+) -> tuple[tuple[float, float], ...] | None:
+    """Re-express a resampled cloud in a rotation-invariant canonical frame.
+
+    Centroid and root-mean-square radius remove translation and uniform
+    scale; aligning the principal axis removes in-plane rotation. Both
+    clouds of a comparison land in the same frame only up to half a turn,
+    so the caller keeps the half-turn variant as an explicit alternative.
+
+    Returns None when no principal axis exists. Beyond degenerate clouds,
+    that includes every near-isotropic covariance -- squares, hexagons,
+    triangles, plus and X glyphs, circles -- where the axis formula returns
+    resampling noise instead of an orientation. The caller de-rotates such
+    clouds with the coarse rotation sweep instead.
+    """
+    normalized = _centroid_radius_normalized_cloud(cloud)
+    if normalized is None:
+        return None
+    angle = _cloud_principal_angle(normalized)
     if angle is None:
         return None
-    return _rotate_point_cloud(centered, -angle)
+    return _rotate_point_cloud(normalized, -angle)
+
+
+@lru_cache(maxsize=512)
+def _sweep_normalized_cloud(
+    cloud: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...] | None:
+    """Decimated, scale-normalized cloud for the coarse rotation sweep.
+
+    The sweep tries dozens of rotations, so it scores against a fixed
+    stride sample of each boundary. The clouds are sorted tuples, so the
+    sample -- and therefore the winner angle -- is identical across runs;
+    the cache only keeps repeated comparisons of the same glyph from
+    re-deriving the same sample.
+    """
+    stride = max(1, len(cloud) // _CLOUD_SWEEP_SAMPLE_POINTS)
+    return _centroid_radius_normalized_cloud(cloud[::stride])
+
+
+@lru_cache(maxsize=2048)
+def _isotropic_sweep_distance(
+    cluster_cloud: tuple[tuple[float, float], ...],
+    prototype_cloud: tuple[tuple[float, float], ...],
+) -> float | None:
+    """Best chamfer distance over a coarse, fixed-order rotation sweep.
+
+    Fallback for comparisons whose principal-axis alignment is undefined
+    because at least one covariance is isotropic. The cluster cloud is
+    swept over the full turn in fixed 5-degree steps against the
+    scale-normalized prototype, covering every relative print angle
+    including the half turn. A strict improvement test keeps the first
+    angle reaching the best distance, so ties go to the smallest angle and
+    two runs sweep in the same order. Distances live at root-mean-square
+    radius 1, a wider frame than the bbox-normalized clouds above, so a
+    swept distance only wins the min when the shapes genuinely coincide
+    once rotated together. Both arguments are the importer's sorted,
+    value-hashable resampled clouds, so the cache only spares repeated
+    comparisons of the same glyph pair their sweep.
+    """
+    cluster_normalized = _sweep_normalized_cloud(cluster_cloud)
+    prototype_normalized = _sweep_normalized_cloud(prototype_cloud)
+    if cluster_normalized is None or prototype_normalized is None:
+        return None
+    best: float | None = None
+    for angle_degrees in range(0, 360, _CLOUD_ROTATION_SWEEP_STEP_DEGREES):
+        candidate = _point_cloud_distance(
+            _rotate_point_cloud(cluster_normalized, math.radians(angle_degrees)),
+            prototype_normalized,
+        )
+        if best is None or candidate < best:
+            best = candidate
+    return best
 
 
 def _cluster_match_score(
@@ -2179,18 +2278,22 @@ def _cluster_match_score(
     # clouds live at root-mean-square radius 1, a wider frame than the
     # bbox-normalized clouds above, so aligned distances only win the min
     # when the shapes genuinely coincide once rotated together.
+    #
+    # Isotropic shapes -- squares, hexagons, triangles, plus and X glyphs,
+    # circles -- have no principal axis at all, so their comparisons
+    # de-rotate by the coarse fixed-order sweep instead: without it the
+    # axis formula returns noise and a rotated instance scores as a
+    # mismatch.
     prototype_aligned = _principal_axis_aligned_cloud(prototype_cloud)
-    if prototype_aligned is not None:
-        prototype_aligned_half_turn = _rotate_point_cloud(
-            prototype_aligned,
-            math.pi,
-        )
-        for mirrored in (False, True):
-            cluster_aligned = _principal_axis_aligned_cloud(
-                _resampled_point_cloud(cluster, mirrored=mirrored)
-            )
-            if cluster_aligned is None:
-                continue
+    prototype_aligned_half_turn = (
+        None
+        if prototype_aligned is None
+        else _rotate_point_cloud(prototype_aligned, math.pi)
+    )
+    for mirrored in (False, True):
+        cluster_resampled = _resampled_point_cloud(cluster, mirrored=mirrored)
+        cluster_aligned = _principal_axis_aligned_cloud(cluster_resampled)
+        if prototype_aligned is not None and cluster_aligned is not None:
             distance = min(
                 distance,
                 _point_cloud_distance(cluster_aligned, prototype_aligned),
@@ -2199,6 +2302,10 @@ def _cluster_match_score(
                     prototype_aligned_half_turn,
                 ),
             )
+            continue
+        swept = _isotropic_sweep_distance(cluster_resampled, prototype_cloud)
+        if swept is not None:
+            distance = min(distance, swept)
     return round(
         max(0.0, min(1.0, 1.0 - distance / _GLYPH_CHAMFER_DISTANCE_SCALE)),
         6,
@@ -4981,6 +5088,19 @@ def _lighting_legend_row_has_description(
     return _lighting_legend_row_description_text(label, texts=texts) is not None
 
 
+def _estimated_text_width_pt(observation: PdfTextObservation) -> float:
+    """Character-count width estimate at the observation's own font size.
+
+    The 0.6 em convention is deliberately the same one the description-edge
+    estimate uses. Narrow CAD fonts (RomanS and condensed faces, about
+    0.45 em) print about a third shorter than this estimate, which is why
+    the estimated edge serves only as the far-column *upper* bound and
+    never as the lower one.
+    """
+    font_size = float(observation.font_size_pt or 8.0)
+    return len(observation.text) * font_size * 0.6
+
+
 def _lighting_legend_row_description_edge(
     label: PdfTextObservation,
     *,
@@ -4998,8 +5118,7 @@ def _lighting_legend_row_description_edge(
     description = _lighting_legend_row_description_text(label, texts=texts)
     if description is None:
         return label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
-    font_size = float(description.font_size_pt or 8.0)
-    return description.x_pt + len(description.text) * font_size * 0.6
+    return description.x_pt + _estimated_text_width_pt(description)
 
 
 def _detect_lighting_legend_entries(
@@ -5042,9 +5161,10 @@ def _detect_lighting_legend_entries(
         # the heading: the heading's own column anchors the table's row
         # grid, and a further printed column joins the same table only when
         # all three of these hold, so no one signal admits a column alone:
-        #   contiguity - it starts within about one inch past where the
-        #     admitted table's printed descriptions are estimated to end,
-        #     never anywhere on the sheet;
+        #   contiguity - it starts right of the table's own tags (the
+        #     admitted labels' max x plus one label width) and within about
+        #     one inch past where the admitted table's printed descriptions
+        #     are estimated to end, never anywhere on the sheet;
         #   table purity - every one of its labels continues the grid, each
         #     on a distinct row (a field-fixture run usually has off-grid
         #     or doubled-up members);
@@ -5077,6 +5197,20 @@ def _detect_lighting_legend_entries(
             else:
                 pending_columns.append(column)
         admitted_labels = list(candidate_labels)
+        # The lower contiguity bound is printed geometry -- the table's own
+        # tag column -- not the estimated description edge. Narrow CAD fonts
+        # (RomanS and condensed faces, about 0.45 em) run the 0.6 em edge
+        # estimate about a third long, and a real column 2 that starts just
+        # past the printed description would sit left of that inflated
+        # estimate and be rejected. The estimated edge keeps only the upper
+        # bound, where overestimating costs nothing.
+        table_tag_right_edge = max(
+            (
+                label.x_pt + _estimated_text_width_pt(label)
+                for label in admitted_labels
+            ),
+            default=math.inf,
+        )
         table_description_edge = max(
             (
                 _lighting_legend_row_description_edge(label, texts=texts)
@@ -5092,10 +5226,9 @@ def _detect_lighting_legend_entries(
             remaining: list[tuple[PdfTextObservation, ...]] = []
             for column in pending_columns:
                 column_x = min(label.x_pt for label in column)
-                if column_x <= table_description_edge:
-                    # Starts inside the text the table is estimated to have
-                    # already printed. The edge only grows, so this column
-                    # never becomes the next one.
+                if column_x <= table_tag_right_edge:
+                    # Starts inside the table's own tag column. The bound
+                    # only grows, so this column never becomes the next one.
                     continue
                 if (
                     column_x
@@ -5127,6 +5260,13 @@ def _detect_lighting_legend_entries(
                             label,
                             texts=texts,
                         )
+                        for label in column
+                    ),
+                )
+                table_tag_right_edge = max(
+                    table_tag_right_edge,
+                    *(
+                        label.x_pt + _estimated_text_width_pt(label)
                         for label in column
                     ),
                 )

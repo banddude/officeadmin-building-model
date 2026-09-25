@@ -176,7 +176,8 @@ and combination outlets, power and data junction boxes, access-control devices,
 and CATV outlets. Field matching is translation-, uniform-scale-, quarter-turn-,
 and axis-mirror-invariant, with principal-axis rotation normalization covering
 arbitrary printed angles (the same machinery the lighting path uses for skewed
-wings). Prototype and candidate strokes are normalized to
+wings; isotropic glyphs with no principal axis de-rotate by the same
+fixed-order coarse sweep the lighting path uses). Prototype and candidate strokes are normalized to
 their glyph bounds, resampled at fixed geometric density, and compared with a
 symmetric chamfer plus Hausdorff distance so CAD block segmentation does not
 need to match the legend's graphics operators. A match is accepted when its
@@ -302,18 +303,25 @@ Legend rows are read as table structure rather than as distance from the
 heading. The heading anchors the table over its own column, whose labels
 define the row grid; a further printed column belongs to the same legend only
 when all three of these hold, so no one signal admits a column alone: it
-starts within about one inch (72 pt) past where the admitted table's printed
-descriptions are estimated to end (per row, the nearest description text's
-position plus its character count times its font size times 0.6, falling back
-to the label plus the description span when a row has no description), every
-one of its labels continues that grid on a distinct row (table purity), and
-each of its rows carries description text to the right the way a printed
-legend row does and a bare field tag does not (row evidence). The estimate
-may legitimately run past the evidence search span, which is what lets a
-legend printed with long descriptions resolve the column beside it. A
-two-column legend with the heading over column 1 therefore still resolves
-column 2, even at the roughly 340 pt column offset measured in issue #108,
-while a vertical run of tagged field fixtures on the
+starts right of the table's own tags (the admitted labels' max x plus one
+label width -- printed geometry, deliberately not font-sensitive) and within
+about one inch (72 pt) past where the admitted table's printed descriptions
+are estimated to end (per row, the nearest description text's position plus
+its character count times its font size times 0.6, falling back to the label
+plus the description span when a row has no description), every one of its
+labels continues that grid on a distinct row (table purity), and each of its
+rows carries description text to the right the way a printed legend row does
+and a bare field tag does not (row evidence). The estimate may legitimately
+run past the evidence search span, which is what lets a legend printed with
+long descriptions resolve the column beside it, and it may also run long of
+the printed text: narrow CAD fonts (RomanS and condensed faces, about 0.45
+em) print about a third shorter than the 0.6 em estimate, which is why the
+estimated edge bounds only how far out a column may sit and the tag-position
+bound decides where a column must start. A two-column legend with the
+heading over column 1 therefore still resolves column 2, even at the roughly
+340 pt column offset measured in issue #108 or when column 2 starts just
+past the true narrow-font description edge measured in issue #111, while a
+vertical run of tagged field fixtures on the
 grid rows -- even far right of the legend, inside the heading's band -- stays
 field evidence and never becomes legend prototypes. A lone tag-shaped label
 on no legend row is not table structure either. Every resolved legend label
@@ -342,7 +350,14 @@ same normalized geometry machinery as power-device matching without making
 shape the semantic classifier: beyond mirroring and quarter turns, both clouds
 of a comparison are re-expressed in a principal-axis frame (centroid and
 root-mean-square radius, then axis alignment), which recognizes fixtures
-printed at non-orthogonal angles in skewed wings. The tag remains the only
+printed at non-orthogonal angles in skewed wings. Isotropic shapes -- squares,
+hexagons, equilateral triangles, plus and X glyphs, circles -- have no
+principal axis: their covariance eigenvalue ratio sits near 1.0 and the axis
+formula returns resampling noise. Comparisons involving such a cloud
+de-rotate by a coarse fixed-order rotation sweep instead (every 5 degrees
+over the full turn, ties keeping the smallest angle), so a square troffer or
+hexagon printed at an arbitrary angle in a skewed wing resolves against its
+axis-aligned legend prototype. The tag remains the only
 type evidence. Repeated instances may share a fixture tag but
 retain separate stable source-geometry identities.
 

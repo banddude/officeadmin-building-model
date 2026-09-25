@@ -1720,17 +1720,16 @@ _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT = 220.0
 _LIGHTING_LEGEND_ROW_GLYPH_Y_TOLERANCE_PT = 18.0
 # Legend rows are read as table structure. The heading anchors the table's
 # row grid over its own column; a further printed column joins the table
-# only when it sits within one column pitch of an already-admitted column,
-# every one of its labels continues the grid on a distinct row, and each of
-# its rows carries description text to the right the way a legend row does.
-# A vertical run of tagged field fixtures on the grid rows must not be
-# mistaken for a legend column, so no one of these signals admits alone.
+# only when it starts within one inch past where the admitted table's
+# printed descriptions are estimated to end, every one of its labels
+# continues the grid on a distinct row, and each of its rows carries
+# description text to the right the way a legend row does. A vertical run
+# of tagged field fixtures on the grid rows must not be mistaken for a
+# legend column, so no one of these signals admits alone.
 _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT = 220.0
 _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT = 48.0
 _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT = 10.0
-_LIGHTING_LEGEND_COLUMN_PITCH_PT = (
-    _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT + _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT
-)
+_LIGHTING_LEGEND_COLUMN_GAP_PT = 72.0
 _LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
     "TYPE": "tag",
     "TAG": "tag",
@@ -4837,26 +4836,61 @@ def _lighting_legend_column_grid_rows(
     return assignments
 
 
+def _lighting_legend_row_description_text(
+    label: PdfTextObservation,
+    *,
+    texts: Sequence[PdfTextObservation],
+) -> PdfTextObservation | None:
+    """Nearest non-tag text on a legend label's baseline to its right.
+
+    Legend rows carry descriptions such as ``DIMMER SWITCH``; a tagged
+    field fixture's label has nothing but other tags beside it.
+    """
+    return min(
+        (
+            observation
+            for observation in texts
+            if observation.page == label.page
+            and observation.element_id != label.element_id
+            and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
+            and label.x_pt
+            < observation.x_pt
+            <= label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+            and _normalize_lighting_tag(observation.text) is None
+        ),
+        key=lambda observation: (observation.x_pt, observation.element_id),
+        default=None,
+    )
+
+
 def _lighting_legend_row_has_description(
     label: PdfTextObservation,
     *,
     texts: Sequence[PdfTextObservation],
 ) -> bool:
-    """Whether non-tag text sits on the label's baseline to its right.
+    """Whether a legend row carries description text on its baseline."""
+    return _lighting_legend_row_description_text(label, texts=texts) is not None
 
-    Legend rows carry descriptions such as ``DIMMER SWITCH``; a tagged
-    field fixture's label does not.
+
+def _lighting_legend_row_description_edge(
+    label: PdfTextObservation,
+    *,
+    texts: Sequence[PdfTextObservation],
+) -> float:
+    """Estimated right edge of a legend row's printed description.
+
+    Character-count estimate at the description's own font size; the
+    estimate may legitimately run past the evidence search span, which is
+    what lets a legend printed with long descriptions admit the column
+    beside it. A row with no description at all is assumed to occupy the
+    full description span, so an undescribed heading column still bounds
+    how far the next printed column can sit.
     """
-    return any(
-        observation.page == label.page
-        and observation.element_id != label.element_id
-        and abs(observation.y_pt - label.y_pt) <= _LIGHTING_ROW_Y_TOLERANCE_PT
-        and label.x_pt
-        < observation.x_pt
-        <= label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
-        and _normalize_lighting_tag(observation.text) is None
-        for observation in texts
-    )
+    description = _lighting_legend_row_description_text(label, texts=texts)
+    if description is None:
+        return label.x_pt + _LIGHTING_LEGEND_DESCRIPTION_SPAN_PT
+    font_size = float(description.font_size_pt or 8.0)
+    return description.x_pt + len(description.text) * font_size * 0.6
 
 
 def _detect_lighting_legend_entries(
@@ -4899,8 +4933,9 @@ def _detect_lighting_legend_entries(
         # the heading: the heading's own column anchors the table's row
         # grid, and a further printed column joins the same table only when
         # all three of these hold, so no one signal admits a column alone:
-        #   contiguity - it lies within one column pitch of an
-        #     already-admitted column, never anywhere on the sheet;
+        #   contiguity - it starts within about one inch past where the
+        #     admitted table's printed descriptions are estimated to end,
+        #     never anywhere on the sheet;
         #   table purity - every one of its labels continues the grid, each
         #     on a distinct row (a field-fixture run usually has off-grid
         #     or doubled-up members);
@@ -4933,6 +4968,13 @@ def _detect_lighting_legend_entries(
             else:
                 pending_columns.append(column)
         admitted_labels = list(candidate_labels)
+        table_description_edge = max(
+            (
+                _lighting_legend_row_description_edge(label, texts=texts)
+                for label in admitted_labels
+            ),
+            default=math.inf,
+        )
         # Chained expansion admits multi-column legends column by column;
         # a rejected column never anchors anything farther out.
         progressed = True
@@ -4940,12 +4982,18 @@ def _detect_lighting_legend_entries(
             progressed = False
             remaining: list[tuple[PdfTextObservation, ...]] = []
             for column in pending_columns:
-                gap = min(
-                    abs(label.x_pt - admitted.x_pt)
-                    for label in column
-                    for admitted in admitted_labels
-                )
-                if gap > _LIGHTING_LEGEND_COLUMN_PITCH_PT:
+                column_x = min(label.x_pt for label in column)
+                if column_x <= table_description_edge:
+                    # Starts inside the text the table is estimated to have
+                    # already printed. The edge only grows, so this column
+                    # never becomes the next one.
+                    continue
+                if (
+                    column_x
+                    > table_description_edge + _LIGHTING_LEGEND_COLUMN_GAP_PT
+                ):
+                    # Well past the printed text; re-tested if a nearer
+                    # admission extends the edge outward.
                     remaining.append(column)
                     continue
                 grid_rows = _lighting_legend_column_grid_rows(column, row_grid)
@@ -4963,6 +5011,16 @@ def _detect_lighting_legend_entries(
                     continue
                 candidate_labels.extend(column)
                 admitted_labels.extend(column)
+                table_description_edge = max(
+                    table_description_edge,
+                    *(
+                        _lighting_legend_row_description_edge(
+                            label,
+                            texts=texts,
+                        )
+                        for label in column
+                    ),
+                )
                 progressed = True
             pending_columns = remaining
         local_entries: list[_LightingLegendEntry] = []

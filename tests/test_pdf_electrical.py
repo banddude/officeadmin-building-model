@@ -1335,34 +1335,45 @@ def _write_shape_class_probe_pdf(path: Path) -> None:
 def _write_far_legend_column_probe_pdf(path: Path) -> None:
     """Issue #108 probe: a switch legend column outside the heading's radius.
 
-    The heading sits over column 1; column 2 lies beyond the heading span
-    (about 280 pt right of the heading, one 258 pt column pitch right of
-    column 1), so under the old radius rule its rows were invisible to
-    legend detection and its SD/S3 labels leaked into the field-code pass,
-    inflating ``unresolved_switch_count``. Column 2 shares column 1's row
-    baselines and carries row descriptions, which is the bounded table
-    structure that admits it. A lone tag-shaped label in its own column on
-    no legend row stays out of the table.
+    The heading sits over column 1; column 2 lies about 340 pt right of the
+    heading (1100 - 760), the geometry measured in the issue, so under the
+    old radius rule its rows were invisible to legend detection and its
+    SD/S3 labels leaked into the field-code pass, inflating
+    ``unresolved_switch_count``. Column 2 shares column 1's row baselines
+    and starts 64 pt past column 1's estimated description right edge
+    (805 + 55 chars x 7 pt x 0.6 = 1036 for the longest row), which is the
+    description-aware contiguity that admits it. A lone tag-shaped label in
+    its own column on no legend row stays out of the table.
     """
     commands = [
         _probe_text(760.0, 655.0, "LIGHTING LEGEND", size=11.0),
-        # Column 1, under the heading.
+        # Column 1, under the heading, with long row descriptions.
         _probe_path(760.0, 615.0, _PROBE_TRIANGLE),
         _probe_text(782.0, 615.0, "S"),
-        _probe_text(805.0, 615.0, "SINGLE POLE SWITCH", size=7.0),
+        _probe_text(
+            805.0,
+            615.0,
+            "SINGLE POLE SWITCH WITH PILOT LIGHT AND CEILING MOUNTED",
+            size=7.0,
+        ),
         _probe_path(760.0, 585.0, _PROBE_TRIANGLE),
         _probe_text(782.0, 585.0, "OS"),
-        _probe_text(805.0, 585.0, "OCCUPANCY SENSOR", size=7.0),
-        # Column 2, one column pitch right of column 1, same row baselines.
-        _probe_path(1018.0, 615.0, _PROBE_TRIANGLE),
-        _probe_text(1040.0, 615.0, "SD"),
-        _probe_text(1063.0, 615.0, "DIMMER SWITCH", size=7.0),
-        _probe_path(1018.0, 585.0, _PROBE_TRIANGLE),
-        _probe_text(1040.0, 585.0, "S3"),
-        _probe_text(1063.0, 585.0, "3-WAY SWITCH", size=7.0),
+        _probe_text(
+            805.0,
+            585.0,
+            "OCCUPANCY SENSOR SWITCH WITH DUAL TECHNOLOGY AND RELAY",
+            size=7.0,
+        ),
+        # Column 2, about 340 pt right of the heading, same row baselines.
+        _probe_path(1078.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(1100.0, 615.0, "SD"),
+        _probe_text(1123.0, 615.0, "DIMMER SWITCH", size=7.0),
+        _probe_path(1078.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(1100.0, 585.0, "S3"),
+        _probe_text(1123.0, 585.0, "3-WAY SWITCH", size=7.0),
         # Tag-shaped text on no legend row, in its own column beyond
-        # column 2: off the grid, so not table structure even though the
-        # column sits within one column pitch of the legend.
+        # column 2: off the grid and starting inside column 2's estimated
+        # text, so not a next table column.
         _probe_path(1138.0, 480.0, _probe_circle(6.0)),
         _probe_text(1160.0, 480.0, "B"),
     ]
@@ -1397,6 +1408,61 @@ def _write_field_fixture_run_probe_pdf(path: Path) -> None:
         _probe_path(830.0, 585.0, _PROBE_FIXTURE_SHAPE),
         _probe_text(852.0, 585.0, "A"),
     ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_long_description_legend_probe_pdf(path: Path) -> None:
+    """Review follow-up probe: description-aware contiguity at both edges.
+
+    Column 1 prints descriptions about 300 pt wide (63 characters at 8 pt),
+    so column 2 starts about 335 pt past column 1's labels -- far beyond
+    the heading span and the description-evidence span -- and resolves
+    because it sits within one inch of the estimated description right
+    edge (255 + 63 x 8 x 0.6 = 557; column 2 labels at 590). A third
+    column with valid on-grid rows and descriptions, but starting well
+    beyond one inch past the re-estimated edge (800 versus 668 + 72),
+    must not resolve.
+    """
+    commands = [
+        _probe_text(200.0, 655.0, "LIGHTING LEGEND", size=11.0),
+        # Column 1, under the heading, with ~300 pt descriptions.
+        _probe_path(210.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(232.0, 615.0, "S"),
+        _probe_text(
+            255.0,
+            615.0,
+            "SINGLE POLE SWITCH WITH PILOT LIGHT, OCCUPANCY SENSOR AND RELAY",
+            size=8.0,
+        ),
+        _probe_path(210.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(232.0, 585.0, "OS"),
+        _probe_text(
+            255.0,
+            585.0,
+            "OCCUPANCY SENSOR SWITCH, DUAL TECHNOLOGY, CEILING MOUNTED",
+            size=8.0,
+        ),
+        # Column 2, one inch past the estimated description edge.
+        _probe_path(568.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(590.0, 615.0, "SD"),
+        _probe_text(613.0, 615.0, "DIMMER SWITCH", size=7.0),
+        _probe_path(568.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(590.0, 585.0, "S3"),
+        _probe_text(613.0, 585.0, "3-WAY SWITCH", size=7.0),
+        # A third column with valid rows and descriptions, but starting
+        # more than one inch past the re-estimated description edge.
+        _probe_path(778.0, 615.0, _probe_circle(6.0)),
+        _probe_text(800.0, 615.0, "A"),
+        _probe_text(823.0, 615.0, "CIRCUIT A", size=7.0),
+        _probe_path(778.0, 585.0, _probe_circle(6.0)),
+        _probe_text(800.0, 585.0, "B"),
+        _probe_text(823.0, 585.0, "CIRCUIT B", size=7.0),
+    ]
+    for x, code in ((100.0, "S"), (220.0, "S3"), (340.0, "SD"), (460.0, "OS")):
+        commands += [
+            _probe_path(x, 450.0, _PROBE_TRIANGLE),
+            _probe_text(x + 16.0, 450.0, code),
+        ]
     _write_probe_pdf(path, commands)
 
 
@@ -1580,12 +1646,16 @@ def test_square_beside_circle_legend_fails_closed_as_mismatch(
 
 
 def test_far_legend_column_is_read_from_table_structure(tmp_path: Path) -> None:
-    # Issue #108: with the heading over column 1, column 2's rows sat about
-    # 340 pt away and were never detected as legend entries, so their SD/S3
-    # labels were counted as field switch codes and inflated the unresolved
-    # count. Reading rows as table structure -- a second column continuing
-    # the heading column's row grid -- recognizes all four switches and
-    # keeps every legend label out of the field-code pass.
+    # Issue #108, at the issue's own geometry: with the heading over
+    # column 1, column 2's rows sat about 340 pt from the heading (1100
+    # versus 760) and 64 pt past column 1's estimated description right
+    # edge, so the old heading-radius rule never detected them as legend
+    # entries and their SD/S3 labels were counted as field switch codes,
+    # inflating the unresolved count. Description-aware table structure --
+    # a second column starting within one inch of the estimated
+    # description edge, on the heading column's row grid, with row
+    # descriptions of its own -- recognizes all four switches and keeps
+    # every legend label out of the field-code pass.
     pdf_path = tmp_path / "far-legend-column-probe.pdf"
     _write_far_legend_column_probe_pdf(pdf_path)
     assert not pdf_path.with_suffix(".expected.json").exists()
@@ -1707,6 +1777,78 @@ def test_field_fixture_run_far_right_of_legend_stays_field(tmp_path: Path) -> No
     assert not errors, "\n".join(error.message for error in errors)
 
 
+def test_long_description_legend_resolves_but_column_past_edge_does_not(
+    tmp_path: Path,
+) -> None:
+    # Description-aware contiguity must hold at both edges. Column 1's
+    # descriptions run about 300 pt, so column 2 starts about 335 pt past
+    # column 1's labels -- beyond the heading span and the description
+    # evidence span -- and still resolves within one inch of the estimated
+    # description edge. A third column with equally valid on-grid rows and
+    # descriptions, but starting well beyond one inch past the re-estimated
+    # edge, stays out of the legend and leaves nothing behind.
+    pdf_path = tmp_path / "long-description-legend-probe.pdf"
+    _write_long_description_legend_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:long-description-legend-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert sorted(
+        (
+            device.attributes["pdf_electrical"]["switch_code"],
+            device.attributes["pdf_electrical"]["switch_type"],
+        )
+        for device in _lighting_switches(model)
+    ) == [
+        ("OS", "occupancy_sensor"),
+        ("S", "single_pole"),
+        ("S3", "three_way"),
+        ("SD", "dimmer"),
+    ]
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert not [item for item in unresolved if item.get("kind") == "lighting_switch"]
+    assert not [item for item in unresolved if item.get("kind") == "lighting_fixture"]
+    assert not [
+        item
+        for item in unresolved
+        if item.get("reason_code") == "lighting_legend_code_role_ambiguous"
+    ]
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_switch_count"] == 4
+    assert lighting["unresolved_switch_count"] == 0
+    assert lighting["legend_regions"][0]["row_count"] == 4
+    assert lighting["legend_regions"][0]["tags"] == ["OS", "S", "S3", "SD"]
+
+    # The too-far third column joined neither the legend nor the field-code
+    # pass: its tags and glyphs produce no recognition and no counted miss.
+    texts_by_id = {text.element_id: text for text in extracted.texts}
+    assert not [
+        item
+        for item in unresolved
+        if texts_by_id.get(item.get("source_element_id", "")) is not None
+        and texts_by_id[item["source_element_id"]].text in {"A", "B"}
+        and item.get("kind") in {"lighting_switch", "lighting_fixture"}
+    ]
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
 def test_isotropic_shape_at_non_orthogonal_angle_stays_fail_closed(
     tmp_path: Path,
 ) -> None:
@@ -1781,6 +1923,7 @@ def test_isotropic_shape_at_non_orthogonal_angle_stays_fail_closed(
         _write_shape_class_probe_pdf,
         _write_far_legend_column_probe_pdf,
         _write_field_fixture_run_probe_pdf,
+        _write_long_description_legend_probe_pdf,
         _write_isotropic_rotation_probe_pdf,
     ),
 )

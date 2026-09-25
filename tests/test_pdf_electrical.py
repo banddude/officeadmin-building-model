@@ -4102,8 +4102,8 @@ def _annotation_tag_probe_annotations(
     # Field tags sit 12 pt beside and 8 pt below or above their glyph, so the
     # nearest compatible glyph is unique; switch letters sit on their glyph.
     field = [
-        (500.0, 450.0, "F5"),  # on the unresolved star: resolves it
-        (760.0, 450.0, "HD"),  # ambiguous tag: two legend rows carry HD
+        (512.0, 442.0, "F5"),  # beside the unresolved star: resolves it
+        (772.0, 442.0, "HD"),  # ambiguous tag: two legend rows carry HD
         (900.0, 200.0, "SCA"),  # no glyph nearby: must not become a device
         (572.0, 442.0, "LED"),  # luminaire modifier
         (632.0, 442.0, "HE WP"),  # luminaire modifiers
@@ -4360,7 +4360,7 @@ def test_single_character_tags_need_the_pages_legend_claim(tmp_path) -> None:
 
 
 def test_annotation_letter_tag_resolves_unresolved_field_glyph(tmp_path) -> None:
-    """F5 on a below-threshold star glyph resolves that glyph, fail-closed.
+    """F5 beside a below-threshold star glyph resolves that glyph, fail-closed.
 
     The resolution records the method, the legend row, the letter tag, and the
     annotation source element id; the annotation joins the resolved device
@@ -4518,6 +4518,180 @@ def test_annotation_tag_probe_is_deterministic_across_runs(tmp_path) -> None:
     second_model = ElectricalPdfImporter().import_document(second)
     assert first_model.to_dict() == second_model.to_dict()
     validate_model(first_model)
+
+
+def _probe_strokes(*polylines: tuple[tuple[float, float], ...]) -> list[str]:
+    """Open SHX-style letter strokes, 0.84 pt wide like CAD field text."""
+    return [
+        "0.84 w "
+        + " ".join(
+            [
+                f"{polyline[0][0]:.3f} {polyline[0][1]:.3f} m",
+                *(f"{x:.3f} {y:.3f} l" for x, y in polyline[1:]),
+                "S",
+            ]
+        )
+        + " 1 w"
+        for polyline in polylines
+    ]
+
+
+# "LED" drawn as strokes inside the box [567, 583] x [437, 447], whose left
+# edge sits 1 pt from a 6 pt circle centred on (560, 450): inside the 2.5 pt
+# glyph gap, so the letters chain into the circle's cluster.
+_LED_LABEL_STROKES = (
+    ((568.0, 446.0), (568.0, 438.0), (572.0, 438.0)),
+    ((576.5, 446.0), (573.0, 446.0), (573.0, 438.0), (576.5, 438.0)),
+    ((573.0, 442.0), (576.0, 442.0)),
+    (
+        (578.0, 446.0),
+        (581.0, 445.0),
+        (582.0, 442.0),
+        (581.0, 439.0),
+        (578.0, 438.0),
+        (578.0, 446.0),
+    ),
+)
+_LED_LABEL_BOX = (575.0, 442.0, "LED", 16.0, 10.0)
+
+
+def _vector_ids_inside(document, box: tuple[float, float, float, float]) -> set[str]:
+    return {
+        vector.element_id
+        for vector in document.vectors
+        if all(
+            box[0] <= x <= box[2] and box[1] <= y <= box[3]
+            for x, y in vector.points_pt
+        )
+    }
+
+
+def test_shx_tag_label_strokes_beside_a_glyph_leave_glyph_clustering(
+    tmp_path,
+) -> None:
+    """Short SHX tag labels beside a glyph are text; letters in a glyph stay.
+
+    ``LED`` touching a circle is removed from clustering. ``TV`` drawn inside
+    a circle's outline, ``DS`` crossed by a 14.7 pt switch bar, a
+    single-character ``S`` and a star that fills an ``F5`` box are symbol
+    parts and stay.
+    """
+    path = tmp_path / "shx-tag-labels.pdf"
+    commands = [
+        _probe_path(560.0, 450.0, _probe_circle(6.0)),
+        *_probe_strokes(*_LED_LABEL_STROKES),
+        _probe_path(700.0, 300.0, _probe_circle(8.0)),
+        *_probe_strokes(
+            ((695.5, 302.5), (699.5, 302.5)),
+            ((697.5, 302.5), (697.5, 297.5)),
+            ((700.5, 302.5), (702.5, 297.5), (704.5, 302.5)),
+        ),
+        *_probe_strokes(
+            (
+                (801.0, 304.0),
+                (804.0, 303.0),
+                (805.0, 300.0),
+                (804.0, 297.0),
+                (801.0, 296.0),
+                (801.0, 304.0),
+            ),
+            (
+                (809.0, 304.0),
+                (806.0, 304.0),
+                (806.0, 300.0),
+                (809.0, 300.0),
+                (809.0, 296.0),
+                (806.0, 296.0),
+            ),
+            ((805.0, 292.65), (805.0, 307.35)),
+        ),
+        _probe_path(1000.0, 300.0, _probe_star(6.0, 2.0)),
+        _probe_path(920.0, 300.0, _probe_circle(8.0)),
+        *_probe_strokes(
+            (
+                (909.0, 304.0),
+                (906.0, 304.0),
+                (906.0, 300.0),
+                (909.0, 300.0),
+                (909.0, 296.0),
+                (906.0, 296.0),
+            ),
+        ),
+    ]
+    _write_probe_pdf(
+        path,
+        commands,
+        annotations=[
+            _LED_LABEL_BOX,
+            (700.0, 300.0, "TV", 10.0, 6.0),
+            (805.0, 300.0, "DS", 10.0, 10.0),
+            (907.5, 300.0, "S", 5.0, 10.0),
+            (1000.0, 300.0, "F5", 12.0, 12.0),
+        ],
+    )
+    document = extract_pdf(path, source_id="fixture:shx-tag-labels")
+    led_ids = _vector_ids_inside(document, (566.5, 436.5, 583.5, 447.5))
+    tv_ids = _vector_ids_inside(document, (694.5, 296.5, 705.5, 303.5))
+    ds_ids = _vector_ids_inside(document, (799.5, 294.5, 810.5, 305.5))
+    s_ids = _vector_ids_inside(document, (904.5, 294.5, 910.5, 305.5))
+    star_ids = _vector_ids_inside(document, (993.5, 293.5, 1006.5, 306.5))
+    assert len(star_ids) == 1
+    assert len(led_ids) == 4
+    assert len(tv_ids) == 3
+    assert len(ds_ids) == 2
+    assert len(s_ids) == 1
+
+    kept = {
+        vector.element_id
+        for vector in pdf_electrical_importer._glyph_cluster_vectors(
+            document,
+            document.vectors,
+        )
+    }
+    assert not led_ids & kept
+    assert tv_ids <= kept
+    assert ds_ids <= kept
+    assert s_ids <= kept
+    # A symbol that fills a short label's box is not one of its letters.
+    assert star_ids <= kept
+    assert len(kept) == len(document.vectors) - len(led_ids)
+    assert kept == {
+        vector.element_id
+        for vector in pdf_electrical_importer._glyph_cluster_vectors(
+            extract_pdf(path, source_id="fixture:shx-tag-labels"),
+            extract_pdf(path, source_id="fixture:shx-tag-labels").vectors,
+        )
+    }
+
+
+def test_led_label_touching_a_luminaire_is_a_modifier_not_glyph_strokes(
+    tmp_path,
+) -> None:
+    """The LED strokes leave the circle's cluster, so the circle matches its
+    legend row and the LED box qualifies it; no letter stroke is left as an
+    unresolved glyph."""
+    path = tmp_path / "led-label-luminaire.pdf"
+    _write_probe_pdf(
+        path,
+        _annotation_tag_legend_commands()
+        + [_probe_path(560.0, 450.0, _probe_circle(6.0))]
+        + _probe_strokes(*_LED_LABEL_STROKES),
+        annotations=[*_annotation_tag_legend_tags(), _LED_LABEL_BOX],
+    )
+    model = ElectricalPdfImporter().import_document(
+        extract_pdf(path, source_id="fixture:led-label-luminaire")
+    )
+    device = _lane_device_at(model, 560.0, 450.0)
+    assert device.device_type == "luminaire"
+    lane = device.attributes["pdf_electrical"]
+    assert lane["shape_recognition"]["method"] == "sheet-legend-geometry-match"
+    assert lane["modifiers"] == ["led"]
+    assert len(model.electrical_devices) == 1
+    assert not [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "vector_cluster"
+    ]
 
 
 

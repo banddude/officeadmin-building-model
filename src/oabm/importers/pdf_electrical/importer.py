@@ -3655,7 +3655,12 @@ def _glyph_cluster_vectors(
             and not inside_any(vector, all_text_boxes)
         ]
     )
-    if not text_boxes and not arc_ids and not screened_ids:
+    if (
+        not text_boxes
+        and not arc_ids
+        and not screened_ids
+        and not _shx_tag_label_boxes(document.symbols)
+    ):
         return tuple(vectors)
     excluded = set(arc_ids) | screened_ids
     excluded.update(
@@ -3663,9 +3668,144 @@ def _glyph_cluster_vectors(
         for vector in vectors
         if vector.element_id not in excluded and inside_any(vector, text_boxes)
     )
-    return tuple(
+    kept = tuple(
         vector for vector in vectors if vector.element_id not in excluded
     )
+    tag_ids = _shx_tag_label_vector_ids(document.symbols, kept)
+    if not tag_ids:
+        return kept
+    return tuple(vector for vector in kept if vector.element_id not in tag_ids)
+
+
+# Short one-word SHX labels (two to four characters: GFI, AFCI, LED, HE, F5,
+# SCA) drawn beside a glyph are tags. Their strokes chain into the glyph's
+# cluster across the glyph gap and distort its shape, so they are removed
+# before glyph clustering, in the legend and the field alike. A label drawn
+# inside the glyph's own outline (a letter in a circle) or crossed by a
+# switch bar (DS, OS) is part of the symbol and stays. Single characters
+# always stay: S, D and V are switch glyphs and 3 and 4 their subscripts.
+_SHX_TAG_LABEL_MIN_CHARS = 2
+_SHX_TAG_LABEL_MAX_CHARS = 4
+_SWITCH_BAR_MIN_LENGTH_PT = 10.0
+
+
+def _shx_tag_label_boxes(
+    symbols: Sequence[PdfSymbolObservation],
+) -> dict[int, tuple[tuple[float, float, float, float], ...]]:
+    boxes: dict[int, list[tuple[float, float, float, float]]] = {}
+    for symbol in symbols:
+        if not _is_shx_text_annotation(symbol):
+            continue
+        contents = " ".join(str(symbol.metadata.get("contents") or "").split())
+        if " " in contents or not (
+            _SHX_TAG_LABEL_MIN_CHARS <= len(contents) <= _SHX_TAG_LABEL_MAX_CHARS
+        ):
+            continue
+        rect = symbol.metadata.get("rect_pt")
+        if not isinstance(rect, (list, tuple)) or len(rect) != 4:
+            continue
+        boxes.setdefault(symbol.page, []).append(
+            (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+        )
+    return {page: tuple(sorted(boxes[page])) for page in sorted(boxes)}
+
+
+# One letter of a two-to-four character label spans a fraction of the label
+# along its reading direction; a single stroke that fills the box both ways
+# is a drawn symbol inside the box, not one of its letters.
+_LABEL_BOX_FILL_RATIO = 0.75
+
+
+def _fills_label_box(
+    vector: PdfVectorPathObservation,
+    box: tuple[float, float, float, float],
+) -> bool:
+    bbox = _vector_bbox(vector)
+    box_width = max(box[2] - box[0], 1e-9)
+    box_height = max(box[3] - box[1], 1e-9)
+    return (
+        (bbox[2] - bbox[0]) / box_width >= _LABEL_BOX_FILL_RATIO
+        and (bbox[3] - bbox[1]) / box_height >= _LABEL_BOX_FILL_RATIO
+    )
+
+
+def _is_switch_bar_through_box(
+    vector: PdfVectorPathObservation,
+    box: tuple[float, float, float, float],
+) -> bool:
+    if vector.closed or len(vector.points_pt) != 2:
+        return False
+    (x0, y0), (x1, y1) = vector.points_pt
+    if math.hypot(x1 - x0, y1 - y0) < _SWITCH_BAR_MIN_LENGTH_PT:
+        return False
+    return (
+        _point_segment_distance_pt(
+            ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0),
+            (x0, y0),
+            (x1, y1),
+        )
+        <= max(box[2] - box[0], box[3] - box[1]) / 2.0
+    )
+
+
+def _shx_tag_label_vector_ids(
+    symbols: Sequence[PdfSymbolObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+) -> set[str]:
+    """Element ids of short SHX tag-label strokes drawn beside (not in) a glyph."""
+
+    boxes_by_page = _shx_tag_label_boxes(symbols)
+    if not boxes_by_page:
+        return set()
+    excluded: set[str] = set()
+    for cluster in _cluster_small_vector_glyphs(
+        tuple(vector for vector in vectors if vector.page in boxes_by_page)
+    ):
+        x0, y0, x1, y1 = cluster.bbox_pt
+        for box in boxes_by_page.get(cluster.page, ()):
+            if box[0] > x1 or box[2] < x0 or box[1] > y1 or box[3] < y0:
+                continue
+            inside_ids = {
+                vector.element_id
+                for vector in cluster.vectors
+                if _points_inside_box_pt(
+                    vector.points_pt,
+                    box,
+                    tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
+                )
+                and not _fills_label_box(vector, box)
+            }
+            if not inside_ids:
+                continue
+            rest = [
+                vector
+                for vector in cluster.vectors
+                if vector.element_id not in inside_ids
+            ]
+            center_x = (box[0] + box[2]) / 2.0
+            center_y = (box[1] + box[3]) / 2.0
+            enclosed = False
+            for vector in rest:
+                bbox = _vector_bbox(vector)
+                if (
+                    bbox[0] <= box[0]
+                    and box[2] <= bbox[2]
+                    and bbox[1] <= box[1]
+                    and box[3] <= bbox[3]
+                ) or (
+                    bbox[0] < center_x < bbox[2]
+                    and bbox[1] < center_y < bbox[3]
+                    and bbox[2] - bbox[0] > box[2] - box[0]
+                    and bbox[3] - bbox[1] > box[3] - box[1]
+                ):
+                    enclosed = True
+                    break
+            if enclosed:
+                continue
+            if any(_is_switch_bar_through_box(vector, box) for vector in rest):
+                continue
+            excluded.update(inside_ids)
+    return excluded
 
 
 def _is_glyph_cluster(cluster: _VectorCluster) -> bool:

@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 from jsonschema import Draft202012Validator
 from pypdf import PdfReader, PdfWriter
@@ -1466,14 +1467,68 @@ def _write_long_description_legend_probe_pdf(path: Path) -> None:
     _write_probe_pdf(path, commands)
 
 
-def _write_isotropic_rotation_probe_pdf(path: Path) -> None:
-    """Review note 1 probe: isotropic shapes at non-orthogonal angles.
+def _write_narrow_font_legend_column_probe_pdf(path: Path) -> None:
+    """Issue #111 probe: narrow CAD fonts versus the description-edge estimate.
 
-    The legend defines A as a square. A square's second-moment covariance
-    is isotropic, so its principal axis is undefined and rotation
-    normalization cannot remove a 30-degree print angle; the instance
-    fails closed today. The axis-aligned control confirms, pinning the
-    gap to rotation rather than to matching.
+    Column 1's descriptions would print about 227 pt wide in a narrow CAD
+    font (63 characters at 8 pt, about 0.45 em), ending at about 482 pt,
+    but the importer's 0.6 em character-count estimate puts their edge at
+    255 + 63 x 8 x 0.6 = 557. Column 2 starts 20 pt past the TRUE edge
+    (502), so the old rule -- reject when the column starts at or left of
+    the estimated edge -- rejected a real column 2. The lower bound is now
+    the table's own tag column (max label x plus one label width, 232 +
+    9.6), the estimated edge only bounds how far out a column may sit
+    (557 + 72), and column 2 resolves on the same grid, purity, and row
+    evidence as before.
+    """
+    commands = [
+        _probe_text(200.0, 655.0, "LIGHTING LEGEND", size=11.0),
+        # Column 1, under the heading, with long narrow-font descriptions.
+        _probe_path(210.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(232.0, 615.0, "S"),
+        _probe_text(
+            255.0,
+            615.0,
+            "SINGLE POLE SWITCH WITH PILOT LIGHT, OCCUPANCY SENSOR AND RELAY",
+            size=8.0,
+        ),
+        _probe_path(210.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(232.0, 585.0, "OS"),
+        _probe_text(
+            255.0,
+            585.0,
+            "OCCUPANCY SENSOR SWITCH, DUAL TECHNOLOGY, CEILING MOUNTED",
+            size=8.0,
+        ),
+        # Column 2, 20 pt past the true 0.45-em description edge, still
+        # left of the 0.6 em estimate: admitted since issue #111.
+        _probe_path(502.0, 615.0, _PROBE_TRIANGLE),
+        _probe_text(524.0, 615.0, "SD"),
+        _probe_text(547.0, 615.0, "DIMMER SWITCH", size=7.0),
+        _probe_path(502.0, 585.0, _PROBE_TRIANGLE),
+        _probe_text(524.0, 585.0, "S3"),
+        _probe_text(547.0, 585.0, "3-WAY SWITCH", size=7.0),
+    ]
+    for x, code in ((100.0, "S"), (220.0, "S3"), (340.0, "SD"), (460.0, "OS")):
+        commands += [
+            _probe_path(x, 450.0, _PROBE_TRIANGLE),
+            _probe_text(x + 16.0, 450.0, code),
+        ]
+    _write_probe_pdf(path, commands)
+
+
+def _write_isotropic_rotation_probe_pdf(path: Path) -> None:
+    """Issue #111 probe: isotropic shapes at non-orthogonal angles.
+
+    A square's and a hexagon's second-moment covariance are isotropic, so
+    their principal axes are undefined and axis alignment cannot remove a
+    print angle; before the sweep fallback a 30-degree square scored 0.271
+    and failed closed. The legend keeps A as an axis-aligned square, B as a
+    triangle, and C as an axis-aligned hexagon. An axis-aligned square
+    control pins the gap to rotation rather than to matching, the 30-degree
+    square and the 20-degree hexagon (scaled 5/6) must confirm, and an
+    A-tagged triangle stays the negative: the sweep adds recall for the
+    same shape, never for a different one.
     """
     commands = _probe_schedule_commands()
     commands += [
@@ -1482,6 +1537,8 @@ def _write_isotropic_rotation_probe_pdf(path: Path) -> None:
         _probe_text(792.0, 615.0, "A"),
         _probe_path(770.0, 585.0, _PROBE_TRIANGLE),
         _probe_text(792.0, 585.0, "B"),
+        _probe_path(770.0, 555.0, _probe_hexagon(6.0)),
+        _probe_text(792.0, 555.0, "C"),
         _probe_path(120.0, 450.0, _PROBE_SQUARE),
         _probe_text(142.0, 450.0, "A"),
         _probe_path(
@@ -1490,6 +1547,14 @@ def _write_isotropic_rotation_probe_pdf(path: Path) -> None:
             _probe_rotated_points(_PROBE_SQUARE, degrees=30.0),
         ),
         _probe_text(322.0, 450.0, "A"),
+        _probe_path(
+            480.0,
+            450.0,
+            _probe_rotated_points(_probe_hexagon(5.0), degrees=20.0),
+        ),
+        _probe_text(502.0, 450.0, "C"),
+        _probe_path(650.0, 450.0, _PROBE_TRIANGLE),
+        _probe_text(672.0, 450.0, "A"),
     ]
     _write_probe_pdf(path, commands)
 
@@ -1849,15 +1914,17 @@ def test_long_description_legend_resolves_but_column_past_edge_does_not(
     assert not errors, "\n".join(error.message for error in errors)
 
 
-def test_isotropic_shape_at_non_orthogonal_angle_stays_fail_closed(
+def test_isotropic_shapes_de_rotate_through_sweep_fallback(
     tmp_path: Path,
 ) -> None:
-    # Review note 1, documenting current behaviour: a square's second-moment
-    # covariance is isotropic, so its principal axis is undefined and
-    # rotation normalization cannot remove a 30-degree print angle. The
-    # axis-aligned control confirms at 1.0 while the 30-degree square fails
-    # closed; a minimum-area-rectangle or coarse-sweep fallback is future
-    # work, not silently weaker thresholds.
+    # Issue #111: a square's and a hexagon's second-moment covariance are
+    # isotropic, so the principal axis is undefined and axis alignment
+    # cannot remove a print angle -- a 30-degree square used to score 0.271
+    # and fail closed. When the eigenvalue ratio sits under the isotropy
+    # cut, the comparison de-rotates by a coarse fixed-order sweep instead:
+    # the 30-degree square and the 20-degree hexagon confirm against their
+    # axis-aligned legend prototypes while the axis-aligned control stays
+    # at 1.0 and the A-tagged triangle stays a mismatch.
     pdf_path = tmp_path / "isotropic-rotation-probe.pdf"
     _write_isotropic_rotation_probe_pdf(pdf_path)
     assert not pdf_path.with_suffix(".expected.json").exists()
@@ -1873,23 +1940,32 @@ def test_isotropic_shape_at_non_orthogonal_angle_stays_fail_closed(
         for device in model.electrical_devices
         if device.device_type == "luminaire"
     ]
-    assert [device.name for device in luminaires] == ["A"]
-    assert (
-        luminaires[0]
-        .attributes["pdf_electrical"]["lighting_recognition"]["shape_score"]
-        == 1.0
+    assert Counter(device.name for device in luminaires) == Counter(
+        {"A": 2, "C": 1}
     )
+    scores = sorted(
+        device.attributes["pdf_electrical"]["lighting_recognition"]["shape_score"]
+        for device in luminaires
+    )
+    # The 30-degree square resolves through the sweep (0.271 before it) in
+    # one mirror state, since a square is its own mirror; the 20-degree
+    # hexagon is already past the strong bar, where sweeping cannot change
+    # a confirm; and the axis-aligned control stays signature-exact.
+    assert scores == pytest.approx([0.897351, 0.897549, 1.0], abs=0.02)
+    assert scores[0] >= pdf_electrical_importer._LIGHTING_GLYPH_CONFIRM_SCORE
     texts_by_id = {text.element_id: text for text in extracted.texts}
-    assert (
-        texts_by_id[
-            luminaires[0]
-            .attributes["pdf_electrical"]["lighting_recognition"][
-                "tag_source_element_id"
-            ]
-        ].x_pt
-        == pytest.approx(142.0, abs=1.0)
-    )
+    for device in luminaires:
+        lane = device.attributes["pdf_electrical"]
+        assert lane["lighting_recognition"]["tag_is_primary_type_evidence"] is True
+        tag_text = texts_by_id[
+            lane["lighting_recognition"]["tag_source_element_id"]
+        ]
+        assert tag_text.text == device.name
+        if device.name == "A":
+            assert lane["fixture_schedule"]["description"] == "DOWNLIGHT"
 
+    # The rotated triangle is still not fixture A: the sweep adds recall
+    # for the same shape, never for a different one.
     misses = [
         item
         for item in model.attributes["pdf_electrical"]["unresolved_observations"]
@@ -1901,12 +1977,142 @@ def test_isotropic_shape_at_non_orthogonal_angle_stays_fail_closed(
     assert misses[0]["shape_score"] < pdf_electrical_importer._GLYPH_MATCH_ABSOLUTE_FLOOR
     assert (
         texts_by_id[misses[0]["source_element_id"]].x_pt
-        == pytest.approx(322.0, abs=1.0)
+        == pytest.approx(672.0, abs=1.0)
     )
 
     lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
-    assert lighting["recognized_fixture_count"] == 1
+    assert lighting["recognized_fixture_count"] == 3
     assert lighting["unresolved_fixture_count"] == 1
+
+    validate_model(model)
+    errors = sorted(
+        _schema_validator().iter_errors(model.to_dict()),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_isotropic_sweep_vectorization_matches_reference_distance() -> None:
+    # Review follow-up on #111: the sweep is vectorized with numpy for
+    # speed. This proves the vectorized broadcast computes the same
+    # combined chamfer + Hausdorff distance as a sequential loop of
+    # `_point_cloud_distance` over the fixed 5-degree sweep order, on the
+    # cloud pairs the new probes actually compare, to floating-point
+    # rounding.
+    square_cloud = _resampled_cloud_for_probe(_PROBE_SQUARE)
+    hexagon_cloud = _resampled_cloud_for_probe(_probe_hexagon(6.0))
+    triangle_cloud = _resampled_cloud_for_probe(_PROBE_TRIANGLE)
+    circle_cloud = _resampled_cloud_for_probe(_probe_circle(6.0))
+    for first, second in (
+        (square_cloud, hexagon_cloud),
+        (square_cloud, triangle_cloud),
+        (hexagon_cloud, circle_cloud),
+        (triangle_cloud, square_cloud),
+        (circle_cloud, circle_cloud),
+        (square_cloud, square_cloud),
+    ):
+        first_sample = pdf_electrical_importer._sweep_normalized_cloud(first)
+        second_sample = pdf_electrical_importer._sweep_normalized_cloud(second)
+        assert first_sample is not None and second_sample is not None
+        vectorized = float(
+            pdf_electrical_importer._sweep_all_distances(
+                np.asarray(first_sample, dtype=np.float64),
+                np.asarray(second_sample, dtype=np.float64),
+            ).min()
+        )
+        reference = min(
+            pdf_electrical_importer._point_cloud_distance(
+                tuple(
+                    (
+                        x * math.cos(math.radians(angle))
+                        - y * math.sin(math.radians(angle)),
+                        x * math.sin(math.radians(angle))
+                        + y * math.cos(math.radians(angle)),
+                    )
+                    for x, y in first_sample
+                ),
+                second_sample,
+            )
+            for angle in range(0, 360, 5)
+        )
+        assert vectorized == pytest.approx(reference, rel=1e-9, abs=1e-12)
+
+
+def _resampled_cloud_for_probe(
+    points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    """Resample a probe outline the way the importer resamples glyphs."""
+    segments = list(zip(points, points[1:])) + [(points[-1], points[0])]
+    cloud: list[tuple[float, float]] = []
+    for first, second in segments:
+        length = math.hypot(second[0] - first[0], second[1] - first[1])
+        sample_count = max(
+            1,
+            math.ceil(length / pdf_electrical_importer._GLYPH_RESAMPLE_STEP),
+        )
+        for index in range(sample_count):
+            fraction = index / sample_count
+            cloud.append(
+                (
+                    first[0] + (second[0] - first[0]) * fraction,
+                    first[1] + (second[1] - first[1]) * fraction,
+                )
+            )
+    return tuple(sorted({(round(x, 5), round(y, 5)) for x, y in cloud}))
+
+
+def test_narrow_font_legend_column_resolves_past_true_description_edge(
+    tmp_path: Path,
+) -> None:
+    # Issue #111: narrow CAD fonts (RomanS and condensed faces, about
+    # 0.45 em) print about a third shorter than the 0.6 em character-count
+    # estimate, so a real column 2 starting 20 pt past the true
+    # description edge sat left of the estimated edge and was rejected.
+    # The lower bound is now the table's own tag column (admitted labels'
+    # max x plus one label width) and the estimated edge only bounds how
+    # far out a column may sit, so column 2 resolves on the same grid,
+    # purity, and row evidence as every other admitted column.
+    pdf_path = tmp_path / "narrow-font-legend-column-probe.pdf"
+    _write_narrow_font_legend_column_probe_pdf(pdf_path)
+    assert not pdf_path.with_suffix(".expected.json").exists()
+
+    extracted = extract_pdf(
+        pdf_path,
+        source_id="fixture:narrow-font-legend-column-probe",
+    )
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    assert sorted(
+        (
+            device.attributes["pdf_electrical"]["switch_code"],
+            device.attributes["pdf_electrical"]["switch_type"],
+        )
+        for device in _lighting_switches(model)
+    ) == [
+        ("OS", "occupancy_sensor"),
+        ("S", "single_pole"),
+        ("S3", "three_way"),
+        ("SD", "dimmer"),
+    ]
+    assert not [
+        device
+        for device in model.electrical_devices
+        if device.device_type == "luminaire"
+    ]
+
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert not [item for item in unresolved if item.get("kind") == "lighting_switch"]
+    assert not [
+        item
+        for item in unresolved
+        if item.get("reason_code") == "lighting_legend_code_role_ambiguous"
+    ]
+
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["recognized_switch_count"] == 4
+    assert lighting["unresolved_switch_count"] == 0
+    assert lighting["legend_regions"][0]["row_count"] == 4
+    assert lighting["legend_regions"][0]["tags"] == ["OS", "S", "S3", "SD"]
 
     validate_model(model)
     errors = sorted(
@@ -1924,13 +2130,16 @@ def test_isotropic_shape_at_non_orthogonal_angle_stays_fail_closed(
         _write_far_legend_column_probe_pdf,
         _write_field_fixture_run_probe_pdf,
         _write_long_description_legend_probe_pdf,
+        _write_narrow_font_legend_column_probe_pdf,
         _write_isotropic_rotation_probe_pdf,
     ),
 )
-def test_issue108_probes_are_deterministic_across_runs(
+def test_recognition_probes_are_deterministic_across_runs(
     tmp_path: Path,
     probe_writer,
 ) -> None:
+    # Issues #108 and #111 probes: two extractions and two imports of every
+    # probe produce identical documents and identical models.
     pdf_path = tmp_path / f"{probe_writer.__name__}.pdf"
     probe_writer(pdf_path)
     assert not pdf_path.with_suffix(".expected.json").exists()

@@ -6475,3 +6475,86 @@ def test_wrapped_legend_labels_split_at_the_row_gap_not_the_midpoint(
         extract_pdf(pdf_path, source_id="test:wrapped-legend-labels")
     ).to_dict()
     validate_model(model)
+
+
+def _legend_glyph_triangle(x: float, y: float) -> list[str]:
+    return [
+        _cad_path_command(
+            ((x - 6.0, y - 5.0), (x + 6.0, y - 5.0), (x, y + 6.0)),
+            close=True,
+        )
+    ]
+
+
+@pytest.mark.parametrize("dimmer_row", [False, True])
+def test_annotation_codes_are_read_only_outside_the_legend_frame(
+    tmp_path: Path, dimmer_row: bool
+) -> None:
+    # A framed legend with a CAT 6 row: a "D" code in the field reads as that
+    # data outlet, while the same code on the legend's own sample does not.
+    # When the legend also lists a dimmer, "D" is the dimmer glyph and never
+    # a data outlet.
+    font = 7.0
+    rows = [
+        (_legend_glyph_duplex, "DUPLEX RECEPTACLE"),
+        (_legend_glyph_triangle, "CAT 6 COMPUTER HOOK-UP"),
+        (_legend_glyph_toggle, "SINGLE POLE TOGGLE"),
+    ]
+    if dimmer_row:
+        rows.append((_legend_glyph_dimmer, "SINGLE POLE DIMMER"))
+    content = [
+        _cad_rect_command(36.0, 36.0, 1128.0, 720.0),
+        _cad_rect_command(72.0, 392.0, 448.0, 328.0),
+        _cad_path_command(((72.0, 700.0), (520.0, 700.0)), close=False),
+        _cad_path_command(((72.0, 702.0), (520.0, 702.0)), close=False),
+        _cad_text_command(84.0, 712.0, "ELECTRICAL SYMBOL LEGEND", 9.0),
+        _cad_text_command(84.0, 686.0, "RECEPTACLES", 8.5),
+    ]
+    for index, (glyph, label) in enumerate(rows):
+        y = 664.0 - 22.0 * index
+        content.extend(glyph(100.0, y))
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    pdf_path = tmp_path / f"annotation-codes-in-frame-{dimmer_row}.pdf"
+    _write_pdf_with_content(
+        pdf_path,
+        content,
+        annotations=(
+            {
+                "/T": "AutoCAD SHX Text",
+                "__rect__": (95.0, 636.0, 105.0, 648.0),
+                "/Contents": "D",
+            },
+            {
+                "/T": "AutoCAD SHX Text",
+                "__rect__": (845.0, 494.0, 855.0, 506.0),
+                "/Contents": "D",
+            },
+        ),
+        width=1200.0,
+    )
+
+    extracted = extract_pdf(pdf_path, source_id="test:annotation-codes-in-frame")
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    region = _legend_frame_region(model)
+    assert region["legend_frame"]["bbox_pt"] == [72.0, 392.0, 520.0, 720.0]
+    assert region["legend_frame"]["inframe_symbols_skipped"] == 1
+    unresolved = model.attributes["pdf_electrical"]["unresolved_observations"]
+    assert not any(
+        row.get("annotation_code") == "D"
+        and row["position_pt"]["x"] < 520.0
+        for row in unresolved
+    )
+    if dimmer_row:
+        assert model.electrical_devices == ()
+        assert [
+            row["position_pt"]
+            for row in unresolved
+            if row.get("annotation_code") == "D"
+        ] == [{"x": 850.0, "y": 500.0}]
+    else:
+        assert [
+            (device.device_type, device.attributes["pdf_electrical"]["source_position_pt"])
+            for device in model.electrical_devices
+        ] == [("data_outlet", {"x": 850.0, "y": 500.0})]
+    validate_model(model)

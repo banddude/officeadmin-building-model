@@ -8354,6 +8354,7 @@ class ElectricalPdfImporter:
                     method="pdf-text-pattern",
                 )
 
+        inframe_symbols_skipped: dict[int, int] = {}
         for symbol in symbols:
             if (symbol.page, symbol.element_id) in claimed_source_ids:
                 continue
@@ -8366,6 +8367,9 @@ class ElectricalPdfImporter:
                 frame_box[0] <= symbol.x_pt <= frame_box[2]
                 and frame_box[1] <= symbol.y_pt <= frame_box[3]
             ):
+                inframe_symbols_skipped[symbol.page] = (
+                    inframe_symbols_skipped.get(symbol.page, 0) + 1
+                )
                 continue
 
             annotation_match = _annotation_code_legend_match(
@@ -10490,6 +10494,13 @@ class ElectricalPdfImporter:
                     attributes=dict(document.page_provenance[page]),
                 )
             )
+        # Symbols inside a legend frame are legend samples; say how many were
+        # kept out of the field so the skip stays visible in provenance.
+        for region_record in legend_recognition.get("regions", ()):
+            if "legend_frame" in region_record:
+                region_record["legend_frame"]["inframe_symbols_skipped"] = (
+                    inframe_symbols_skipped.get(int(region_record["page"]), 0)
+                )
         for note in legend_recognition.get("frame_rederivations", ()):
             model_provenance.append(
                 Provenance(

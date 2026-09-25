@@ -310,13 +310,14 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
     SymbolRule(r"\b(?:XFMR|TRANSFORMER)\b", "equipment", "transformer", 0.97),
     SymbolRule(r"\b(?:EVSE|CHARGER)[A-Z0-9]*\b", "device", "evse", 0.98),
     SymbolRule(
-        r"^(?!.*\bCOMBINATION\b).*\bDUPLEX\b.*\b(?:ELECTRICAL\s+)?OUTLET\b",
+        r"^(?!.*\bCOMBINATION\b).*\bDUPLEX\b.*\b(?:(?:ELECTRICAL\s+)?OUTLET|RECEPTACLE)\b",
         "device",
         "receptacle_duplex",
         1.0,
     ),
     SymbolRule(
-        r"^(?!.*\bCOMBINATION\b).*\b(?:QUADRUPLEX|QUADRUPLE|QUAD)\b.*\b(?:ELECTRICAL\s+)?OUTLET\b",
+        r"^(?!.*\bCOMBINATION\b).*\b(?:QUADRUPLEX|QUADRUPLE|QUAD|FOURPLEX|FOUR-PLEX)\b"
+        r".*\b(?:(?:ELECTRICAL\s+)?OUTLET|RECEPTACLE)\b",
         "device",
         "receptacle_quad",
         1.0,
@@ -352,16 +353,32 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         1.0,
     ),
     SymbolRule(
-        r"\b(?:CABLE\s+TV|CATV)\b.*\bOUTLET\b",
+        r"\b(?:CABLE\s+TV|CATV|TELEVISION)\b.*\bOUTLET\b",
         "device",
         "catv_outlet",
         1.0,
     ),
-    SymbolRule(r"^(?!.*\bCOMBINATION\b)(?!.*\bDUPLEX\b.*\b(?:ELECTRICAL\s+)?OUTLET\b).*\b(?:GFCI|GFI|RECEPTACLE|RECEPT|DUPLEX|REC)[A-Z0-9]*\b", "device", "receptacle", 0.94),
+    SymbolRule(
+        r"^(?!.*\bCOMBINATION\b).*\bCAT\s*-?\s*[56]E?\b.*\b(?:OUTLET|HOOK-?UP|JACK|DROP)\b",
+        "device",
+        "data_outlet",
+        1.0,
+    ),
+    # The generic receptacle yields to the specific duplex and quad rules, and
+    # "RECESSED" is not a receptacle abbreviation.
+    SymbolRule(
+        r"^(?!.*\bCOMBINATION\b)"
+        r"(?!.*\b(?:DUPLEX|QUADRUPLEX|QUADRUPLE|QUAD|FOURPLEX|FOUR-PLEX)\b.*\b(?:(?:ELECTRICAL\s+)?OUTLET|RECEPTACLE)\b)"
+        r".*\b(?:GFCI|GFI|RECEPTACLE|RECEPT|DUPLEX|REC(?!ESS))[A-Z0-9]*\b",
+        "device",
+        "receptacle",
+        0.94,
+    ),
     SymbolRule(r"^(?!.*\b(?:ELECTRICAL|POWER|DATA|TELE|TELEPHONE)\b.*\b(?:JBOX|J-?BOX|JUNCTION\s+BOX)\b).*\b(?:(?:JBOX|J-?BOX|JB)[A-Z0-9]*|JUNCTION\s+BOX)\b", "device", "junction_box", 0.94),
-    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE)\b", "device", "luminaire", 0.91),
+    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE|SCONCE|FLOODLIGHT|DOWNLIGHT|PENDANT)\b", "device", "luminaire", 0.91),
     SymbolRule(r"\b(?:DISCONNECT|DISC)\b", "device", "disconnect", 0.92),
     SymbolRule(r"\b(?:SWITCH|SW)\b", "device", "switch", 0.75),
+    SymbolRule(r"\b(?:TOGGLE|DIMMER)\b", "device", "switch", 0.9),
     # Bare "SW" is intentionally ambiguous without a legend.
     SymbolRule(r"\bSW\b", "equipment", "switchboard", 0.75),
 )
@@ -452,6 +469,7 @@ class _LegendRegion:
     header_element_ids: tuple[str, ...] = ()
     table_bbox_pt: tuple[float, float, float, float] | None = None
     frame_provenance: tuple[Mapping[str, Any], ...] = ()
+    legend_frame: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -4296,6 +4314,178 @@ def _symbol_function_legend_regions(
     return tuple(best_by_page[page] for page in sorted(best_by_page))
 
 
+_LEGEND_FRAME_MAX_PAGE_FRACTION = 0.6
+_LEGEND_FRAME_MIN_SIDE_PT = 72.0
+
+
+def _legend_frame_around(
+    heading: PdfTextObservation,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[float, float, float, float] | None:
+    """The ruled rectangle that encloses a legend title, when the sheet draws one.
+
+    A frame needs a vertical rule on each side of the title that spans the
+    title's baseline, and horizontal rules closing the top and bottom between
+    them. A frame covering most of the sheet is the sheet border, not a legend.
+    """
+
+    horizontal, vertical = _rule_segments(vectors, page=heading.page)
+    font = float(heading.font_size_pt or 8.0)
+    title_end = heading.x_pt + 0.5 * len(heading.text) * font
+    tolerance = 2.0 * _LEGEND_RULE_AXIS_TOLERANCE_PT
+    spanning = [
+        rule for rule in vertical
+        if rule[1] - tolerance <= heading.y_pt <= rule[2] + tolerance
+    ]
+    left = max((rule for rule in spanning if rule[0] <= heading.x_pt), default=None)
+    right = min((rule for rule in spanning if rule[0] >= title_end), default=None)
+    if left is None or right is None:
+        return None
+    bottom = max(left[1], right[1])
+    top = min(left[2], right[2])
+    if right[0] - left[0] < _LEGEND_FRAME_MIN_SIDE_PT or top - bottom < _LEGEND_FRAME_MIN_SIDE_PT:
+        return None
+
+    def closed_at(y: float) -> bool:
+        return any(
+            abs(rule[1] - y) <= tolerance
+            and rule[0] <= left[0] + tolerance
+            and rule[2] >= right[0] - tolerance
+            for rule in horizontal
+        )
+
+    if not (closed_at(bottom) and closed_at(top)):
+        return None
+    xs = [value for rule in horizontal for value in (rule[0], rule[2])]
+    xs.extend(rule[0] for rule in vertical)
+    ys = [value for rule in vertical for value in (rule[1], rule[2])]
+    ys.extend(rule[1] for rule in horizontal)
+    sheet_width = (max(xs) - min(xs)) if xs else 0.0
+    sheet_height = (max(ys) - min(ys)) if ys else 0.0
+    if (
+        sheet_width > 0
+        and (right[0] - left[0]) > _LEGEND_FRAME_MAX_PAGE_FRACTION * sheet_width
+    ) or (
+        sheet_height > 0
+        and (top - bottom) > _LEGEND_FRAME_MAX_PAGE_FRACTION * sheet_height
+    ):
+        return None
+    return (left[0], bottom, right[0], top)
+
+
+def _row_inside(row: _LegendRow, bbox: tuple[float, float, float, float]) -> bool:
+    x0, y0, x1, y1 = bbox
+    cx0, cy0, cx1, cy1 = row.cluster.bbox_pt
+    return (
+        x0 <= cx0 and cx1 <= x1 and y0 <= cy0 and cy1 <= y1
+        and x0 <= row.label.x_pt <= x1 and y0 <= row.label.y_pt <= y1
+    )
+
+
+def _drop_rows_in_rejected_sections(
+    rows: Sequence[_LegendRow],
+    frame: tuple[float, float, float, float],
+    texts: Sequence[PdfTextObservation],
+) -> tuple[list[_LegendRow], int, list[str]]:
+    """Inside a legend frame, keep rows out of sections such as ABBREVIATIONS.
+
+    A section heading is larger text inside the frame. Each row belongs to the
+    nearest heading above it in its own column; rows under a heading with a
+    rejected legend context (abbreviations, notes, schedules) are not symbols.
+    """
+
+    sizes = sorted(row.label.font_size_pt for row in rows if row.label.font_size_pt)
+    if not sizes:
+        return list(rows), 0, []
+    base = sizes[len(sizes) // 2]
+    page = rows[0].cluster.page
+    x0, y0, x1, y1 = frame
+    headings = [
+        text for text in texts
+        if text.page == page
+        and x0 <= text.x_pt <= x1
+        and y0 <= text.y_pt <= y1
+        and (text.font_size_pt or 0.0) >= 1.15 * base
+        and _looks_like_section_heading(text)
+    ]
+    kept: list[_LegendRow] = []
+    dropped = 0
+    for row in rows:
+        above = [
+            heading for heading in headings
+            if heading.y_pt > row.label.y_pt
+            and row.cluster.bbox_pt[0] - 40.0 <= heading.x_pt <= row.label.x_pt + 40.0
+        ]
+        section = min(
+            above,
+            key=lambda heading: (heading.y_pt - row.label.y_pt, heading.element_id),
+            default=None,
+        )
+        if section is not None and _heading_has_rejected_legend_context(section):
+            dropped += 1
+            continue
+        kept.append(row)
+    return kept, dropped, sorted({" ".join(heading.text.split()) for heading in headings})
+
+
+def _join_framed_legend_columns(
+    region: _LegendRegion,
+    page_groups: Sequence[tuple[_LegendRow, ...]],
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+) -> _LegendRegion:
+    """Add the other columns of a ruled legend block to its title-matched region.
+
+    A legend often runs in columns, and only one sits under the title; the
+    others sit under section headings such as RECEPTACLES or SWITCHES. Row
+    groups entirely inside the same ruled frame as the title belong to that
+    legend. A group headed as notes, keynotes or a schedule does not.
+    """
+
+    if region.heading is None:
+        return region
+    frame = _legend_frame_around(region.heading, vectors)
+    if frame is None or not all(_row_inside(row, frame) for row in region.rows):
+        return region
+    present = {(row.cluster.geometry_key, row.label.element_id) for row in region.rows}
+    joined: list[_LegendRow] = list(region.rows)
+    joined_groups = 0
+    for group in page_groups:
+        if any((row.cluster.geometry_key, row.label.element_id) in present for row in group):
+            continue
+        if not all(_row_inside(row, frame) for row in group):
+            continue
+        heading = _nearest_section_heading(group, texts, vectors, allow_beside=True)
+        if heading is not None and _heading_has_rejected_legend_context(heading):
+            continue
+        joined.extend(group)
+        joined_groups += 1
+        present.update((row.cluster.geometry_key, row.label.element_id) for row in group)
+    joined, dropped, sections = _drop_rows_in_rejected_sections(joined, frame, texts)
+    return replace(
+        region,
+        rows=tuple(
+            sorted(
+                joined,
+                key=lambda row: (
+                    row.cluster.page,
+                    -row.cluster.center_pt[1],
+                    row.cluster.center_pt[0],
+                    row.label.element_id,
+                ),
+            )
+        ),
+        table_bbox_pt=frame,
+        legend_frame={
+            "method": "ruled frame around the legend title",
+            "bbox_pt": list(frame),
+            "joined_row_groups": joined_groups,
+            "section_headings": sections,
+            "rows_dropped_in_rejected_sections": dropped,
+        },
+    )
+
+
 def _detect_legend_regions(
     *,
     texts: Sequence[PdfTextObservation],
@@ -4340,14 +4530,19 @@ def _detect_legend_regions(
                 )
             )
         if candidates:
-            regions_by_page[page] = max(
-                candidates,
-                key=lambda region: (
-                    len(region.rows),
-                    sum(row.classification is not None for row in region.rows),
-                    (region.heading.font_size_pt or 0.0) if region.heading else 0.0,
-                    region.heading.element_id if region.heading else "",
+            regions_by_page[page] = _join_framed_legend_columns(
+                max(
+                    candidates,
+                    key=lambda region: (
+                        len(region.rows),
+                        sum(row.classification is not None for row in region.rows),
+                        (region.heading.font_size_pt or 0.0) if region.heading else 0.0,
+                        region.heading.element_id if region.heading else "",
+                    ),
                 ),
+                page_groups,
+                texts,
+                vectors,
             )
 
     signature_counts: dict[tuple[int, str], int] = {}
@@ -6441,8 +6636,22 @@ def _recognize_legend_shapes(
     for reference in references:
         references_by_page.setdefault(reference.page, []).append(reference)
 
+    # Glyphs drawn inside a legend frame or legend table are legend samples,
+    # never installed devices.
+    legend_boxes = {
+        region.page: region.table_bbox_pt
+        for region in regions
+        if region.table_bbox_pt is not None
+    }
     field_clusters = _prepare_field_clusters(
-        clusters,
+        tuple(
+            cluster for cluster in clusters
+            if cluster.page not in legend_boxes
+            or not (
+                legend_boxes[cluster.page][0] <= cluster.center_pt[0] <= legend_boxes[cluster.page][2]
+                and legend_boxes[cluster.page][1] <= cluster.center_pt[1] <= legend_boxes[cluster.page][3]
+            )
+        ),
         prototype_geometry_keys=prototype_geometry_keys,
         legend_entries_by_page=legend_entries_by_page,
         references_by_page=references_by_page,
@@ -6483,6 +6692,11 @@ def _recognize_legend_shapes(
                         ]
                     }
                     if region.frame_provenance
+                    else {}
+                ),
+                **(
+                    {"legend_frame": dict(region.legend_frame)}
+                    if region.legend_frame is not None
                     else {}
                 ),
             }

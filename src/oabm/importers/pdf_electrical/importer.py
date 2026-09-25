@@ -3280,20 +3280,6 @@ def _shx_text_boxes(
     }
 
 
-def _points_inside_box_pt(
-    points: Sequence[tuple[float, float]],
-    box: tuple[float, float, float, float],
-    *,
-    tolerance_pt: float,
-) -> bool:
-    x0, y0, x1, y1 = box
-    return all(
-        x0 - tolerance_pt <= x <= x1 + tolerance_pt
-        and y0 - tolerance_pt <= y <= y1 + tolerance_pt
-        for x, y in points
-    )
-
-
 _DASH_ARC_MIN_DASHES = 4
 _DASH_ARC_MIN_SEGMENT_PT = 2.0
 _DASH_ARC_MAX_SEGMENT_PT = 34.0
@@ -3623,44 +3609,45 @@ def _glyph_cluster_vectors(
     """
 
     text_boxes = _shx_text_boxes(document.symbols)
+    all_text_boxes = _shx_text_boxes(document.symbols, multi_character_only=False)
     screened_ids = _screened_background_vector_ids(vectors)
+    # A path lies wholly inside an axis-aligned text box exactly when its
+    # bounding box does.
+    bboxes = {vector.element_id: _vector_bbox(vector) for vector in vectors}
+
+    def inside_any(
+        vector: PdfVectorPathObservation,
+        boxes: Mapping[int, tuple[tuple[float, float, float, float], ...]],
+    ) -> bool:
+        x0, y0, x1, y1 = bboxes[vector.element_id]
+        tolerance = _SHX_TEXT_BOX_TOLERANCE_PT
+        return any(
+            box[0] - tolerance <= x0
+            and box[1] - tolerance <= y0
+            and x1 <= box[2] + tolerance
+            and y1 <= box[3] + tolerance
+            for box in boxes.get(vector.page, ())
+        )
+
     # Arc dashes are looked for among the opaque linework outside any drawn
     # SHX string: letter strokes, even of one-letter glyph codes, are never
     # dashes, and screened architecture would chain unrelated strokes in.
-    all_text_boxes = _shx_text_boxes(document.symbols, multi_character_only=False)
     arc_ids = _dashed_arc_train_vector_ids(
         [
             vector
             for vector in vectors
             if vector.element_id not in screened_ids
-            and not any(
-                _points_inside_box_pt(
-                    vector.points_pt,
-                    box,
-                    tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
-                )
-                for box in all_text_boxes.get(vector.page, ())
-            )
+            and not inside_any(vector, all_text_boxes)
         ]
     )
     if not text_boxes and not arc_ids and not screened_ids:
         return tuple(vectors)
     excluded = set(arc_ids) | screened_ids
-    for vector in vectors:
-        if vector.element_id in excluded:
-            continue
-        boxes = text_boxes.get(vector.page)
-        if not boxes:
-            continue
-        if any(
-            _points_inside_box_pt(
-                vector.points_pt,
-                box,
-                tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
-            )
-            for box in boxes
-        ):
-            excluded.add(vector.element_id)
+    excluded.update(
+        vector.element_id
+        for vector in vectors
+        if vector.element_id not in excluded and inside_any(vector, text_boxes)
+    )
     return tuple(
         vector for vector in vectors if vector.element_id not in excluded
     )

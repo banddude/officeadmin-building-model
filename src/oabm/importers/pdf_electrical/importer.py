@@ -9712,12 +9712,18 @@ class ElectricalPdfImporter:
                 )
                 continue
 
-            # A tag the page's own legend claims keeps the legend's meaning:
-            # when it neither resolved nor joined a glyph it stays unresolved
-            # with its precise reason instead of falling back to a fixed
-            # alias or a verbatim label word.
+            annotation_match = _annotation_code_legend_match(
+                symbol,
+                annotation_legend_entries.get(symbol.page, ()),
+            )
+            # A tag the page's own legend claims that neither resolved nor
+            # joined a glyph, and that the annotation-code rules cannot read
+            # either, stays unresolved with the tag's precise reason instead
+            # of the generic "does not uniquely match" one.
             tag_outcome = tag_outcomes.get(symbol.element_id)
-            if tag_outcome is not None:
+            if tag_outcome is not None and (
+                annotation_match is None or annotation_match[0] is None
+            ):
                 unresolved_observations.append(
                     _unresolved_annotation_row(
                         symbol,
@@ -9732,11 +9738,6 @@ class ElectricalPdfImporter:
                     )
                 )
                 continue
-
-            annotation_match = _annotation_code_legend_match(
-                symbol,
-                annotation_legend_entries.get(symbol.page, ()),
-            )
             if annotation_match is not None:
                 legend_entry, annotation_recognition = annotation_match
                 if legend_entry is None:

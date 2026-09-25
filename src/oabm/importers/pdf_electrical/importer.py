@@ -639,6 +639,66 @@ def _flatten_cubic_bezier(
     return tuple(samples)
 
 
+_STROKING_PAINT_OPERATORS = frozenset({b"S", b"s", b"B", b"B*", b"b", b"b*"})
+_FILLING_PAINT_OPERATORS = frozenset({b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"})
+
+
+def _resolved_pdf_object(value: Any) -> Any:
+    try:
+        return value.get_object()
+    except AttributeError:
+        return value
+
+
+def _ext_gstate_alpha(
+    resources: Any,
+    name: str,
+) -> tuple[float | None, float | None]:
+    """Stroke (/CA) and fill (/ca) constant alpha of one named graphics state.
+
+    A value the state does not set, or cannot be read, is None and leaves the
+    current alpha unchanged.
+    """
+
+    if not isinstance(resources, Mapping):
+        return None, None
+    states = _resolved_pdf_object(resources.get("/ExtGState"))
+    if not isinstance(states, Mapping):
+        return None, None
+    state = _resolved_pdf_object(states.get(name))
+    if not isinstance(state, Mapping):
+        return None, None
+
+    def alpha(key: str) -> float | None:
+        raw = state.get(key)
+        if raw is None:
+            return None
+        try:
+            value = float(_resolved_pdf_object(raw))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        return min(1.0, max(0.0, value))
+
+    return alpha("/CA"), alpha("/ca")
+
+
+def _form_xobject_resources(resources: Any, name: str) -> Any | None:
+    """The resources a named form XObject paints with, or None for no form."""
+
+    if not isinstance(resources, Mapping):
+        return None
+    xobjects = _resolved_pdf_object(resources.get("/XObject"))
+    if not isinstance(xobjects, Mapping):
+        return None
+    xobject = _resolved_pdf_object(xobjects.get(name))
+    if not isinstance(xobject, Mapping) or str(xobject.get("/Subtype")) != "/Form":
+        return None
+    own = _resolved_pdf_object(xobject.get("/Resources"))
+    return own if isinstance(own, Mapping) else resources
+
+
 def _make_page_visitors(
     *,
     page_number: int,
@@ -647,6 +707,7 @@ def _make_page_visitors(
     texts: list[PdfTextObservation],
     symbols: list[PdfSymbolObservation],
     vectors: list[PdfVectorPathObservation],
+    resources: Any = None,
 ):
     text_counter = 0
     operator_counter = 0
@@ -663,6 +724,13 @@ def _make_page_visitors(
             tuple[dict[str, Any], ...],
         ]
     ] = []
+    # Constant stroke and fill alpha from ExtGState (/CA, /ca), saved by q/Q
+    # and around each form XObject, which paints with its own resources.
+    stroke_alpha = 1.0
+    fill_alpha = 1.0
+    alpha_stack: list[tuple[float, float]] = []
+    resource_stack: list[Any] = [_resolved_pdf_object(resources)]
+    form_frames: list[tuple[bool, float, float, int]] = []
 
     def displayed_graphics_point(
         cm: Sequence[float],
@@ -741,6 +809,12 @@ def _make_page_visitors(
                 continue
             vector_counter += 1
             metadata: dict[str, Any] = {"paint_operator": paint_operator}
+            # Only a translucent paint is recorded; opaque paths keep their
+            # metadata unchanged.
+            if operator in _STROKING_PAINT_OPERATORS and stroke_alpha < 1.0:
+                metadata["stroke_alpha"] = round(stroke_alpha, 6)
+            if operator in _FILLING_PAINT_OPERATORS and fill_alpha < 1.0:
+                metadata["fill_alpha"] = round(fill_alpha, 6)
             if curve_commands:
                 metadata.update(
                     {
@@ -768,7 +842,36 @@ def _make_page_visitors(
         tm: Sequence[float],
     ) -> None:
         nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
+        nonlocal stroke_alpha, fill_alpha
         operator_counter += 1
+
+        if operator == b"q":
+            alpha_stack.append((stroke_alpha, fill_alpha))
+            return
+        if operator == b"Q":
+            if alpha_stack:
+                stroke_alpha, fill_alpha = alpha_stack.pop()
+            return
+        if operator == b"gs" and operands:
+            new_stroke, new_fill = _ext_gstate_alpha(
+                resource_stack[-1], str(operands[0])
+            )
+            if new_stroke is not None:
+                stroke_alpha = new_stroke
+            if new_fill is not None:
+                fill_alpha = new_fill
+            return
+        if operator == b"Do":
+            form_resources = (
+                _form_xobject_resources(resource_stack[-1], str(operands[0]))
+                if operands
+                else None
+            )
+            form_frames.append(
+                (form_resources is not None, stroke_alpha, fill_alpha, len(alpha_stack))
+            )
+            if form_resources is not None:
+                resource_stack.append(form_resources)
 
         if operator == b"Do" and operands:
             name = str(operands[0])
@@ -906,7 +1009,25 @@ def _make_page_visitors(
         if operator == b"n":
             clear_paths()
 
-    return visitor_text, visitor_operand_before
+    def visitor_operand_after(
+        operator: bytes,
+        operands: Sequence[Any],
+        cm: Sequence[float],
+        tm: Sequence[float],
+    ) -> None:
+        nonlocal stroke_alpha, fill_alpha
+        if operator != b"Do" or not form_frames:
+            return
+        is_form, saved_stroke, saved_fill, depth = form_frames.pop()
+        if not is_form:
+            return
+        # A form XObject paints inside an implicit q/Q with its own resources.
+        if len(resource_stack) > 1:
+            resource_stack.pop()
+        stroke_alpha, fill_alpha = saved_stroke, saved_fill
+        del alpha_stack[depth:]
+
+    return visitor_text, visitor_operand_before, visitor_operand_after
 
 
 def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectricalDocument:
@@ -977,13 +1098,14 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                         if str(xobject.get("/Subtype")) == "/Form":
                             form_names.add(str(raw_name))
 
-        visitor_text, visitor_operand_before = _make_page_visitors(
+        visitor_text, visitor_operand_before, visitor_operand_after = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),
             display_transform=display_transform,
             texts=texts,
             symbols=symbols,
             vectors=vectors,
+            resources=resources,
         )
 
         temporary_font_resource = False
@@ -1001,6 +1123,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             page.extract_text(
                 visitor_text=visitor_text,
                 visitor_operand_before=visitor_operand_before,
+                visitor_operand_after=visitor_operand_after,
             )
         except Exception as exc:
             raise ElectricalPdfError(
@@ -3379,22 +3502,68 @@ def _page_dashed_arc_train_vector_ids(
     return matched
 
 
+# A path painted at or below this constant alpha is a screened background
+# layer (architecture traced under the electrical work), not device linework.
+_SCREENED_BACKGROUND_ALPHA_MAX = 0.5
+
+
+def _painted_alpha(vector: PdfVectorPathObservation) -> float:
+    """The most opaque alpha among the components the path actually paints."""
+
+    operator = str(vector.metadata.get("paint_operator") or "").encode("ascii", "replace")
+    alphas: list[float] = []
+    if operator in _STROKING_PAINT_OPERATORS:
+        alphas.append(float(vector.metadata.get("stroke_alpha", 1.0)))
+    if operator in _FILLING_PAINT_OPERATORS:
+        alphas.append(float(vector.metadata.get("fill_alpha", 1.0)))
+    return max(alphas) if alphas else 1.0
+
+
+def _screened_background_vector_ids(
+    vectors: Sequence[PdfVectorPathObservation],
+) -> set[str]:
+    """Paths painted translucent on a page that also paints opaque paths.
+
+    CAD sheets trace the architecture under the electrical work through a
+    low constant alpha while the devices stay opaque. Those screened strokes
+    are not device glyph strokes, and chaining them into device clusters
+    makes the clusters too large to match. A page painted entirely
+    translucent keeps every path, since nothing there sets the devices apart.
+    """
+
+    alphas = {vector.element_id: _painted_alpha(vector) for vector in vectors}
+    opaque_pages = {
+        vector.page
+        for vector in vectors
+        if alphas[vector.element_id] > _SCREENED_BACKGROUND_ALPHA_MAX
+    }
+    return {
+        vector.element_id
+        for vector in vectors
+        if vector.page in opaque_pages
+        and alphas[vector.element_id] <= _SCREENED_BACKGROUND_ALPHA_MAX
+    }
+
+
 def _glyph_cluster_vectors(
     document: PdfElectricalDocument,
     vectors: Sequence[PdfVectorPathObservation],
 ) -> tuple[PdfVectorPathObservation, ...]:
     """Vector paths that may take part in device-glyph clustering.
 
-    Letter strokes inside a drawn SHX text string are text, and the separate
-    dashes of a circuit arc are wiring; neither may chain real glyphs into
-    oversized clusters or pose as glyph strokes itself.
+    Letter strokes inside a drawn SHX text string are text, the separate
+    dashes of a circuit arc are wiring, and translucent strokes on a sheet
+    that paints its devices opaque are the screened architecture; none of
+    them may chain real glyphs into oversized clusters or pose as glyph
+    strokes itself.
     """
 
     text_boxes = _shx_text_boxes(document.symbols)
     arc_ids = _dashed_arc_train_vector_ids(vectors)
-    if not text_boxes and not arc_ids:
+    screened_ids = _screened_background_vector_ids(vectors)
+    if not text_boxes and not arc_ids and not screened_ids:
         return tuple(vectors)
-    excluded = set(arc_ids)
+    excluded = set(arc_ids) | screened_ids
     for vector in vectors:
         if vector.element_id in excluded:
             continue

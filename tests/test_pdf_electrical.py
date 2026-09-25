@@ -12,6 +12,7 @@ from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
     DictionaryObject,
+    FloatObject,
     NameObject,
     NumberObject,
     TextStringObject,
@@ -6558,3 +6559,190 @@ def test_annotation_codes_are_read_only_outside_the_legend_frame(
             for device in model.electrical_devices
         ] == [("data_outlet", {"x": 850.0, "y": 500.0})]
     validate_model(model)
+
+
+def _write_pdf_with_graphics_states(
+    path: Path,
+    content: list[str],
+    *,
+    states: dict[str, float],
+    form: tuple[str, list[str], dict[str, float]] | None = None,
+    width: float = 612.0,
+    height: float = 792.0,
+) -> None:
+    """One page whose content may select /CA+/ca graphics states by name."""
+
+    def ext_gstates(values: dict[str, float]) -> DictionaryObject:
+        return DictionaryObject(
+            {
+                NameObject(f"/{name}"): DictionaryObject(
+                    {
+                        NameObject("/Type"): NameObject("/ExtGState"),
+                        NameObject("/CA"): FloatObject(alpha),
+                        NameObject("/ca"): FloatObject(alpha),
+                    }
+                )
+                for name, alpha in values.items()
+            }
+        )
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=width, height=height)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    resources = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): writer._add_object(font)}
+            ),
+            NameObject("/ExtGState"): ext_gstates(states),
+        }
+    )
+    if form is not None:
+        form_name, form_content, form_states = form
+        form_stream = DecodedStreamObject()
+        form_stream.set_data("\n".join(form_content).encode("ascii"))
+        form_stream.update(
+            {
+                NameObject("/Type"): NameObject("/XObject"),
+                NameObject("/Subtype"): NameObject("/Form"),
+                NameObject("/BBox"): ArrayObject(
+                    [NumberObject(0), NumberObject(0), NumberObject(width), NumberObject(height)]
+                ),
+                NameObject("/Resources"): DictionaryObject(
+                    {NameObject("/ExtGState"): ext_gstates(form_states)}
+                ),
+            }
+        )
+        resources[NameObject("/XObject")] = DictionaryObject(
+            {NameObject(f"/{form_name}"): writer._add_object(form_stream)}
+        )
+    page[NameObject("/Resources")] = resources
+    stream = DecodedStreamObject()
+    stream.set_data("\n".join(content).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def test_extractor_records_translucent_paint_through_q_q_and_forms(
+    tmp_path: Path,
+) -> None:
+    content = [
+        _cad_path_command(((10.0, 10.0), (60.0, 10.0)), close=False),
+        "q /GS0 gs",
+        _cad_path_command(((10.0, 20.0), (60.0, 20.0)), close=False),
+        "10 30 20 20 re f",
+        "Q",
+        _cad_path_command(((10.0, 60.0), (60.0, 60.0)), close=False),
+        # The form sets its own translucent state without q/Q; the implicit
+        # q/Q around a form keeps that state from leaking onto the page.
+        "/Fm0 Do",
+        _cad_path_command(((10.0, 80.0), (60.0, 80.0)), close=False),
+    ]
+    pdf_path = tmp_path / "translucent-paint.pdf"
+    _write_pdf_with_graphics_states(
+        pdf_path,
+        content,
+        states={"GS0": 0.247},
+        form=(
+            "Fm0",
+            ["/GSF gs", _cad_path_command(((10.0, 70.0), (60.0, 70.0)), close=False)],
+            {"GSF": 0.5},
+        ),
+    )
+    extracted = extract_pdf(pdf_path, source_id="test:translucent-paint")
+    repeated = extract_pdf(pdf_path, source_id="test:translucent-paint")
+    assert extracted == repeated
+
+    by_y = {
+        round(vector.points_pt[0][1]): vector.metadata for vector in extracted.vectors
+    }
+    assert "stroke_alpha" not in by_y[10] and "fill_alpha" not in by_y[10]
+    assert by_y[20]["stroke_alpha"] == 0.247
+    assert "fill_alpha" not in by_y[20]
+    assert by_y[30]["fill_alpha"] == 0.247
+    assert "stroke_alpha" not in by_y[30]
+    assert "stroke_alpha" not in by_y[60]
+    assert by_y[70]["stroke_alpha"] == 0.5
+    assert "stroke_alpha" not in by_y[80]
+
+
+def test_screened_architecture_does_not_chain_into_device_glyphs(
+    tmp_path: Path,
+) -> None:
+    # A duplex receptacle drawn opaque against a wall traced translucent: the
+    # wall strokes touch the glyph and, chained with it, would make one
+    # cluster far over the glyph size limit.
+    font = 7.0
+    content = [
+        _cad_text_command(84.0, 712.0, "ELECTRICAL SYMBOL LEGEND", 9.0),
+    ]
+    for index, (glyph, label) in enumerate(
+        (
+            (_legend_glyph_duplex, "DUPLEX RECEPTACLE"),
+            (_legend_glyph_fourplex, "FOURPLEX RECEPTACLE"),
+            (_legend_glyph_toggle, "SINGLE POLE TOGGLE"),
+        )
+    ):
+        y = 680.0 - 24.0 * index
+        content.extend(glyph(100.0, y))
+        content.append(_cad_text_command(136.0, y - 0.35 * font, label, font))
+    wall = []
+    for step in range(12):
+        x = 380.0 + 12.0 * step
+        wall.append(_cad_path_command(((x, 405.5), (x + 11.0, 405.5)), close=False))
+        wall.append(_cad_path_command(((x, 409.0), (x + 11.0, 409.0)), close=False))
+    content.extend(["q /GS0 gs", *wall, "Q"])
+    content.extend(_legend_glyph_duplex(450.0, 400.0))
+    # The same wall with its own receptacle, all painted opaque, stays one
+    # oversized cluster: only the screened paint is set apart.
+    opaque_wall = [
+        command.replace("405.500", "205.500").replace("409.000", "209.000")
+        for command in wall
+    ]
+    content.extend(opaque_wall)
+    content.extend(_legend_glyph_duplex(450.0, 200.0))
+    pdf_path = tmp_path / "screened-architecture.pdf"
+    _write_pdf_with_graphics_states(pdf_path, content, states={"GS0": 0.247})
+
+    extracted = extract_pdf(pdf_path, source_id="test:screened-architecture")
+    screened = pdf_electrical_importer._screened_background_vector_ids(
+        extracted.vectors
+    )
+    assert len(screened) == 24
+    model = ElectricalPdfImporter().import_document(extracted)
+
+    devices = [
+        (
+            device.device_type,
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["x"]),
+            round(device.attributes["pdf_electrical"]["source_position_pt"]["y"]),
+        )
+        for device in model.electrical_devices
+    ]
+    assert devices == [("receptacle_duplex", 450, 400)]
+    assert model.to_dict() == ElectricalPdfImporter().import_document(
+        extract_pdf(pdf_path, source_id="test:screened-architecture")
+    ).to_dict()
+    validate_model(model)
+
+
+def test_an_entirely_translucent_page_keeps_its_paths_for_glyphs(
+    tmp_path: Path,
+) -> None:
+    content = ["/GS0 gs", *_legend_glyph_duplex(300.0, 300.0)]
+    pdf_path = tmp_path / "all-translucent.pdf"
+    _write_pdf_with_graphics_states(pdf_path, content, states={"GS0": 0.247})
+    extracted = extract_pdf(pdf_path, source_id="test:all-translucent")
+    assert all(
+        vector.metadata.get("stroke_alpha") == 0.247 for vector in extracted.vectors
+    )
+    assert pdf_electrical_importer._screened_background_vector_ids(
+        extracted.vectors
+    ) == set()

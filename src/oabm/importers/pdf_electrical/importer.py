@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import hashlib
 from collections import Counter
 import math
@@ -485,6 +486,11 @@ class _LegendEntry:
     region: _LegendRegion
     label_source_element_ids: tuple[str, ...] = ()
     symbol_code_texts: tuple[PdfTextObservation, ...] = ()
+    # A prototype whose straight strokes box in a short text code (a "CTV"
+    # inside a rectangle) is a text symbol: the frame is generic and the code
+    # is the symbol. It only names field glyphs that box in the same code.
+    boxed_text_code: str | None = None
+    boxed_text_source_element_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2306,6 +2312,166 @@ def _cluster_contains_nonmodifier_text(
     return False
 
 
+# A stroke is a box side when it runs along one axis within this tolerance.
+_BOXED_TEXT_AXIS_TOLERANCE_PT = 0.35
+
+
+def _boxed_text_code_value(text: str) -> str | None:
+    """Compact code of one text that can be the content of a text symbol.
+
+    A short code with at least one letter ("CTV", "C.T.V.", "CR"). Status
+    letters, counts and heights are field modifiers, never symbol codes.
+    """
+
+    cleaned = " ".join(text.split())
+    if not cleaned or _field_modifier_text(cleaned) is not None:
+        return None
+    normalized = _normalized_annotation_code(cleaned)
+    if normalized is None or not re.search(r"[A-Z]", normalized):
+        return None
+    return normalized.replace(" ", "")
+
+
+def _text_reference_point(observation: PdfTextObservation) -> tuple[float, float]:
+    """Approximate middle of a text run from its baseline start and font size."""
+
+    size = observation.font_size_pt
+    if not size or size <= 0.0:
+        return observation.x_pt, observation.y_pt
+    characters = len(" ".join(observation.text.split()))
+    return (
+        observation.x_pt + 0.3 * float(size) * characters,
+        observation.y_pt + 0.35 * float(size),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _BoxedTextIndex:
+    """Code-like texts per page, sorted by x, for fast glyph-box lookups."""
+
+    xs_by_page: Mapping[int, tuple[float, ...]]
+    items_by_page: Mapping[
+        int,
+        tuple[tuple[float, float, PdfTextObservation], ...],
+    ]
+
+    @classmethod
+    def build(cls, texts: Sequence[PdfTextObservation]) -> _BoxedTextIndex:
+        items: dict[int, list[tuple[float, float, PdfTextObservation]]] = {}
+        for observation in texts:
+            if _boxed_text_code_value(observation.text) is None:
+                continue
+            x_pt, y_pt = _text_reference_point(observation)
+            items.setdefault(observation.page, []).append((x_pt, y_pt, observation))
+        ordered = {
+            page: tuple(
+                sorted(
+                    page_items,
+                    key=lambda item: (item[0], item[1], item[2].element_id),
+                )
+            )
+            for page, page_items in items.items()
+        }
+        return cls(
+            xs_by_page={
+                page: tuple(item[0] for item in page_items)
+                for page, page_items in ordered.items()
+            },
+            items_by_page=ordered,
+        )
+
+    def within(
+        self,
+        page: int,
+        bbox: tuple[float, float, float, float],
+    ) -> tuple[tuple[float, float, PdfTextObservation], ...]:
+        xs = self.xs_by_page.get(page)
+        if not xs:
+            return ()
+        items = self.items_by_page[page]
+        start = bisect.bisect_right(xs, bbox[0])
+        end = bisect.bisect_left(xs, bbox[2])
+        return tuple(
+            item
+            for item in items[start:end]
+            if bbox[1] < item[1] < bbox[3]
+        )
+
+
+def _cluster_boxed_texts(
+    cluster: _VectorCluster,
+    index: _BoxedTextIndex,
+) -> tuple[PdfTextObservation, ...]:
+    """Code texts boxed in on all four sides by the cluster's straight strokes.
+
+    Only straight, axis-aligned strokes count as box sides, so the letter in a
+    circle (a J-box "J") is not a boxed text; the gate is for rectangular text
+    frames. Texts are returned in reading order.
+    """
+
+    candidates = index.within(cluster.page, cluster.bbox_pt)
+    if not candidates:
+        return ()
+    horizontals: list[tuple[float, float, float]] = []
+    verticals: list[tuple[float, float, float]] = []
+    tolerance = _BOXED_TEXT_AXIS_TOLERANCE_PT
+    for vector in cluster.vectors:
+        if _vector_contains_bezier(vector):
+            continue
+        for (x1, y1), (x2, y2) in _vector_segments(vector):
+            if abs(y1 - y2) <= tolerance and abs(x1 - x2) > tolerance:
+                horizontals.append(((y1 + y2) / 2.0, min(x1, x2), max(x1, x2)))
+            elif abs(x1 - x2) <= tolerance and abs(y1 - y2) > tolerance:
+                verticals.append(((x1 + x2) / 2.0, min(y1, y2), max(y1, y2)))
+    if len(horizontals) < 2 or len(verticals) < 2:
+        return ()
+
+    boxed: list[PdfTextObservation] = []
+    for x_pt, y_pt, observation in candidates:
+        spans_x = [
+            side for side, low, high in horizontals if low <= x_pt <= high
+        ]
+        spans_y = [side for side, low, high in verticals if low <= y_pt <= high]
+        if (
+            any(side > y_pt for side in spans_x)
+            and any(side < y_pt for side in spans_x)
+            and any(side > x_pt for side in spans_y)
+            and any(side < x_pt for side in spans_y)
+        ):
+            boxed.append(observation)
+    return tuple(
+        sorted(
+            boxed,
+            key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
+        )
+    )
+
+
+def _boxed_text_joined_code(texts: Sequence[PdfTextObservation]) -> str | None:
+    values = [_boxed_text_code_value(observation.text) for observation in texts]
+    if not values or any(value is None for value in values):
+        return None
+    return "".join(value for value in values if value is not None)
+
+
+def _cluster_boxed_text_codes(
+    cluster: _VectorCluster,
+    index: _BoxedTextIndex,
+) -> frozenset[str]:
+    """Codes a field glyph carries: each boxed text, and all of them read together."""
+
+    boxed = _cluster_boxed_texts(cluster, index)
+    codes = {
+        value
+        for observation in boxed
+        if (value := _boxed_text_code_value(observation.text)) is not None
+    }
+    joined = _boxed_text_joined_code(boxed)
+    if joined is not None:
+        codes.add(joined)
+    return frozenset(codes)
+
+
 def _cluster_scale_ratio(
     cluster: _VectorCluster,
     prototype: _VectorCluster,
@@ -2346,8 +2512,47 @@ def _match_cluster_to_legend_entries(
     entries: Sequence[_LegendEntry],
     *,
     texts: Sequence[PdfTextObservation] = (),
+    boxed_text_index: _BoxedTextIndex | None = None,
 ) -> tuple[_LegendEntry | None, dict[str, Any]]:
     candidate_strokes = _comparison_stroke_counts(cluster)
+    boxed_text_gate: dict[str, Any] | None = None
+    if any(entry.boxed_text_code is not None for entry in entries):
+        # A boxed-text prototype is a text symbol. A glyph that does not box
+        # in the same code can never be it, however alike the frames look, so
+        # the prototype is not a candidate at all (fail closed).
+        glyph_codes = _cluster_boxed_text_codes(
+            cluster,
+            boxed_text_index
+            if boxed_text_index is not None
+            else _BoxedTextIndex.build(texts),
+        )
+        excluded = [
+            entry
+            for entry in entries
+            if entry.boxed_text_code is not None
+            and entry.boxed_text_code not in glyph_codes
+        ]
+        if excluded:
+            excluded_ids = {id(entry) for entry in excluded}
+            entries = [entry for entry in entries if id(entry) not in excluded_ids]
+            boxed_text_gate = {
+                "glyph_boxed_text_codes": sorted(glyph_codes),
+                "excluded_prototypes": [
+                    {
+                        "canonical_type": entry.canonical_type,
+                        "legend_label": entry.label.text,
+                        "boxed_text_code": entry.boxed_text_code,
+                    }
+                    for entry in sorted(
+                        excluded,
+                        key=lambda item: (
+                            item.canonical_type,
+                            item.label.element_id,
+                            item.prototype.geometry_key,
+                        ),
+                    )
+                ],
+            }
     base_diagnostics: dict[str, Any] = {
         "nearest_type": None,
         "nearest_score": None,
@@ -2366,6 +2571,8 @@ def _match_cluster_to_legend_entries(
         "stripped_text_tags": list(cluster.stripped_text_tags),
         "cleanup_actions": list(cluster.cleanup_actions),
     }
+    if boxed_text_gate is not None:
+        base_diagnostics["boxed_text_gate"] = boxed_text_gate
     if not entries:
         return None, {
             **base_diagnostics,
@@ -2373,7 +2580,12 @@ def _match_cluster_to_legend_entries(
             "nearest_prototype": None,
             "score": None,
             "second_best": None,
-            "non_unique_reason": "no classified legend prototypes are available",
+            "non_unique_reason": (
+                "every legend prototype is a boxed text code the glyph does "
+                "not carry"
+                if boxed_text_gate is not None
+                else "no classified legend prototypes are available"
+            ),
         }
 
     ranked: list[
@@ -2868,6 +3080,7 @@ def _prepare_field_clusters(
     legend_entries_by_page: Mapping[int, Sequence[_LegendEntry]],
     references_by_page: Mapping[int, Sequence[_LegendReference]],
     texts: Sequence[PdfTextObservation],
+    boxed_text_index: _BoxedTextIndex | None = None,
 ) -> tuple[_VectorCluster, ...]:
     entries_for_page: dict[int, tuple[_LegendEntry, ...]] = {}
     for cluster in clusters:
@@ -2895,17 +3108,48 @@ def _prepare_field_clusters(
         )
 
     prepared: list[_VectorCluster] = []
+    # The largest prototype sets the scale at which leader lines and touching
+    # neighbours are cut away from a field glyph. A boxed-text prototype can
+    # only ever name a glyph that boxes in its code, so it sets that scale
+    # only for such glyphs; every other glyph is prepared as if the text
+    # symbol row were absent.
     extents_by_page: dict[int, tuple[float, ...]] = {}
+    boxed_extents_by_page: dict[int, dict[str, tuple[float, ...]]] = {}
     for page, entries in entries_for_page.items():
         extents_by_page[page] = tuple(
             _cluster_extent_pt(entry.prototype)
             for entry in entries
+            if entry.boxed_text_code is None
         )
+        boxed: dict[str, list[float]] = {}
+        for entry in entries:
+            if entry.boxed_text_code is not None:
+                boxed.setdefault(entry.boxed_text_code, []).append(
+                    _cluster_extent_pt(entry.prototype)
+                )
+        if boxed:
+            boxed_extents_by_page[page] = {
+                code: tuple(values) for code, values in sorted(boxed.items())
+            }
+    if boxed_extents_by_page and boxed_text_index is None:
+        boxed_text_index = _BoxedTextIndex.build(texts)
 
     for cluster in clusters:
         if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
             continue
         extents = extents_by_page.get(cluster.page, ())
+        boxed_extents = boxed_extents_by_page.get(cluster.page)
+        if boxed_extents and boxed_text_index is not None:
+            glyph_codes = _cluster_boxed_text_codes(cluster, boxed_text_index)
+            extents = (
+                *extents,
+                *(
+                    extent
+                    for code, values in boxed_extents.items()
+                    if code in glyph_codes
+                    for extent in values
+                ),
+            )
         if not extents:
             prepared.append(cluster)
             continue
@@ -6634,7 +6878,11 @@ def _recognize_legend_shapes(
                 row.label_source_element_ids or (row.label.element_id,)
             )
     prototype_geometry_keys: set[tuple[int, str]] = set()
-    entries_by_signature: dict[tuple[int, str], list[_LegendEntry]] = {}
+    boxed_text_index = _BoxedTextIndex.build(texts)
+    entries_by_signature: dict[
+        tuple[int, str, str | None],
+        list[_LegendEntry],
+    ] = {}
     classified_entries_by_page: dict[int, list[_LegendEntry]] = {}
     unresolved: list[dict[str, Any]] = []
     legend_pages = {region.page for region in regions}
@@ -6683,6 +6931,12 @@ def _recognize_legend_shapes(
                 continue
 
             entity_kind, canonical_type, confidence = row.classification
+            boxed_texts = _cluster_boxed_texts(prototype, boxed_text_index)
+            boxed_code = _boxed_text_joined_code(boxed_texts)
+            if boxed_code is not None:
+                legend_text_ids.update(
+                    observation.element_id for observation in boxed_texts
+                )
             entry = _LegendEntry(
                 entity_kind=entity_kind,
                 canonical_type=canonical_type,
@@ -6694,14 +6948,25 @@ def _recognize_legend_shapes(
                     row.label_source_element_ids or (label.element_id,)
                 ),
                 symbol_code_texts=row.symbol_code_texts,
+                boxed_text_code=boxed_code,
+                boxed_text_source_element_ids=(
+                    tuple(observation.element_id for observation in boxed_texts)
+                    if boxed_code is not None
+                    else ()
+                ),
             )
+            # Two text symbols that share a frame but box in different codes
+            # are different symbols, so the code is part of the shape key.
             entries_by_signature.setdefault(
-                (prototype.page, prototype.shape_signature), []
+                (prototype.page, prototype.shape_signature, boxed_code), []
             ).append(entry)
             classified_entries_by_page.setdefault(prototype.page, []).append(entry)
 
-    legend_by_signature: dict[tuple[int, str], _LegendEntry] = {}
-    for (page, signature), entries in sorted(entries_by_signature.items()):
+    legend_by_signature: dict[tuple[int, str, str | None], _LegendEntry] = {}
+    for (page, signature, boxed_code), entries in sorted(
+        entries_by_signature.items(),
+        key=lambda item: (item[0][0], item[0][1], item[0][2] or ""),
+    ):
         classifications = {
             (entry.entity_kind, entry.canonical_type)
             for entry in entries
@@ -6729,7 +6994,7 @@ def _recognize_legend_shapes(
                     }
                 )
             continue
-        legend_by_signature[(page, signature)] = sorted(
+        legend_by_signature[(page, signature, boxed_code)] = sorted(
             entries,
             key=lambda entry: (
                 -entry.confidence,
@@ -6739,11 +7004,14 @@ def _recognize_legend_shapes(
         )[0]
 
     legend_entries_by_page: dict[int, list[_LegendEntry]] = {}
-    for (page, _signature), entry in sorted(legend_by_signature.items()):
+    for (page, _signature, _boxed_code), entry in sorted(
+        legend_by_signature.items(),
+        key=lambda item: (item[0][0], item[0][1], item[0][2] or ""),
+    ):
         legend_entries_by_page.setdefault(page, []).append(entry)
 
     active_legend_pages = {
-        page for page, _signature in legend_by_signature
+        page for page, _signature, _boxed_code in legend_by_signature
     }
     aliases_by_page = _legend_page_aliases(regions, texts)
     references, unresolved_references = _resolve_explicit_legend_references(
@@ -6763,6 +7031,7 @@ def _recognize_legend_shapes(
         legend_entries_by_page=legend_entries_by_page,
         references_by_page=references_by_page,
         texts=texts,
+        boxed_text_index=boxed_text_index,
     )
 
     legend_recognition = {
@@ -6837,6 +7106,7 @@ def _recognize_legend_shapes(
             cluster,
             legend_entries_by_page.get(cluster.page, ()),
             texts=texts,
+            boxed_text_index=boxed_text_index,
         )
         reference: _LegendReference | None = None
         if legend_entry is None:
@@ -6854,6 +7124,7 @@ def _recognize_legend_shapes(
                         (),
                     ),
                     texts=texts,
+                    boxed_text_index=boxed_text_index,
                 )
                 remote_diagnostics.append((candidate_reference, diagnostics))
                 if remote_entry is not None:
@@ -7045,6 +7316,31 @@ def _recognize_legend_shapes(
                 "margin": match_diagnostics.get("margin"),
             },
         }
+        field_boxed_texts: tuple[PdfTextObservation, ...] = ()
+        if legend_entry.boxed_text_code is not None:
+            boxed = _cluster_boxed_texts(cluster, boxed_text_index)
+            field_boxed_texts = tuple(
+                observation
+                for observation in boxed
+                if _boxed_text_code_value(observation.text)
+                == legend_entry.boxed_text_code
+            ) or (
+                boxed
+                if _boxed_text_joined_code(boxed) == legend_entry.boxed_text_code
+                else ()
+            )
+            shape_recognition.update(
+                {
+                    "boxed_text_code": legend_entry.boxed_text_code,
+                    "legend_boxed_text_element_ids": list(
+                        legend_entry.boxed_text_source_element_ids
+                    ),
+                    "boxed_text_element_ids": [
+                        observation.element_id
+                        for observation in field_boxed_texts
+                    ],
+                }
+            )
         if cluster.cleanup_actions:
             shape_recognition["cluster_cleanup"] = list(cluster.cleanup_actions)
         if cluster.excluded_source_element_ids:
@@ -7135,6 +7431,24 @@ def _recognize_legend_shapes(
         for label_element_id in label_source_element_ids:
             if label_element_id not in candidate.source_element_ids:
                 candidate.source_element_ids.append(label_element_id)
+        for observation in field_boxed_texts:
+            if observation.element_id in candidate.source_element_ids:
+                continue
+            candidate.source_element_ids.append(observation.element_id)
+            candidate.provenance.append(
+                _provenance(
+                    document,
+                    element_id=observation.element_id,
+                    page=observation.page,
+                    method="pdf-boxed-text-code",
+                    confidence=confidence,
+                    attributes={
+                        "source_text": observation.text,
+                        "boxed_text_code": legend_entry.boxed_text_code,
+                        "source_geometry_key": cluster.geometry_key,
+                    },
+                )
+            )
         if status_evidence is not None:
             status_observation, status_code, status_meaning = status_evidence
             if status_observation.element_id not in candidate.source_element_ids:

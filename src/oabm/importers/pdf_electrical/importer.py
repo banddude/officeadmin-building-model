@@ -3389,22 +3389,50 @@ def _heading_distance_to_group(
     return distance
 
 
+def _section_heading_min_size_pt(
+    rows: Sequence[_LegendRow],
+) -> float | None:
+    """Smallest rendered size a section heading over ``rows`` may have.
+
+    CAD legends draw section headings (FIXTURES, RECEPTACLES, ...) larger than
+    the 7 pt-ish row labels, while a wrapped label's continuation lines render
+    at the label size. Without a size floor, a continuation line sitting beside
+    its own row group outranks the real legend title and the legend is never
+    detected. Mirrors the ratio used by ``_drop_rows_in_rejected_sections``.
+    """
+
+    sizes = sorted(
+        row.label.font_size_pt for row in rows if row.label.font_size_pt
+    )
+    if not sizes:
+        return None
+    return 1.15 * sizes[len(sizes) // 2]
+
+
 def _nearest_section_heading(
     rows: Sequence[_LegendRow],
     texts: Sequence[PdfTextObservation],
     vectors: Sequence[PdfVectorPathObservation],
     *,
     allow_beside: bool,
+    require_legend_title: bool = False,
 ) -> PdfTextObservation | None:
     if not rows:
         return None
     page = rows[0].cluster.page
     row_label_ids = {row.label.element_id for row in rows}
+    min_size_pt = _section_heading_min_size_pt(rows)
     candidates: list[tuple[float, float, str, PdfTextObservation]] = []
     for observation in texts:
         if observation.page != page or observation.element_id in row_label_ids:
             continue
         if not _looks_like_section_heading(observation):
+            continue
+        if min_size_pt is not None and (
+            observation.font_size_pt or 0.0
+        ) < min_size_pt:
+            continue
+        if require_legend_title and not _is_legend_heading(observation):
             continue
         distance = _heading_distance_to_group(
             observation,
@@ -3509,6 +3537,54 @@ def _heading_is_explicitly_referenced_from_other_page(
     return False
 
 
+def _label_wrap_lines(
+    label: PdfTextObservation,
+    texts: Sequence[PdfTextObservation],
+    *,
+    claimed: set[str],
+) -> tuple[PdfTextObservation, ...]:
+    """Wrapped continuation lines directly below a legend row label.
+
+    CAD legends wrap long labels onto 2-5 lines while the row pairs with the
+    first line only. The continuation lines are label text, not section
+    headings or field labels, and their words belong to the row's
+    classification text ("DUPLEX 2X" / "RECEPTACLE" is a duplex receptacle,
+    "CAT 6 COMPUTER" / "HOOK-UP" is a data outlet). A continuation renders at
+    the label size, starts at the label's column within the first line's own
+    width, and chains downward within a few line pitches.
+    """
+
+    if not label.font_size_pt or label.font_size_pt <= 0.0:
+        return ()
+    label_width = 0.5 * len(label.text) * label.font_size_pt
+    max_pitch = 4.8 * label.font_size_pt
+    lines: list[PdfTextObservation] = []
+    last = label
+    while True:
+        following = [
+            text for text in texts
+            if text.page == label.page
+            and text.element_id not in claimed
+            and text.font_size_pt is not None
+            and 0.0 < text.font_size_pt < 1.15 * label.font_size_pt
+            and label.x_pt - 2.0 <= text.x_pt <= label.x_pt + label_width
+            and 0.0 < last.y_pt - text.y_pt <= max_pitch
+        ]
+        if not following:
+            return tuple(lines)
+        next_line = min(
+            following,
+            key=lambda text: (
+                last.y_pt - text.y_pt,
+                text.x_pt,
+                text.element_id,
+            ),
+        )
+        lines.append(next_line)
+        claimed.add(next_line.element_id)
+        last = next_line
+
+
 def _legend_row_candidates(
     clusters: Sequence[_VectorCluster],
     texts: Sequence[PdfTextObservation],
@@ -3587,6 +3663,34 @@ def _legend_row_candidates(
                 horizontal_gap_pt=horizontal_gap,
             )
         )
+
+    # Fold wrapped label continuation lines into their row: the merged text is
+    # what the vocabulary rules classify, and the continuation element ids stay
+    # claimed as legend label text.
+    enriched: list[_LegendRow] = []
+    claimed_wraps: set[str] = {row.label.element_id for row in rows}
+    for row in rows:
+        wraps = _label_wrap_lines(row.label, texts, claimed=claimed_wraps)
+        if not wraps:
+            enriched.append(row)
+            continue
+        merged_text = " ".join([row.label.text, *(line.text for line in wraps)])
+        merged_classification, merged_ranked = _classify_semantic_text(
+            merged_text,
+            rules,
+            ambiguity_margin=ambiguity_margin,
+        )
+        enriched.append(
+            replace(
+                row,
+                classification=merged_classification,
+                classification_candidates=merged_ranked,
+                label_source_element_ids=tuple(
+                    [row.label.element_id, *[line.element_id for line in wraps]]
+                ),
+            )
+        )
+    rows = enriched
     return tuple(
         sorted(
             rows,
@@ -4373,12 +4477,25 @@ def _legend_frame_around(
     return (left[0], bottom, right[0], top)
 
 
+_LEGEND_ROW_FRAME_TOLERANCE_PT = 3.0
+
+
 def _row_inside(row: _LegendRow, bbox: tuple[float, float, float, float]) -> bool:
+    """Whether one legend row sits inside a ruled frame.
+
+    CAD glyphs and labels are often drawn touching the frame rules, so a small
+    tolerance keeps a frame from being rejected over a stroke that grazes its
+    edge; the frame itself is still derived from the rules.
+    """
+
     x0, y0, x1, y1 = bbox
     cx0, cy0, cx1, cy1 = row.cluster.bbox_pt
+    tolerance = _LEGEND_ROW_FRAME_TOLERANCE_PT
     return (
-        x0 <= cx0 and cx1 <= x1 and y0 <= cy0 and cy1 <= y1
-        and x0 <= row.label.x_pt <= x1 and y0 <= row.label.y_pt <= y1
+        x0 - tolerance <= cx0 and cx1 <= x1 + tolerance
+        and y0 - tolerance <= cy0 and cy1 <= y1 + tolerance
+        and x0 - tolerance <= row.label.x_pt <= x1 + tolerance
+        and y0 - tolerance <= row.label.y_pt <= y1 + tolerance
     )
 
 
@@ -4457,7 +4574,17 @@ def _join_framed_legend_columns(
             continue
         heading = _nearest_section_heading(group, texts, vectors, allow_beside=True)
         if heading is not None and _heading_has_rejected_legend_context(heading):
-            continue
+            # A rejected section heading is only fatal for the whole group when
+            # it sits outside the legend frame (a notes column beside the
+            # legend). ABBREVIATIONS inside a legend frame heads one section of
+            # a shared ruled block: join the group and let the per-row section
+            # drop below remove just its rows.
+            heading_inside_frame = (
+                frame[0] <= heading.x_pt <= frame[2]
+                and frame[1] <= heading.y_pt <= frame[3]
+            )
+            if not heading_inside_frame:
+                continue
         joined.extend(group)
         joined_groups += 1
         present.update((row.cluster.geometry_key, row.label.element_id) for row in group)
@@ -4517,8 +4644,9 @@ def _detect_legend_regions(
                 texts,
                 vectors,
                 allow_beside=True,
+                require_legend_title=True,
             )
-            if heading is None or not _is_legend_heading(heading):
+            if heading is None:
                 continue
             candidates.append(
                 _LegendRegion(
@@ -6637,20 +6765,68 @@ def _recognize_legend_shapes(
         references_by_page.setdefault(reference.page, []).append(reference)
 
     # Glyphs drawn inside a legend frame or legend table are legend samples,
-    # never installed devices.
+    # never installed devices. A glyph straddling a frame rule is treated as
+    # inside too: only its center inside would let a sample drawn over the
+    # bottom rule leak out as an installed device.
     legend_boxes = {
         region.page: region.table_bbox_pt
         for region in regions
         if region.table_bbox_pt is not None
     }
+
+    def cluster_inside_legend_frame(
+        cluster: _VectorCluster,
+    ) -> bool:
+        box = legend_boxes.get(cluster.page)
+        if box is None:
+            return False
+        x0, y0, x1, y1 = box
+        cx0, cy0, cx1, cy1 = cluster.bbox_pt
+        return cx0 <= x1 and cx1 >= x0 and cy0 <= y1 and cy1 >= y0
+
+    inframe_excluded_counts: dict[int, int] = {}
+    for cluster in clusters:
+        if cluster_inside_legend_frame(cluster):
+            inframe_excluded_counts[cluster.page] = (
+                inframe_excluded_counts.get(cluster.page, 0) + 1
+            )
+
+    # Text inside a legend frame that no legend row claimed (a stray note, a
+    # leftover annotation) must not claim a device identity through the text
+    # rules either. Keep it as unresolved evidence instead.
+    for text in texts:
+        if text.element_id in legend_text_ids or text.page not in legend_boxes:
+            continue
+        box = legend_boxes[text.page]
+        if not (
+            box[0] <= text.x_pt <= box[2] and box[1] <= text.y_pt <= box[3]
+        ):
+            continue
+        if _field_modifier_text(" ".join(text.split())) is not None:
+            continue
+        if not _text_entity_hits(text.text):
+            continue
+        legend_text_ids.add(text.element_id)
+        unresolved.append(
+            {
+                "kind": "text",
+                "page": text.page,
+                "source_element_id": text.element_id,
+                "text": text.text,
+                "position_pt": {"x": text.x_pt, "y": text.y_pt},
+                "status": "unresolved_identity",
+                "reason": (
+                    "text inside a legend frame did not join a legend row and "
+                    "cannot claim a device identity"
+                ),
+            }
+        )
+
     field_clusters = _prepare_field_clusters(
         tuple(
-            cluster for cluster in clusters
-            if cluster.page not in legend_boxes
-            or not (
-                legend_boxes[cluster.page][0] <= cluster.center_pt[0] <= legend_boxes[cluster.page][2]
-                and legend_boxes[cluster.page][1] <= cluster.center_pt[1] <= legend_boxes[cluster.page][3]
-            )
+            cluster
+            for cluster in clusters
+            if not cluster_inside_legend_frame(cluster)
         ),
         prototype_geometry_keys=prototype_geometry_keys,
         legend_entries_by_page=legend_entries_by_page,
@@ -6695,7 +6871,14 @@ def _recognize_legend_shapes(
                     else {}
                 ),
                 **(
-                    {"legend_frame": dict(region.legend_frame)}
+                    {
+                        "legend_frame": {
+                            **dict(region.legend_frame),
+                            "inframe_glyph_clusters_excluded": (
+                                inframe_excluded_counts.get(region.page, 0)
+                            ),
+                        }
+                    }
                     if region.legend_frame is not None
                     else {}
                 ),

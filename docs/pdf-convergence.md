@@ -181,8 +181,28 @@ Otherwise the page stays `registration_pending` with a stable reason:
   configuration is reported in `diagnostics`, never applied;
 - `scale_incompatible`: the walls match only at a scale other than the printed
   ratio. This is a diagnostic only, never applied;
-- `multiple_drawing_regions_on_page`: one `PdfPageTransform` per page cannot
-  place two floor drawings.
+- `drawing_regions_overlap`: the extents of two drawings on one page overlap, so
+  a point cannot be assigned to one drawing.
+
+**A page holding several drawings** (#72), for example two floor plans side by
+side, is split the way the architecture importer splits a sheet (#103). Each
+drawing is registered on its own evidence:
+
+- its walls;
+- grid bubbles inside its extents;
+- level names printed with it.
+
+The rules above apply per drawing. A drawing may register to a different level
+from the others on its page.
+
+The page is `registered` only when **every** drawing registers and their extents
+do not overlap. It then has no page transform. It has one
+`DrawingRegionTransform` per drawing instead: the drawing's scope (its wall
+extents plus the #103 annotation margin, in displayed page points) and that
+drawing's `PdfPageTransform`. The page record has `registration_mode:
+per_drawing` and one entry per drawing in `drawings`, with that drawing's
+candidates and registration. If any drawing is refused, the page stays pending
+with that drawing's reasons.
 
 A registered page's `PdfPageTransform` composes electrical sheet point →
 architectural sheet point → canonical frame. It targets the model `frame_id`,
@@ -201,6 +221,17 @@ The electrical importer records that registration as an `inferred` model
 provenance entry per page, while device source positions remain observed.
 
 `ElectricalSheetRegistration.page_transforms()` returns transforms only when
-**every** page is registered. Otherwise it returns `None`, the electrical import
+**every** page is registered. A single-drawing page maps to its
+`PdfPageTransform`, and a multi-drawing page to its tuple of
+`DrawingRegionTransform`. Otherwise it returns `None`, the electrical import
 stays `registration_pending`, and `converge_pdf_models` refuses it. One page's
 transform is never offered for another page or a partial document.
+
+The electrical importer places each recognized point on a multi-drawing page with
+the transform of the unique drawing whose extents contain it. A point outside
+every drawing, or inside two, cannot be placed. The whole document then stays
+`registration_pending` (`registration_mode: drawing-region-transforms-unresolved`,
+with the unplaced points listed in `drawing_region_assignment`), and convergence
+refuses it. When every point is placed, convergence accepts the document like
+any registered one; each device carries its `drawing_region_bbox_pt`, and its Z
+comes from its own drawing's level.

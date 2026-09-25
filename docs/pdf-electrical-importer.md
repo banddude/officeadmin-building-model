@@ -46,8 +46,18 @@ tiles. This is explicitly marked `multi-page-local-best-effort-unregistered`;
 model provenance records the synthetic transform for every page, and no
 cross-page or building registration is asserted. This prevents unrelated
 page-local coordinates from collapsing onto one another while still allowing
-per-page recognition to proceed. When explicit `PdfPageTransform` values are
-supplied they must still cover every page and target one canonical `frame_id`.
+per-page recognition to proceed. When explicit transforms are supplied they
+must still cover every page and target one canonical `frame_id`.
+
+A page's value is either one `PdfPageTransform` or a non-empty sequence of
+`DrawingRegionTransform(source_bbox_pt, transform)`, one per drawing on a page
+that holds several drawings (#72). A recognized point on such a page uses the
+transform of the unique region whose bbox (displayed page points) contains it.
+If any point lies outside every region, or inside two, nothing is placed by
+region: the document keeps the best-effort placement, stays
+`registration_pending`, and `drawing_region_assignment` lists the unplaced
+points. Placed devices record their `drawing_region_bbox_pt`, and each region's
+registration is its own `inferred` provenance entry.
 Architectural convergence can replace best-effort placement once sheet
 registration is known. Transforms proposed by sheet registration (#104, see
 `pdf-convergence.md`) carry a `registration` record; the importer keeps it in

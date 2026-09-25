@@ -28,6 +28,7 @@ from statistics import median
 from typing import Any, Mapping
 
 from oabm.importers.pdf_architecture import (
+    SheetWallEvidence,
     drawing_level_names,
     printed_sheet_scale,
     region_wall_evidence,
@@ -48,7 +49,7 @@ from oabm.importers.pdf_architecture.wall_registration import (
     register_walls,
     segments_from_evidence,
 )
-from oabm.importers.pdf_electrical import PdfPageTransform
+from oabm.importers.pdf_electrical import DrawingRegionTransform, PdfPageTransform
 from oabm.model import DERIVATION_INFERRED, BuildingModel
 
 REGISTERED = "registered"
@@ -135,6 +136,17 @@ class PageRegistration:
     reason_codes: tuple[str, ...]
     transform: PdfPageTransform | None
     record: Mapping[str, Any]
+    # A registered page with several drawings has one transform per drawing
+    # instead of one page transform.
+    drawing_transforms: tuple[DrawingRegionTransform, ...] = ()
+
+    @property
+    def placement(self) -> PdfPageTransform | tuple[DrawingRegionTransform, ...] | None:
+        """What the electrical importer accepts for this page, if registered."""
+
+        if self.status != REGISTERED:
+            return None
+        return self.drawing_transforms or self.transform
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,16 +160,22 @@ class ElectricalSheetRegistration:
     def all_registered(self) -> bool:
         return bool(self.pages) and all(page.status == REGISTERED for page in self.pages)
 
-    def page_transforms(self) -> dict[int, PdfPageTransform] | None:
-        """Every page's transform, or None unless every page is registered.
+    def page_transforms(
+        self,
+    ) -> dict[int, PdfPageTransform | tuple[DrawingRegionTransform, ...]] | None:
+        """Every page's placement, or None unless every page is registered.
 
-        One page's transform is never offered for another page or for a partial
-        document; the electrical importer then keeps the whole document pending.
+        A page with one drawing maps to its ``PdfPageTransform``; a page whose
+        drawings registered separately maps to its ``DrawingRegionTransform``
+        tuple. One page's transform is never offered for another page or for a
+        partial document; the electrical importer then keeps the whole document
+        pending.
         """
 
         if not self.all_registered:
             return None
-        return {page.page: page.transform for page in self.pages if page.transform is not None}
+        placements = {page.page: page.placement for page in self.pages}
+        return {page: value for page, value in placements.items() if value is not None}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -207,8 +225,15 @@ def _grid_labels_against(
     return agreeing, disagreeing
 
 
-def _grid_bubbles(page: PdfPageObservation) -> dict[str, tuple[float, float]]:
-    """Short labels enclosed by a drawn ring; a label seen twice is dropped."""
+def _grid_bubbles(
+    page: PdfPageObservation,
+    scope: tuple[float, float, float, float] | None = None,
+) -> dict[str, tuple[float, float]]:
+    """Short labels enclosed by a drawn ring; a label seen twice is dropped.
+
+    With ``scope``, only labels inside those extents count, so a grid repeated
+    on each drawing of a multi-drawing sheet stays usable for each drawing.
+    """
 
     found: dict[str, list[tuple[float, float]]] = {}
     cell = 40.0
@@ -225,6 +250,10 @@ def _grid_bubbles(page: PdfPageObservation) -> dict[str, tuple[float, float]]:
         if not 1 <= len(label) <= 3 or not set(label) <= _GRID_LABEL_CHARS or label.startswith("."):
             continue
         center = text.center_pt
+        if scope is not None and not (
+            scope[0] <= center[0] <= scope[2] and scope[1] <= center[1] <= scope[3]
+        ):
+            continue
         distances: list[float] = []
         angles: list[float] = []
         cx, cy = math.floor(center[0] / cell), math.floor(center[1] / cell)
@@ -427,20 +456,42 @@ class _EvidenceCache:
         self.electrical_page = electrical_page
         self.electrical_mpp = electrical_mpp
         self._electrical: dict[bool, tuple[str, tuple[tuple[tuple[float, float, float, float], tuple[MatchSegment, ...]], ...]]] = {}
+        self._views: dict[bool, SheetWallEvidence] = {}
         self._architecture: dict[tuple[str, bool], tuple[str, tuple[MatchSegment, ...]]] = {}
 
-    def electrical(self, use_layers: bool) -> tuple[str, tuple[tuple[tuple[float, float, float, float], tuple[MatchSegment, ...]], ...]]:
-        if use_layers not in self._electrical:
-            view = sheet_wall_evidence(
+    def view(self, use_layers: bool) -> SheetWallEvidence:
+        if use_layers not in self._views:
+            self._views[use_layers] = sheet_wall_evidence(
                 self.electrical_page,
                 meters_per_point=self.electrical_mpp,
                 use_wall_layers=use_layers,
             )
+        return self._views[use_layers]
+
+    def electrical(self, use_layers: bool) -> tuple[str, tuple[tuple[tuple[float, float, float, float], tuple[MatchSegment, ...]], ...]]:
+        if use_layers not in self._electrical:
+            view = self.view(use_layers)
             self._electrical[use_layers] = (
                 view.evidence_kind,
                 tuple((bbox, segments_from_evidence(items)) for bbox, items in view.drawings),
             )
         return self._electrical[use_layers]
+
+    def drawing_walls(
+        self,
+        use_layers: bool,
+        drawing_bbox: tuple[float, float, float, float],
+    ) -> tuple[MatchSegment, ...]:
+        """The walls of the one drawing in this mode whose centre lies in ``drawing_bbox``."""
+
+        _, drawings = self.electrical(use_layers)
+        found = [
+            segments
+            for bbox, segments in drawings
+            if drawing_bbox[0] <= (bbox[0] + bbox[2]) / 2.0 <= drawing_bbox[2]
+            and drawing_bbox[1] <= (bbox[1] + bbox[3]) / 2.0 <= drawing_bbox[3]
+        ]
+        return found[0] if len(found) == 1 else ()
 
     def architecture(self, target: _Target, use_layers: bool) -> tuple[str, tuple[MatchSegment, ...]]:
         key = (target.region_id, use_layers)
@@ -459,8 +510,14 @@ def _evaluate_target(
     electrical_labels: Mapping[str, tuple[float, float]],
     options: SheetRegistrationOptions,
     electrical_level_names: tuple[str, ...] = (),
+    drawing_bbox: tuple[float, float, float, float] | None = None,
 ) -> dict[str, Any]:
-    """Match one electrical drawing against one architectural region."""
+    """Match one electrical drawing against one architectural region.
+
+    ``drawing_bbox`` selects one drawing of a multi-drawing page by position in
+    each evidence mode (the two modes may split a sheet differently);
+    otherwise ``drawing_index`` selects it.
+    """
 
     scale = cache.electrical_mpp / target.meters_per_point
     walls: tuple[MatchSegment, ...] = ()
@@ -472,13 +529,12 @@ def _evaluate_target(
         for use_layers in (True, False):
             electrical_kind, drawings = cache.electrical(use_layers)
             architecture_kind, architecture_segments = cache.architecture(target, use_layers)
-            if (
-                electrical_kind == architecture_kind
-                and drawing_index < len(drawings)
-                and drawings[drawing_index][1]
-                and architecture_segments
-            ):
-                walls = drawings[drawing_index][1]
+            if drawing_bbox is not None:
+                drawing_walls = cache.drawing_walls(use_layers, drawing_bbox)
+            else:
+                drawing_walls = drawings[drawing_index][1] if drawing_index < len(drawings) else ()
+            if electrical_kind == architecture_kind and drawing_walls and architecture_segments:
+                walls = drawing_walls
                 architecture_walls = architecture_segments
                 evidence_kind = architecture_kind
                 break
@@ -699,34 +755,100 @@ def _register_page(
         )
 
     drawing_boxes: list[tuple[float, float, float, float] | None] = [bbox for bbox, _ in drawings] or [None]
-    per_drawing: list[list[dict[str, Any]]] = []
-    for index, bbox in enumerate(drawing_boxes):
-        per_drawing.append([
+    if len(drawing_boxes) == 1:
+        candidates = [
             _evaluate_target(
                 target,
-                index if bbox is not None else None,
+                0 if drawing_boxes[0] is not None else None,
                 cache,
                 labels,
                 options,
-                level_names if len(drawing_boxes) == 1 else (),
+                level_names,
             )
             for target in targets
-        ])
-    if len(drawing_boxes) > 1:
-        record["reason_codes"] = ["multiple_drawing_regions_on_page"]
-        record["drawings"] = [
-            {
-                "source_bbox_pt": list(bbox) if bbox else None,
-                "candidates": [_public(item) for item in candidates],
-            }
-            for bbox, candidates in zip(drawing_boxes, per_drawing)
         ]
-        return PageRegistration(
-            page.page_number, REGISTRATION_PENDING, ("multiple_drawing_regions_on_page",), None, record,
-        )
+        decision = _decide(candidates, drawing_boxes[0], options)
+        record.update(decision["record"])
+        if decision["transform"] is None:
+            record["reason_codes"] = decision["reason_codes"]
+            return PageRegistration(
+                page.page_number, REGISTRATION_PENDING, tuple(decision["reason_codes"]), None, record,
+            )
+        record.update({"status": REGISTERED, "reason_codes": []})
+        return PageRegistration(page.page_number, REGISTERED, (), decision["transform"], record)
 
-    candidates = per_drawing[0]
-    record["candidates"] = [_public(item) for item in candidates]
+    # Several drawings: each is registered on its own evidence (walls inside
+    # it, grid bubbles and level names printed with it). The page registers
+    # only when every drawing does; each then places the points inside its
+    # own extents.
+    view = cache.view(True)
+    drawing_records: list[dict[str, Any]] = []
+    region_transforms: list[DrawingRegionTransform] = []
+    reasons: set[str] = set()
+    for index, bbox in enumerate(drawing_boxes):
+        assert bbox is not None
+        scope = view.drawing_scopes[index] if index < len(view.drawing_scopes) else bbox
+        names = view.drawing_level_names[index] if index < len(view.drawing_level_names) else ()
+        drawing_labels = _grid_bubbles(page, scope)
+        candidates = [
+            _evaluate_target(
+                target, index, cache, drawing_labels, options, names, drawing_bbox=bbox,
+            )
+            for target in targets
+        ]
+        decision = _decide(candidates, bbox, options)
+        drawing_record: dict[str, Any] = {
+            "index": index + 1,
+            "source_bbox_pt": list(bbox),
+            "scope_bbox_pt": list(scope),
+            "level_names": list(names),
+            "grid_labels": sorted(drawing_labels),
+            "status": REGISTERED if decision["transform"] is not None else REGISTRATION_PENDING,
+            "reason_codes": decision["reason_codes"],
+            **decision["record"],
+        }
+        drawing_records.append(drawing_record)
+        if decision["transform"] is None:
+            reasons.update(decision["reason_codes"])
+        else:
+            region_transforms.append(DrawingRegionTransform(tuple(scope), decision["transform"]))
+    record["drawings"] = drawing_records
+    record["registration_mode"] = "per_drawing"
+    if reasons or len(region_transforms) != len(drawing_boxes):
+        record["reason_codes"] = sorted(reasons)
+        return PageRegistration(
+            page.page_number, REGISTRATION_PENDING, tuple(record["reason_codes"]), None, record,
+        )
+    scopes = [item.source_bbox_pt for item in region_transforms]
+    if any(
+        first[0] <= second[2] and second[0] <= first[2] and first[1] <= second[3] and second[1] <= first[3]
+        for position, first in enumerate(scopes)
+        for second in scopes[position + 1:]
+    ):
+        # Overlapping drawing extents cannot say which drawing a point belongs to.
+        record["reason_codes"] = ["drawing_regions_overlap"]
+        return PageRegistration(
+            page.page_number, REGISTRATION_PENDING, ("drawing_regions_overlap",), None, record,
+        )
+    record.update({"status": REGISTERED, "reason_codes": []})
+    return PageRegistration(
+        page.page_number, REGISTERED, (), None, record, drawing_transforms=tuple(region_transforms),
+    )
+
+
+def _decide(
+    candidates: list[dict[str, Any]],
+    probe_box: tuple[float, float, float, float] | None,
+    options: SheetRegistrationOptions,
+) -> dict[str, Any]:
+    """Accept one drawing's placement, or say why not.
+
+    Returns ``record`` (the public candidates plus diagnostics or the accepted
+    registration), ``reason_codes``, and ``transform`` (``None`` unless
+    registered).
+    """
+
+    record: dict[str, Any] = {"candidates": [_public(item) for item in candidates]}
     accepted = [item for item in candidates if item["accepted"]]
     if not accepted:
         best = sorted(
@@ -750,10 +872,11 @@ def _register_page(
                 "identity_wall_inlier_count": best["wall_inlier_count"],
                 "alternative": best["orientation_alternative"],
             }
-        record["reason_codes"] = sorted(set(reasons)) or ["insufficient_matched_evidence"]
-        return PageRegistration(
-            page.page_number, REGISTRATION_PENDING, tuple(record["reason_codes"]), None, record,
-        )
+        return {
+            "record": record,
+            "reason_codes": sorted(set(reasons)) or ["insufficient_matched_evidence"],
+            "transform": None,
+        }
 
     composed = {
         item["target_region_id"]: _compose(item["_target"], item["scale_ratio"], item["_translation_pt"])
@@ -764,7 +887,7 @@ def _register_page(
         key=lambda item: (-item["wall_inlier_count"], -len(item["grid_labels_shared"]), item["target_region_id"]),
     )
     chosen = ranked[0]
-    probe_box = drawing_boxes[0] or (0.0, 0.0, 1.0, 1.0)
+    probe_box = probe_box or (0.0, 0.0, 1.0, 1.0)
     corners = [
         (probe_box[0], probe_box[1]), (probe_box[2], probe_box[1]),
         (probe_box[2], probe_box[3]), (probe_box[0], probe_box[3]),
@@ -781,9 +904,8 @@ def _register_page(
         )
         (agreeing if same_level and same_place else disagreeing).append(item["target_region_id"])
     if disagreeing:
-        record["reason_codes"] = ["competing_targets"]
         record["competing_region_ids"] = sorted(agreeing + disagreeing)
-        return PageRegistration(page.page_number, REGISTRATION_PENDING, ("competing_targets",), None, record)
+        return {"record": record, "reason_codes": ["competing_targets"], "transform": None}
 
     target: _Target = chosen["_target"]
     wall_match: WallMatch | None = chosen["_wall_match"]
@@ -811,15 +933,8 @@ def _register_page(
     }
     coefficients = {key: round(value, 12) for key, value in chosen_coefficients.items()}
     transform = PdfPageTransform(frame_id=target.frame_id, registration=registration, **coefficients)
-    record.update(
-        {
-            "status": REGISTERED,
-            "reason_codes": [],
-            "registration": registration,
-            "page_transform": transform.to_attributes(),
-        }
-    )
-    return PageRegistration(page.page_number, REGISTERED, (), transform, record)
+    record.update({"registration": registration, "page_transform": transform.to_attributes()})
+    return {"record": record, "reason_codes": [], "transform": transform}
 
 
 def register_electrical_sheets(

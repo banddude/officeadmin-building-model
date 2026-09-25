@@ -34,7 +34,12 @@ from oabm.importers.pdf_convergence.sheet_registration import (
     SheetRegistrationOptions,
     register_electrical_sheets,
 )
-from oabm.importers.pdf_electrical import ElectricalPdfError, ElectricalPdfImporter
+from oabm.importers.pdf_electrical import (
+    DrawingRegionTransform,
+    ElectricalPdfError,
+    ElectricalPdfImporter,
+    PdfPageTransform,
+)
 from oabm.model import BuildingModel, validate_model
 
 MPP = 48 * 0.0254 / 72  # 1/4" = 1'-0"
@@ -77,6 +82,8 @@ class Drawing:
     walls: bool = True
     jitter_stub_pt: float = 0.0
     mirrored: bool = False
+    evse_tag: str = "EVSE-1"
+    evse_at: tuple[float, float] = EVSE_AT
 
 
 @dataclass(frozen=True)
@@ -182,9 +189,9 @@ def _add_sheet(writer: PdfWriter, sheet: Sheet) -> None:
             commands.append(_circle(cx, cy, 14))
             commands.append(_text(cx - 3.5, cy - 3.5, label))
         if drawing.evse:
-            ex, ey = _local(drawing, EVSE_AT)
+            ex, ey = _local(drawing, drawing.evse_at)
             commands.append(f"q 1 0 0 1 {ex:.4f} {ey:.4f} cm /EVSE1 Do Q")
-            commands.append(_text(ex + 5, ey + 5, "EVSE-1 +48\" AFF WALL MTD", size=9))
+            commands.append(_text(ex + 5, ey + 5, f"{drawing.evse_tag} +48\" AFF WALL MTD", size=9))
     stream = DecodedStreamObject()
     stream.set_data(("\n".join(commands) + "\n").encode())
     page[NameObject("/Contents")] = writer._add_object(stream)
@@ -463,17 +470,6 @@ def test_electrical_sheet_naming_another_level_is_refused(tmp_path: Path) -> Non
     assert same.status == REGISTERED
 
 
-def test_multiple_drawings_on_one_electrical_page_stay_pending(tmp_path: Path) -> None:
-    _, source, architecture = _two_floor_architecture(tmp_path)
-    upper = replace(ELECTRICAL, origin=(800.0 + OFFSET[0], 400.0 + OFFSET[1]), title="THIRD FLOOR POWER PLAN")
-    [page] = _register(
-        architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL, upper)),
-    ).pages
-    assert page.status == REGISTRATION_PENDING
-    assert page.reason_codes == ("multiple_drawing_regions_on_page",)
-    assert len(page.record["drawings"]) == 2
-
-
 def test_refused_registration_stays_pending_and_convergence_rejects_it(tmp_path: Path) -> None:
     _, source, architecture = _architecture(tmp_path)
     turned = replace(ELECTRICAL, origin=(900.0, 300.0), quarter_turns=1)
@@ -670,3 +666,271 @@ def test_symmetric_walls_need_grid_labels_to_fix_orientation(tmp_path: Path) -> 
     assert resolved.status == REGISTERED
     assert resolved.record["registration"]["evidence_method"] == "wall_vectors_and_grid_labels"
     assert _evse_error_m(resolved.transform, plain) == pytest.approx(0.0, abs=1e-9)
+
+
+# Per-drawing transforms (#72 part B): one page holding two floor drawings.
+
+THIRD_ROOM = Room(0.0, 0.0, 300.0, 280.0, "ROOM: DEN")
+THIRD_EVSE_AT = (276.0, 140.0)  # just inside the den's east wall
+THIRD_ORIGIN = (800.0, 400.0)
+
+
+def _floor_hint() -> RegistrationHint:
+    """Stack the third-floor drawing on the second floor's canonical origin."""
+
+    return RegistrationHint(
+        page_number=1,
+        source_a_pt=THIRD_ORIGIN,
+        source_b_pt=(THIRD_ORIGIN[0] + 300.0, THIRD_ORIGIN[1]),
+        model_a_m=(ARCH_ORIGIN[0] * MPP, ARCH_ORIGIN[1] * MPP),
+        model_b_m=((ARCH_ORIGIN[0] + 300.0) * MPP, ARCH_ORIGIN[1] * MPP),
+        region_point_pt=(THIRD_ORIGIN[0] + 20.0, THIRD_ORIGIN[1] + 20.0),
+    )
+
+
+def _distinct_floor_architecture(tmp_path: Path):
+    third = Drawing(
+        THIRD_ORIGIN, rooms=(THIRD_ROOM,), title="THIRD FLOOR PLAN", notes=("ELEVATION: 20'-0\"",),
+    )
+    return _architecture(tmp_path, Sheet((SECOND, third)), options=ImportOptions(registrations=(_floor_hint(),)))
+
+
+LOWER = replace(ELECTRICAL, title=None)
+UPPER = Drawing(
+    (THIRD_ORIGIN[0] + OFFSET[0], THIRD_ORIGIN[1] + OFFSET[1]),
+    rooms=(THIRD_ROOM,),
+    evse=True,
+    evse_tag="EVSE-2",
+    evse_at=THIRD_EVSE_AT,
+)
+
+
+def _levels(architecture: BuildingModel) -> dict:
+    return {level.name: level for level in architecture.levels}
+
+
+def test_each_drawing_of_a_two_floor_page_registers_to_its_own_level(tmp_path: Path) -> None:
+    _, source, architecture = _distinct_floor_architecture(tmp_path)
+    regions = architecture.attributes["pdf_architecture"]["drawing_regions"]
+    assert [region["status"] for region in regions] == ["resolved", "resolved"]
+    levels = _levels(architecture)
+    electrical_path = _electrical(tmp_path, _e_sheet(LOWER, UPPER))
+    result = _register(architecture, source, electrical_path)
+
+    [page] = result.pages
+    assert page.status == REGISTERED
+    assert page.reason_codes == ()
+    assert page.transform is None
+    assert page.record["registration_mode"] == "per_drawing"
+    lower, upper = page.record["drawings"]
+    assert [lower["status"], upper["status"]] == [REGISTERED, REGISTERED]
+    assert lower["registration"]["level_id"] == levels["Second Floor"].id
+    assert upper["registration"]["level_id"] == levels["Third Floor"].id
+    assert [item["registration"]["derivation"] for item in (lower, upper)] == ["inferred"] * 2
+    lower_region, upper_region = page.drawing_transforms
+    assert result.page_transforms() == {1: page.drawing_transforms}
+    # Each drawing's extents hold its own drawing and not the other one.
+    assert lower_region.contains(*_local(LOWER, (0.0, 0.0)))
+    assert not lower_region.contains(*_local(UPPER, (0.0, 0.0)))
+    assert upper_region.contains(*_local(UPPER, (0.0, 0.0)))
+    assert not upper_region.contains(*_local(LOWER, (0.0, 0.0)))
+    # Each transform places its own drawing on its own floor.
+    mapped = lower_region.transform.apply(*_local(LOWER, (354.0, 236.0)))
+    expected = _local(SECOND, (354.0, 236.0))
+    assert (mapped.x, mapped.y) == pytest.approx((expected[0] * MPP, expected[1] * MPP), abs=1e-6)
+    assert mapped.z == pytest.approx(levels["Second Floor"].elevation_m)
+    mapped = upper_region.transform.apply(*_local(UPPER, (300.0, 280.0)))
+    assert (mapped.x, mapped.y) == pytest.approx(
+        ((ARCH_ORIGIN[0] + 300.0) * MPP, (ARCH_ORIGIN[1] + 280.0) * MPP), abs=1e-6,
+    )
+    assert mapped.z == pytest.approx(levels["Third Floor"].elevation_m)
+
+    electrical = ElectricalPdfImporter().import_pdf(
+        electrical_path, source_id="fixture:electrical", page_transforms=result.page_transforms(),
+    )
+    lane = electrical.attributes["pdf_electrical"]
+    assert lane["registration_pending"] is False
+    assert lane["spatial_status"] == "registered-to-canonical-frame"
+    assert lane["registration_mode"] == "explicit-page-and-drawing-transforms"
+    assert lane["drawing_region_assignment"] == {
+        "status": "resolved",
+        "pages": {"1": {"assigned": 2, "outside_drawing_regions": 0, "in_multiple_drawing_regions": 0}},
+    }
+    assert len(lane["drawing_region_transforms"]["1"]) == 2
+    inferred = [item for item in electrical.provenance if item.derivation == "inferred"]
+    assert len(inferred) == 2
+    assert all("drawing_region_bbox_pt" in item.attributes for item in inferred)
+
+    merged = converge_pdf_models(architecture, electrical)
+    validate_model(merged)
+    placed = sorted(
+        merged.electrical_devices,
+        key=lambda item: item.attributes["pdf_electrical"]["source_position_pt"]["x"],
+    )
+    assert len(placed) == 2
+    lower_device, upper_device = placed
+    assert lower_device.level_id == levels["Second Floor"].id
+    assert upper_device.level_id == levels["Third Floor"].id
+    expected_lower = _local(SECOND, EVSE_AT)
+    assert (lower_device.pose.position.x, lower_device.pose.position.y) == pytest.approx(
+        (expected_lower[0] * MPP, expected_lower[1] * MPP), abs=1e-6,
+    )
+    assert (upper_device.pose.position.x, upper_device.pose.position.y) == pytest.approx(
+        ((ARCH_ORIGIN[0] + THIRD_EVSE_AT[0]) * MPP, (ARCH_ORIGIN[1] + THIRD_EVSE_AT[1]) * MPP), abs=1e-6,
+    )
+    assert upper_device.pose.position.z == pytest.approx(levels["Third Floor"].elevation_m + 48 * 0.0254)
+    assert lower_device.attributes["pdf_electrical"]["drawing_region_bbox_pt"] == list(
+        lower_region.source_bbox_pt
+    )
+
+
+def test_identical_floors_on_one_page_register_by_their_printed_level_names(tmp_path: Path) -> None:
+    _, source, architecture = _two_floor_architecture(tmp_path)
+    levels = _levels(architecture)
+    upper = replace(
+        ELECTRICAL,
+        origin=(800.0 + OFFSET[0], 400.0 + OFFSET[1]),
+        title="THIRD FLOOR POWER PLAN",
+        evse_tag="EVSE-2",
+    )
+    [page] = _register(architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL, upper))).pages
+    assert page.status == REGISTERED
+    lower_record, upper_record = page.record["drawings"]
+    assert lower_record["level_names"] == ["Second Floor"]
+    assert upper_record["level_names"] == ["Third Floor"]
+    assert lower_record["registration"]["level_id"] == levels["Second Floor"].id
+    assert upper_record["registration"]["level_id"] == levels["Third Floor"].id
+
+    # Without the titles, each drawing matches both identical floors.
+    untitled = _register(
+        architecture,
+        source,
+        _electrical(
+            tmp_path,
+            _e_sheet(replace(ELECTRICAL, title=None), replace(upper, title=None)),
+            name="untitled.pdf",
+        ),
+    )
+    [pending] = untitled.pages
+    assert pending.status == REGISTRATION_PENDING
+    assert pending.reason_codes == ("competing_targets",)
+    assert [item["reason_codes"] for item in pending.record["drawings"]] == [["competing_targets"]] * 2
+    assert untitled.page_transforms() is None
+
+
+def test_one_unregistered_drawing_keeps_the_page_pending(tmp_path: Path) -> None:
+    _, source, architecture = _distinct_floor_architecture(tmp_path)
+    # Mirroring flips the stub to the drawing's west side; move the drawing
+    # east so the two drawings stay separated on the page.
+    mirrored_upper = replace(UPPER, mirrored=True, origin=(UPPER.origin[0] + 200.0, UPPER.origin[1]))
+    result = _register(architecture, source, _electrical(tmp_path, _e_sheet(LOWER, mirrored_upper)))
+    [page] = result.pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("orientation_incompatible",)
+    assert page.drawing_transforms == ()
+    lower, upper = page.record["drawings"]
+    assert lower["status"] == REGISTERED
+    assert upper["status"] == REGISTRATION_PENDING
+    assert upper["reason_codes"] == ["orientation_incompatible"]
+    assert result.page_transforms() is None
+
+
+def test_a_point_outside_every_drawing_keeps_the_document_pending(tmp_path: Path) -> None:
+    _, source, architecture = _distinct_floor_architecture(tmp_path)
+    stray = Sheet(
+        (LOWER, UPPER),
+        wall_layer="xref_Floor Plan|A-Wall",
+        sheet_number="E9.1",
+        extra=(
+            "q 1 0 0 1 700.0000 1000.0000 cm /EVSE1 Do Q",
+            _text(705.0, 1005.0, "EVSE-3 +48\" AFF WALL MTD", size=9),
+        ),
+    )
+    electrical_path = _electrical(tmp_path, stray)
+    result = _register(architecture, source, electrical_path)
+    transforms = result.page_transforms()
+    assert transforms is not None and len(transforms[1]) == 2
+
+    electrical = ElectricalPdfImporter().import_pdf(
+        electrical_path, source_id="fixture:electrical", page_transforms=transforms,
+    )
+    lane = electrical.attributes["pdf_electrical"]
+    assert lane["registration_pending"] is True
+    assert lane["registration_mode"] == "drawing-region-transforms-unresolved"
+    assignment = lane["drawing_region_assignment"]
+    assert assignment["status"] == "unresolved"
+    assert assignment["pages"]["1"] == {
+        "assigned": 2, "outside_drawing_regions": 1, "in_multiple_drawing_regions": 0,
+    }
+    [unplaced] = assignment["unplaced_points"]
+    assert unplaced["reason"] == "outside_drawing_regions"
+    assert unplaced["source_position_pt"]["x"] == pytest.approx(700.0, abs=15.0)
+    assert unplaced["source_position_pt"]["y"] == pytest.approx(1000.0, abs=15.0)
+    assert "drawing_region_transforms" not in lane
+    assert not any(item.derivation == "inferred" and "page_transform" in item.attributes and item.attributes.get("registration_status") == "registered-from-matched-evidence" for item in electrical.provenance)
+    with pytest.raises(PdfConvergenceError, match="registered"):
+        converge_pdf_models(architecture, electrical)
+
+
+def test_a_point_inside_two_drawing_regions_keeps_the_document_pending(tmp_path: Path) -> None:
+    electrical_path = _electrical(tmp_path, _e_sheet(ELECTRICAL))
+    transform = PdfPageTransform(frame_id="frame:test", m11_m_per_pt=MPP, m22_m_per_pt=MPP)
+    overlapping = (
+        DrawingRegionTransform((0.0, 0.0, 1000.0, 1152.0), transform),
+        DrawingRegionTransform((200.0, 0.0, 1728.0, 1152.0), replace(transform, tx_m=1.0)),
+    )
+    electrical = ElectricalPdfImporter().import_pdf(
+        electrical_path, source_id="fixture:electrical", page_transforms={1: overlapping},
+    )
+    lane = electrical.attributes["pdf_electrical"]
+    assert lane["registration_pending"] is True
+    assert lane["drawing_region_assignment"]["pages"]["1"]["in_multiple_drawing_regions"] == 1
+    # The same regions without the overlap place the point.
+    separate = (
+        DrawingRegionTransform((0.0, 0.0, 1000.0, 1152.0), transform),
+        DrawingRegionTransform((1100.0, 0.0, 1728.0, 1152.0), replace(transform, tx_m=1.0)),
+    )
+    placed = ElectricalPdfImporter().import_pdf(
+        electrical_path, source_id="fixture:electrical", page_transforms={1: separate},
+    )
+    assert placed.attributes["pdf_electrical"]["registration_pending"] is False
+    [device] = placed.electrical_devices
+    source_point = _local(ELECTRICAL, EVSE_AT)
+    assert (device.pose.position.x, device.pose.position.y) == pytest.approx(
+        (source_point[0] * MPP, source_point[1] * MPP), abs=1e-9,
+    )
+
+
+def test_drawing_region_transforms_are_validated(tmp_path: Path) -> None:
+    electrical_path = _electrical(tmp_path, _e_sheet(ELECTRICAL))
+    transform = PdfPageTransform(frame_id="frame:test")
+    with pytest.raises(ElectricalPdfError, match="ordered"):
+        DrawingRegionTransform((10.0, 0.0, 5.0, 10.0), transform)
+    with pytest.raises(ElectricalPdfError, match="PdfPageTransform"):
+        DrawingRegionTransform((0.0, 0.0, 5.0, 10.0), "not a transform")  # type: ignore[arg-type]
+    with pytest.raises(ElectricalPdfError, match="non-empty"):
+        ElectricalPdfImporter().import_pdf(electrical_path, page_transforms={1: ()})
+    with pytest.raises(ElectricalPdfError, match="same canonical coordinate frame"):
+        ElectricalPdfImporter().import_pdf(
+            electrical_path,
+            page_transforms={1: (
+                DrawingRegionTransform((0.0, 0.0, 500.0, 500.0), transform),
+                DrawingRegionTransform((600.0, 0.0, 900.0, 500.0), replace(transform, frame_id="frame:other")),
+            )},
+        )
+
+
+def test_per_drawing_registration_is_deterministic(tmp_path: Path) -> None:
+    _, source, architecture = _distinct_floor_architecture(tmp_path)
+    electrical_path = _electrical(tmp_path, _e_sheet(LOWER, UPPER))
+    first = _register(architecture, source, electrical_path)
+    second = _register(architecture, source, electrical_path)
+    assert first.to_dict() == second.to_dict()
+    assert first.page_transforms() == second.page_transforms()
+    one = ElectricalPdfImporter().import_pdf(
+        electrical_path, source_id="fixture:electrical", page_transforms=first.page_transforms(),
+    )
+    two = ElectricalPdfImporter().import_pdf(
+        electrical_path, source_id="fixture:electrical", page_transforms=second.page_transforms(),
+    )
+    assert one.to_json() == two.to_json()

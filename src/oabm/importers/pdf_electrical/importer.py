@@ -372,9 +372,26 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         0.98,
     ),
     # A bare TELEPHONE legend row is the telephone outlet; the telephone
-    # junction-box rule above keeps precedence for junction boxes.
-    SymbolRule(r"\bTELEPHONE\b", "device", "data_outlet", 0.95),
-    SymbolRule(r"\bSPEAKER\b", "device", "speaker", 0.95),
+    # junction-box rule above keeps precedence for junction boxes. Longer
+    # telephone words name backboards, terminal boards and cabinets, so the
+    # outlet rule is anchored to jack/outlet wording or a row-alone label.
+    SymbolRule(
+        r"^(?!.*\b(?:BACKBOARD|BOARD|CABINET|RACK|CONDUIT|PANEL|STATION|CONTROL)\b)"
+        r".*\bTELEPHONE\b.*\b(?:OUTLET|JACK|RECEPTACLE|DROP)\b",
+        "device",
+        "data_outlet",
+        0.95,
+    ),
+    SymbolRule(r"^\s*TELEPHONE\s*$", "device", "data_outlet", 0.95),
+    # FIRE ALARM speakers are notification appliances, and a volume control
+    # is not the speaker device itself.
+    SymbolRule(
+        r"^(?!.*\b(?:FIRE\s+ALARM|VOLUME|CONTROL|STATION|PANEL|RACK|BOARD|CABINET)\b)"
+        r".*\bSPEAKER\b",
+        "device",
+        "speaker",
+        0.95,
+    ),
     SymbolRule(
         r"\bSMOKE\s*/\s*(?:CARBON\s+)?MONOXIDE\b",
         "device",
@@ -394,10 +411,25 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         0.94,
     ),
     SymbolRule(r"^(?!.*\b(?:ELECTRICAL|POWER|DATA|TELE|TELEPHONE)\b.*\b(?:JBOX|J-?BOX|JUNCTION\s+BOX)\b).*\b(?:(?:JBOX|J-?BOX|JB)[A-Z0-9]*|JUNCTION\s+BOX)\b", "device", "junction_box", 0.94),
-    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE|SCONCE|FLOODLIGHT|DOWNLIGHT|PENDANT)\b", "device", "luminaire", 0.91),
+    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE|SCONCE|FLOODLIGHT|DOWNLIGHT)\b", "device", "luminaire", 0.91),
+    # A pendant control station is not a luminaire.
+    SymbolRule(
+        r"^(?!.*\b(?:STATION|CONTROL|MOUNTED|PANEL|RACK|BOARD|CABINET)\b)"
+        r".*\bPENDANT\b",
+        "device",
+        "luminaire",
+        0.91,
+    ),
     SymbolRule(r"\b(?:DISCONNECT|DISC)\b", "device", "disconnect", 0.92),
     SymbolRule(r"\b(?:SWITCH|SW)\b", "device", "switch", 0.75),
-    SymbolRule(r"\b(?:TOGGLE|DIMMER)\b", "device", "switch", 0.9),
+    # Dimmer racks and panels are equipment, not switch legend rows.
+    SymbolRule(
+        r"^(?!.*\b(?:RACK|PANEL|BOARD|CABINET|CONTROL|STATION)\b)"
+        r".*\b(?:TOGGLE|DIMMER)\b",
+        "device",
+        "switch",
+        0.9,
+    ),
     # Bare "SW" is intentionally ambiguous without a legend.
     SymbolRule(r"\bSW\b", "equipment", "switchboard", 0.75),
 )
@@ -491,6 +523,9 @@ class _LegendRegion:
     table_bbox_pt: tuple[float, float, float, float] | None = None
     frame_provenance: tuple[Mapping[str, Any], ...] = ()
     legend_frame: Mapping[str, Any] | None = None
+    # Rows dropped with a rejected section inside the frame. They are no
+    # legend rows, but their glyphs stay frame samples: never field devices.
+    dropped_rows: tuple[_LegendRow, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1189,10 +1224,13 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                                 "subject": subject,
                                 "contents": contents,
                                 "native_id": native_id,
-                                "title": title,
+                                # Only the fact that this annotation carries
+                                # CAD SHX text matters downstream; the author
+                                # string itself is not copied into the model.
+                                "cad_shx_text": title == _SHX_TEXT_AUTHOR,
                                 "rect_pt": rect_pt,
                             }.items()
-                            if value is not None
+                            if value
                         },
                     )
                 )
@@ -3234,7 +3272,7 @@ def _is_shx_text_annotation(symbol: PdfSymbolObservation) -> bool:
 
     return (
         symbol.source_kind == "annotation:square"
-        and str(symbol.metadata.get("title") or "") == _SHX_TEXT_AUTHOR
+        and bool(symbol.metadata.get("cad_shx_text"))
     )
 
 
@@ -3251,33 +3289,105 @@ def _is_multi_character_shx_text(contents: str) -> bool:
     return " " in cleaned or len(cleaned) >= 5
 
 
-def _shx_text_boxes(
-    symbols: Sequence[PdfSymbolObservation],
-    *,
-    multi_character_only: bool = True,
-) -> dict[int, tuple[tuple[float, float, float, float], ...]]:
-    """Displayed rectangles of the SHX text on each page.
+def _box_is_rotated_text_box(
+    box: tuple[float, float, float, float],
+    contents_length: int,
+) -> bool:
+    """Whether a drawn-text rectangle encloses rotated rather than run-in text.
 
-    By default only multi-character (word) text; with
-    ``multi_character_only=False`` every drawn string, glyph codes included.
+    A run-in string's box is one letter tall: its long side grows with the
+    string while its short side stays at the letter height. Text drawn at
+    about forty-five degrees gets a bounding box that grows in both
+    directions, so a long string whose box is squarish means rotated text.
+    Such a box must not exclude letter strokes: it covers glyphs the string
+    does not actually enclose.
     """
 
-    boxes: dict[int, list[tuple[float, float, float, float]]] = {}
-    for symbol in symbols:
-        if not _is_shx_text_annotation(symbol):
-            continue
-        rect = symbol.metadata.get("rect_pt")
-        contents = str(symbol.metadata.get("contents") or "")
-        if not isinstance(rect, (list, tuple)) or len(rect) != 4:
-            continue
-        if multi_character_only and not _is_multi_character_shx_text(contents):
-            continue
-        boxes.setdefault(symbol.page, []).append(
-            (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+    if contents_length < 4:
+        return False
+    width = box[2] - box[0]
+    height = box[3] - box[1]
+    if width <= 0.0 or height <= 0.0:
+        return False
+    return min(width, height) > 0.8 * max(width, height)
+
+
+def _stroke_is_letter_sized(
+    vector_bbox: tuple[float, float, float, float],
+    box: tuple[float, float, float, float],
+) -> bool:
+    """Whether one stroke is small enough to be a letter inside a text box.
+
+    A letter stroke is at most one line tall. A tag box that happens to hold
+    a piece of a device glyph (a duplex's centre line crossing a ``GFI`` box)
+    must not exclude that stroke from clustering: the stroke is longer than
+    the box is tall, so it is not a letter.
+    """
+
+    extent = max(
+        vector_bbox[2] - vector_bbox[0],
+        vector_bbox[3] - vector_bbox[1],
+    )
+    return extent <= (box[3] - box[1]) + 2.0 * _SHX_TEXT_BOX_TOLERANCE_PT
+
+
+class _ShxTextBoxIndex:
+    """Per-page interval index over drawn SHX text boxes.
+
+    Testing every vector against every box is vectors times boxes and ran
+    twice per import; sorting the boxes by left edge and bisecting keeps each
+    lookup to the boxes whose x range overlaps the vector's. Boxes of rotated
+    text are dropped at build time: their rectangles cover glyphs the text
+    does not actually enclose.
+    """
+
+    def __init__(
+        self,
+        symbols: Sequence[PdfSymbolObservation],
+        *,
+        multi_character_only: bool,
+    ) -> None:
+        boxes_by_page: dict[int, list[tuple[tuple[float, float, float, float], int]]] = {}
+        for symbol in symbols:
+            if not _is_shx_text_annotation(symbol):
+                continue
+            rect = symbol.metadata.get("rect_pt")
+            contents = str(symbol.metadata.get("contents") or "")
+            if not isinstance(rect, (list, tuple)) or len(rect) != 4:
+                continue
+            box = (float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+            if multi_character_only and not _is_multi_character_shx_text(contents):
+                continue
+            if _box_is_rotated_text_box(box, len(" ".join(contents.split()))):
+                continue
+            boxes_by_page.setdefault(symbol.page, []).append(
+                (box, len(" ".join(contents.split())))
+            )
+        self._entries_by_page: dict[int, list[tuple[tuple[float, float, float, float], int]]] = {
+            page: sorted(boxes, key=lambda item: (item[0][0], item[0][2]))
+            for page, boxes in boxes_by_page.items()
+        }
+        self._starts_by_page: dict[int, list[float]] = {
+            page: [box[0] for box, _length in entries]
+            for page, entries in self._entries_by_page.items()
+        }
+
+    def candidates(
+        self,
+        page: int,
+        x0: float,
+        x1: float,
+    ) -> tuple[tuple[tuple[float, float, float, float], int], ...]:
+        entries = self._entries_by_page.get(page, ())
+        if not entries:
+            return ()
+        starts = self._starts_by_page[page]
+        high = bisect.bisect_right(starts, x1 + _SHX_TEXT_BOX_TOLERANCE_PT)
+        return tuple(
+            entry
+            for entry in entries[:high]
+            if entry[0][2] >= x0 - _SHX_TEXT_BOX_TOLERANCE_PT
         )
-    return {
-        page: tuple(boxes[page]) for page in sorted(boxes)
-    }
 
 
 def _points_inside_box_pt(
@@ -3609,39 +3719,61 @@ def _screened_background_vector_ids(
     }
 
 
-def _glyph_cluster_vectors(
+def _glyph_cluster_groups(
     document: PdfElectricalDocument,
     vectors: Sequence[PdfVectorPathObservation],
-) -> tuple[PdfVectorPathObservation, ...]:
-    """Vector paths that may take part in device-glyph clustering.
+) -> tuple[tuple[PdfVectorPathObservation, ...], tuple[PdfVectorPathObservation, ...]]:
+    """Split the page vectors into opaque and screened glyph-candidate groups.
 
-    Letter strokes inside a drawn SHX text string are text, the separate
-    dashes of a circuit arc are wiring, and translucent strokes on a sheet
-    that paints its devices opaque are the screened architecture; none of
-    them may chain real glyphs into oversized clusters or pose as glyph
-    strokes itself.
+    Letter strokes inside a drawn SHX text string are text, and the separate
+    dashes of a circuit arc are wiring; neither may chain real glyphs into
+    oversized clusters or pose as glyph strokes itself. Translucent strokes on
+    a sheet that paints its devices opaque are the screened architecture: they
+    are kept as their own group so they cluster only among themselves and can
+    still be recognized or reported unresolved, instead of being deleted with
+    no trace.
     """
 
-    text_boxes = _shx_text_boxes(document.symbols)
-    all_text_boxes = _shx_text_boxes(document.symbols, multi_character_only=False)
+    all_text_index = _ShxTextBoxIndex(document.symbols, multi_character_only=False)
+    word_text_index = _ShxTextBoxIndex(document.symbols, multi_character_only=True)
     screened_ids = _screened_background_vector_ids(vectors)
     # A path lies wholly inside an axis-aligned text box exactly when its
-    # bounding box does.
-    bboxes = {vector.element_id: _vector_bbox(vector) for vector in vectors}
-
-    def inside_any(
-        vector: PdfVectorPathObservation,
-        boxes: Mapping[int, tuple[tuple[float, float, float, float], ...]],
-    ) -> bool:
-        x0, y0, x1, y1 = bboxes[vector.element_id]
-        return any(
-            _points_inside_box_pt(
-                ((x0, y0), (x1, y1)),
+    # bounding box does. Letter-sized containment is computed once per
+    # document: a stroke in any drawn-text box is excluded from the arc
+    # search, and a stroke in a word box is text and never a glyph stroke.
+    letter_in_any_box: set[str] = set()
+    letter_in_word_box: set[str] = set()
+    for vector in vectors:
+        vbbox = _vector_bbox(vector)
+        in_any = False
+        in_word = False
+        for box, _length in all_text_index.candidates(vector.page, vbbox[0], vbbox[2]):
+            if not _points_inside_box_pt(
+                ((vbbox[0], vbbox[1]), (vbbox[2], vbbox[3])),
                 box,
                 tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
-            )
-            for box in boxes.get(vector.page, ())
-        )
+            ):
+                continue
+            if not _stroke_is_letter_sized(vbbox, box):
+                continue
+            in_any = True
+            break
+        if in_any:
+            for box, _length in word_text_index.candidates(vector.page, vbbox[0], vbbox[2]):
+                if not _points_inside_box_pt(
+                    ((vbbox[0], vbbox[1]), (vbbox[2], vbbox[3])),
+                    box,
+                    tolerance_pt=_SHX_TEXT_BOX_TOLERANCE_PT,
+                ):
+                    continue
+                if not _stroke_is_letter_sized(vbbox, box):
+                    continue
+                in_word = True
+                break
+        if in_any:
+            letter_in_any_box.add(vector.element_id)
+        if in_word:
+            letter_in_word_box.add(vector.element_id)
 
     # Arc dashes are looked for among the opaque linework outside any drawn
     # SHX string: letter strokes, even of one-letter glyph codes, are never
@@ -3651,19 +3783,60 @@ def _glyph_cluster_vectors(
             vector
             for vector in vectors
             if vector.element_id not in screened_ids
-            and not inside_any(vector, all_text_boxes)
+            and vector.element_id not in letter_in_any_box
         ]
     )
-    if not text_boxes and not arc_ids and not screened_ids:
-        return tuple(vectors)
-    excluded = set(arc_ids) | screened_ids
-    excluded.update(
-        vector.element_id
+    remaining = [
+        vector
         for vector in vectors
-        if vector.element_id not in excluded and inside_any(vector, text_boxes)
+        if vector.element_id not in arc_ids
+        and vector.element_id not in letter_in_word_box
+    ]
+    opaque = tuple(
+        vector for vector in remaining if vector.element_id not in screened_ids
+    )
+    screened = tuple(
+        vector for vector in remaining if vector.element_id in screened_ids
+    )
+    return opaque, screened
+
+
+def _glyph_cluster_vectors(
+    document: PdfElectricalDocument,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[PdfVectorPathObservation, ...]:
+    """Vector paths that may take part in device-glyph clustering."""
+
+    opaque, screened = _glyph_cluster_groups(document, vectors)
+    return (*opaque, *screened)
+
+
+def _glyph_clusters(
+    document: PdfElectricalDocument,
+    vectors: Sequence[PdfVectorPathObservation],
+) -> tuple[_VectorCluster, ...]:
+    """Glyph clusters over the candidate vectors, screened paths kept apart.
+
+    Screened paths cluster only among themselves, so screened architecture
+    still cannot chain into an opaque glyph — but a screened device glyph
+    forms its own cluster and keeps its chance to match a legend row or be
+    reported unresolved instead of vanishing.
+    """
+
+    opaque, screened = _glyph_cluster_groups(document, vectors)
+    clusters = (
+        *_cluster_small_vector_glyphs(opaque),
+        *_cluster_small_vector_glyphs(screened),
     )
     return tuple(
-        vector for vector in vectors if vector.element_id not in excluded
+        sorted(
+            clusters,
+            key=lambda cluster: (
+                cluster.page,
+                cluster.bbox_pt,
+                cluster.geometry_key,
+            ),
+        )
     )
 
 
@@ -4022,8 +4195,6 @@ def _nearest_section_heading(
             continue
         if not _looks_like_section_heading(observation):
             continue
-        if require_legend_title and not _is_legend_heading(observation):
-            continue
         distance = _heading_distance_to_group(
             observation,
             rows,
@@ -4042,7 +4213,42 @@ def _nearest_section_heading(
         )
     if not candidates:
         return None
-    return min(candidates, key=lambda item: item[:3])[3]
+    nearest = min(candidates, key=lambda item: item[:3])
+    if require_legend_title:
+        # A legend title farther away cannot rescue a group that belongs to a
+        # rejected section: when every row of the group sits under a rejected
+        # heading in its own column (a keynote column, a notes column beside
+        # the legend), the group is that section and is rejected, so its rows
+        # never take the legend's identity and its field tags stay tags.
+        # Rows above such a heading head their own legend section, so a
+        # legend column that merely continues below into abbreviations or
+        # notes survives here; its rejected rows are dropped by the section
+        # step once a frame joins the column.
+        rejected = [
+            candidate[3]
+            for candidate in candidates
+            if _heading_has_rejected_legend_context(candidate[3])
+        ]
+        if rejected and not any(
+            not any(
+                heading.y_pt > row.label.y_pt
+                and row.cluster.bbox_pt[0] - 40.0 <= heading.x_pt <= row.label.x_pt + 40.0
+                for heading in rejected
+            )
+            for row in rows
+        ):
+            return None
+        # Ordinary subheadings inside a legend (LUMINAIRES, CONTROLS) only
+        # head sections of the legend itself, so look past them for the title.
+        titled = [
+            candidate
+            for candidate in candidates
+            if _is_legend_heading(candidate[3])
+        ]
+        if not titled:
+            return None
+        return min(titled, key=lambda item: item[:3])[3]
+    return nearest[3]
 
 
 def _dense_legend_group_is_valid(
@@ -4342,6 +4548,26 @@ def _legend_row_candidates(
             rules,
             ambiguity_margin=ambiguity_margin,
         )
+        if len(block) > 1 and classification is not None:
+            # Wrapped label lines are fragments that classify to nothing on
+            # their own. When a line classifies by itself to a different type
+            # than the merged text, the chain joined separate rows (a row
+            # whose sample is an open stroke or an oversized glyph has no
+            # anchor of its own and its label leaks onto the row below); the
+            # merged words then invent a type neither row has. Keep the row
+            # ambiguous and let it fail closed as unresolved legend evidence.
+            for line in block:
+                line_classification, _line_ranked = _classify_semantic_text(
+                    line.text,
+                    rules,
+                    ambiguity_margin=ambiguity_margin,
+                )
+                if line_classification is not None and (
+                    line_classification[0],
+                    line_classification[1],
+                ) != (classification[0], classification[1]):
+                    classification = None
+                    break
         for cluster in clusters:
             if cluster.page != label.page:
                 continue
@@ -5191,6 +5417,9 @@ def _legend_frame_around(
 
 
 _LEGEND_ROW_FRAME_TOLERANCE_PT = 3.0
+# A legend sample sits at its row, within a row pitch or two; a device
+# elsewhere under the same ruled frame is farther away.
+_LEGEND_FRAME_SAMPLE_RADIUS_PT = 60.0
 
 
 def _row_inside(row: _LegendRow, bbox: tuple[float, float, float, float]) -> bool:
@@ -5216,30 +5445,39 @@ def _drop_rows_in_rejected_sections(
     rows: Sequence[_LegendRow],
     frame: tuple[float, float, float, float],
     texts: Sequence[PdfTextObservation],
-) -> tuple[list[_LegendRow], int, list[str]]:
+    *,
+    extra_headings: Sequence[PdfTextObservation] = (),
+) -> tuple[list[_LegendRow], list[_LegendRow], list[str]]:
     """Inside a legend frame, keep rows out of sections such as ABBREVIATIONS.
 
     A section heading is larger text inside the frame. Each row belongs to the
     nearest heading above it in its own column; rows under a heading with a
     rejected legend context (abbreviations, notes, schedules) are not symbols.
+    Headings already found at join time are passed in ``extra_headings`` so
+    both steps decide with one definition: a heading just over the label size
+    that the size gate below misses still drops its rows.
     """
 
     sizes = sorted(row.label.font_size_pt for row in rows if row.label.font_size_pt)
     if not sizes:
-        return list(rows), 0, []
+        return list(rows), [], []
     base = sizes[len(sizes) // 2]
     page = rows[0].cluster.page
     x0, y0, x1, y1 = frame
-    headings = [
-        text for text in texts
+    headings_by_id = {
+        text.element_id: text
+        for text in texts
         if text.page == page
         and x0 <= text.x_pt <= x1
         and y0 <= text.y_pt <= y1
         and (text.font_size_pt or 0.0) >= 1.15 * base
         and _looks_like_section_heading(text)
-    ]
+    }
+    for heading in extra_headings:
+        headings_by_id.setdefault(heading.element_id, heading)
+    headings = list(headings_by_id.values())
     kept: list[_LegendRow] = []
-    dropped = 0
+    dropped: list[_LegendRow] = []
     for row in rows:
         above = [
             heading for heading in headings
@@ -5252,7 +5490,7 @@ def _drop_rows_in_rejected_sections(
             default=None,
         )
         if section is not None and _heading_has_rejected_legend_context(section):
-            dropped += 1
+            dropped.append(row)
             continue
         kept.append(row)
     return kept, dropped, sorted({" ".join(heading.text.split()) for heading in headings})
@@ -5280,6 +5518,23 @@ def _join_framed_legend_columns(
     present = {(row.cluster.geometry_key, row.label.element_id) for row in region.rows}
     joined: list[_LegendRow] = list(region.rows)
     joined_groups = 0
+    joined_rejected_headings: list[PdfTextObservation] = []
+    # The title-matched rows themselves can run into a rejected section part
+    # way down their own column; the heading found for them decides here, the
+    # same as for every group joined below.
+    own_heading = _nearest_section_heading(
+        list(region.rows),
+        texts,
+        vectors,
+        allow_beside=True,
+    )
+    if (
+        own_heading is not None
+        and _heading_has_rejected_legend_context(own_heading)
+        and frame[0] <= own_heading.x_pt <= frame[2]
+        and frame[1] <= own_heading.y_pt <= frame[3]
+    ):
+        joined_rejected_headings.append(own_heading)
     for group in page_groups:
         if any((row.cluster.geometry_key, row.label.element_id) in present for row in group):
             continue
@@ -5291,17 +5546,24 @@ def _join_framed_legend_columns(
             # it sits outside the legend frame (a notes column beside the
             # legend). ABBREVIATIONS inside a legend frame heads one section of
             # a shared ruled block: join the group and let the per-row section
-            # drop below remove just its rows.
+            # drop below remove just its rows. The heading found here is the
+            # one the drop step uses for these rows, whatever its font size.
             heading_inside_frame = (
                 frame[0] <= heading.x_pt <= frame[2]
                 and frame[1] <= heading.y_pt <= frame[3]
             )
             if not heading_inside_frame:
                 continue
+            joined_rejected_headings.append(heading)
         joined.extend(group)
         joined_groups += 1
         present.update((row.cluster.geometry_key, row.label.element_id) for row in group)
-    joined, dropped, sections = _drop_rows_in_rejected_sections(joined, frame, texts)
+    joined, dropped_rows, sections = _drop_rows_in_rejected_sections(
+        joined,
+        frame,
+        texts,
+        extra_headings=joined_rejected_headings,
+    )
     return replace(
         region,
         rows=tuple(
@@ -5316,12 +5578,13 @@ def _join_framed_legend_columns(
             )
         ),
         table_bbox_pt=frame,
+        dropped_rows=tuple(dropped_rows),
         legend_frame={
             "method": "ruled frame around the legend title",
             "bbox_pt": list(frame),
             "joined_row_groups": joined_groups,
             "section_headings": sections,
-            "rows_dropped_in_rejected_sections": dropped,
+            "rows_dropped_in_rejected_sections": len(dropped_rows),
         },
     )
 
@@ -6509,9 +6772,7 @@ def _recognize_lighting(
 ]:
     clusters = tuple(
         cluster
-        for cluster in _cluster_small_vector_glyphs(
-            _glyph_cluster_vectors(document, vectors)
-        )
+        for cluster in _glyph_clusters(document, vectors)
         if _is_glyph_cluster(cluster)
     )
     (
@@ -7317,9 +7578,7 @@ def _recognize_legend_shapes(
 ]:
     clusters = tuple(
         cluster
-        for cluster in _cluster_small_vector_glyphs(
-            _glyph_cluster_vectors(document, vectors)
-        )
+        for cluster in _glyph_clusters(document, vectors)
         if _is_glyph_cluster(cluster)
     )
     glyph_vector_ids = {
@@ -7360,6 +7619,11 @@ def _recognize_legend_shapes(
                 row.label_source_element_ids or (row.label.element_id,)
             )
     prototype_geometry_keys: set[tuple[int, str]] = set()
+    # Rows a frame's rejected section dropped keep their glyphs out of the
+    # field too: the glyphs are frame samples, not installed devices.
+    for region in regions:
+        for row in region.dropped_rows:
+            prototype_geometry_keys.add((row.cluster.page, row.cluster.geometry_key))
     entries_by_signature: dict[tuple[int, str], list[_LegendEntry]] = {}
     classified_entries_by_page: dict[int, list[_LegendEntry]] = {}
     unresolved: list[dict[str, Any]] = []
@@ -7485,7 +7749,13 @@ def _recognize_legend_shapes(
     # Glyphs drawn inside a legend frame or legend table are legend samples,
     # never installed devices. A glyph straddling a frame rule is treated as
     # inside too: only its center inside would let a sample drawn over the
-    # bottom rule leak out as an installed device.
+    # bottom rule leak out as an installed device. A frame can still be far
+    # larger than the legend's own rows (a ruled viewport around an unframed
+    # legend), so the exclusion follows the rows: a row prototype, or a
+    # cluster of a known row's shape near that row, is a sample; a cluster
+    # near the rows but matching none is legend linework, kept out of the
+    # field and reported as unresolved; a cluster far from every row stays a
+    # field candidate and keeps its own chance to match or fail closed.
     legend_boxes = {
         region.page: region.table_bbox_pt
         for region in regions
@@ -7500,8 +7770,53 @@ def _recognize_legend_shapes(
             return False
         x0, y0, x1, y1 = box
         cx0, cy0, cx1, cy1 = cluster.bbox_pt
-        return cx0 <= x1 and cx1 >= x0 and cy0 <= y1 and cy1 >= y0
+        if not (cx0 <= x1 and cx1 >= x0 and cy0 <= y1 and cy1 >= y0):
+            return False
+        if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
+            return True
+        page_entries = legend_entries_by_page.get(cluster.page, ())
+        near_rows = [
+            entry
+            for entry in page_entries
+            if _distance_pt(
+                cluster.center_pt[0],
+                cluster.center_pt[1],
+                entry.prototype.center_pt[0],
+                entry.prototype.center_pt[1],
+            )
+            <= _LEGEND_FRAME_SAMPLE_RADIUS_PT
+        ]
+        if not near_rows:
+            return False
+        if any(
+            entry.prototype.shape_signature == cluster.shape_signature
+            for entry in near_rows
+        ):
+            return True
+        if (cluster.page, cluster.geometry_key) not in inframe_unpaired_reported:
+            inframe_unpaired_reported.add((cluster.page, cluster.geometry_key))
+            unresolved.append(
+                {
+                    "kind": "vector_cluster",
+                    "page": cluster.page,
+                    "source_element_id": cluster.source_element_ids[0],
+                    "source_element_ids": list(cluster.source_element_ids),
+                    "position_pt": {
+                        "x": cluster.center_pt[0],
+                        "y": cluster.center_pt[1],
+                    },
+                    "bbox_pt": list(cluster.bbox_pt),
+                    "shape_signature": cluster.shape_signature,
+                    "status": "unresolved_identity",
+                    "reason": (
+                        "cluster inside a legend frame is no legend row and no "
+                        "sample of a legend row; it cannot claim a device identity"
+                    ),
+                }
+            )
+        return True
 
+    inframe_unpaired_reported: set[tuple[int, str]] = set()
     inframe_excluded_counts: dict[int, int] = {}
     for cluster in clusters:
         if cluster_inside_legend_frame(cluster):
@@ -7552,6 +7867,7 @@ def _recognize_legend_shapes(
         texts=texts,
     )
 
+    screened_vector_ids = _screened_background_vector_ids(vectors)
     legend_recognition = {
         "regions": [
             {
@@ -7621,6 +7937,24 @@ def _recognize_legend_shapes(
             }
             for reference in references
         ],
+        # Screened (translucent) paths cluster among themselves and stay in
+        # play; say how many there are so the split stays visible.
+        **(
+            {
+                "screened_background": {
+                    "vector_count": len(screened_vector_ids),
+                    "pages": sorted(
+                        {
+                            vector.page
+                            for vector in vectors
+                            if vector.element_id in screened_vector_ids
+                        }
+                    ),
+                }
+            }
+            if screened_vector_ids
+            else {}
+        ),
     }
 
     candidates: dict[str, _EntityCandidate] = {}
@@ -8613,7 +8947,8 @@ class ElectricalPdfImporter:
 
             # A legend glyph often carries a letter code annotation of its own
             # (the dimmer "D", a "$" drawn as "S"). Codes are only read on the
-            # field side; inside the legend frame the symbol is a sample.
+            # field side; inside the legend frame the symbol is a sample. The
+            # skip is recorded as unresolved evidence, not deleted silently.
             frame_box = legend_frame_boxes.get(symbol.page)
             if frame_box is not None and (
                 frame_box[0] <= symbol.x_pt <= frame_box[2]
@@ -8621,6 +8956,20 @@ class ElectricalPdfImporter:
             ):
                 inframe_symbols_skipped[symbol.page] = (
                     inframe_symbols_skipped.get(symbol.page, 0) + 1
+                )
+                unresolved_observations.append(
+                    {
+                        "kind": "symbol",
+                        "page": symbol.page,
+                        "source_element_id": symbol.element_id,
+                        "name": symbol.name,
+                        "source_kind": symbol.source_kind,
+                        "position_pt": {"x": symbol.x_pt, "y": symbol.y_pt},
+                        "status": "unresolved_identity",
+                        "reason": (
+                            "legend sample inside a legend frame or table"
+                        ),
+                    }
                 )
                 continue
 
@@ -10746,13 +11095,15 @@ class ElectricalPdfImporter:
                     attributes=dict(document.page_provenance[page]),
                 )
             )
-        # Symbols inside a legend frame are legend samples; say how many were
-        # kept out of the field so the skip stays visible in provenance.
+        # Symbols inside a legend frame or table are legend samples; say how
+        # many were kept out of the field so the skip stays visible in
+        # provenance, for framed regions and symbol-table regions alike.
         for region_record in legend_recognition.get("regions", ()):
+            skipped = inframe_symbols_skipped.get(int(region_record["page"]), 0)
             if "legend_frame" in region_record:
-                region_record["legend_frame"]["inframe_symbols_skipped"] = (
-                    inframe_symbols_skipped.get(int(region_record["page"]), 0)
-                )
+                region_record["legend_frame"]["inframe_symbols_skipped"] = skipped
+            elif skipped:
+                region_record["inframe_symbols_skipped"] = skipped
         for note in legend_recognition.get("frame_rederivations", ()):
             model_provenance.append(
                 Provenance(

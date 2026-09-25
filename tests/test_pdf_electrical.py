@@ -1281,6 +1281,22 @@ def _probe_hexagon(radius: float) -> tuple[tuple[float, float], ...]:
     )
 
 
+def _probe_pentagon(radius: float) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (
+            round(
+                radius * math.cos(-math.pi / 2.0 + 2.0 * math.pi * index / 5.0),
+                3,
+            ),
+            round(
+                radius * math.sin(-math.pi / 2.0 + 2.0 * math.pi * index / 5.0),
+                3,
+            ),
+        )
+        for index in range(5)
+    )
+
+
 def _probe_star(
     outer_radius: float,
     inner_radius: float,
@@ -4518,6 +4534,44 @@ def test_annotation_tag_probe_is_deterministic_across_runs(tmp_path) -> None:
     second_model = ElectricalPdfImporter().import_document(second)
     assert first_model.to_dict() == second_model.to_dict()
     validate_model(first_model)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "known limitation of legend shape scoring (not the annotation-tag "
+        "lane): a 5 pt pentagon scores 0.756 against the 6 pt hexagon "
+        "DIMMER SWITCH prototype, above the 0.75 strong-score threshold, so "
+        "the 0.019 margin over the circle row is waived and it matches as a "
+        "switch. A fix in the matcher flips this test."
+    ),
+)
+def test_pentagon_lookalike_is_not_a_hexagon_dimmer_switch(tmp_path) -> None:
+    """A pentagon is not the hexagon dimmer glyph and must stay unresolved."""
+    path = tmp_path / "pentagon-lookalike.pdf"
+    _write_probe_pdf(
+        path,
+        _annotation_tag_legend_commands()
+        + [_probe_path(500.0, 450.0, _probe_pentagon(5.0))],
+    )
+    model = ElectricalPdfImporter().import_document(
+        extract_pdf(path, source_id="fixture:pentagon-lookalike")
+    )
+    assert not model.electrical_devices, [
+        (
+            device.device_type,
+            device.attributes["pdf_electrical"]["shape_recognition"][
+                "match_diagnostics"
+            ]["nearest_score"],
+        )
+        for device in model.electrical_devices
+    ]
+    rows = [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if item.get("kind") == "vector_cluster"
+    ]
+    assert len(rows) == 1
 
 
 def _probe_strokes(*polylines: tuple[tuple[float, float], ...]) -> list[str]:

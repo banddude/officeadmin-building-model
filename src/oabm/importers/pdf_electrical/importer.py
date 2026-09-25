@@ -5,6 +5,8 @@ from collections import Counter
 from functools import lru_cache
 import math
 import re
+
+import numpy as np
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1653,6 +1655,25 @@ _CLOUD_ISOTROPIC_EIGENVALUE_RATIO = 1.1
 # the full turn, ties keeping the smallest angle.
 _CLOUD_ROTATION_SWEEP_STEP_DEGREES = 5
 _CLOUD_SWEEP_SAMPLE_POINTS = 64
+# A swept comparison runs only inside the ambiguous band. At or under the
+# strong-score distance the pair has already decided (the strong bar
+# confirms regardless of margins, so a sweep cannot change the outcome),
+# and a rotation-invariant radial-profile gap beyond the match-minimum
+# distance means no rotation can land the pair at the confirm minimum --
+# clouds that coincide under some rotation have identical radius
+# multisets, so their sorted radial profiles coincide too.
+_SWEEP_STRONG_DISTANCE = (
+    (1.0 - _GLYPH_MATCH_STRONG_SCORE) * _GLYPH_CHAMFER_DISTANCE_SCALE
+)
+_SWEEP_PROFILE_GAP_MAX = (
+    (1.0 - _GLYPH_MATCH_SCORE_MIN) * _GLYPH_CHAMFER_DISTANCE_SCALE
+)
+_SWEEP_PROFILE_QUANTILES = 32
+# Maximum combined distance between a sweep sample and its own mirror for
+# the cloud to count as mirror-symmetric, where the mirrored variant is a
+# rotation the unmirrored sweep already covers. Sample-phase noise for
+# symmetric glyphs sits near 0.05; chiral shapes exceed 0.3.
+_CLOUD_MIRROR_SYMMETRY_MAX_DISTANCE = 0.15
 _ANNOTATION_CODE_MAX_CHARS = 16
 _UNREGISTERED_PAGE_TILE_OFFSET_M = 100.0
 _LEGEND_TITLE_WORDS = frozenset({"LEGEND", "SYMBOL", "SYMBOLS"})
@@ -2215,6 +2236,114 @@ def _sweep_normalized_cloud(
     return _centroid_radius_normalized_cloud(cloud[::stride])
 
 
+@lru_cache(maxsize=1)
+def _sweep_rotation_trig() -> tuple[tuple[float, float], ...]:
+    """Cosine/sine per sweep angle, in the fixed ascending sweep order."""
+    return tuple(
+        (
+            math.cos(math.radians(angle_degrees)),
+            math.sin(math.radians(angle_degrees)),
+        )
+        for angle_degrees in range(0, 360, _CLOUD_ROTATION_SWEEP_STEP_DEGREES)
+    )
+
+
+def _sweep_all_distances(
+    first: np.ndarray,
+    second: np.ndarray,
+) -> np.ndarray:
+    """Combined chamfer + Hausdorff distance for every sweep rotation.
+
+    The same metric as `_point_cloud_distance` -- directed mean nearest
+    distance in both directions, combined as 0.55 * chamfer + 0.45 *
+    Hausdorff -- evaluated for all fixed-order rotations of `first` in one
+    broadcast. Row k is the distance at the k-th sweep angle, so ties keep
+    the smallest angle exactly as the sequential scan did.
+    """
+    trig = np.asarray(_sweep_rotation_trig(), dtype=np.float64)
+    cos_theta = trig[:, 0][:, None]
+    sin_theta = trig[:, 1][:, None]
+    x, y = first[:, 0][None, :], first[:, 1][None, :]
+    rotated = np.stack(
+        (x * cos_theta - y * sin_theta, x * sin_theta + y * cos_theta),
+        axis=2,
+    )[:, :, None, :]
+    distances = np.hypot(
+        rotated[..., 0] - second[None, None, :, 0],
+        rotated[..., 1] - second[None, None, :, 1],
+    )
+    first_to_second = distances.min(axis=2)
+    second_to_first = distances.min(axis=1)
+    chamfer = (
+        first_to_second.mean(axis=1) + second_to_first.mean(axis=1)
+    ) / 2.0
+    hausdorff = np.maximum(
+        first_to_second.max(axis=1),
+        second_to_first.max(axis=1),
+    )
+    return 0.55 * chamfer + 0.45 * hausdorff
+
+
+@lru_cache(maxsize=512)
+def _sweep_radial_profile(
+    cloud: tuple[tuple[float, float], ...],
+) -> tuple[float, ...]:
+    """Sorted radial distances of a sweep sample at fixed quantiles.
+
+    Rotation-invariant shape fingerprint: a cloud that some rotation maps
+    onto another has exactly the other's radius multiset, hence the same
+    sorted profile. Fixed quantile count makes differently sized samples
+    comparable.
+    """
+    radii = np.sort(
+        np.hypot(
+            np.fromiter((x for x, _ in cloud), dtype=np.float64),
+            np.fromiter((y for _, y in cloud), dtype=np.float64),
+        )
+    )
+    quantiles = np.quantile(
+        radii,
+        np.linspace(0.0, 1.0, _SWEEP_PROFILE_QUANTILES),
+    )
+    return tuple(float(value) for value in quantiles)
+
+
+def _sweep_radial_profile_gap(
+    first: tuple[tuple[float, float], ...],
+    second: tuple[tuple[float, float], ...],
+) -> float:
+    """Mean absolute gap between two clouds' sorted radial profiles."""
+    return sum(
+        abs(first_radius - second_radius)
+        for first_radius, second_radius in zip(
+            _sweep_radial_profile(first),
+            _sweep_radial_profile(second),
+        )
+    ) / _SWEEP_PROFILE_QUANTILES
+
+
+@lru_cache(maxsize=512)
+def _cloud_mirror_symmetric(
+    cloud: tuple[tuple[float, float], ...],
+) -> bool:
+    """Whether a sweep sample coincides with its own mirror image.
+
+    A cloud that some rotation maps onto its reflection gains nothing from
+    a mirrored sweep: its mirror is one of the rotations the unmirrored
+    sweep already covers. Squares, hexagons, triangles, plus and X glyphs,
+    and circles all qualify; chiral glyphs do not. Detected with one
+    vectorized sweep of the sample against its reflection.
+    """
+    mirrored = np.asarray(cloud, dtype=np.float64) * np.array([-1.0, 1.0])
+    return bool(
+        _sweep_all_distances(
+            np.asarray(cloud, dtype=np.float64),
+            mirrored,
+        ).min()
+        <= _CLOUD_MIRROR_SYMMETRY_MAX_DISTANCE
+    )
+
+
 @lru_cache(maxsize=2048)
 def _isotropic_sweep_distance(
     cluster_cloud: tuple[tuple[float, float], ...],
@@ -2226,27 +2355,38 @@ def _isotropic_sweep_distance(
     because at least one covariance is isotropic. The cluster cloud is
     swept over the full turn in fixed 5-degree steps against the
     scale-normalized prototype, covering every relative print angle
-    including the half turn. A strict improvement test keeps the first
-    angle reaching the best distance, so ties go to the smallest angle and
-    two runs sweep in the same order. Distances live at root-mean-square
-    radius 1, a wider frame than the bbox-normalized clouds above, so a
-    swept distance only wins the min when the shapes genuinely coincide
-    once rotated together. Both arguments are the importer's sorted,
+    including the half turn. Distances live at root-mean-square radius 1,
+    a wider frame than the bbox-normalized clouds above, so a swept
+    distance only wins the min when the shapes genuinely coincide once
+    rotated together. Both arguments are the importer's sorted,
     value-hashable resampled clouds, so the cache only spares repeated
     comparisons of the same glyph pair their sweep.
+
+    Returns None without sweeping when the pair cannot confirm under any
+    rotation: clouds whose sorted radial profiles already differ by more
+    than the match-minimum distance budget cannot land at the confirm
+    minimum, and the quarter-turn path keeps their score.
     """
     cluster_normalized = _sweep_normalized_cloud(cluster_cloud)
     prototype_normalized = _sweep_normalized_cloud(prototype_cloud)
     if cluster_normalized is None or prototype_normalized is None:
         return None
-    best: float | None = None
-    for angle_degrees in range(0, 360, _CLOUD_ROTATION_SWEEP_STEP_DEGREES):
-        candidate = _point_cloud_distance(
-            _rotate_point_cloud(cluster_normalized, math.radians(angle_degrees)),
-            prototype_normalized,
+    if (
+        _sweep_radial_profile_gap(cluster_normalized, prototype_normalized)
+        > _SWEEP_PROFILE_GAP_MAX
+    ):
+        return None
+    cluster_sample = np.asarray(cluster_normalized, dtype=np.float64)
+    prototype_sample = np.asarray(prototype_normalized, dtype=np.float64)
+    best = float(_sweep_all_distances(cluster_sample, prototype_sample).min())
+    # A mirror-symmetric cluster's mirror is one of the rotations the
+    # unmirrored sweep already tried; only chiral glyphs need both.
+    if not _cloud_mirror_symmetric(cluster_normalized):
+        mirrored = cluster_sample * np.array([-1.0, 1.0])
+        best = min(
+            best,
+            float(_sweep_all_distances(mirrored, prototype_sample).min()),
         )
-        if best is None or candidate < best:
-            best = candidate
     return best
 
 
@@ -2290,6 +2430,14 @@ def _cluster_match_score(
         if prototype_aligned is None
         else _rotate_point_cloud(prototype_aligned, math.pi)
     )
+    # Two round clouds are already rotation-invariant: every orientation is
+    # the one the sweep would pick, so sweeping cannot change the score.
+    # This is the dominant isotropic case -- circles, on both the lighting
+    # and the power path.
+    sweep_can_help = not (
+        _cluster_shape_class(cluster) == "round"
+        and _cluster_shape_class(prototype) == "round"
+    )
     for mirrored in (False, True):
         cluster_resampled = _resampled_point_cloud(cluster, mirrored=mirrored)
         cluster_aligned = _principal_axis_aligned_cloud(cluster_resampled)
@@ -2303,9 +2451,16 @@ def _cluster_match_score(
                 ),
             )
             continue
-        swept = _isotropic_sweep_distance(cluster_resampled, prototype_cloud)
-        if swept is not None:
-            distance = min(distance, swept)
+        # The sweep runs only inside the ambiguous band: at or under the
+        # strong-score distance the pair has already decided, and sweeping
+        # cannot change a confirm.
+        if sweep_can_help and distance > _SWEEP_STRONG_DISTANCE:
+            swept = _isotropic_sweep_distance(
+                cluster_resampled,
+                prototype_cloud,
+            )
+            if swept is not None:
+                distance = min(distance, swept)
     return round(
         max(0.0, min(1.0, 1.0 - distance / _GLYPH_CHAMFER_DISTANCE_SCALE)),
         6,

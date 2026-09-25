@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
 from jsonschema import Draft202012Validator
 from pypdf import PdfReader, PdfWriter
@@ -1946,10 +1947,11 @@ def test_isotropic_shapes_de_rotate_through_sweep_fallback(
         device.attributes["pdf_electrical"]["lighting_recognition"]["shape_score"]
         for device in luminaires
     )
-    # The 30-degree square resolves through the sweep (0.271 before it),
-    # the 20-degree hexagon lands on its exact legend alignment, and the
-    # axis-aligned control stays signature-exact.
-    assert scores == pytest.approx([0.897352, 0.999824, 1.0], abs=0.02)
+    # The 30-degree square resolves through the sweep (0.271 before it) in
+    # one mirror state, since a square is its own mirror; the 20-degree
+    # hexagon is already past the strong bar, where sweeping cannot change
+    # a confirm; and the axis-aligned control stays signature-exact.
+    assert scores == pytest.approx([0.897351, 0.897549, 1.0], abs=0.02)
     assert scores[0] >= pdf_electrical_importer._LIGHTING_GLYPH_CONFIRM_SCORE
     texts_by_id = {text.element_id: text for text in extracted.texts}
     for device in luminaires:
@@ -1988,6 +1990,75 @@ def test_isotropic_shapes_de_rotate_through_sweep_fallback(
         key=lambda error: list(error.path),
     )
     assert not errors, "\n".join(error.message for error in errors)
+
+
+def test_isotropic_sweep_vectorization_matches_reference_distance() -> None:
+    # Review follow-up on #111: the sweep is vectorized with numpy for
+    # speed. This proves the vectorized broadcast computes the same
+    # combined chamfer + Hausdorff distance as a sequential loop of
+    # `_point_cloud_distance` over the fixed 5-degree sweep order, on the
+    # cloud pairs the new probes actually compare, to floating-point
+    # rounding.
+    square_cloud = _resampled_cloud_for_probe(_PROBE_SQUARE)
+    hexagon_cloud = _resampled_cloud_for_probe(_probe_hexagon(6.0))
+    triangle_cloud = _resampled_cloud_for_probe(_PROBE_TRIANGLE)
+    circle_cloud = _resampled_cloud_for_probe(_probe_circle(6.0))
+    for first, second in (
+        (square_cloud, hexagon_cloud),
+        (square_cloud, triangle_cloud),
+        (hexagon_cloud, circle_cloud),
+        (triangle_cloud, square_cloud),
+        (circle_cloud, circle_cloud),
+        (square_cloud, square_cloud),
+    ):
+        first_sample = pdf_electrical_importer._sweep_normalized_cloud(first)
+        second_sample = pdf_electrical_importer._sweep_normalized_cloud(second)
+        assert first_sample is not None and second_sample is not None
+        vectorized = float(
+            pdf_electrical_importer._sweep_all_distances(
+                np.asarray(first_sample, dtype=np.float64),
+                np.asarray(second_sample, dtype=np.float64),
+            ).min()
+        )
+        reference = min(
+            pdf_electrical_importer._point_cloud_distance(
+                tuple(
+                    (
+                        x * math.cos(math.radians(angle))
+                        - y * math.sin(math.radians(angle)),
+                        x * math.sin(math.radians(angle))
+                        + y * math.cos(math.radians(angle)),
+                    )
+                    for x, y in first_sample
+                ),
+                second_sample,
+            )
+            for angle in range(0, 360, 5)
+        )
+        assert vectorized == pytest.approx(reference, rel=1e-9, abs=1e-12)
+
+
+def _resampled_cloud_for_probe(
+    points: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    """Resample a probe outline the way the importer resamples glyphs."""
+    segments = list(zip(points, points[1:])) + [(points[-1], points[0])]
+    cloud: list[tuple[float, float]] = []
+    for first, second in segments:
+        length = math.hypot(second[0] - first[0], second[1] - first[1])
+        sample_count = max(
+            1,
+            math.ceil(length / pdf_electrical_importer._GLYPH_RESAMPLE_STEP),
+        )
+        for index in range(sample_count):
+            fraction = index / sample_count
+            cloud.append(
+                (
+                    first[0] + (second[0] - first[0]) * fraction,
+                    first[1] + (second[1] - first[1]) * fraction,
+                )
+            )
+    return tuple(sorted({(round(x, 5), round(y, 5)) for x, y in cloud}))
 
 
 def test_narrow_font_legend_column_resolves_past_true_description_edge(

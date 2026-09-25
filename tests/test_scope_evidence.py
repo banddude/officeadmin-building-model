@@ -28,7 +28,7 @@ from oabm.importers.pdf_electrical import (
     UserScopeAssumption,
     extract_pdf,
 )
-from oabm.model import validate_model
+from oabm.model import BuildingModel, is_observed, validate_model
 from oabm.qa.takeoff_comparison import device_scope_counts
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +37,8 @@ FIXTURE = ROOT / "fixtures" / "pdf_electrical" / "geometry-only-power-sheet-note
 # real person's decision about a real document set; the caller supplies both
 # strings, and the importer records them verbatim with user derivation.
 ASSUMPTION = UserScopeAssumption(
-    rule="Everything on the synthetic electrical sheets is in-scope new work except items marked (E)",
-    source="synthetic reviewer 2026-09-24 9:33 PM",
+    rule="Synthetic test rule: unmarked items on these generated sheets are new work, except items marked (E)",
+    source="synthetic test fixture",
 )
 # The N marker of the quadruplex outlet drawn at (406, 500), and the N marker
 # of the power J-box at (190, 280).
@@ -137,8 +137,8 @@ def _scope_totals(model) -> dict[str, int]:
 
 
 def test_note_naming_new_and_existing_keeps_unmarked_outlets_unresolved(tmp_path: Path) -> None:
-    # "4. ALL OUTLETS SHOWN ON PLAN ARE NEW / EXISTING U.O.N. ..." in four runs,
-    # continuing onto a second line, as the TI power sheet prints it.
+    # A numbered note naming both scopes, split into four runs on one baseline
+    # and continuing onto a second line, the way CAD exports often print it.
     path = _variant(
         tmp_path,
         "note-new-or-existing",
@@ -147,11 +147,11 @@ def test_note_naming_new_and_existing_keeps_unmarked_outlets_unresolved(tmp_path
             _runs(
                 494,
                 (596, "4."),
-                (604, "ALL OUTLETS SHOWN ON PLAN ARE"),
-                (693, "NEW / EXISTING"),
-                (736, "U.O.N. USE EXISTING"),
+                (604, "ALL OUTLETS SHOWN ON THIS SHEET ARE"),
+                (706, "NEW / EXISTING"),
+                (749, "U.O.N. FIELD VERIFY"),
             ),
-            _runs(486, (604, "IN LIEU OF NEW IF CLOSE BY.")),
+            _runs(486, (604, "EACH LOCATION BEFORE ROUGH-IN.")),
         ),
     )
     model = _model(path)
@@ -160,8 +160,10 @@ def test_note_naming_new_and_existing_keeps_unmarked_outlets_unresolved(tmp_path
     assert lane["scope_reason"] == "scope_default_note_ambiguous"
     assert lane["scope_note_ambiguity"] == "names_new_and_existing"
     assert lane["scope_note_family"] == "outlets"
-    assert lane["scope_note_text"].startswith("4. ALL OUTLETS SHOWN ON PLAN ARE NEW / EXISTING U.O.N.")
-    assert "IN LIEU OF NEW" in lane["scope_note_text"]
+    assert lane["scope_note_text"].startswith(
+        "4. ALL OUTLETS SHOWN ON THIS SHEET ARE NEW / EXISTING U.O.N."
+    )
+    assert "BEFORE ROUGH-IN" in lane["scope_note_text"]
     assert len(lane["scope_note_source_element_ids"]) == 5
     assert "scope_marker" not in lane
     counts = device_scope_counts(model)
@@ -183,7 +185,7 @@ def test_outlet_note_default_applies_to_unmarked_outlets_only(
         UNMARK_QUAD,
         UNMARK_JBOX,
         *_notes(
-            _runs(494, (596, "4."), (604, "ALL OUTLETS SHOWN ON PLAN")),
+            _runs(494, (596, "4."), (604, "ALL OUTLETS SHOWN ON THIS SHEET")),
             _runs(486, (604, f"ARE {scope_word} U.O.N."))
             + b"\n"
             + _runs(478, (596, "5."), (604, "EXISTING CEILING TO REMAIN.")),
@@ -194,7 +196,7 @@ def test_outlet_note_default_applies_to_unmarked_outlets_only(
     assert quad["scope_status"] == expected
     assert quad["scope_method"] == "sheet general note default for unmarked devices"
     assert quad["scope_note_family"] == "outlets"
-    assert quad["scope_note_text"] == f"4. ALL OUTLETS SHOWN ON PLAN ARE {scope_word} U.O.N."
+    assert quad["scope_note_text"] == f"4. ALL OUTLETS SHOWN ON THIS SHEET ARE {scope_word} U.O.N."
     assert "scope_marker" not in quad
     # A J-box is not an outlet: the note does not reach it.
     jbox = _lane_at(model, JBOX_POSITION)
@@ -373,8 +375,8 @@ def _write_lighting_scope_sheet(path: Path) -> None:
     text(92, 290, "EXISTING TO BE REMOVED AND SALVAGED FOR RELOCATION", 6.0)
     text(80, 281, "E", 6.0)
     text(92, 281, "EXISTING TO REMAIN", 6.0)
-    text(80, 250, "4.", 6.0)
-    text(88, 250, "LIGHT FIXTURES SHOWN ON PLAN ARE EXISTING U.O.N.", 6.0)
+    text(80, 250, "3.", 6.0)
+    text(88, 250, "LIGHT FIXTURES SHOWN ON THIS SHEET ARE EXISTING U.O.N.", 6.0)
     for x, markers in (
         (120.0, ()),  # unmarked: the note's default
         (280.0, (("R", 0.0, -14.0),)),  # its own marker: relocated
@@ -407,7 +409,7 @@ def test_light_fixture_note_default_reaches_only_unmarked_luminaires(tmp_path: P
     assert unmarked["scope_status"] == "existing_to_remain"
     assert unmarked["scope_method"] == "sheet general note default for unmarked devices"
     assert unmarked["scope_note_family"] == "light_fixtures"
-    assert unmarked["scope_note_text"] == "4. LIGHT FIXTURES SHOWN ON PLAN ARE EXISTING U.O.N."
+    assert unmarked["scope_note_text"] == "3. LIGHT FIXTURES SHOWN ON THIS SHEET ARE EXISTING U.O.N."
     assert (relocated["scope_marker"], relocated["scope_status"]) == ("R", "relocated")
     assert relocated["scope_marker_method"] == "status letter beside device position"
     assert tied["scope_reason"] == "scope_marker_ambiguous"
@@ -419,20 +421,40 @@ def test_light_fixture_note_default_reaches_only_unmarked_luminaires(tmp_path: P
     assert json.loads(json.dumps(counts, sort_keys=True)) == counts
 
 
-def _assumption_lane(model) -> dict:
-    lanes = [
-        device.attributes["pdf_electrical"]
+def _device_at(model, position: tuple[float, float]):
+    matches = [
+        device
         for device in model.electrical_devices
-        if any(key.startswith("scope_assumption_") for key in device.attributes["pdf_electrical"])
+        if abs(device.attributes["pdf_electrical"]["source_position_pt"]["x"] - position[0]) < 1.0
+        and abs(device.attributes["pdf_electrical"]["source_position_pt"]["y"] - position[1]) < 1.0
     ]
-    return lanes
+    assert len(matches) == 1, position
+    return matches[0]
+
+
+def _user_records(device) -> list:
+    return [record for record in device.provenance if record.derivation == "user"]
+
+
+def _assumption_keys(lane: dict) -> list[str]:
+    return sorted(key for key in lane if key.startswith("scope_assumption_"))
+
+
+# The E-marked receptacle beside the quad, at (298, 500), and its marker.
+EAST_POSITION = (298.0, 500.0)
+EAST_MARKER = b"1 0 0 1 308 504 Tm (E) Tj"
+UNMARK_EAST = (EAST_MARKER, EAST_MARKER.replace(b"(E)", b"( )"))
+LEGEND_E_LETTER = b"1 0 0 1 596 133 Tm (E) Tj"
 
 
 def test_user_scope_assumption_is_off_by_default(tmp_path: Path) -> None:
     path = _variant(tmp_path, "assumption-off", UNMARK_QUAD)
-    lane = _lane_at(_model(path), QUAD_POSITION)
+    model = _model(path)
+    lane = _lane_at(model, QUAD_POSITION)
     assert (lane["scope_status"], lane["scope_reason"]) == ("unresolved", "no_scope_marker")
-    assert not any(key.startswith("scope_assumption_") for key in lane)
+    assert not _assumption_keys(lane)
+    assert not any(_user_records(device) for device in model.electrical_devices)
+    assert all(is_observed(device.provenance) for device in model.electrical_devices)
 
 
 def test_user_scope_assumption_resolves_unmarked_devices_as_new_with_user_provenance(
@@ -448,25 +470,45 @@ def test_user_scope_assumption_resolves_unmarked_devices_as_new_with_user_proven
     assert lane["scope_assumption_derivation"] == "user"
     assert lane["scope_assumption_rule"] == ASSUMPTION.rule
     assert lane["scope_assumption_source"] == ASSUMPTION.source
+    # derivation, not the lane keys, is the canonical record: one user record
+    # scoped by name to scope_status, carrying the rule and source verbatim.
+    device = _device_at(on, QUAD_POSITION)
+    (record,) = _user_records(device)
+    assert record.source_kind == "caller-scope-assumption"
+    assert record.method == "user scope assumption"
+    assert record.attributes == {
+        "assumed_attribute": "scope_status",
+        "scope_status": "new",
+        "rule": ASSUMPTION.rule,
+        "source": ASSUMPTION.source,
+    }
+    assert not is_observed(device.provenance)
+    # The device's own sheet evidence is still recorded as observed.
+    assert any(item.derivation == "observed" for item in device.provenance)
+    assert is_observed(_device_at(off, QUAD_POSITION).provenance)
     assert device_scope_counts(on)["in_scope_total"] == (
         device_scope_counts(off)["in_scope_total"] + 1
     )
     # A marker the sheet's own legend resolves keeps its legend provenance.
     # Only the quad was unmarked here; the J-box still carries its own N.
     marked = [
-        device.attributes["pdf_electrical"]
+        device
         for device in on.electrical_devices
         if device.attributes["pdf_electrical"].get("scope_marker")
     ]
     assert len(marked) == 15
     assert all(
-        lane["scope_method"] == "sheet status legend"
-        for lane in marked
+        device.attributes["pdf_electrical"]["scope_method"] == "sheet status legend"
+        and not _user_records(device)
+        for device in marked
     )
-    assert len(_assumption_lane(on)) >= 1
-    # Deterministic across runs.
-    again = _lane_at(_model(path, ASSUMPTION), QUAD_POSITION)
-    assert again == lane
+    # Deterministic across runs, including serialization.
+    again = _model(path, ASSUMPTION)
+    assert _lane_at(again, QUAD_POSITION) == lane
+    assert again.to_json() == on.to_json()
+    # The user record survives the canonical JSON round trip.
+    reparsed = BuildingModel.from_json(on.to_json())
+    assert _user_records(_device_at(reparsed, QUAD_POSITION)) == [record]
 
 
 def test_user_scope_assumption_e_exception_marks_the_nearest_device_existing(
@@ -479,14 +521,16 @@ def test_user_scope_assumption_e_exception_marks_the_nearest_device_existing(
         UNMARK_QUAD,
         append=b"BT /F1 6 Tf 1 0 0 1 406 490 Tm ((E) EXISTING UNIT TO REMAIN) Tj ET\n",
     )
-    lane = _lane_at(_model(near, ASSUMPTION), QUAD_POSITION)
+    model = _model(near, ASSUMPTION)
+    lane = _lane_at(model, QUAD_POSITION)
     assert lane["scope_status"] == "existing_to_remain"
     assert lane["scope_method"] == "user scope assumption, (E) exception"
     assert lane["scope_assumption_derivation"] == "user"
-    assert [
-        element_id
-        for element_id in lane["scope_assumption_existing_marker_source_element_ids"]
-    ]
+    (callout_id,) = lane["scope_assumption_existing_marker_source_element_ids"]
+    (record,) = _user_records(_device_at(model, QUAD_POSITION))
+    assert record.source_element_id == callout_id
+    assert record.attributes["scope_status"] == "existing_to_remain"
+    assert record.attributes["existing_marker_source_element_ids"] == [callout_id]
     # Beyond the association radius the exception cannot reach the device,
     # which keeps the rule's default.
     far = _variant(
@@ -500,13 +544,95 @@ def test_user_scope_assumption_e_exception_marks_the_nearest_device_existing(
     assert far_lane["scope_method"] == "user scope assumption"
 
 
+def test_user_scope_assumption_e_callout_between_two_devices_stays_unresolved(
+    tmp_path: Path,
+) -> None:
+    # One "(E)" callout equally near two unmarked devices. Which one it marks is
+    # unknown, so neither may default to new and neither may be guessed existing.
+    path = _variant(
+        tmp_path,
+        "assumption-e-tie",
+        UNMARK_QUAD,
+        UNMARK_EAST,
+        append=b"BT /F1 6 Tf 1 0 0 1 352 530 Tm ((E) SYNTHETIC CALLOUT) Tj ET\n",
+    )
+    model = _model(path, ASSUMPTION)
+    for position in (QUAD_POSITION, EAST_POSITION):
+        lane = _lane_at(model, position)
+        assert lane["scope_status"] == "unresolved"
+        assert lane["scope_reason"] == "scope_assumption_exception_ambiguous"
+        assert len(lane["scope_assumption_existing_marker_candidate_source_element_ids"]) == 1
+        assert "scope_assumption_derivation" not in lane
+        assert not _user_records(_device_at(model, position))
+
+
+@pytest.mark.parametrize(
+    "definition",
+    (
+        b"BT /F1 6 Tf 1 0 0 1 400 490 Tm ((E) = EXISTING) Tj ET\n",
+        b"BT /F1 6 Tf 1 0 0 1 400 490 Tm ((E)) Tj ET\n"
+        b"BT /F1 6 Tf 1 0 0 1 412 490 Tm (EXISTING) Tj ET\n",
+    ),
+)
+def test_user_scope_assumption_ignores_an_e_abbreviation_definition(
+    tmp_path: Path, definition: bytes
+) -> None:
+    # "(E) = EXISTING" defines the abbreviation; it marks no item.
+    path = _variant(tmp_path, "assumption-e-definition", UNMARK_QUAD, append=definition)
+    lane = _lane_at(_model(path, ASSUMPTION), QUAD_POSITION)
+    assert (lane["scope_status"], lane["scope_method"]) == ("new", "user scope assumption")
+
+
+@pytest.mark.parametrize(
+    ("author", "expected_scope"),
+    (
+        # A markup comment is not the sheet marking the item.
+        ("Reviewer", "new"),
+        # An SHX text proxy is the drawing's own printed callout.
+        ("AutoCAD SHX Text", "existing_to_remain"),
+    ),
+)
+def test_user_scope_assumption_e_exception_reads_only_drawing_text(
+    tmp_path: Path, author: str, expected_scope: str
+) -> None:
+    path = _variant(
+        tmp_path,
+        f"assumption-e-comment-{expected_scope}",
+        UNMARK_QUAD,
+        comments=((406.0, 490.0, "(E) EXISTING UNIT TO REMAIN", author),),
+    )
+    lane = _lane_at(_model(path, ASSUMPTION), QUAD_POSITION)
+    assert lane["scope_status"] == expected_scope
+
+
+def test_markup_comment_is_not_a_sheet_note_default(tmp_path: Path) -> None:
+    path = _variant(
+        tmp_path,
+        "note-markup",
+        UNMARK_QUAD,
+        comments=((620.0, 470.0, "ALL OUTLETS SHOWN ON THIS SHEET ARE EXISTING U.O.N.", "Reviewer"),),
+    )
+    lane = _lane_at(_model(path), QUAD_POSITION)
+    assert (lane["scope_status"], lane["scope_reason"]) == ("unresolved", "no_scope_marker")
+    assert "scope_note_text" not in lane
+
+
 def test_user_scope_assumption_never_overrides_sheet_evidence(tmp_path: Path) -> None:
     # A legend-resolved marker keeps its scope ...
     path = _variant(tmp_path, "assumption-legend-wins")
     lane = _lane_at(_model(path, ASSUMPTION), QUAD_POSITION)
     assert (lane["scope_marker"], lane["scope_status"]) == ("N", "new")
     assert lane["scope_method"] == "sheet status legend"
-    assert not any(key.startswith("scope_assumption_") for key in lane)
+    assert not _assumption_keys(lane)
+    # ... even when the rule's (E) exception points at it.
+    marked_near_callout = _variant(
+        tmp_path,
+        "assumption-legend-wins-over-e",
+        append=b"BT /F1 6 Tf 1 0 0 1 406 490 Tm ((E) EXISTING UNIT TO REMAIN) Tj ET\n",
+    )
+    lane = _lane_at(_model(marked_near_callout, ASSUMPTION), QUAD_POSITION)
+    assert (lane["scope_status"], lane["scope_method"]) == ("new", "sheet status legend")
+    assert not _assumption_keys(lane)
     # ... and tied markers are a conflict that stays unresolved.
     tied = _variant(
         tmp_path,
@@ -516,4 +642,48 @@ def test_user_scope_assumption_never_overrides_sheet_evidence(tmp_path: Path) ->
     tied_lane = _lane_at(_model(tied, ASSUMPTION), QUAD_POSITION)
     assert tied_lane["scope_status"] == "unresolved"
     assert tied_lane["scope_reason"] == "scope_marker_ambiguous"
-    assert not any(key.startswith("scope_assumption_") for key in tied_lane)
+    assert not _assumption_keys(tied_lane)
+
+
+def test_user_scope_assumption_keeps_a_note_naming_both_scopes_unresolved(
+    tmp_path: Path,
+) -> None:
+    path = _variant(
+        tmp_path,
+        "assumption-note-new-or-existing",
+        UNMARK_QUAD,
+        *_notes(
+            _runs(494, (596, "4."), (604, "ALL OUTLETS SHOWN ON THIS SHEET ARE NEW / EXISTING U.O.N.")),
+            _runs(486, (596, "5. SYNTHETIC.")),
+        ),
+    )
+    model = _model(path, ASSUMPTION)
+    lane = _lane_at(model, QUAD_POSITION)
+    assert lane["scope_status"] == "unresolved"
+    assert lane["scope_reason"] == "scope_default_note_ambiguous"
+    assert not _assumption_keys(lane)
+    assert not _user_records(_device_at(model, QUAD_POSITION))
+
+
+def test_user_scope_assumption_never_reads_a_letter_the_legend_does_not_define(
+    tmp_path: Path,
+) -> None:
+    # Remove the legend's E row letter: every E-marked device now carries a
+    # marker the sheet does not define. That is the sheet's own evidence of a
+    # status the importer cannot read, so the rule must not call it new.
+    path = _variant(
+        tmp_path,
+        "assumption-undefined-marker",
+        (LEGEND_E_LETTER, LEGEND_E_LETTER.replace(b"(E)", b"( )")),
+    )
+    off = _model(path)
+    on = _model(path, ASSUMPTION)
+    undefined = [
+        device.attributes["pdf_electrical"]
+        for device in on.electrical_devices
+        if device.attributes["pdf_electrical"].get("scope_reason") == "scope_marker_undefined"
+    ]
+    assert undefined
+    assert all(lane["scope_marker"] == "E" for lane in undefined)
+    assert all(not _assumption_keys(lane) for lane in undefined)
+    assert device_scope_counts(on) == device_scope_counts(off)

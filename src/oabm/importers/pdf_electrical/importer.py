@@ -4,7 +4,7 @@ import hashlib
 from collections import Counter
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -293,15 +293,17 @@ class ElectricalInstanceHint:
 
 @dataclass(frozen=True, slots=True)
 class UserScopeAssumption:
-    """Explicit caller-supplied scope rule for entities the sheets leave unresolved.
+    """Explicit caller-supplied scope rule for entities with no scope evidence.
 
     This is never inferred from a sheet: it records a human decision about a
-    named document set, verbatim, and every entity it classifies carries that
-    user derivation. Pass it only for the documents the rule text names.
-    Sheet evidence always wins: a marker resolved through a page legend, or a
-    sheet general-note default, keeps its own scope, and unresolved evidence
-    that reports a conflict (tied markers, or a default that names both scopes)
-    stays unresolved. OFF unless explicitly passed.
+    named document set, verbatim, and every scope it sets carries a canonical
+    provenance record with user derivation. Pass it only for the documents the
+    rule text names. It applies only where the sheet says nothing about scope
+    (``no_scope_marker``). Sheet evidence always wins: a legend-resolved marker
+    or a sheet general-note default keeps its own scope, and every other
+    unresolved reason (tied markers, an undefined marker letter, a legend
+    conflict, a default that names both scopes) stays unresolved. OFF unless
+    explicitly passed.
     """
 
     rule: str
@@ -2158,75 +2160,142 @@ def _scope_note_default_attributes(
     }
 
 
-# An explicit user-supplied scope rule never overrides unresolved evidence that
-# is itself a conflict: two markers agreeing on nothing, a legend giving one
-# letter two meanings, or a general note naming both scopes all stay unresolved.
-_USER_SCOPE_CONFLICT_REASONS = frozenset(
-    {
-        "scope_marker_ambiguous",
-        "scope_legend_conflict",
-        "scope_default_note_ambiguous",
-        "scope_default_note_conflict",
-    }
-)
-# Only a standalone uppercase "(E)" token is the exception marker the rule
-# names; "(N)" needs no detection because the rule's default is already new.
+# An explicit user-supplied scope rule resolves only entities the sheets leave
+# with no scope evidence at all. Every other unresolved reason is the sheet's
+# own evidence and stays unresolved: tied marker letters, a letter the sheet's
+# legend does not define (it says something the importer cannot read), a legend
+# giving one letter two meanings, a general note naming both scopes, and any
+# reason added later. This is an allow-list so a new reason fails closed.
+_USER_SCOPE_APPLICABLE_REASONS = frozenset({"no_scope_marker"})
+# Only an uppercase "(E)" token is the exception marker the rule names; "(N)"
+# needs no detection because the rule's default is already new.
 _USER_SCOPE_EXISTING_MARKER_RE = re.compile(r"\(E\)")
+_USER_SCOPE_EXISTING_MARKER_PREFIX_RE = re.compile(r"^\(E\)\s*")
 # An "(E)" callout qualifies the item its leader targets, and callout text
-# stands off from that target. No leader geometry is modeled here, so the
-# marker reaches the nearest candidate within the importer's default
-# annotation association radius. A tie within the field-status ambiguity
-# margin leaves the marker's target ambiguous, so it claims nothing.
-_USER_SCOPE_MARKER_RADIUS_PT = 144.0
+# stands off from that target. No leader geometry is modeled here, so a callout
+# reaches the nearest entity within the importer's annotation association
+# radius, and only when that entity is clearly the nearest: any other entity
+# within this relative margin (or the field-status tie margin) makes the
+# callout's target ambiguous, and every tied entity the rule would otherwise
+# classify stays unresolved instead of defaulting to new.
+_USER_SCOPE_MARKER_RELATIVE_MARGIN = 0.25
+
+
+def _is_drawing_text(
+    observation: PdfTextObservation, text_proxy_ids: Collection[str]
+) -> bool:
+    """Whether a text is printed by the drawing itself.
+
+    Text the extractor read from a PDF annotation (element ID
+    ``pN:annotation:...``) is a comment laid over the sheet, not the sheet's
+    own evidence, except an AutoCAD SHX text proxy, which repeats a string the
+    drawing prints as strokes.
+    """
+
+    return ":annotation:" not in observation.element_id or observation.element_id in text_proxy_ids
+
+
+def _user_scope_existing_callouts(
+    texts: Sequence[PdfTextObservation],
+) -> list[PdfTextObservation]:
+    """Drawing texts carrying an "(E)" callout, minus abbreviation definitions.
+
+    "(E) = EXISTING", "(E) EXISTING", or an "(E)" run whose same-baseline
+    neighbour reads "EXISTING" defines the abbreviation; it marks no item.
+    """
+
+    callouts: list[PdfTextObservation] = []
+    for observation in texts:
+        if _USER_SCOPE_EXISTING_MARKER_RE.search(observation.text) is None:
+            continue
+        normalized = " ".join(observation.text.upper().split())
+        inline = _SCOPE_LEGEND_INLINE_RE.fullmatch(normalized)
+        if inline and inline.group("marker") == "E" and _scope_meaning(inline.group("meaning")):
+            continue
+        rest = _USER_SCOPE_EXISTING_MARKER_PREFIX_RE.sub("", normalized, count=1)
+        if normalized.startswith("(E)") and rest and _scope_meaning(rest) == SCOPE_EXISTING:
+            continue
+        if normalized == "(E)":
+            row = [
+                other
+                for other in texts
+                if other.page == observation.page
+                and other is not observation
+                and abs(other.y_pt - observation.y_pt) <= _SCOPE_LEGEND_ROW_Y_PT
+                and 0.0 < other.x_pt - observation.x_pt <= _SCOPE_LEGEND_ROW_GAP_PT
+            ]
+            if row:
+                meaning = min(row, key=lambda item: (item.x_pt - observation.x_pt, item.element_id))
+                if _scope_meaning(meaning.text) == SCOPE_EXISTING:
+                    continue
+        callouts.append(observation)
+    return sorted(callouts, key=lambda item: (item.page, item.element_id))
 
 
 def _user_scope_existing_claims(
     candidates: Iterable[_EntityCandidate],
     texts: Sequence[PdfTextObservation],
-) -> dict[str, tuple[str, ...]]:
-    """Candidate key -> element IDs of "(E)" callouts that mark it existing."""
+    *,
+    radius_pt: float,
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    """(E) callouts per candidate key: (clear claims, ambiguous claims).
 
-    markers: dict[int, list[PdfTextObservation]] = {}
-    for observation in texts:
-        if _USER_SCOPE_EXISTING_MARKER_RE.search(observation.text):
-            markers.setdefault(observation.page, []).append(observation)
-    if not markers:
-        return {}
+    A callout clearly claims its nearest entity within ``radius_pt`` when no
+    other entity is within the tie margin of it. Otherwise the callout is
+    ambiguous for every entity inside that margin.
+    """
+
+    callouts = _user_scope_existing_callouts(texts)
+    if not callouts:
+        return {}, {}
     positions: dict[int, list[tuple[float, float, str]]] = {}
     for candidate in candidates:
         positions.setdefault(candidate.page, []).append(
             (candidate.x_pt, candidate.y_pt, candidate.key)
         )
     claims: dict[str, list[str]] = {}
-    for page, observations in sorted(markers.items()):
-        page_positions = positions.get(page, ())
-        for observation in observations:
-            ranked = sorted(
-                (
-                    (_distance_pt(observation.x_pt, observation.y_pt, x_pt, y_pt), key)
-                    for x_pt, y_pt, key in page_positions
-                ),
-                key=lambda item: (item[0], item[1]),
-            )
-            ranked = [item for item in ranked if item[0] <= _USER_SCOPE_MARKER_RADIUS_PT]
-            if not ranked:
-                continue
-            if len(ranked) > 1 and ranked[1][0] <= ranked[0][0] + _FIELD_STATUS_AMBIGUITY_PT:
-                continue
-            claims.setdefault(ranked[0][1], []).append(observation.element_id)
-    return {key: tuple(sorted(element_ids)) for key, element_ids in claims.items()}
+    ambiguous: dict[str, list[str]] = {}
+    for observation in callouts:
+        ranked = sorted(
+            (
+                (_distance_pt(observation.x_pt, observation.y_pt, x_pt, y_pt), key)
+                for x_pt, y_pt, key in positions.get(observation.page, ())
+            ),
+            key=lambda item: (item[0], item[1]),
+        )
+        ranked = [item for item in ranked if item[0] <= radius_pt]
+        if not ranked:
+            continue
+        reach = (
+            ranked[0][0] * (1.0 + _USER_SCOPE_MARKER_RELATIVE_MARGIN)
+            + _FIELD_STATUS_AMBIGUITY_PT
+        )
+        tied = [key for distance, key in ranked if distance <= reach]
+        target = claims if len(tied) == 1 else ambiguous
+        for key in tied:
+            target.setdefault(key, []).append(observation.element_id)
+    return (
+        {key: tuple(sorted(ids)) for key, ids in claims.items()},
+        {key: tuple(sorted(ids)) for key, ids in ambiguous.items()},
+    )
 
 
 def _user_scope_assumption_attributes(
     lane: Mapping[str, Any],
     claim_source_element_ids: tuple[str, ...] | None,
+    ambiguous_source_element_ids: tuple[str, ...] | None,
     assumption: UserScopeAssumption,
 ) -> dict[str, Any]:
-    """Scope for one still-unresolved entity from the caller's explicit rule."""
+    """Scope for one entity with no sheet scope evidence, from the caller's rule.
+
+    Returns nothing unless the rule applies. The returned attributes are the
+    lane's diagnostic copy; the caller also records a canonical provenance
+    record with user derivation for every scope the rule sets.
+    """
 
     if lane.get("scope_status") != SCOPE_UNRESOLVED:
         return {}
-    if lane.get("scope_reason") in _USER_SCOPE_CONFLICT_REASONS:
+    if lane.get("scope_reason") not in _USER_SCOPE_APPLICABLE_REASONS:
         return {}
     evidence = {
         "scope_assumption_rule": assumption.rule,
@@ -2242,11 +2311,58 @@ def _user_scope_assumption_attributes(
             ),
             **evidence,
         }
+    if ambiguous_source_element_ids:
+        # An "(E)" callout may target this entity or a neighbour equally near.
+        # The rule's default would call it new; that is a guess, so it stays
+        # unresolved and the rule is not applied.
+        return {
+            "scope_status": SCOPE_UNRESOLVED,
+            "scope_reason": "scope_assumption_exception_ambiguous",
+            "scope_assumption_existing_marker_candidate_source_element_ids": list(
+                ambiguous_source_element_ids
+            ),
+        }
     return {
         "scope_status": SCOPE_NEW,
         "scope_method": "user scope assumption",
         **evidence,
     }
+
+
+def _user_scope_provenance(
+    document: PdfElectricalDocument,
+    *,
+    page: int,
+    lane: Mapping[str, Any],
+    assumption: UserScopeAssumption,
+) -> Provenance:
+    """Canonical record that a user rule, not a sheet, set this scope.
+
+    Scoped by name to ``scope_status``: the entity's position and type remain
+    observed; only its scope rests on the caller's decision.
+    """
+
+    marker_ids = list(lane.get("scope_assumption_existing_marker_source_element_ids", ()))
+    return Provenance(
+        source_kind="caller-scope-assumption",
+        source_id=document.source_id,
+        source_element_id=marker_ids[0] if marker_ids else None,
+        page=page,
+        method=str(lane["scope_method"]),
+        confidence=1.0,
+        derivation=DERIVATION_USER,
+        attributes={
+            "assumed_attribute": "scope_status",
+            "scope_status": lane["scope_status"],
+            "rule": assumption.rule,
+            "source": assumption.source,
+            **(
+                {"existing_marker_source_element_ids": marker_ids}
+                if marker_ids
+                else {}
+            ),
+        },
+    )
 
 
 # Lighting is intentionally a separate recognition path from power-device
@@ -7617,13 +7733,24 @@ class ElectricalPdfImporter:
             for observation in legend_texts
             if observation.element_id not in lighting_claimed_text_ids
         )
-        # Field status letters: the plan's own texts, plus single E/N/R letters
-        # that the drawing prints in an SHX font and carries as text-proxy
-        # comments. Other annotation codes and fixture tags are not markers.
-        shx_status_text_ids = {
+        # Scope evidence comes only from what the drawing prints: its own
+        # text, plus SHX-font strings it carries as AutoCAD text-proxy
+        # comments. Any other comment is a markup laid over the sheet.
+        text_proxy_ids = {
             f"{symbol.element_id}:text"
             for symbol in symbols
             if symbol.metadata.get("text_proxy") == _SHX_TEXT_PROXY
+        }
+        drawing_texts = tuple(
+            observation for observation in texts if _is_drawing_text(observation, text_proxy_ids)
+        )
+        # Field status letters: the plan's own texts, plus single E/N/R letters
+        # printed in an SHX font. Other annotation codes and fixture tags are
+        # not markers.
+        shx_status_text_ids = {
+            f"{symbol.element_id}:text"
+            for symbol in symbols
+            if f"{symbol.element_id}:text" in text_proxy_ids
             and (_field_modifier_text(str(symbol.metadata.get("contents") or "")) or ("",))[0]
             == "status"
         }
@@ -7631,7 +7758,11 @@ class ElectricalPdfImporter:
         status_texts = tuple(
             sorted(
                 (
-                    *generic_legend_texts,
+                    *(
+                        observation
+                        for observation in generic_legend_texts
+                        if _is_drawing_text(observation, text_proxy_ids)
+                    ),
                     *(
                         observation
                         for observation in texts
@@ -7643,7 +7774,7 @@ class ElectricalPdfImporter:
             )
         )
         scope_status_letters = _scope_status_letters(status_texts)
-        scope_notes = _scope_default_notes(texts)
+        scope_notes = _scope_default_notes(drawing_texts)
         generic_vectors = tuple(
             vector
             for vector in vectors
@@ -8353,10 +8484,12 @@ class ElectricalPdfImporter:
         # a sheet whose panel is also named `EVSE` invented a circuit.
         entity_identity_text_owner: dict[str, str] = {}
         identity_owners: dict[str, str] = {}
-        user_scope_claims = (
-            _user_scope_existing_claims(candidates.values(), texts)
+        user_scope_claims, user_scope_ambiguous_claims = (
+            _user_scope_existing_claims(
+                candidates.values(), drawing_texts, radius_pt=self.annotation_radius_pt
+            )
             if self.user_scope_assumption is not None
-            else {}
+            else ({}, {})
         )
 
         for candidate in sorted(candidates.values(), key=lambda item: item.key):
@@ -8485,13 +8618,25 @@ class ElectricalPdfImporter:
                 user_scope = _user_scope_assumption_attributes(
                     lane_attributes,
                     user_scope_claims.get(candidate.key),
+                    user_scope_ambiguous_claims.get(candidate.key),
                     self.user_scope_assumption,
                 )
                 if user_scope:
-                    # The entity is no longer unresolved; the stale reason would
-                    # contradict the recorded user decision.
+                    # Replace the "no scope evidence" reason: either the rule
+                    # resolved the entity, or it carries its own new reason.
                     lane_attributes.pop("scope_reason", None)
                     lane_attributes.update(user_scope)
+                    if user_scope["scope_status"] != SCOPE_UNRESOLVED:
+                        # derivation is the authoritative record of how this
+                        # scope came to be; the lane keys are diagnostics.
+                        candidate.provenance.append(
+                            _user_scope_provenance(
+                                document,
+                                page=candidate.page,
+                                lane=lane_attributes,
+                                assumption=self.user_scope_assumption,
+                            )
+                        )
             if mounting:
                 if len(mounting) == 1:
                     lane_attributes["mounting_height_m"] = mounting[0]

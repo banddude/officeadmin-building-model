@@ -467,6 +467,11 @@ string (`R = EXISTING TO BE RELOCATED`). Every device records `scope_status`:
 Legends are page-local, like symbol legends; a legend on another sheet is not
 inherited.
 
+Scope evidence is read only from what the drawing prints: its own text, plus
+the SHX text proxies described below. Any other PDF comment (a reviewer's
+`/FreeText`, `/Square` or sticky-note markup) is laid over the sheet, so it is
+never a status marker, a general-note default, or an `(E)` callout.
+
 A device whose position has no marker of its own still takes a status letter
 printed beside it: single `E`/`N`/`R` texts within the field-status radius are
 marker candidates, and letters that tie within the ambiguity margin with
@@ -480,32 +485,53 @@ by any other author are not markers.
 
 A sheet general note can also default the scope of the unmarked devices of one
 family on that sheet, for example
-`4. LIGHT FIXTURES SHOWN ON PLAN ARE EXISTING U.O.N.` A default needs a named
-family (light fixtures, luminaires, outlets, receptacles), exactly one scope,
-and an "unless otherwise noted" clause, with no further scope wording in the
-note's own text. The note reaches only unmarked devices whose canonical type
-is in that family, and only on the note's own page. A note that names both
+`LIGHT FIXTURES SHOWN ON THIS SHEET ARE EXISTING U.O.N.` A default needs a
+named family (light fixtures, luminaires, outlets, receptacles), exactly one
+scope, and an "unless otherwise noted" clause, with no further scope wording in
+the note's own text. The note reaches only unmarked devices whose canonical
+type is in that family, and only on the note's own page. A note that names both
 scopes (`NEW / EXISTING U.O.N.`), or whose own text qualifies the default
-(`... NEW U.O.N. USE EXISTING IN LIEU OF NEW ...`), stays evidence of
+(`... NEW U.O.N. REUSE EXISTING OUTLETS WHERE AVAILABLE.`), stays evidence of
 ambiguity: its devices remain `unresolved` with `scope_reason`
 `scope_default_note_ambiguous`, and two notes of the same family giving
 different scopes give `scope_default_note_conflict`. The note text and its
 source element IDs are recorded with the devices it reaches.
 
 For document sets a human has explicitly ruled on, the importer accepts a
-`UserScopeAssumption(rule, source)` — `ElectricalPdfImporter(
-user_scope_assumption=...)`, off by default. For every entity the sheets still
-leave unresolved (and only those), it records `scope_status: new` with
-`scope_method: "user scope assumption"` plus the rule and source verbatim and
-`scope_assumption_derivation: user`; it is never treated as observed sheet
-evidence. The rule's exception is an uppercase `(E)` callout: within the
-default annotation association radius it marks the nearest such unresolved
-entity `existing_to_remain` (`scope_method: "user scope assumption, (E)
-exception"`, with the callout's element IDs); a tie for the nearest leaves the
-callout's target ambiguous, so the exception does not fire. Sheet evidence
-always wins: legend-resolved markers and valid sheet-note defaults keep their
-own scope, and unresolved conflicts (tied markers, a legend giving a letter two
-meanings, a note naming both scopes) stay unresolved.
+`UserScopeAssumption(rule: str, source: str)`, passed as
+`ElectricalPdfImporter(user_scope_assumption=...)`. It is off by default, and
+the library ships no rule of its own: the caller supplies the rule text and
+its source, and passes the assumption only for the documents the rule names.
+
+- **Where it applies.** Only to entities with `scope_reason: no_scope_marker`,
+  meaning the sheet gives no scope evidence for them at all. Every other
+  unresolved reason is the sheet's own evidence and stays unresolved: tied
+  letters, a letter the sheet's legend does not define
+  (`scope_marker_undefined`), a legend giving one letter two meanings, and a
+  note naming both scopes. Legend-resolved markers and valid sheet-note
+  defaults keep their own scope.
+- **Default.** The rule sets `scope_status: new` with
+  `scope_method: "user scope assumption"`.
+- **The `(E)` exception.** A drawing text with an uppercase `(E)` callout marks
+  the nearest entity within the importer's `annotation_radius_pt` as
+  `existing_to_remain` (`scope_method: "user scope assumption, (E) exception"`,
+  with the callout's element IDs). It does so only when that entity is clearly
+  the nearest: another entity within 25% (plus the 2 pt field-status tie
+  margin) makes the callout's target ambiguous. The rule then sets no scope for
+  any of the tied entities, and those it would have classified stay
+  `unresolved` with `scope_reason: scope_assumption_exception_ambiguous`. An
+  abbreviation definition (`(E) = EXISTING`, `(E) EXISTING`) marks nothing.
+  Leader lines are not traced, so a callout whose leader runs to an entity
+  outside the radius does not reach it.
+- **Provenance.** `derivation` is the authoritative record of the rule's
+  effect. Every scope the rule sets adds a canonical `Provenance` record with
+  `derivation: user`, `source_kind: caller-scope-assumption`, the
+  `scope_method` as its method, and `attributes`: `assumed_attribute:
+  scope_status`, the resulting `scope_status`, and the rule and source
+  verbatim. The entity's own sheet records stay observed, so `is_observed`
+  reports the entity as not purely observed. The lane keys
+  `scope_assumption_rule`, `scope_assumption_source` and
+  `scope_assumption_derivation: user` are diagnostic copies.
 
 Unresolved vector glyph clusters retain tuning evidence instead of only a
 generic failure string. Each unresolved cluster exposes the nearest and

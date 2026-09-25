@@ -2,13 +2,13 @@
   "source_fixture": "fixtures/model/v1/garage-route.json",
   "ifc_schema": "IFC4",
   "expected_counts": {
-    "IfcElectricDistributionBoard": 1,
-    "IfcElectricAppliance": 1,
-    "IfcDistributionCircuit": 1,
-    "IfcCableCarrierSegment": 3,
     "IfcCableCarrierFitting": 2,
+    "IfcCableCarrierSegment": 3,
     "IfcCableSegment": 3,
+    "IfcDistributionCircuit": 1,
     "IfcDistributionPort": 12,
+    "IfcElectricDistributionBoard": 1,
+    "IfcOutlet": 1,
     "IfcRelConnectsPorts": 12
   },
   "route": {

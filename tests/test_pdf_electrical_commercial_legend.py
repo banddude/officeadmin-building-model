@@ -763,3 +763,59 @@ def test_power_legend_path_keeps_unclosed_outlines_out_of_glyphs(
     assert [device.device_type for device in devices] == ["junction_box"]
     assert devices[0].pose.position.x == pytest.approx(120.0 * POINT_TO_M)
     assert _luminaires(model) == []
+
+
+def _circle_points(cx: float, cy: float, radius: float) -> tuple[tuple[float, float], ...]:
+    import math
+
+    return tuple(
+        (
+            cx + radius * math.cos(2.0 * math.pi * index / 16),
+            cy + radius * math.sin(2.0 * math.pi * index / 16),
+        )
+        for index in range(16)
+    )
+
+
+def test_unconfirmed_general_legend_leaves_its_rows_to_the_power_path(
+    tmp_path: Path,
+) -> None:
+    """A power symbol legend is not a lighting legend unless it confirms.
+
+    The JB row's label reads like a fixture tag, and the light row printed
+    just below lends it a luminaire word, so the lighting path finds the JB
+    label with two equally near glyphs. That one ambiguous row never
+    confirms a lighting legend, so it must not claim the JB label: the power
+    path reads the legend exactly as it would without the lighting pass and
+    types the field boxes, and no lighting legend diagnostics are reported
+    for a legend that is not one.
+    """
+
+    pdf_path = tmp_path / "power-legend-light-neighbour.pdf"
+    content = _RcpContent()
+    content.text(370.0, 400.0, "ELECTRICAL SYMBOL LEGEND", size=11.0)
+    content.path(_square_closed(385.0, 360.0, 8.0), close=True)
+    content.text(398.0, 357.0, "JB", size=6.0)
+    content.path(_circle_points(385.0, 346.0, 4.0), close=True)
+    content.text(400.0, 343.0, "RECESSED LIGHT", size=6.0)
+    for x in (100.0, 160.0):
+        content.path(_square_closed(x, 200.0, 8.0), close=True)
+    _write_rcp_pdf(pdf_path, content)
+
+    model = ElectricalPdfImporter().import_document(
+        extract_pdf(pdf_path, source_id="fixture:power-legend-light-neighbour")
+    )
+    boxes = sorted(
+        device.pose.position.x
+        for device in model.electrical_devices
+        if device.device_type == "junction_box"
+    )
+    assert boxes == pytest.approx([100.0 * POINT_TO_M, 160.0 * POINT_TO_M])
+    assert _luminaires(model) == []
+    assert [
+        item
+        for item in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if str(item.get("kind", "")).startswith("lighting_legend")
+    ] == []
+    lighting = model.attributes["pdf_electrical"]["lighting_recognition"]
+    assert lighting["legend_regions"] == []

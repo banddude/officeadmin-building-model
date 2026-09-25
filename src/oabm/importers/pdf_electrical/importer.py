@@ -5802,6 +5802,11 @@ def _detect_lighting_legend_entries(
         local_entries: list[_LightingLegendEntry] = []
         used_keys: set[tuple[int, str]] = set()
         used_outline_keys: set[tuple[int, str]] = set()
+        # Row-level misses are held until the legend is confirmed. A general
+        # legend that never confirms as a lighting legend is simply not one:
+        # it must leave its rows (and their labels) to the power-device path.
+        row_unresolved: list[dict[str, Any]] = []
+        row_claimed_text_ids: set[str] = set()
         for label in sorted(
             candidate_labels,
             key=lambda item: (-item.y_pt, item.x_pt, item.element_id),
@@ -5839,8 +5844,8 @@ def _detect_lighting_legend_entries(
                     used_outline_keys=used_outline_keys,
                 )
                 if linear_miss is not None:
-                    unresolved.append(linear_miss)
-                    claimed_text_ids.add(label.element_id)
+                    row_unresolved.append(linear_miss)
+                    row_claimed_text_ids.add(label.element_id)
                 if linear_entry is not None:
                     assert linear_entry.linear is not None
                     used_outline_keys.add(
@@ -5875,7 +5880,7 @@ def _detect_lighting_legend_entries(
                 )
                 < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
             ):
-                unresolved.append(
+                row_unresolved.append(
                     {
                         "kind": "lighting_legend_tag",
                         "page": label.page,
@@ -5890,7 +5895,7 @@ def _detect_lighting_legend_entries(
                         ),
                     }
                 )
-                claimed_text_ids.add(label.element_id)
+                row_claimed_text_ids.add(label.element_id)
                 continue
             cluster = nearby[0]
             used_keys.add((cluster.page, cluster.geometry_key))
@@ -5914,7 +5919,12 @@ def _detect_lighting_legend_entries(
         # A heading plus one coincidental letter is too weak to establish a
         # lighting legend. Two tagged rows make the path distinct from room
         # labels and ordinary drafting notes.
-        if len(local_entries) < 2:
+        confirmed = len(local_entries) >= 2
+        if general_legend and not confirmed:
+            continue
+        unresolved.extend(row_unresolved)
+        claimed_text_ids.update(row_claimed_text_ids)
+        if not confirmed:
             if candidate_labels:
                 unresolved.append(
                     {

@@ -5092,6 +5092,17 @@ def _frame_roots(
     return frozenset((f"region:{region_id}",))
 
 
+def _frames_share_evidence(first: frozenset[str], second: frozenset[str]) -> bool:
+    """Whether two frames rest on common evidence, so their geometry may merge.
+
+    The single gate for every cross-region merge (repeated walls and repeated
+    wall-loop footprints). Without it, no two regions share evidence and the
+    importer behaves as it did before shared-wall registration existed.
+    """
+
+    return bool(first & second)
+
+
 def _wall_repeats(
     candidate: Wall,
     emitted: Wall,
@@ -5215,7 +5226,7 @@ class _MaterializedWalls:
                 for index in self._cells.get((level_id, cx + dx, cy + dy), ()):
                     if self.region_ids[index] == region_id:
                         continue
-                    if not (self.region_roots[index] & frame_roots):
+                    if not _frames_share_evidence(self.region_roots[index], frame_roots):
                         continue
                     other = self.contexts[index].wall
                     gap = _wall_repeats(wall, other, self.tolerance_m, self.along_limit_m)
@@ -5355,9 +5366,10 @@ def import_observations(
     openings: list[Opening] = []
     used_space_ids: set[str] = set()
     used_opening_identity: set[str] = set()
-    # The frame roots of the region that emitted each space, so a geometric
-    # space is only dropped for an earlier space of an evidence-linked frame.
-    space_roots: dict[str, frozenset[str]] = {}
+    # The region that emitted each space and its frame roots, so a geometric
+    # space is only matched within tolerance to an earlier space of another
+    # region whose frame shares evidence with its own.
+    space_origins: dict[str, tuple[str, frozenset[str]]] = {}
     # Every materialized wall and the region that emitted it, so a wall drawn
     # again by another region of the same level is materialized once.
     materialized_walls = _MaterializedWalls(
@@ -5460,7 +5472,7 @@ def import_observations(
             else "sheet_geometry_fallback" if registration_fallback is not None
             else "project_origin"
         )
-        target_roots: list[frozenset[str]] = ()
+        target_roots: list[frozenset[str]] = []
         if inter_sheet_registration is not None:
             roots_by_id = {
                 other.region_id: other.frame_roots
@@ -5564,8 +5576,33 @@ def import_observations(
                 slab_thickness,
                 ambiguities,
             )
+            # A named room this region's frame put on the footprint of a room
+            # another evidence-linked region already emitted under another
+            # name: both are kept, and the unreconciled names are recorded.
+            renamed = sorted(
+                other.id
+                for other in spaces
+                if other.level_id == level.id
+                and other.name != space.name
+                and space_origins[other.id][0] != region.region_id
+                and _frames_share_evidence(space_origins[other.id][1], region.frame_roots)
+                and _footprints_coincide(space, other, _REPEATED_WALL_TOLERANCE_M)
+            )
+            if renamed:
+                ambiguities.append(
+                    {
+                        "page": page.page_number,
+                        "code": "repeated_space_name_conflict",
+                        "detail": (
+                            f"room {shell.room.name!r} lies on the footprint of a room an "
+                            "evidence-linked drawing region already emitted under another "
+                            "name; both spaces were kept and the names were not reconciled"
+                        ),
+                        "space_ids": [*renamed, space.id],
+                    }
+                )
             spaces.append(space)
-            space_roots[space.id] = region.frame_roots
+            space_origins[space.id] = (region.region_id, region.frame_roots)
             used_space_ids.add(space.id)
             page_walls.extend(shell_walls)
             if slab:
@@ -5607,7 +5644,7 @@ def import_observations(
                 if space.id in used_space_ids:
                     continue
                 spaces.append(space)
-                space_roots[space.id] = region.frame_roots
+                space_origins[space.id] = (region.region_id, region.frame_roots)
                 used_space_ids.add(space.id)
                 layered_room_count += 1
                 ambiguities.append({
@@ -5772,32 +5809,35 @@ def import_observations(
                 }
             )
 
-        region_spaces = [
-            space for space in spaces if space.level_id == level.id
-        ]
+        # A geometric wall-loop space whose footprint equals a space already on
+        # this level is not emitted again: the exact rule this importer always
+        # applied, kept unchanged. A later region's loop that its frame put on
+        # an earlier region's footprint within the wall tolerance is a repeat
+        # too, but only when the two frames share evidence; a loop that merely
+        # lands near another from an unrelated frame stays distinct.
+        def footprint_key(space: Space) -> tuple[tuple[float, float], ...]:
+            return tuple(
+                sorted((round(point.x, 6), round(point.y, 6)) for point in space.footprint.points)
+            )
+
+        level_spaces = [space for space in spaces if space.level_id == level.id]
+        existing_space_footprints = {footprint_key(space) for space in level_spaces}
         for geometric_space in geometric_spaces:
-            if any(
-                space_roots.get(other.id, frozenset()) & region.frame_roots
-                and _footprints_coincide(geometric_space, other, _REPEATED_WALL_TOLERANCE_M)
-                for other in region_spaces
-            ):
+            key = footprint_key(geometric_space)
+            if key in existing_space_footprints:
                 continue
-            if geometric_space.id in used_space_ids:
-                ambiguities.append(
-                    {
-                        "page": page.page_number,
-                        "code": "duplicate_room_identity_across_pages",
-                        "detail": (
-                            "a geometric wall-loop space repeats a canonical level/room "
-                            "identity; later geometry was not substituted automatically"
-                        ),
-                    }
-                )
+            if any(
+                space_origins[other.id][0] != region.region_id
+                and _frames_share_evidence(space_origins[other.id][1], region.frame_roots)
+                and _footprints_coincide(geometric_space, other, _REPEATED_WALL_TOLERANCE_M)
+                for other in level_spaces
+            ):
                 continue
             geometric_space = _remap_space_wall_ids(geometric_space, wall_id_map)
             spaces.append(geometric_space)
-            space_roots[geometric_space.id] = region.frame_roots
-            region_spaces.append(geometric_space)
+            space_origins[geometric_space.id] = (region.region_id, region.frame_roots)
+            level_spaces.append(geometric_space)
+            existing_space_footprints.add(key)
             used_space_ids.add(geometric_space.id)
 
         page_openings = _make_openings(

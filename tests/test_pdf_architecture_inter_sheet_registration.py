@@ -158,10 +158,13 @@ def _regions(model):
 
 
 def _import_without_shared_walls(path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The importer as it behaves when shared-wall registration refuses every sheet.
+    """The importer as it behaved before shared-wall registration existed.
 
-    The cross-region repeat dedup is disabled as well: a refused registration
-    must not merge anything, so the reference behavior emits every wall.
+    Every sheet's registration is refused, and no two frames share evidence,
+    so neither repeated walls nor repeated wall-loop footprints merge across
+    regions: the only cross-region rule left is the exact-footprint space rule
+    that predates this lane. (``_frames_share_evidence`` is the single gate of
+    both merges.)
     """
 
     with monkeypatch.context() as patch:
@@ -170,11 +173,7 @@ def _import_without_shared_walls(path: Path, monkeypatch: pytest.MonkeyPatch):
             "_register_region_by_shared_walls",
             lambda *args, **kwargs: (None, {"disabled": True}),
         )
-        patch.setattr(
-            architecture_importer._MaterializedWalls,
-            "repeat_of",
-            lambda self, wall, region_id, frame_roots: None,
-        )
+        patch.setattr(architecture_importer, "_frames_share_evidence", lambda first, second: False)
         return _import(path)
 
 
@@ -509,9 +508,19 @@ def test_walls_repeated_by_a_registered_sheet_are_emitted_once(
 
     # The spaces name only kept wall ids, and the geometric loop space is not
     # emitted twice: with the same room label the model has exactly the first
-    # sheet's spaces, naming the same kept wall ids; a renamed room adds
-    # exactly its own space.
+    # sheet's spaces, naming the same kept wall ids. A renamed room adds its
+    # own space on the same footprint, and the unreconciled names are recorded.
     assert len(model.spaces) == len(first_only.spaces) + (1 if labels[0] != labels[1] else 0)
+    if labels[0] != labels[1]:
+        [kept] = first_only.spaces
+        [added] = [space for space in model.spaces if space.id != kept.id]
+        assert added.name != kept.name
+        assert added.footprint.points == pytest.approx(kept.footprint.points)
+        [renamed] = _ambiguities(model, "repeated_space_name_conflict")
+        assert renamed["page"] == 2
+        assert renamed["space_ids"] == [kept.id, added.id]
+    else:
+        assert not _ambiguities(model, "repeated_space_name_conflict")
     emitted_wall_ids = {wall.id for wall in model.walls}
     for space in model.spaces:
         lane = space.attributes["pdf_architecture"]
@@ -667,21 +676,27 @@ def test_a_lookalike_wall_beside_a_repeated_wall_stays_distinct(tmp_path: Path) 
     validate_model(model)
 
 
+@pytest.mark.parametrize(
+    "labels",
+    [("ROOM: SHOP", "ROOM: DEN"), ("NOTE: GRID", "NOTE: GRID")],
+    ids=["labelled-rooms", "unlabelled-loops"],
+)
 def test_fallback_sheets_of_different_plans_never_share_wall_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, labels: tuple[str, str],
 ) -> None:
     # Two later sheets are both refused registration and both fall back to
     # their own lower-left frame. The fallback puts every sheet's largest wall
     # loop at the same canonical spot, so unrelated plans coincide there by
     # construction: their frames share no evidence and their walls stay
-    # distinct (main's wall counts, no cross-page identity claim).
+    # distinct (main's 12 walls and 3 spaces, no cross-page identity claim).
     path = _write(
         tmp_path / "plans.pdf",
         ("A101", (FIRST,)),
-        ("A102", (Plan((900.0, 500.0), "NOTE: GRID", room=(260.0, 200.0), stub=(80.0, 40.0)),)),
-        ("A103", (Plan((200.0, 300.0), "NOTE: GRID", room=(260.0, 140.0), stub=(150.0, 100.0)),)),
+        ("A102", (Plan((900.0, 500.0), labels[0], room=(260.0, 200.0), stub=(80.0, 40.0)),)),
+        ("A103", (Plan((200.0, 300.0), labels[1], room=(260.0, 140.0), stub=(150.0, 100.0)),)),
     )
     model = _import(path)
+    assert len(model.spaces) == 3
 
     first, second, third = _regions(model)
     assert first["frame"]["basis"] == "project_origin"
@@ -706,7 +721,9 @@ def test_a_mirrored_refused_sheet_keeps_all_of_its_walls(
     # Sheet 3 is sheet 2 mirrored, so it is refused as orientation-incompatible
     # and falls back. The fallback then places its room on sheet 2's fallback
     # room exactly; unrelated fallback frames still must not fold its walls
-    # into sheet 2's (main: 12 walls, not 8).
+    # into sheet 2's (main: 12 walls, not 8). Main's exact-footprint space rule,
+    # which predates this lane, still drops sheet 3's loop space, which lands
+    # exactly on sheet 2's: main's 2 spaces, unchanged.
     first = replace(FIRST, label="NOTE: GRID")
     second = Plan((250.0, 400.0), "NOTE: GRID", room=(260.0, 200.0), stub=(80.0, 40.0))
     mirrored = replace(second, origin=(700.0, 250.0), mirrored=True)
@@ -721,6 +738,7 @@ def test_a_mirrored_refused_sheet_keeps_all_of_its_walls(
     assert "orientation_incompatible" in attempt["reason_codes"]
     assert [region["entity_counts"]["walls"] for region in regions] == [4, 4, 4]
     assert len(model.walls) == 12
+    assert len(model.spaces) == 2
     assert not _ambiguities(model, "duplicate_wall_identity_across_pages")
     assert not any("repeats_drawing_region_id" in item.attributes for wall in model.walls for item in wall.provenance)
     _assert_previous_behavior_kept(path, model, monkeypatch)
@@ -732,7 +750,8 @@ def test_an_ambiguously_oriented_refused_sheet_keeps_all_of_its_walls(
     # Sheet 3 has the same room as sheet 2 but its stub sits elsewhere, so no
     # orientation explains everything and the registration is refused as
     # ambiguous. Its fallback frame shares no evidence with sheet 2's, so its
-    # walls stay distinct (main: 12 walls, not 8).
+    # walls stay distinct (main: 12 walls, not 8). As on main, its loop space
+    # lands exactly on sheet 2's and is not emitted twice (main: 2 spaces).
     first = replace(FIRST, label="NOTE: GRID")
     second = Plan((250.0, 400.0), "NOTE: GRID", room=(260.0, 200.0), stub=(80.0, 40.0))
     third = Plan((500.0, 600.0), "NOTE: GRID", room=(260.0, 200.0), stub=(150.0, 120.0))
@@ -747,7 +766,57 @@ def test_an_ambiguously_oriented_refused_sheet_keeps_all_of_its_walls(
     assert "ambiguous_orientation" in attempt["reason_codes"]
     assert [region["entity_counts"]["walls"] for region in regions] == [4, 4, 4]
     assert len(model.walls) == 12
+    assert len(model.spaces) == 2
     assert not _ambiguities(model, "duplicate_wall_identity_across_pages")
+    assert not any("repeats_drawing_region_id" in item.attributes for wall in model.walls for item in wall.provenance)
+    _assert_previous_behavior_kept(path, model, monkeypatch)
+
+
+def test_a_near_copy_on_an_unrelated_fallback_frame_keeps_its_walls_and_space(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Sheet 3 is sheet 2 mirrored and 1 pt wider: refused, it falls back, and
+    # its walls and loop land within the 0.05 m repeat tolerance of sheet 2's
+    # without coinciding exactly. Only the evidence gate keeps them apart:
+    # main emits all 12 walls and 3 spaces, and so does this lane.
+    first = replace(FIRST, label="NOTE: GRID")
+    second = Plan((250.0, 400.0), "NOTE: GRID", room=(260.0, 200.0), stub=(80.0, 40.0))
+    near = replace(second, origin=(700.0, 250.0), room=(261.0, 200.0), mirrored=True)
+    path = _write(tmp_path / "plans.pdf", ("A101", (first,)), ("A102", (second,)), ("A103", (near,)))
+    model = _import(path)
+
+    regions = _regions(model)
+    assert [region["frame"]["basis"] for region in regions] == [
+        "project_origin", "sheet_geometry_fallback", "sheet_geometry_fallback",
+    ]
+    assert regions[1]["frame"]["evidence_roots"] != regions[2]["frame"]["evidence_roots"]
+    assert [region["entity_counts"]["walls"] for region in regions] == [4, 4, 4]
+    assert len(model.walls) == 12
+    assert len(model.spaces) == 3
+    assert not _ambiguities(model, "duplicate_wall_identity_across_pages")
+    assert not any("repeats_drawing_region_id" in item.attributes for wall in model.walls for item in wall.provenance)
+
+    # The lookalikes are within the repeat bounds, so the gate is what holds.
+    def page_of(entity) -> int:
+        return entity.provenance[0].page
+
+    walls = {page: [wall for wall in model.walls if page_of(wall) == page] for page in (2, 3)}
+    along_limit = architecture_importer._MaterializedWalls(
+        architecture_importer._REPEATED_WALL_TOLERANCE_M, ImportOptions().max_wall_thickness_m,
+    ).along_limit_m
+    for wall in walls[3]:
+        assert any(
+            architecture_importer._wall_repeats(
+                wall, other, architecture_importer._REPEATED_WALL_TOLERANCE_M, along_limit,
+            ) is not None
+            for other in walls[2]
+        )
+    [second_space] = [space for space in model.spaces if page_of(space) == 2]
+    [near_space] = [space for space in model.spaces if page_of(space) == 3]
+    assert architecture_importer._footprints_coincide(
+        near_space, second_space, architecture_importer._REPEATED_WALL_TOLERANCE_M,
+    )
+    assert near_space.footprint != second_space.footprint
     _assert_previous_behavior_kept(path, model, monkeypatch)
 
 
@@ -888,21 +957,23 @@ def test_a_later_different_plan_still_emits_its_walls(tmp_path: Path) -> None:
     validate_model(model)
 
 
+@pytest.mark.parametrize(
+    "sheet_numbers",
+    [("A101", "A102", "A103"), ("A101", "A101", "A101")],
+    ids=["distinct-sheet-numbers", "one-sheet-number"],
+)
 def test_repeated_registered_sheets_are_agreeing_electrical_targets(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sheet_numbers: tuple[str, str, str],
 ) -> None:
-    # Three copies of one plan on distinct sheet numbers. Registered to one
-    # frame they emit one wall set and agree as targets, so the electrical
-    # sheet registers; with the registration disabled the sheets fall back to
-    # unrelated frames and compete as before. (The same-number id-collision
-    # case is covered by the registered "repeated-sheet-number" param above:
-    # without the dedup, identical same-number sheets would claim identical
-    # wall ids and no valid model could emit them twice.)
+    # Three copies of one plan. Registered to one frame they emit one wall set
+    # and agree as targets, so the electrical sheet registers; with the
+    # registration disabled the sheets fall back to unrelated frames and
+    # compete as before.
     path = _write(
         tmp_path / "plans.pdf",
-        ("A101", (replace(FIRST, label="NOTE: GRID"),)),
-        ("A102", (replace(SECOND_COPY, label="NOTE: GRID"),)),
-        ("A103", (replace(FIRST, origin=(ORIGIN[0] - 150.0, ORIGIN[1] + 200.0), label="NOTE: GRID"),)),
+        (sheet_numbers[0], (replace(FIRST, label="NOTE: GRID"),)),
+        (sheet_numbers[1], (replace(SECOND_COPY, label="NOTE: GRID"),)),
+        (sheet_numbers[2], (replace(FIRST, origin=(ORIGIN[0] - 150.0, ORIGIN[1] + 200.0), label="NOTE: GRID"),)),
     )
     source = extract_pdf(path, source_id="fixture:architecture")
     electrical = extract_pdf(
@@ -923,6 +994,12 @@ def test_repeated_registered_sheets_are_agreeing_electrical_targets(
     mapped = registered.transform.apply(500.0, 350.0)
     assert (mapped.x, mapped.y) == pytest.approx((ORIGIN[0] * MPP, ORIGIN[1] * MPP), abs=1e-6)
 
+    if len(set(sheet_numbers)) == 1:
+        # Unregistered, two identical copies on one printed sheet number fall
+        # back onto the same canonical spot and claim identical wall ids. No
+        # valid model holds them twice (main rejects this input with a
+        # duplicate-id ContractError), so the control uses distinct numbers.
+        return
     unregistered = _import_without_shared_walls(path, monkeypatch)
     [pending] = register_electrical_sheets(unregistered, source, electrical).pages
     assert pending.status == REGISTRATION_PENDING

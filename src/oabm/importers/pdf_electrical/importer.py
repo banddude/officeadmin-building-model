@@ -1878,7 +1878,7 @@ def _scope_status_attributes(
 # Lighting is intentionally a separate recognition path from power-device
 # legends. A fixture's readable type tag is the semantic evidence; geometry
 # only confirms that the tag is attached to a fixture instance.
-# Tags such as A, A1, F2, LF-4 and LF-5A: one or two letters, then an
+# Tags such as A, B2, K7, QX-3 and W-12B: one or two letters, then an
 # optional number with an optional one-letter variant suffix.
 _LIGHTING_TAG_RE = re.compile(r"^[A-Z]{1,2}(?:-?\d{1,2}[A-Z]?)?$", re.IGNORECASE)
 # The tag narrows the candidates to one fixture type, so the power-device
@@ -1926,10 +1926,10 @@ _LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT = 220.0
 _LIGHTING_LEGEND_LABEL_COLUMN_TOLERANCE_PT = 48.0
 _LIGHTING_LEGEND_ROW_GRID_TOLERANCE_PT = 10.0
 _LIGHTING_LEGEND_COLUMN_GAP_PT = 72.0
-# A general legend (for example a reflected ceiling legend) carries no
-# lighting word in its title and lists ceiling finishes, exit signs and
-# switching beside its fixtures. Such a legend can supply fixture prototypes
-# only through rows whose own description names a luminaire, and its body is
+# A general legend (a legend or symbols title with no lighting word) may list
+# other symbols (finishes, signage, controls) beside its fixtures. Such a
+# legend can supply fixture prototypes only through rows whose own
+# description names a luminaire, and its body is
 # read as structure: printed lines in the title's column that continue down
 # without a blank band taller than one inch and end at the next section title.
 _LIGHTING_LEGEND_BODY_ROW_GAP_PT = 72.0
@@ -1963,8 +1963,8 @@ _LIGHTING_LUMINAIRE_DESCRIPTION_WORDS = frozenset(
         "PENDANTS",
     }
 )
-# Linear fixtures are drawn to scale ("length per plan"), so a legend bar can
-# be longer than the glyph cap and a field run far longer still. A linear
+# Linear fixtures are drawn to scale, so a legend bar can be longer than the
+# glyph cap and a field run far longer still. A linear
 # prototype is one stroked, unfilled rectangular outline at least this many
 # times longer than it is wide. A field run must be the same kind of outline
 # with the prototype's width; its length is free.
@@ -4813,7 +4813,7 @@ def _plain_words(value: str) -> tuple[str, ...]:
 
 
 def _is_general_legend_heading(observation: PdfTextObservation) -> bool:
-    """A legend title without a lighting word, such as REFLECTED CEILING LEGEND.
+    """A legend title without a lighting word, such as a plain symbols legend.
 
     It is only a candidate: fixture prototypes come from it solely through
     rows that describe themselves as luminaires.
@@ -5784,8 +5784,8 @@ def _detect_lighting_legend_entries(
                 progressed = True
             pending_columns = remaining
         # A general legend is a lighting legend only through rows whose own
-        # description names a luminaire; its other rows (finishes, exit
-        # signs, switching, status markers) are never fixture prototypes.
+        # description names a luminaire; its other rows (finishes, signage,
+        # controls, status markers) are never fixture prototypes.
         row_descriptions: dict[str, tuple[PdfTextObservation, ...]] = {}
         if general_legend:
             described_labels: list[PdfTextObservation] = []
@@ -6274,8 +6274,8 @@ def _cluster_inside_general_legend_table(
 ) -> bool:
     """Whether a cluster sits beside a confirmed general legend's own rows.
 
-    A general legend keeps its non-luminaire rows (ceiling finishes, exit
-    signs, status markers) unclaimed, so their symbols stay in the field
+    A general legend keeps its non-luminaire rows (finishes, signage,
+    status markers) unclaimed, so their symbols stay in the field
     set. Those symbols are legend table geometry, never untagged field
     fixtures, and must not be reported as tagless lighting misses.
     """

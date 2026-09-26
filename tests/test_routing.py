@@ -360,3 +360,104 @@ def test_checked_in_routing_fixtures_cover_normal_alternate_and_impossible():
     impossible = BuildingModel.load(fixture_dir / "impossible.json")
     with pytest.raises(NoRouteError, match="required corridors=constraint:required"):
         route_between_ports(impossible, "port:source", "port:load", "emt")
+
+
+def _partition_wall(*, y=0.0, x0=-4.0, x1=4.0, thickness=0.12, height=2.7):
+    from oabm.model import Level, Wall
+    wall = Wall(
+        id="wall:partition", level_id="level:split",
+        centerline=Polyline3D(points=(Point3(x=x0, y=y, z=-0.05), Point3(x=x1, y=y, z=-0.05))),
+        thickness_m=thickness, height_m=height,
+    )
+    level = Level(id="level:split", elevation_m=0, height_m=height)
+    return wall, level
+
+
+def _model_across_wall(wall, level, openings=()):
+    # A slab laps the wall base and caps the space under it, so the only
+    # ways across are the wall itself, its openings, or over the top.
+    floor_slab = Obstacle(
+        id="obstacle:floor-slab", geometry=_box(0, 0, -5.005, 9.0, 2.0, 9.97),
+    )
+    return replace(
+        _base_model(
+            start=Point3(x=0, y=-2, z=0),
+            end=Point3(x=0, y=2, z=0),
+            start_direction=Vector3(x=0, y=1, z=0),
+            end_direction=Vector3(x=0, y=-1, z=0),
+            obstacles=(floor_slab,),
+        ),
+        levels=(level,), walls=(wall,), openings=tuple(openings),
+    )
+
+
+def _wall_crossing_segments(route):
+    return [
+        (a, b)
+        for a, b in zip(route.centerline.points, route.centerline.points[1:])
+        if (a.y < 0) != (b.y < 0)
+    ]
+
+
+def test_wall_between_ports_routes_through_door_opening_and_records_no_penetration():
+    from oabm.model import Opening, Size3
+    wall, level = _partition_wall()
+    door = Opening(
+        id="opening:doorway", host_id=wall.id, opening_type="door",
+        pose=Pose(position=Point3(x=0.6, y=0, z=1.2)), size=Size3(x=0.9, y=0.3, z=2.6),
+    )
+    model = _model_across_wall(wall, level, openings=(door,))
+    route, _ = route_between_ports(model, "port:source", "port:load", "emt")
+    crossings = _wall_crossing_segments(route)
+    assert crossings
+    for a, b in crossings:
+        assert 0.15 < (a.x + b.x) / 2 < 1.05
+    assert route.attributes["penetrated_wall_ids"] == []
+
+
+def test_wall_without_opening_penetrates_once_and_records_the_wall():
+    wall, level = _partition_wall()
+    model = _model_across_wall(wall, level)
+    route, _ = route_between_ports(model, "port:source", "port:load", "emt")
+    assert _points(route) == ((0, -2, 0), (0, 2, 0))
+    assert len(_wall_crossing_segments(route)) == 1
+    assert route.attributes["penetrated_wall_ids"] == ["wall:partition"]
+
+    priced_out = route_between_ports(
+        model, "port:source", "port:load", "emt",
+        options=RoutingOptions(wall_penetration_cost_m=40.0),
+    )[0]
+    assert priced_out.attributes["penetrated_wall_ids"] == []
+    assert max(point.z for point in priced_out.centerline.points) > wall.height_m - 0.1
+
+
+def test_route_with_no_wall_in_the_way_is_unchanged():
+    wall, level = _partition_wall(y=6.0)
+    model = replace(_base_model(), levels=(level,), walls=(wall,))
+    route, _ = route_between_ports(model, "port:source", "port:load", "emt")
+    assert _points(route) == ((0, 0, 0), (4, 0, 0))
+    assert route.attributes["penetrated_wall_ids"] == []
+
+
+def test_wall_crossing_route_is_deterministic_under_input_ordering():
+    from oabm.model import Opening, Size3
+    wall, level = _partition_wall()
+    far_wall, _ = _partition_wall(y=5.0)
+    far_wall = replace(far_wall, id="wall:storage", level_id="level:split")
+    door = Opening(
+        id="opening:doorway", host_id=wall.id, opening_type="door",
+        pose=Pose(position=Point3(x=0.6, y=0, z=1.2)), size=Size3(x=0.9, y=0.3, z=2.6),
+    )
+    first_model = _model_across_wall(wall, level, openings=(door,))
+    ordered_model = replace(first_model, walls=(wall, far_wall))
+    reordered_model = replace(ordered_model, walls=(far_wall, wall))
+    first = route_between_ports(ordered_model, "port:source", "port:load", "emt")
+    again = route_between_ports(ordered_model, "port:source", "port:load", "emt")
+    reordered = route_between_ports(reordered_model, "port:source", "port:load", "emt")
+    assert first == again == reordered
+
+
+def test_wall_penetration_cost_option_is_validated():
+    assert RoutingOptions(wall_penetration_cost_m=0.0).wall_penetration_cost_m == 0.0
+    with pytest.raises(RoutingError, match="wall_penetration_cost_m"):
+        RoutingOptions(wall_penetration_cost_m=-0.5)

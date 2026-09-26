@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import heapq
 import math
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ class RoutingOptions:
     preferred_corridor_discount: float = 0.20
     surface_path_discount: float = 0.05
     soft_obstacle_penalty_factor: float = 3.0
+    wall_penetration_cost_m: float = 3.0
     vertical_cost_factor: float = 1.0
     coordinate_precision: int = 9
 
@@ -62,6 +64,7 @@ class RoutingOptions:
             "search_margin_m",
             "corridor_tolerance_m",
             "soft_obstacle_penalty_factor",
+            "wall_penetration_cost_m",
         ):
             value = getattr(self, name)
             if not math.isfinite(value) or value < 0:
@@ -113,6 +116,81 @@ class _Rule:
     bounds: _Bounds
     geometry: Box3D | Polyline3D | Polygon3D | None = None
     tolerance_m: float = 0.0
+    include_center_in_grid: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class _WallSegment:
+    """One centerline span of a wall in its horizontal local frame."""
+
+    origin_x: float
+    origin_y: float
+    unit_x: float
+    unit_y: float
+    normal_x: float
+    normal_y: float
+    length: float
+
+
+@dataclass(frozen=True, slots=True)
+class _OpeningRule:
+    id: str
+    box: Box3D
+    bounds: _Bounds
+
+
+@dataclass(frozen=True, slots=True)
+class _WallRule:
+    """Canonical wall solid: centerline swept by thickness over its height."""
+
+    id: str
+    bounds: _Bounds
+    segments: tuple[_WallSegment, ...]
+    half_thickness: float
+    thickness_m: float
+    base_z: float
+    top_z: float
+    openings: tuple[_OpeningRule, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _WallIndex:
+    """Bisect broad phase over wall footprint x-intervals.
+
+    Walls are ordered by their footprint minimum x with a running maximum of
+    the maximum x, so a segment range query scans only walls that can overlap
+    it and always yields them in the same deterministic order.
+    """
+
+    min_x: tuple[float, ...]
+    prefix_max_x: tuple[float, ...]
+    walls: tuple[_WallRule, ...]
+
+    @classmethod
+    def build(cls, walls: tuple[_WallRule, ...]) -> "_WallIndex":
+        ordered = tuple(sorted(walls, key=lambda item: (item.bounds.min_x, item.id)))
+        running = -math.inf
+        prefix: list[float] = []
+        for item in ordered:
+            running = max(running, item.bounds.max_x)
+            prefix.append(running)
+        return cls(
+            tuple(item.bounds.min_x for item in ordered),
+            tuple(prefix),
+            ordered,
+        )
+
+    def candidates(self, low_x: float, high_x: float) -> tuple[_WallRule, ...]:
+        boundary = bisect.bisect_right(self.min_x, high_x + _EPS)
+        found: list[_WallRule] = []
+        index = boundary - 1
+        while index >= 0:
+            if self.prefix_max_x[index] < low_x - _EPS:
+                break
+            found.append(self.walls[index])
+            index -= 1
+        found.reverse()
+        return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +200,8 @@ class _RoutingGeometry:
     required: tuple[_Rule, ...]
     preferred: tuple[_Rule, ...]
     surfaces: tuple[_Rule, ...]
+    walls: tuple[_WallRule, ...]
+    wall_index: _WallIndex
 
 
 def route_between_ports(
@@ -138,6 +218,11 @@ def route_between_ports(
     The input is the canonical ``BuildingModel``. The outputs are canonical
     ``Route`` and ``RouteFitting`` objects only; callers decide whether and how
     to attach them to a model document.
+
+    Canonical walls are traversable obstacles: the route may cross a wall
+    through one of its openings without penalty, or anywhere else as a
+    recorded penetration priced by ``RoutingOptions.wall_penetration_cost_m``.
+    Every crossed wall id is listed on the route under ``penetrated_wall_ids``.
     """
 
     if not route_type:
@@ -205,6 +290,7 @@ def route_between_ports(
         raise NoRouteError(
             f"best route requires {bend_count} bends, exceeding max_bends={options.max_bends}"
         )
+    penetrated_wall_ids = _penetrated_wall_ids(points, geometry)
 
     route_id = stable_id(
         "route",
@@ -240,6 +326,7 @@ def route_between_ports(
             "bend_count": bend_count,
             "length_m": round(length_m, options.coordinate_precision),
             "required_constraint_ids": [item.id for item in geometry.required],
+            "penetrated_wall_ids": penetrated_wall_ids,
         },
     )
     return route, fittings
@@ -334,21 +421,43 @@ def _collect_routing_geometry(
     surfaces: list[_Rule] = []
     level_by_id = {level.id: level for level in model.levels}
     surface_pad = options.corridor_tolerance_m + route_radius
+    openings_by_host: dict[str, list[_OpeningRule]] = {}
+    for opening in sorted(model.openings, key=lambda item: item.id):
+        box = Box3D(pose=opening.pose, size=opening.size)
+        openings_by_host.setdefault(opening.host_id, []).append(
+            _OpeningRule(opening.id, box, _geometry_bounds(box))
+        )
+    walls: list[_WallRule] = []
     for wall in sorted(model.walls, key=lambda item: item.id):
         base = _geometry_bounds(wall.centerline)
         level = level_by_id.get(wall.level_id)
         base_z = min(point.z for point in wall.centerline.points)
         if level is not None:
             base_z = min(base_z, level.elevation_m)
-        wall_bounds = _Bounds(
-            base.min_x,
-            base.min_y,
+        top_z = base_z + wall.height_m
+        half_thickness = wall.thickness_m / 2
+        solid_bounds = _Bounds(
+            base.min_x - half_thickness,
+            base.min_y - half_thickness,
             base_z,
-            base.max_x,
-            base.max_y,
-            base_z + wall.height_m,
-        ).expanded(wall.thickness_m / 2 + surface_pad)
-        surfaces.append(_Rule(f"wall:{wall.id}", wall_bounds))
+            base.max_x + half_thickness,
+            base.max_y + half_thickness,
+            top_z,
+        )
+        walls.append(_WallRule(
+            id=wall.id,
+            bounds=solid_bounds,
+            segments=tuple(_wall_segments(wall.centerline)),
+            half_thickness=half_thickness,
+            thickness_m=wall.thickness_m,
+            base_z=base_z,
+            top_z=top_z,
+            openings=tuple(openings_by_host.get(wall.id, ())),
+        ))
+        wall_bounds = solid_bounds.expanded(half_thickness + surface_pad)
+        surfaces.append(_Rule(
+            f"wall:{wall.id}", wall_bounds, include_center_in_grid=False,
+        ))
     for ceiling in sorted(model.ceilings, key=lambda item: item.id):
         bounds = _geometry_bounds(ceiling.footprint)
         z = sum(point.z for point in ceiling.footprint.points) / len(ceiling.footprint.points)
@@ -368,6 +477,8 @@ def _collect_routing_geometry(
         required=tuple(required),
         preferred=tuple(preferred),
         surfaces=tuple(surfaces),
+        walls=tuple(walls),
+        wall_index=_WallIndex.build(tuple(walls)),
     )
 
 
@@ -435,20 +546,60 @@ def _candidate_coordinates(
     )
     for rule in all_rules:
         bounds = rule.bounds
-        xs.update({_canon(bounds.min_x - escape, p), _canon(bounds.max_x + escape, p), _canon(bounds.center.x, p)})
-        ys.update({_canon(bounds.min_y - escape, p), _canon(bounds.max_y + escape, p), _canon(bounds.center.y, p)})
-        zs.update({_canon(bounds.min_z - escape, p), _canon(bounds.max_z + escape, p), _canon(bounds.center.z, p)})
+        xs.update({_canon(bounds.min_x - escape, p), _canon(bounds.max_x + escape, p)})
+        ys.update({_canon(bounds.min_y - escape, p), _canon(bounds.max_y + escape, p)})
+        zs.update({_canon(bounds.min_z - escape, p), _canon(bounds.max_z + escape, p)})
+        if rule.include_center_in_grid:
+            xs.add(_canon(bounds.center.x, p))
+            ys.add(_canon(bounds.center.y, p))
+            zs.add(_canon(bounds.center.z, p))
         if isinstance(rule.geometry, (Polyline3D, Polygon3D)):
             for point in rule.geometry.points:
                 xs.add(_canon(point.x, p))
                 ys.add(_canon(point.y, p))
                 zs.add(_canon(point.z, p))
 
+    # Wall faces, end caps, and top plane give crossings one clean grid edge
+    # through the solid; the centerline itself is deliberately not a grid
+    # plane so a crossing cannot ride it for free.
     for wall in model.walls:
+        half_thickness = wall.thickness_m / 2
+        base_z = min(point.z for point in wall.centerline.points)
+        zs.update({_canon(base_z, p), _canon(base_z + wall.height_m, p)})
         for point in wall.centerline.points:
-            xs.add(_canon(point.x, p))
-            ys.add(_canon(point.y, p))
-            zs.add(_canon(point.z, p))
+            xs.update({_canon(point.x - half_thickness, p), _canon(point.x + half_thickness, p)})
+            ys.update({_canon(point.y - half_thickness, p), _canon(point.y + half_thickness, p)})
+    walls_by_id = {wall.id: wall for wall in model.walls}
+    for opening in sorted(model.openings, key=lambda item: item.id):
+        if opening.host_id not in walls_by_id:
+            continue
+        bounds = _geometry_bounds(Box3D(pose=opening.pose, size=opening.size))
+        xs.update({_canon(bounds.min_x - escape, p), _canon(bounds.max_x + escape, p)})
+        ys.update({_canon(bounds.min_y - escape, p), _canon(bounds.max_y + escape, p)})
+        zs.update({
+            _canon(bounds.min_z - escape, p),
+            _canon(bounds.center.z, p),
+            _canon(bounds.max_z + escape, p),
+        })
+        # One interior plane along the wall gives crossings a free column
+        # through the opening. The center across the wall stays out of the
+        # grid: it would sit on the centerline and let crossings ride it.
+        host = walls_by_id[opening.host_id]
+        span_x = math.fsum(
+            abs(second.x - first.x)
+            for first, second in zip(host.centerline.points, host.centerline.points[1:])
+        )
+        span_y = math.fsum(
+            abs(second.y - first.y)
+            for first, second in zip(host.centerline.points, host.centerline.points[1:])
+        )
+        if span_y <= _EPS:
+            xs.add(_canon(bounds.center.x, p))
+        elif span_x <= _EPS:
+            ys.add(_canon(bounds.center.y, p))
+        else:
+            xs.add(_canon(bounds.center.x, p))
+            ys.add(_canon(bounds.center.y, p))
     for ceiling in model.ceilings:
         for point in ceiling.footprint.points:
             xs.add(_canon(point.x, p))
@@ -504,15 +655,20 @@ def _search(
     terminal_vector = _vector(end_anchor, end) if end_stub_exists else None
 
     initial_mask = _required_mask(0, start, start_anchor, geometry.required)
-    initial_cost = _edge_base_cost(start, start_anchor, geometry, options) if start_stub_exists else 0.0
+    if start_stub_exists:
+        initial_cost, start_memory = _edge_cost_with_memory(
+            start, start_anchor, geometry, options, 0,
+        )
+    else:
+        initial_cost, start_memory = 0.0, 0
     start_prev = -2 if start_stub_exists else -1
-    start_state = (start_node, start_prev, 0, initial_mask)
-    best: dict[tuple[tuple[int, int, int], int, int, int], float] = {start_state: initial_cost}
+    start_state = (start_node, start_prev, 0, initial_mask, start_memory)
+    best: dict[tuple[tuple[int, int, int], int, int, int, int], float] = {start_state: initial_cost}
     predecessor: dict[
-        tuple[tuple[int, int, int], int, int, int],
-        tuple[tuple[int, int, int], int, int, int],
+        tuple[tuple[int, int, int], int, int, int, int],
+        tuple[tuple[int, int, int], int, int, int, int],
     ] = {}
-    heap: list[tuple[float, int, int, int, int, int, int, tuple[tuple[int, int, int], int, int, int]]] = []
+    heap: list[tuple[float, int, int, int, int, int, int, int, tuple[tuple[int, int, int], int, int, int, int]]] = []
     _push(heap, initial_cost, start_state)
 
     full_required_mask = (1 << len(geometry.required)) - 1
@@ -520,12 +676,12 @@ def _search(
     best_goal_state = None
 
     while heap:
-        cost, _, _, _, _, _, _, state = heapq.heappop(heap)
+        cost, _, _, _, _, _, _, _, state = heapq.heappop(heap)
         if cost > best.get(state, math.inf) + 1e-12:
             continue
         if cost >= best_goal_cost - 1e-12:
             break
-        node, prev_code, bends, mask = state
+        node, prev_code, bends, mask, memory = state
         point = _point_for(node, xs, ys, zs)
 
         if node == end_node:
@@ -544,7 +700,10 @@ def _search(
                 if options.max_bends is not None and terminal_bends > options.max_bends:
                     pass
                 else:
-                    terminal_cost += _edge_base_cost(end_anchor, end, geometry, options)
+                    stub_cost, _ = _edge_cost_with_memory(
+                        end_anchor, end, geometry, options, memory,
+                    )
+                    terminal_cost += stub_cost
                     if turn:
                         terminal_cost += options.bend_penalty_m
             if final_mask == full_required_mask and (
@@ -572,10 +731,13 @@ def _search(
             if options.max_bends is not None and next_bends > options.max_bends:
                 continue
             next_mask = _required_mask(mask, point, next_point, geometry.required)
-            next_cost = cost + _edge_base_cost(point, next_point, geometry, options)
+            edge_cost, next_memory = _edge_cost_with_memory(
+                point, next_point, geometry, options, memory,
+            )
+            next_cost = cost + edge_cost
             if turn:
                 next_cost += options.bend_penalty_m
-            next_state = (next_node, direction_code, next_bends, next_mask)
+            next_state = (next_node, direction_code, next_bends, next_mask, next_memory)
             old_cost = best.get(next_state)
             if old_cost is None or next_cost < old_cost - 1e-12:
                 best[next_state] = next_cost
@@ -603,10 +765,10 @@ def _search(
 
 
 def _push(heap, cost: float, state) -> None:
-    node, direction, bends, mask = state
+    node, direction, bends, mask, memory = state
     heapq.heappush(
         heap,
-        (cost, bends, node[0], node[1], node[2], direction, mask, state),
+        (cost, bends, node[0], node[1], node[2], direction, mask, memory, state),
     )
 
 
@@ -657,6 +819,228 @@ def _edge_base_cost(
     if geometry.surfaces and any(_segment_midpoint_in_bounds(a, b, item.bounds) for item in geometry.surfaces):
         cost *= 1.0 - options.surface_path_discount
     return cost
+
+
+def _wall_segments(centerline: Polyline3D) -> Iterable[_WallSegment]:
+    """Local horizontal frames for the wall baseline spans, in polyline order."""
+    for start, end in zip(centerline.points, centerline.points[1:]):
+        delta_x, delta_y = end.x - start.x, end.y - start.y
+        length = math.hypot(delta_x, delta_y)
+        if length <= _EPS:
+            continue
+        unit_x, unit_y = delta_x / length, delta_y / length
+        yield _WallSegment(
+            origin_x=start.x,
+            origin_y=start.y,
+            unit_x=unit_x,
+            unit_y=unit_y,
+            normal_x=-unit_y,
+            normal_y=unit_x,
+            length=length,
+        )
+
+
+def _strict_side(value: float) -> int:
+    if value > _EPS:
+        return 1
+    if value < -_EPS:
+        return -1
+    return 0
+
+
+def _wall_edge_event(
+    a: Point3,
+    b: Point3,
+    wall: _WallRule,
+    memory: int,
+) -> tuple[float, int | None]:
+    """Penetration chord of a-b against one wall plus the next side memory.
+
+    chord > 0 means the edge crosses the wall solid outside every opening and
+    owes the penetration cost. The memory carries the last strict side of the
+    centerline seen inside the solid, so a crossing split across grid nodes
+    that sit exactly on the centerline still charges on the way out. None
+    means the edge never entered this wall solid.
+    """
+    if not _segment_intersects_bounds(a, b, wall.bounds):
+        return 0.0, None
+    span = _distance(a, b)
+    if span <= _EPS:
+        return 0.0, memory
+    chord_total = 0.0
+    current = memory
+    touched = False
+    for segment in wall.segments:
+        inside = _wall_segment_solid_interval(a, b, wall, segment)
+        if inside is None:
+            continue
+        touched = True
+        from_start_x, from_start_y = a.x - segment.origin_x, a.y - segment.origin_y
+        delta_x, delta_y = b.x - a.x, b.y - a.y
+        side_a = from_start_x * segment.normal_x + from_start_y * segment.normal_y
+        side_b = side_a + delta_x * segment.normal_x + delta_y * segment.normal_y
+        strict_a = _strict_side(side_a)
+        strict_b = _strict_side(side_b)
+        if (
+            (strict_a and strict_b and strict_a == -strict_b)
+            or (strict_a and not strict_b)
+            or (not strict_a and strict_b and current == -strict_b)
+        ):
+            covered = tuple(_opening_intervals(a, b, wall.openings, inside))
+            chord_total += _uncovered_length(inside, covered) * span
+        if strict_b:
+            current = strict_b
+        elif strict_a:
+            current = strict_a
+    if not touched:
+        return 0.0, None
+    return chord_total, current
+
+
+def _wall_edge_charges(
+    a: Point3,
+    b: Point3,
+    geometry: _RoutingGeometry,
+    options: "RoutingOptions",
+    memory: int,
+) -> tuple[float, int]:
+    if not geometry.walls:
+        return 0.0, 0
+    total = 0.0
+    current = memory
+    touched = False
+    for wall in geometry.wall_index.candidates(min(a.x, b.x), max(a.x, b.x)):
+        chord, nxt = _wall_edge_event(a, b, wall, current)
+        if chord > _EPS:
+            total += options.wall_penetration_cost_m * chord / wall.thickness_m
+        if nxt is not None:
+            current = nxt
+            touched = True
+    return total, (current if touched else 0)
+
+
+def _edge_cost_with_memory(
+    a: Point3,
+    b: Point3,
+    geometry: _RoutingGeometry,
+    options: "RoutingOptions",
+    memory: int,
+) -> tuple[float, int]:
+    charge, next_memory = _wall_edge_charges(a, b, geometry, options, memory)
+    return _edge_base_cost(a, b, geometry, options) + charge, next_memory
+
+
+def _wall_segment_solid_interval(
+    a: Point3,
+    b: Point3,
+    wall: _WallRule,
+    segment: _WallSegment,
+) -> tuple[float, float] | None:
+    from_start_x, from_start_y = a.x - segment.origin_x, a.y - segment.origin_y
+    delta_x, delta_y = b.x - a.x, b.y - a.y
+    along_a = from_start_x * segment.unit_x + from_start_y * segment.unit_y
+    along_b = along_a + delta_x * segment.unit_x + delta_y * segment.unit_y
+    side_a = from_start_x * segment.normal_x + from_start_y * segment.normal_y
+    side_b = side_a + delta_x * segment.normal_x + delta_y * segment.normal_y
+    height_a, height_b = a.z - wall.base_z, b.z - wall.base_z
+    intervals = (
+        _affine_interval(
+            along_a, along_b,
+            -wall.half_thickness, segment.length + wall.half_thickness,
+        ),
+        _affine_interval(side_a, side_b, -wall.half_thickness, wall.half_thickness),
+        _affine_interval(height_a, height_b, 0.0, wall.top_z - wall.base_z),
+    )
+    if any(item is None for item in intervals):
+        return None
+    low = max(item[0] for item in intervals)
+    high = min(item[1] for item in intervals)
+    if high <= low:
+        return None
+    return low, high
+
+
+def _affine_interval(
+    start_value: float,
+    end_value: float,
+    low: float,
+    high: float,
+) -> tuple[float, float] | None:
+    """Parameter range in [0, 1] where an affine value stays inside [low, high]."""
+    delta = end_value - start_value
+    if abs(delta) <= _EPS:
+        if start_value < low - _EPS or start_value > high + _EPS:
+            return None
+        return (0.0, 1.0)
+    first = (low - start_value) / delta
+    second = (high - start_value) / delta
+    if first > second:
+        first, second = second, first
+    return (max(0.0, first), min(1.0, second))
+
+
+def _opening_intervals(
+    a: Point3,
+    b: Point3,
+    openings: tuple[_OpeningRule, ...],
+    inside: tuple[float, float],
+) -> Iterable[tuple[float, float]]:
+    for opening in openings:
+        local_a = _box_local_coordinates(a, opening.box)
+        local_b = _box_local_coordinates(b, opening.box)
+        clips = []
+        for start_value, end_value, half_size in (
+            (local_a[0], local_b[0], opening.box.size.x / 2),
+            (local_a[1], local_b[1], opening.box.size.y / 2),
+            (local_a[2], local_b[2], opening.box.size.z / 2),
+        ):
+            clipped = _affine_interval(start_value, end_value, -half_size, half_size)
+            if clipped is None:
+                break
+            clips.append(clipped)
+        else:
+            low = max(inside[0], *(item[0] for item in clips))
+            high = min(inside[1], *(item[1] for item in clips))
+            if high > low:
+                yield low, high
+
+
+def _uncovered_length(
+    inside: tuple[float, float],
+    covered: tuple[tuple[float, float], ...],
+) -> float:
+    """Fraction of the in-solid span not punched through by any opening."""
+    low, high = inside
+    cursor = low
+    uncovered = 0.0
+    for start, end in sorted(covered):
+        if end <= cursor:
+            continue
+        if start > cursor:
+            uncovered += min(start, high) - cursor
+        cursor = max(cursor, end)
+        if cursor >= high:
+            break
+    if cursor < high:
+        uncovered += high - cursor
+    return uncovered
+
+
+def _penetrated_wall_ids(points: list[Point3], geometry: _RoutingGeometry) -> list[str]:
+    found: set[str] = set()
+    memory = 0
+    for a, b in zip(points, points[1:]):
+        touched = False
+        for wall in geometry.wall_index.candidates(min(a.x, b.x), max(a.x, b.x)):
+            chord, nxt = _wall_edge_event(a, b, wall, memory)
+            if chord > _EPS:
+                found.add(wall.id)
+            if nxt is not None:
+                memory = nxt
+                touched = True
+        if not touched:
+            memory = 0
+    return sorted(found)
 
 
 def _required_mask(mask: int, a: Point3, b: Point3, required: tuple[_Rule, ...]) -> int:

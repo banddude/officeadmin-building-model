@@ -10,9 +10,9 @@ The v1 router is deterministic and geometry-driven:
 
 1. Resolve the declared start/end `Port` objects and honor their direction vectors with short exit/entry stubs.
 2. Expand hard obstacle and keep-out geometry by object clearance, caller clearance, and half the routed nominal diameter.
-3. Build a sparse rectilinear 3D coordinate grid from endpoint anchors, obstacle/constraint extents, level elevations, wall centerlines, and ceiling geometry.
+3. Build a sparse rectilinear 3D coordinate grid from endpoint anchors, obstacle/constraint extents, level elevations, wall centerlines, ceiling geometry, and optional bundle-hint interval endpoints.
 4. Run deterministic Dijkstra search over adjacent grid coordinates. Search state includes incoming direction, bend count, and which hard required corridors have been visited.
-5. Score length plus bend cost, optional vertical cost, soft-obstacle penalty, preferred-corridor discount, and wall/ceiling pathway discount.
+5. Score length plus bend cost, optional vertical cost, soft-obstacle penalty, preferred-corridor discount, wall/ceiling pathway discount, and optional bundle-hint discount.
 6. Simplify collinear points, emit the canonical centerline, then emit ordered canonical fitting decisions at every remaining direction change.
 
 There is no random seed, heuristic learned state, or input-list-order dependence. Equal-cost ties are resolved from sorted canonical geometry and coordinate ordering.
@@ -30,6 +30,24 @@ Constraints apply when `applies_to` is empty, contains the route type, or contai
 Canonical `Obstacle` objects are hard unless `obstacle_type` is `soft` or `advisory`.
 
 Wall and ceiling geometry contributes candidate coordinates and optional lower-cost pathway regions. Walls and ceilings are not implicitly hard obstacles; a caller must represent a true no-go region with `Obstacle` or a hard route constraint.
+
+## Bundle hints (optional)
+
+A caller that routes runs in sequence can pass earlier runs to `route_between_ports` as `bundle_hints=BundleHints(paths=(...), discount=...)`. Later runs may then follow those paths at reduced edge cost, so home runs from one panel bundle onto a few shared trunks instead of zigzagging independently. The caller decides the order and which paths to pass; the router only prices edges. Hints are caller input only: they are never persisted and never become routes themselves.
+
+Semantics are along-only:
+
+- only axis-aligned hint segments are indexed; diagonal segments are ignored;
+- only an edge lying on a hint segment gets the discount (`1.0 - discount`);
+- parallel offsets get nothing, edges crossing a hint get nothing, and an edge running past a segment end is not discounted.
+
+Calls that produce no usable index are byte-identical to passing no hints: no argument, `bundle_hints=None`, empty `paths`, diagonal-only paths, or `discount=0`. Any other hint also adds the hint's interval endpoints to the routing lattice, so a hint can change a route even when that route does not follow it.
+
+A hinted route carries two extra attributes: `bundle_hint_discount` (the applied discount) and `bundle_hint_shared_m` (meters of centerline that actually lie on hint segments). Route id, provenance method, and fitting ids are unchanged; hints affect cost and geometry only.
+
+Worked example (synthetic): a panel at `(0, 0, 2.7)` serves a luminaire at `(10, 2, 2.7)` with 0.15 m stubs. Without hints the run crosses on its own line, `((0,0,2.7),(0,0,2.85),(0,2,2.85),(10,2,2.85),(10,2,2.7))`, 12.3 m and 3 bends. With the hint segment `(0,1,2.85)-(10,1,2.85)` at `discount=0.25`, the 10 m trunk ride costs `10 x 0.75 = 7.5` equivalent meters, which beats the two extra bends (`bend_penalty_m` of 0.30 each): the route becomes `((0,0,2.7),(0,0,2.85),(0,1,2.85),(10,1,2.85),(10,2,2.85),(10,2,2.7))`, still 12.3 m of conduit, with `bundle_hint_shared_m == 10.0`.
+
+Callers own the hint list. Pass only earlier runs on the same routing plane, clipped to a window around the new run's endpoints, so the added lattice stays small. A route joins a hint only when the discount on the shared length beats the extra bends the join costs (`bend_penalty_m` each).
 
 ## Bend limits and fitting decisions
 

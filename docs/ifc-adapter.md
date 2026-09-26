@@ -106,6 +106,16 @@ IFC does not natively carry every canonical v1 field, especially provenance, con
 
 Generated IFC-only objects such as route span ports, route attachment ports (which also record `CanonicalPortId`) and spatial containers use `OABM_Adapter` metadata so the importer can distinguish adapter structure from canonical entities; `from_ifc` ignores them.
 
+## Byte determinism
+
+Exporting the same canonical model twice produces byte-identical STEP files. An export is derived bytes, not an event, so nothing in it depends on the clock, the process, or creation luck:
+
+- **Header.** The STEP `FILE_NAME` time stamp is the fixed instant `1970-01-01T00:00:00`, never the wall clock. The remaining header fields (`name`, author, organization, preprocessor/originating system) are constant strings owned by the adapter and the pinned ifcopenshell release; they vary across library upgrades, not across runs.
+- **GlobalIds.** Every `IfcRoot` entity carries a `GlobalId` derived from model content. Canonical products, ports, spatial containers, systems, port/service links, and the `OABM_Provenance` property sets pin theirs at creation from canonical identity. Everything `ifcopenshell.api` creates with a random `GlobalId` — `OABM_Canonical`/`OABM_Adapter` property sets, `IfcRelDefinesByProperties`, aggregates, spatial containment, group assignments, feature voids/fills — is restamped before the file is written: a property set from its name plus the sorted `GlobalId`s of the objects it describes; a relationship from its IFC class plus its relating/related references. A key collision raises `IfcAdapterError` instead of sharing an identity; creation order is never part of a key.
+- **Reference order.** IFC relationship `SET` attributes (`RelatedObjects`, `RelatedElements`, `RelatedBuildings`) are unordered by schema but ifcopenshell serializes them in internal-container order, which varies between processes. They are written sorted by STEP id; STEP ids are deterministic because the build is. Ordered `LIST` attributes are untouched.
+
+`from_ifc` is unchanged by all of this: it reads identity from canonical metadata, not from property-set or relationship GlobalIds.
+
 ## Provenance in IFC
 
 Every exported product that comes from a canonical entity — architecture elements, electrical distribution elements, ports, and the `IfcDistributionSystem`/`IfcDistributionCircuit` of routes and circuits, plus the `IfcProject` model header — also carries a plain custom property set named `OABM_Provenance`. It is an ordinary `IfcPropertySet` of single-value properties, so any IFC viewer (Bonsai, Revit, Navisworks) shows it with no OABM knowledge: a consumer can tell a measured wall from one whose thickness this tool chose without implementing OABM's private format.

@@ -42,6 +42,18 @@ ADAPTER_PSET = "OABM_Adapter"
 PROVENANCE_PSET = "OABM_Provenance"
 _IFC_NAMESPACE = uuid.UUID("0c569baf-3d91-5d5e-a755-9eb9435c67ae")
 _EPS = 1e-7
+# An export is derived bytes, not an event: the same canonical model must
+# serialize to the same file on every run, so the STEP header carries this
+# fixed instant instead of the wall clock (see docs/ifc-adapter.md).
+_FIXED_EXPORT_TIMESTAMP = "1970-01-01T00:00:00"
+# Relationship classes whose GlobalId the adapter always derives from
+# canonical identity at creation (port links and system-service links). Their
+# keys are not reconstructible from generic structure alone, so the
+# determinism pass never restamps them.
+_PINNED_RELATIONSHIP_CLASSES = frozenset(
+    {"IfcRelConnectsPorts", "IfcRelServicesBuildings"}
+)
+_OABM_PSET_NAMES = frozenset({CANONICAL_PSET, ADAPTER_PSET, PROVENANCE_PSET})
 # Planarity/horizontality slop for derived Body authoring, in metres. Canonical
 # architecture geometry sits on level planes; anything beyond this is treated as
 # not determinable rather than approximated.
@@ -81,6 +93,10 @@ def canonical_id_to_ifc_guid(canonical_id: str) -> str:
 
 def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcopenshell.file:
     """Materialize a canonical model as IFC4 suitable for Bonsai editing.
+
+    Exporting one model twice yields byte-identical STEP files: the header
+    time stamp is fixed, and every ``IfcRoot`` GlobalId is derived from model
+    content (see ``_finalize_deterministic_bytes``).
 
     Canonical entities retain deterministic IFC GlobalIds. IFC-native geometry,
     ports, systems, and connectivity are authored where IFC has an equivalent.
@@ -654,9 +670,225 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             f"for ports {mismatched!r}"
         )
 
+    _finalize_deterministic_bytes(ifc)
+
     if destination is not None:
         ifc.write(str(Path(destination)))
     return ifc
+
+
+def _finalize_deterministic_bytes(ifc: ifcopenshell.file) -> None:
+    """Pin every serialized value that would otherwise vary between runs.
+
+    Two exports of one canonical model are two renderings of the same content
+    and must be byte-identical. Two things would otherwise differ:
+
+    - the STEP header's ``FILE_NAME`` time stamp, which ifcopenshell sets from
+      the wall clock, is pinned to ``_FIXED_EXPORT_TIMESTAMP``;
+    - ``ifcopenshell.api`` mints random GlobalIds for the entities it creates
+      internally -- property sets, ``IfcRelDefinesByProperties``, aggregates,
+      spatial containment, group assignments, feature voids/fills. Every such
+      ``IfcRoot`` entity is restamped here from a key derived only from model
+      content (see ``_assign_deterministic_global_ids``).
+    """
+
+    ifc.header.file_name.time_stamp = _FIXED_EXPORT_TIMESTAMP
+    _normalize_relationship_reference_order(ifc)
+    _assign_deterministic_global_ids(ifc)
+
+
+def _normalize_relationship_reference_order(ifc: ifcopenshell.file) -> None:
+    """Write SET-valued relationship references in one deterministic order.
+
+    IFC relationship ``SET`` attributes (``RelatedObjects``, ``RelatedElements``,
+    ``RelatedBuildings``) are unordered by schema, but ifcopenshell serializes
+    them in whatever order its internal container happens to hold, which varies
+    between processes. Sorting by STEP id fixes the written order; STEP ids are
+    themselves deterministic because the build is. Ordered LIST attributes are
+    never touched (singular references are not lists at all).
+    """
+
+    for rel in ifc.by_type("IfcRelationship"):
+        for name, value in rel.get_info().items():
+            if not name.startswith("Related") or not isinstance(value, (list, tuple)):
+                continue
+            ordered = sorted(value, key=lambda item: item.id())
+            if list(value) != ordered:
+                setattr(rel, name, ordered)
+
+
+def _carries_oabm_pset(item: Any) -> bool:
+    """Whether ``item`` carries one of the adapter's own property sets.
+
+    Carriers are exactly the entities whose GlobalId the adapter already pins
+    from canonical identity at creation (the project, canonical products,
+    adapter ports and spatial containers), so their GlobalIds are final.
+    """
+
+    for rel in getattr(item, "IsDefinedBy", ()) or ():
+        if not rel.is_a("IfcRelDefinesByProperties"):
+            continue
+        definition = rel.RelatingPropertyDefinition
+        if definition.is_a("IfcPropertySet") and definition.Name in _OABM_PSET_NAMES:
+            return True
+    return False
+
+
+def _is_pinned_root(item: Any) -> bool:
+    """Whether ``item``'s GlobalId is already derived from model content."""
+
+    if item.is_a("IfcPort") or item.is_a() in _PINNED_RELATIONSHIP_CLASSES:
+        return True
+    if item.is_a("IfcPropertySet") and item.Name == PROVENANCE_PSET:
+        # The legible provenance set pins its GlobalId to its owner's
+        # canonical identity at creation (``<canonical id>#OABM_Provenance``).
+        return True
+    return _carries_oabm_pset(item)
+
+
+def _assign_deterministic_global_ids(ifc: ifcopenshell.file) -> None:
+    """Give every unpinned ``IfcRoot`` entity a content-derived GlobalId.
+
+    Canonical products, ports, spatial containers, systems, port links,
+    service links and the legible provenance property sets already carry
+    deterministic GlobalIds (``from_ifc`` verifies the canonical ones), so
+    they are never touched. The rest -- property sets and the relationships
+    ``ifcopenshell.api`` created with random GlobalIds -- are restamped from
+    a stable key over model content:
+
+    - a property set is keyed by its name plus the sorted GlobalIds of the
+      objects it describes;
+    - a relationship is keyed by its IFC class plus every relating/related
+      reference it holds.
+
+    A key collision fails loudly: two distinct entities that claim one
+    content-derived identity mean the key rule is too weak, and silently
+    sharing a GlobalId would corrupt the file. Creation order is never part of
+    a key.
+    """
+
+    claimed: dict[str, str] = {}
+
+    def claim(guid: str, owner: str) -> str:
+        if guid in claimed:
+            raise IfcAdapterError(
+                "deterministic GlobalId collision between "
+                f"{claimed[guid]!r} and {owner!r}"
+            )
+        claimed[guid] = owner
+        return guid
+
+    pinned_ids: set[int] = set()
+    for item in ifc.by_type("IfcRoot"):
+        if _is_pinned_root(item):
+            pinned_ids.add(item.id())
+            claim(item.GlobalId, f"pinned {item.is_a()} {item.GlobalId!r}")
+
+    # Property sets first: relationship keys reference the sets they assign,
+    # so the sets' final GlobalIds must exist before any relationship is keyed.
+    defining_rels: dict[int, list[Any]] = {}
+    for rel in ifc.by_type("IfcRelDefinesByProperties"):
+        definition = rel.RelatingPropertyDefinition
+        defining_rels.setdefault(definition.id(), []).append(rel)
+
+    final_ids: dict[int, str] = {}
+    keyed_psets: list[tuple[str, Any]] = []
+    for pset in ifc.by_type("IfcPropertySet"):
+        if pset.id() in pinned_ids:
+            continue
+        described = sorted(
+            {
+                related.GlobalId
+                for rel in defining_rels.get(pset.id(), ())
+                for related in rel.RelatedObjects
+            }
+        )
+        keyed_psets.append(
+            (f"pset:{pset.Name or ''}:{','.join(described)}", pset)
+        )
+    for key, pset in sorted(keyed_psets, key=lambda item: (item[0], item[1].id())):
+        pset.GlobalId = claim(
+            canonical_id_to_ifc_guid(key), f"property set {pset.Name!r}"
+        )
+        final_ids[pset.id()] = pset.GlobalId
+
+    # Relationships in dependency order: a relationship that references
+    # another unpinned relationship waits for one round; a cycle or an
+    # unresolvable reference fails loudly instead of hashing a random value.
+    remaining = [
+        rel
+        for rel in ifc.by_type("IfcRelationship")
+        if rel.id() not in pinned_ids
+    ]
+    while remaining:
+        ready: list[tuple[str, Any]] = []
+        deferred: list[Any] = []
+        for rel in remaining:
+            key, resolvable = _relationship_stable_key(rel, pinned_ids, final_ids)
+            if resolvable:
+                ready.append((key, rel))
+            else:
+                deferred.append(rel)
+        if not ready:
+            raise IfcAdapterError(
+                "cannot derive deterministic GlobalIds: relationships "
+                f"{sorted(rel.is_a() for rel in deferred)!r} reference each other "
+                "without any pinned identity"
+            )
+        for key, rel in sorted(ready, key=lambda item: (item[0], item[1].id())):
+            rel.GlobalId = claim(canonical_id_to_ifc_guid(key), rel.is_a())
+            final_ids[rel.id()] = rel.GlobalId
+        remaining = deferred
+
+
+def _relationship_stable_key(
+    rel: Any, pinned_ids: set[int], final_ids: Mapping[int, str]
+) -> tuple[str, bool]:
+    """Build the stable key for one relationship, or report it unresolvable.
+
+    The key is the IFC class followed by every attribute value in schema
+    order; references to IfcRoot entities contribute their final GlobalId,
+    references to GlobalId-less entities (for example ``IfcMaterial``) their
+    class and name. Unresolvable means a referenced relationship does not have
+    a final GlobalId yet and the caller must wait for a later round.
+    """
+
+    parts = [rel.is_a()]
+    resolvable = True
+    for name, value in rel.get_info().items():
+        if name in ("id", "GlobalId"):
+            continue
+        part, part_resolvable = _reference_key(value, pinned_ids, final_ids)
+        parts.append(f"{name}={part}")
+        resolvable = resolvable and part_resolvable
+    return "|".join(parts), resolvable
+
+
+def _reference_key(
+    value: Any, pinned_ids: set[int], final_ids: Mapping[int, str]
+) -> tuple[str, bool]:
+    resolvable = True
+    if value is None:
+        return "-", resolvable
+    if isinstance(value, (list, tuple)):
+        rendered = [
+            _reference_key(item, pinned_ids, final_ids) for item in value
+        ]
+        resolvable = all(item[1] for item in rendered)
+        return ",".join(sorted(item[0] for item in rendered)), resolvable
+    if isinstance(value, ifcopenshell.entity_instance):
+        if value.id() in final_ids:
+            return final_ids[value.id()], resolvable
+        if value.id() in pinned_ids or not value.is_a("IfcRoot"):
+            # Pinned IfcRoot entities were born deterministic; entities
+            # without a GlobalId (IfcMaterial, geometry) are identified by
+            # class and name.
+            ident = getattr(value, "GlobalId", None) or (
+                f"{value.is_a()}:{getattr(value, 'Name', None) or ''}"
+            )
+            return ident, resolvable
+        return "", False
+    return repr(value), resolvable
 
 
 def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:

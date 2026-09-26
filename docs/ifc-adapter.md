@@ -106,6 +106,24 @@ IFC does not natively carry every canonical v1 field, especially provenance, con
 
 Generated IFC-only objects such as route span ports, route attachment ports (which also record `CanonicalPortId`) and spatial containers use `OABM_Adapter` metadata so the importer can distinguish adapter structure from canonical entities; `from_ifc` ignores them.
 
+## Provenance in IFC
+
+Every exported product that comes from a canonical entity — architecture elements, electrical distribution elements, ports, and the `IfcDistributionSystem`/`IfcDistributionCircuit` of routes and circuits, plus the `IfcProject` model header — also carries a plain custom property set named `OABM_Provenance`. It is an ordinary `IfcPropertySet` of single-value properties, so any IFC viewer (Bonsai, Revit, Navisworks) shows it with no OABM knowledge: a consumer can tell a measured wall from one whose thickness this tool chose without implementing OABM's private format.
+
+| Property | IFC4 type | Value |
+| --- | --- | --- |
+| `Derivation` | IfcLabel | Entity-level class from the UNSCOPED records (those with `scope_paths` null): `inferred` if any unscoped record is inferred, else `user` if any is user, else `observed` if unscoped records remain, else `unstated` when there are none. A record with an unset derivation states nothing and reads as observed unless an inferred or user record is present. |
+| `InferredClaims` | IfcText | Sorted, comma-separated union of `scope_paths` from the scoped inferred records (for example `thickness_m`), or an empty string. |
+| `UserClaims` | IfcText | The same for scoped user records. |
+| `Confidence` | IfcReal | The entity's canonical `confidence`. |
+| `DesignStatus` | IfcLabel | The entity's `attributes["design_status"]` when present (for example `proposed`); the property is omitted otherwise. |
+| `Sources` | IfcText | Sorted, unique `source_kind:source_id` pairs of all records, `"; "`-joined, truncated deterministically at 1000 characters with a trailing ` …` so a cut list is visible as cut. |
+| `Methods` | IfcText | Sorted, unique `method` values, joined and truncated the same way. |
+
+The scoped claims are the point of the split: a scan-measured wall whose thickness is the importer's default reads `Derivation=observed` with `InferredClaims=thickness_m` instead of collapsing into one class. An entity-level label can never carry that distinction, so the per-claim scope travels beside it.
+
+The property set is legible, not an import channel. `OABM_Canonical.CanonicalJson` remains the lossless shadow, and `from_ifc` reads only that blob and ignores `OABM_Provenance` — the two say the same thing, and the blob stays authoritative. Each property set's `GlobalId` is derived from the entity ID plus `#OABM_Provenance` with the same stable-GUID helper as everything else, so exports are deterministic and the property set identity survives round trips.
+
 ## Bonsai proof
 
 The deterministic fixture `fixtures/model/v1/garage-route.json` is the round-trip proof. Tests materialize it to IFC, write and reopen the STEP file, inspect the expected electrical distribution classes/connectivity, make a Bonsai-equivalent native IFC edit, save/reopen again, and rebuild the canonical model. Stable canonical IDs and unchanged semantics survive; edited IFC-native fields are reflected back in the canonical object.

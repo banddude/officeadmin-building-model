@@ -22,6 +22,9 @@ import ifcopenshell.util.placement
 import numpy as np
 
 from oabm.model import (
+    DERIVATION_INFERRED,
+    DERIVATION_OBSERVED,
+    DERIVATION_USER,
     SCHEMA_VERSION,
     Box3D,
     BuildingModel,
@@ -36,6 +39,7 @@ from oabm.model import (
 IFC_SCHEMA = "IFC4"
 CANONICAL_PSET = "OABM_Canonical"
 ADAPTER_PSET = "OABM_Adapter"
+PROVENANCE_PSET = "OABM_Provenance"
 _IFC_NAMESPACE = uuid.UUID("0c569baf-3d91-5d5e-a755-9eb9435c67ae")
 _EPS = 1e-7
 # Planarity/horizontality slop for derived Body authoring, in metres. Canonical
@@ -81,7 +85,9 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
     Canonical entities retain deterministic IFC GlobalIds. IFC-native geometry,
     ports, systems, and connectivity are authored where IFC has an equivalent.
     The ``OABM_Canonical`` property set stores only the lossless contract shadow
-    needed for fields IFC does not carry directly (for example provenance).
+    needed for fields IFC does not carry directly (for example provenance), and
+    the plain ``OABM_Provenance`` property set restates that provenance legibly
+    for viewers with no OABM knowledge; ``from_ifc`` reads only the blob.
 
     Architecture entities carry two independent shape representations. The
     ``Axis`` curve (wall centerline, space/slab/ceiling footprint) is the
@@ -821,6 +827,127 @@ def _add_canonical_pset(
             **visible_properties,
         },
     )
+    _add_provenance_pset(ifc, product, payload)
+
+
+#: Longest ``Sources``/``Methods`` text, with the truncation marker counted in.
+_PROVENANCE_TEXT_LIMIT = 1000
+_TRUNCATION_MARKER = " …"
+
+
+def _truncated_list_text(values: list[str]) -> str:
+    """``"; "``-joined text, cut deterministically when past the text limit.
+
+    A cut value always ends with the truncation marker, so a consumer can
+    tell a clipped list from a complete one; equal inputs always cut at the
+    same character.
+    """
+
+    text = "; ".join(values)
+    if len(text) <= _PROVENANCE_TEXT_LIMIT:
+        return text
+    return text[: _PROVENANCE_TEXT_LIMIT - len(_TRUNCATION_MARKER)] + _TRUNCATION_MARKER
+
+
+def _entity_derivation(records: list[Mapping[str, Any]]) -> str:
+    """Entity-level derivation class, from the UNSCOPED records only.
+
+    A scoped record qualifies named fields, so it never votes on the entity
+    class: a measured wall with an assumed thickness reads ``"observed"``
+    here while ``InferredClaims`` names ``thickness_m``. Inferred wins over
+    user, user over observed — the honest reading is the least flattering
+    one. A record whose ``derivation`` is unset states nothing and reads as
+    observed unless an inferred or user record is present, matching the
+    display rule the GLB exporter applies to the same absence. With no
+    unscoped records at all the entity states nothing: ``"unstated"``.
+    """
+
+    unscoped = [
+        str(record.get("derivation") or DERIVATION_OBSERVED)
+        for record in records
+        if record.get("scope_paths") is None
+    ]
+    if DERIVATION_INFERRED in unscoped:
+        return DERIVATION_INFERRED
+    if DERIVATION_USER in unscoped:
+        return DERIVATION_USER
+    if unscoped:
+        return DERIVATION_OBSERVED
+    return "unstated"
+
+
+def _scoped_claims(records: list[Mapping[str, Any]], derivation: str) -> str:
+    """Sorted, comma-separated union of the scopes claimed by one class.
+
+    These are the per-claim scopes the entity-level ``Derivation`` label
+    deliberately does not carry: the scoping survives legibly instead of
+    collapsing the entity into one class.
+    """
+
+    paths = sorted({
+        str(path)
+        for record in records
+        if record.get("derivation") == derivation
+        for path in (record.get("scope_paths") or ())
+    })
+    return ",".join(paths)
+
+
+def _sources_text(records: list[Mapping[str, Any]]) -> str:
+    pairs = sorted({
+        f"{record['source_kind']}:{record['source_id']}"
+        for record in records
+        if record.get("source_kind") and record.get("source_id")
+    })
+    return _truncated_list_text(pairs)
+
+
+def _methods_text(records: list[Mapping[str, Any]]) -> str:
+    methods = sorted({
+        str(record["method"]) for record in records if record.get("method")
+    })
+    return _truncated_list_text(methods)
+
+
+def _add_provenance_pset(
+    ifc: ifcopenshell.file, product: Any, payload: Mapping[str, Any]
+) -> None:
+    """Legible provenance as a plain custom property set, ``OABM_Provenance``.
+
+    Every exported product that comes from a canonical entity carries it, so
+    an ordinary IFC consumer (Bonsai, Revit, Navisworks) can tell a measured
+    wall from one whose thickness this tool chose without implementing
+    OABM's private format. The lossless channel stays
+    ``OABM_Canonical.CanonicalJson`` and remains the only import channel:
+    ``from_ifc`` reads the blob and ignores this pset, so the pset is
+    legible, never a second truth. The pset's GlobalId is derived from the
+    entity id plus ``#OABM_Provenance``, so exports stay deterministic.
+    """
+
+    records = [
+        record
+        for record in (payload.get("provenance") or ())
+        if isinstance(record, Mapping)
+    ]
+    stable_key = str(payload.get("id") or payload.get("model_id") or "")
+    pset = ifcopenshell.api.pset.add_pset(ifc, product=product, name=PROVENANCE_PSET)
+    pset.GlobalId = canonical_id_to_ifc_guid(f"{stable_key}#OABM_Provenance")
+    properties: dict[str, Any] = {
+        "Derivation": ifc.createIfcLabel(_entity_derivation(records)),
+        "InferredClaims": ifc.createIfcText(_scoped_claims(records, DERIVATION_INFERRED)),
+        "UserClaims": ifc.createIfcText(_scoped_claims(records, DERIVATION_USER)),
+    }
+    confidence = payload.get("confidence")
+    if confidence is not None:
+        properties["Confidence"] = ifc.createIfcReal(float(confidence))
+    attributes = payload.get("attributes")
+    if isinstance(attributes, Mapping):
+        design_status = attributes.get("design_status")
+        if design_status is not None:
+            properties["DesignStatus"] = ifc.createIfcLabel(str(design_status))
+    properties["Sources"] = ifc.createIfcText(_sources_text(records))
+    properties["Methods"] = ifc.createIfcText(_methods_text(records))
+    ifcopenshell.api.pset.edit_pset(ifc, pset=pset, properties=properties)
 
 
 def _mark_adapter(ifc: ifcopenshell.file, product: Any, **properties: Any) -> None:

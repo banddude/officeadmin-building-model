@@ -15,8 +15,11 @@ from .golden import (
 )
 from .takeoff_comparison import (
     compare_counts,
+    compare_tag_labels,
     compare_with_references,
+    count_label_occurrences,
     device_scope_counts,
+    normalize_tag,
     reference_disagreements,
     scored_types,
 )
@@ -27,8 +30,11 @@ __all__ = [
     "canonical_digest",
     "canonical_json",
     "compare_counts",
+    "compare_tag_labels",
     "compare_with_references",
+    "count_label_occurrences",
     "device_scope_counts",
+    "normalize_tag",
     "iter_entities",
     "load_golden_cases",
     "load_golden_model",

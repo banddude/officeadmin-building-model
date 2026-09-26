@@ -16,6 +16,12 @@ dependencies = [
 
 [project.optional-dependencies]
 ifc = ["ifcopenshell>=0.8.5,<0.9", "numpy>=1.26,<3"]
+# camelot-py pulls opencv-python-headless and pypdfium2 itself; the lattice
+# flavor runs camelot's vector engine, which needs no ghostscript.
+tables = ["camelot-py>=2,<3"]
+# Heavier layout-model backend, never installed by CI; its tests skip
+# cleanly when docling is absent.
+docling = ["docling>=2,<3"]
 dev = [
   "pytest>=8,<10",
   "jsonschema>=4.23,<5",

@@ -21,6 +21,8 @@ from oabm.importers.pdf_architecture.extract import _group_words, _unique_lines,
 from oabm.importers.pdf_architecture.importer import (
     _Transform2D,
     _dimension_marker_evidence_ids,
+    _room_label_rejection_reason,
+    _room_labels,
     classify_page,
     drawing_level_names,
     import_architectural_pdf,
@@ -1445,6 +1447,168 @@ def test_room_labels_do_not_require_vocabulary_or_prefix(label: str) -> None:
         "label_confidence"
     ] == pytest.approx(0.88)
     assert "multiple_room_labels_in_enclosure" not in _ambiguity_codes(model)
+
+
+def _write_noisy_room_source(path: Path) -> None:
+    """Synthetic source PDF: one labelled room plus ordinary plan noise text.
+
+    All wording is invented for this test: a labelled room with an adjacent
+    room number, a note sentence, a numbered note entry, a dimension, a
+    single letter, a sheet number, a bare scale ratio, and a stray two-digit
+    number nowhere near any room name. An unlabelled ordinary-vector loop
+    holds part of the noise so label noise cannot become room evidence there.
+    """
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)}),
+    })
+    commands = [
+        "10 10 592 772 re S", "12 12 588 768 re S",
+        "100 200 200 200 re S", "104 204 192 192 re S",
+        "350 150 m 550 150 l S", "550 150 m 550 350 l S",
+        "550 350 m 350 350 l S", "350 350 m 350 150 l S",
+        "BT /F1 10 Tf 1 0 0 1 25 740 Tm (A108 FLOOR PLAN) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 25 722 Tm (SCALE: 1:100) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 25 704 Tm (LEVEL: GROUND) Tj ET",
+        "BT /F1 12 Tf 1 0 0 1 168 330 Tm (ROOM: STUDIO) Tj ET",
+        "BT /F1 12 Tf 1 0 0 1 175 312 Tm (210) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 120 370 Tm (EVERY PARTITION RUNS PAST GRID LINE M) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 120 352 Tm (3. PANEL SCHEDULE GOVERNS JOINT SEQUENCE) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 430 300 Tm (E5.2) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 470 270 Tm (1:50) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 430 240 Tm (2134 MM) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 470 210 Tm (S) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 320 600 Tm (14) Tj ET",
+    ]
+    stream = DecodedStreamObject()
+    stream.set_data(("\n".join(commands) + "\n").encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def test_generated_plan_uses_only_the_real_room_label_candidate(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-noisy-room-plan.pdf"
+    _write_noisy_room_source(source)
+    assert not source.with_suffix(".expected.json").exists()
+    noise_texts = {
+        "EVERY PARTITION RUNS PAST GRID LINE M",
+        "3. PANEL SCHEDULE GOVERNS JOINT SEQUENCE",
+        "E5.2",
+        "1:50",
+        "2134 MM",
+        "S",
+        "14",
+    }
+
+    observations = extract_pdf(source, source_id="fixture:noisy-room-plan")
+    extracted = {item.text for item in observations.pages[0].texts}
+    assert noise_texts.issubset(extracted)
+
+    model = import_observations(
+        observations, options=ImportOptions(default_wall_height_m=3.0)
+    )
+
+    validate_model(model)
+    assert len(model.spaces) == 1
+    assert len(model.walls) == 4
+    assert model.spaces[0].name == "STUDIO 210"
+    page = observations.pages[0]
+    source_text_by_id = {item.element_id: item.text for item in page.texts}
+    assert {
+        source_text_by_id[element_id]
+        for element_id in model.spaces[0].attributes["pdf_architecture"][
+            "label_source_element_ids"
+        ]
+    } == {"ROOM: STUDIO", "210"}
+
+    rejections = [
+        item
+        for item in model.attributes["pdf_architecture"]["ambiguities"]
+        if item["code"] == "room_label_candidates_rejected"
+    ]
+    assert len(rejections) == 1
+    assert rejections[0]["rejected_counts"] == {
+        "bare_number": 1,
+        "dimension_string": 1,
+        "note_number_prefix": 1,
+        "scale_string": 1,
+        "sentence_note": 1,
+        "sheet_number": 1,
+        "single_character": 1,
+        "title_block_string": 3,
+    }
+
+    for item in model.attributes["pdf_architecture"]["ambiguities"]:
+        assert item.get("room_anchor") not in noise_texts
+    assert "ordinary_vector_enclosure_unresolved" not in _ambiguity_codes(model)
+
+    rerun = import_observations(
+        extract_pdf(source, source_id="fixture:noisy-room-plan"),
+        options=ImportOptions(default_wall_height_m=3.0),
+    )
+    assert rerun.to_json() == model.to_json()
+
+
+def test_room_label_candidate_matrix_rejects_noise_and_keeps_room_names() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=330,
+        height_pt=220,
+        texts=(
+            _text("m:title", "A108 FLOOR PLAN", 10, 190),
+            _text("m:studio", "ROOM: STUDIO", 20, 160),
+            _text("m:num", "214", 30, 140),
+            _text("m:prefixed", "(E) LOBBY", 120, 160),
+            _text("m:a102", "A102", 120, 140),
+            _text("m:pair", "12", 125, 140),
+            _text("m:stray", "14", 240, 140),
+            _text("m:dim", "24'-6\"", 240, 160),
+            _text("m:mmdim", "2100", 240, 120),
+            _text("m:sheet", "E5.2", 20, 120),
+            _text("m:sheet2", "C4.7", 20, 100),
+            _text("m:scale", "1:50", 120, 100),
+            _text("m:scale2", "1/4\" = 1'-0\"", 240, 100),
+            _text("m:note1", "3. COORDINATE RECESSED FIXTURES WITH THE REFLECTED PLAN", 20, 80),
+            _text("m:note2", "COORDINATE ALL RECESSED FIXTURES WITH THE REFLECTED PLAN.", 20, 60),
+            _text("m:letter", "S", 120, 60),
+            _text("m:letter2", "Q", 240, 60),
+            _text("m:digit", "7", 240, 40),
+        ),
+    )
+
+    assert {label.name for label in _room_labels(page)} == {
+        "STUDIO",
+        "214",
+        "(E) LOBBY",
+        "A102",
+        "12",
+    }
+    assert _room_label_rejection_reason("24'-6\"") == "dimension_string"
+    assert _room_label_rejection_reason("2100") == "dimension_string"
+    assert _room_label_rejection_reason("E5.2") == "sheet_number"
+    assert _room_label_rejection_reason("C4.7") == "sheet_number"
+    assert _room_label_rejection_reason("1:50") == "scale_string"
+    assert _room_label_rejection_reason(
+        "3. COORDINATE RECESSED FIXTURES WITH THE REFLECTED PLAN"
+    ) == "note_number_prefix"
+    assert _room_label_rejection_reason(
+        "COORDINATE ALL RECESSED FIXTURES WITH THE REFLECTED PLAN."
+    ) == "sentence_note"
+    assert _room_label_rejection_reason(
+        "EVERY PARTITION RUNS PAST GRID LINE M WITHOUT EXCEPTION"
+    ) == "sentence_note"
+    assert _room_label_rejection_reason("S") == "single_character"
+    assert _room_label_rejection_reason("STUDIO") is None
+    assert _room_label_rejection_reason("(E) LOBBY") is None
+    assert _room_label_rejection_reason("214") is None
+    assert _room_label_rejection_reason("A102") is None
 
 
 def test_cad_derived_untagged_wall_faces_emit_closed_space_with_low_confidence_height() -> None:

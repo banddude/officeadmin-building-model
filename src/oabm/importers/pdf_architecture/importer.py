@@ -112,6 +112,17 @@ _LEADER_TAG_RE = re.compile(
     r"^(?:\d{1,4}[A-Z]?|[A-Z]{1,4}[-.]?\d{0,4})$",
     re.IGNORECASE,
 )
+# Sheet identifiers such as C4.7 or E5.2: optional discipline letter(s), then a
+# dotted numeric subset. Room numbers ("214", "A102") carry no such dot.
+_SHEET_NUMBER_RE = re.compile(r"^(?:[A-Z]{1,2}[-.]?)?\d+\.\d+(?:[A-Z])?$", re.IGNORECASE)
+# Printed scale ratios ("1:100", "1/100") and inch-equals scale strings.
+_SCALE_STRING_RE = re.compile(r"^(?:\d+\s*[:/]\s*\d+|\d+(?:/\d+)?\"?\s*=\s*\S+)$")
+# Numbered general-note entries: "1." or "2)" followed by sentence text.
+_NOTE_NUMBER_PREFIX_RE = re.compile(r"^\d{1,2}[.)]\s+\S")
+# Two-digit bare numbers are kept only to pair with a nearby room name; alone
+# they are keynote or detail digits, not rooms.
+_SHORT_BARE_NUMBER_RE = re.compile(r"^\d{2}$")
+_ROOM_NOTE_MAX_WORDS = 6
 _ROOM_LABEL_AMBIGUITY_MARGIN = 0.06
 
 
@@ -193,6 +204,9 @@ class _RoomLabel:
     confidence: float
     source_observations: tuple[PdfTextObservation, ...] = ()
     room_number_pattern: bool = False
+    # Short bare numbers stay eligible only to pair with a nearby room name;
+    # they are dropped before they can stand alone as a room.
+    pairing_only: bool = False
     selection_provenance: dict[str, object] | None = None
 
 
@@ -1593,39 +1607,72 @@ def _is_leader_tag(page: PdfPageObservation, observation: PdfTextObservation) ->
     return False
 
 
-def _room_label_candidate(
+def _room_label_rejection_reason(name: str) -> str | None:
+    """Return why a cleaned text is not plausible as a room label, else None.
+
+    These are lexical exclusions only. Position still establishes room-label
+    semantics through the enclosure scoping, so arbitrary project-specific
+    labels stay eligible.
+    """
+    if _is_dimension_pattern_text(name):
+        return "dimension_string"
+    if _KEYNOTE_RE.match(name):
+        return "keynote_string"
+    if _is_title_block_string(name):
+        return "title_block_string"
+    if _SHEET_NUMBER_RE.fullmatch(name):
+        return "sheet_number"
+    if _SCALE_STRING_RE.fullmatch(name):
+        return "scale_string"
+    if _NOTE_NUMBER_PREFIX_RE.match(name):
+        return "note_number_prefix"
+    if name.endswith(".") or len(name.split()) > _ROOM_NOTE_MAX_WORDS:
+        return "sentence_note"
+    if len(name) == 1:
+        return "single_character"
+    return None
+
+
+def _room_label_candidate_with_reason(
     page: PdfPageObservation,
     observation: PdfTextObservation,
-) -> _RoomLabel | None:
+) -> tuple[_RoomLabel | None, str | None]:
+    """Return the label candidate for one text, or why there is none."""
     text = _clean_text(observation.text)
     if not text:
-        return None
+        return None, None
 
     explicit = _EXPLICIT_ROOM_LABEL_RE.match(text)
     name = _clean_text(explicit.group(1)) if explicit else text
     if not name:
-        return None
+        return None, None
 
-    # Position establishes room-label semantics. Lexical and leader rules are
-    # exclusions only, so arbitrary project-specific labels stay eligible.
-    if _find_dimension(name) is not None:
-        return None
-    if _KEYNOTE_RE.match(name):
-        return None
-    if _is_title_block_string(name):
-        return None
+    reason = _room_label_rejection_reason(name)
+    if reason is not None:
+        return None, reason
     if _is_leader_tag(page, observation):
-        return None
+        return None, "leader_tag"
 
-    return _RoomLabel(
-        observation=observation,
-        name=name,
-        anchor=_anchor(name),
-        usage=None,
-        confidence=0.98 if explicit else 0.88,
-        source_observations=(observation,),
-        room_number_pattern=bool(_ROOM_NUMBER_RE.fullmatch(name)),
+    return (
+        _RoomLabel(
+            observation=observation,
+            name=name,
+            anchor=_anchor(name),
+            usage=None,
+            confidence=0.98 if explicit else 0.88,
+            source_observations=(observation,),
+            room_number_pattern=bool(_ROOM_NUMBER_RE.fullmatch(name)),
+            pairing_only=bool(_SHORT_BARE_NUMBER_RE.fullmatch(name)),
+        ),
+        None,
     )
+
+
+def _room_label_candidate(
+    page: PdfPageObservation,
+    observation: PdfTextObservation,
+) -> _RoomLabel | None:
+    return _room_label_candidate_with_reason(page, observation)[0]
 
 
 def _pair_adjacent_room_number_and_name(
@@ -1705,7 +1752,7 @@ def _pair_adjacent_room_number_and_name(
     result = [
         label
         for label in labels
-        if label.observation.element_id not in used_ids
+        if label.observation.element_id not in used_ids and not label.pairing_only
     ]
     result.extend(combined)
     return tuple(
@@ -1719,17 +1766,124 @@ def _pair_adjacent_room_number_and_name(
     )
 
 
+def _drop_unpairable_short_numbers(
+    page: PdfPageObservation,
+    labels: tuple[_RoomLabel, ...],
+) -> tuple[_RoomLabel, ...]:
+    """Drop short bare numbers that no plausible name label could absorb.
+
+    A short bare number only matters as a pairing partner for an adjacent
+    room name. When no name label sits within the same proximity bounds the
+    enclosure-scoped pairing uses, the number could never pair, so keeping it
+    would turn a stray keynote or detail digit into a room. Number patterns
+    beyond the short form ("214", "A102") keep the existing number-only room
+    behaviour. The authoritative pairing stays enclosure-scoped in
+    ``_pair_adjacent_room_number_and_name``; this is an eligibility prefilter.
+    """
+    if not any(label.pairing_only for label in labels):
+        return labels
+    names = [label for label in labels if not label.room_number_pattern]
+    if not names:
+        return tuple(label for label in labels if not label.pairing_only)
+    page_median = _page_median_font_size(page)
+    kept: list[_RoomLabel] = []
+    for label in labels:
+        if not label.pairing_only:
+            kept.append(label)
+            continue
+        number_size = _room_label_font_size(label)
+        number_obs = label.observation
+        for name in names:
+            name_obs = name.observation
+            name_size = _room_label_font_size(name)
+            vertical_gap = abs(name_obs.center_pt[1] - number_obs.center_pt[1])
+            if vertical_gap <= max(1.0, 0.35 * max(name_size, number_size)):
+                continue
+            if vertical_gap > max(18.0, 2.4 * page_median):
+                continue
+            horizontal_gap = abs(name_obs.center_pt[0] - number_obs.center_pt[0])
+            half_span = max(
+                name_obs.bbox_pt[2] - name_obs.bbox_pt[0],
+                number_obs.bbox_pt[2] - number_obs.bbox_pt[0],
+                12.0,
+            ) / 2.0
+            if horizontal_gap > half_span + page_median:
+                continue
+            if name_size < page_median * 0.70:
+                continue
+            kept.append(label)
+            break
+    return tuple(kept)
+
+
 def _room_labels(page: PdfPageObservation) -> tuple[_RoomLabel, ...]:
-    return tuple(
+    return _drop_unpairable_short_numbers(
+        page,
+        tuple(
+            sorted(
+                (
+                    label
+                    for observation in page.texts
+                    if (label := _room_label_candidate(page, observation)) is not None
+                ),
+                key=lambda item: (item.anchor, item.observation.element_id),
+            )
+        ),
+    )
+
+
+def _room_labels_with_rejections(
+    page: PdfPageObservation,
+) -> tuple[tuple[_RoomLabel, ...], dict[str, int]]:
+    """Room labels plus deterministic counts of rejected candidate texts.
+
+    Counts cover the lexical exclusions, leader tags, and the short bare
+    numbers dropped for having no name label they could pair with.
+    """
+    counts: dict[str, int] = {}
+    labels: list[_RoomLabel] = []
+    for observation in page.texts:
+        label, reason = _room_label_candidate_with_reason(page, observation)
+        if label is not None:
+            labels.append(label)
+        if reason is not None:
+            counts[reason] = counts.get(reason, 0) + 1
+    ordered = tuple(
         sorted(
-            (
-                label
-                for observation in page.texts
-                if (label := _room_label_candidate(page, observation)) is not None
-            ),
+            labels,
             key=lambda item: (item.anchor, item.observation.element_id),
         )
     )
+    kept = _drop_unpairable_short_numbers(page, ordered)
+    dropped_short = len(ordered) - len(kept)
+    if dropped_short:
+        counts["bare_number"] = counts.get("bare_number", 0) + dropped_short
+    return kept, {key: counts[key] for key in sorted(counts)}
+
+
+def _record_room_label_rejections(
+    page: PdfPageObservation,
+    ambiguities: list[dict[str, object]],
+) -> tuple[_RoomLabel, ...]:
+    """Record one per-page summary of unused room-label candidates.
+
+    The record replaces per-text room noise with a single deterministic
+    counter entry; it never blocks geometry.
+    """
+    rooms, counts = _room_labels_with_rejections(page)
+    if counts:
+        ambiguities.append(
+            {
+                "page": page.page_number,
+                "code": "room_label_candidates_rejected",
+                "detail": (
+                    "text that is not plausible as a room label was recorded, "
+                    "not used as one"
+                ),
+                "rejected_counts": counts,
+            }
+        )
+    return rooms
 
 
 def _polygon_center_and_radius(
@@ -5737,7 +5891,7 @@ def import_observations(
             )
 
         counts_before = (len(spaces), len(slabs), len(ceilings))
-        rooms = _room_labels(region_page)
+        rooms = _record_room_label_rejections(region_page, ambiguities)
         rectangle_shells = _shell_candidates(region_page, scale, rooms, options, ambiguities)
         ordinary_vector_shells = _ordinary_vector_shell_candidates(
             region_page,

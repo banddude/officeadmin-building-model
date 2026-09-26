@@ -23,11 +23,13 @@ import numpy as np
 
 from oabm.model import (
     SCHEMA_VERSION,
+    Box3D,
     BuildingModel,
     Point3,
     Polyline3D,
     Pose,
     Quaternion,
+    Size3,
     Vector3,
 )
 
@@ -91,7 +93,10 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
     world coordinates — and an opening gets a void box (``size.x`` x host wall
     ``thickness_m`` x ``size.z``) authored in its product-local coordinates,
     because its ``ObjectPlacement`` already carries the canonical pose, so
-    ``IfcRelVoidsElement`` actually cuts. An entity missing a dimension its
+    ``IfcRelVoidsElement`` actually cuts. Electrical devices, equipment and
+    box obstacles get the same centered local box from their ``Size3``
+    (obstacle placements carry the box pose); conductors and route fittings
+    deliberately get no Body and record why. An entity missing a dimension its
     Body needs gets no Body and no invented default; the reason is recorded on
     its ``OABM_Adapter`` property set (``Body=no`` with ``BodyReason``).
     """
@@ -288,14 +293,22 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             _mark_adapter(ifc, item, Body="no", BodyReason=reason)
 
     for ordinal, obstacle in enumerate(model.obstacles):
-        add_product(obstacle, "obstacle", ordinal, "IfcBuildingElementProxy")
+        box_pose = obstacle.geometry.pose if isinstance(obstacle.geometry, Box3D) else None
+        item = add_product(
+            obstacle,
+            "obstacle",
+            ordinal,
+            "IfcBuildingElementProxy",
+            pose=box_pose,
+        )
+        _mark_body(ifc, item, _assign_obstacle_body(ifc, item, body_context, obstacle.geometry))
 
     for ordinal, constraint in enumerate(model.route_constraints):
         add_product(constraint, "route_constraint", ordinal, "IfcAnnotation")
 
     for ordinal, equipment in enumerate(model.electrical_equipment):
         ifc_class, predefined = _equipment_ifc_type(equipment.equipment_type)
-        add_product(
+        item = add_product(
             equipment,
             "electrical_equipment",
             ordinal,
@@ -303,6 +316,7 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             predefined_type=predefined,
             pose=equipment.pose,
         )
+        _mark_body(ifc, item, _assign_box_body(ifc, item, body_context, equipment.size))
 
     for ordinal, device in enumerate(model.electrical_devices):
         ifc_class, predefined = _device_ifc_type(device.device_type)
@@ -316,6 +330,7 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
         )
         if hasattr(item, "ObjectType"):
             item.ObjectType = device.device_type
+        _mark_body(ifc, item, _assign_box_body(ifc, item, body_context, device.size))
 
     canonical_ports: dict[str, Any] = {}
     canonical_port_owners: dict[str, Any] = {}
@@ -386,6 +401,12 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             predefined_type=_fitting_predefined_type(fitting.fitting_type),
         )
         _set_pose(ifc, item, fitting.pose)
+        _mark_adapter(
+            ifc,
+            item,
+            Body="no",
+            BodyReason="fitting is a placement-only occurrence on its conduit run",
+        )
         _add_canonical_pset(
             ifc,
             item,
@@ -569,6 +590,12 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             "conductor",
             ordinal,
             model_document["conductors"][ordinal],
+        )
+        _mark_adapter(
+            ifc,
+            item,
+            Body="no",
+            BodyReason="conductor is represented by its route's conduit solid; see route_ids",
         )
         entity_ifc[conductor.id] = item
         if conductor.route_ids:
@@ -1196,6 +1223,68 @@ def _assign_opening_body(
     )
     _assign_body_representation(ifc, product, context, [solid])
     return None
+
+
+def _assign_box_body(
+    ifc: ifcopenshell.file,
+    product: Any,
+    context: Any,
+    size: Size3 | None,
+) -> str | None:
+    """Author a device/equipment Body: a ``size.x`` x ``size.y`` x ``size.z``
+    box centered on the pose.
+
+    Like the opening void it is authored in the product's LOCAL coordinates,
+    because the product's ``ObjectPlacement`` already carries the canonical
+    pose — authoring in world coordinates would apply the pose twice, and a
+    Bonsai move of the device must move its solid with it. A device without a
+    canonical size gets no Body and no default box. Returns a no-Body reason,
+    or ``None`` when a Body was authored.
+    """
+
+    if size is None:
+        return "no canonical size"
+    depth = float(size.z)
+    profile = ifc.create_entity(
+        "IfcRectangleProfileDef",
+        ProfileType="AREA",
+        XDim=float(size.x),
+        YDim=float(size.y),
+    )
+    solid = ifc.create_entity(
+        "IfcExtrudedAreaSolid",
+        SweptArea=profile,
+        Position=_placement_3d(
+            ifc, (0.0, 0.0, -depth / 2.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)
+        ),
+        ExtrudedDirection=ifc.create_entity(
+            "IfcDirection", DirectionRatios=(0.0, 0.0, 1.0)
+        ),
+        Depth=depth,
+    )
+    _assign_body_representation(ifc, product, context, [solid])
+    return None
+
+
+def _assign_obstacle_body(
+    ifc: ifcopenshell.file,
+    product: Any,
+    context: Any,
+    geometry: Any,
+) -> str | None:
+    """Author an obstacle Body from its canonical box, or refuse without one.
+
+    A ``box3d`` obstacle gets the same centered local box as a device, with
+    the product placement carrying the box pose. A polyline or polygon
+    obstacle has no canonical volumetric extent to extrude, so it gets no
+    Body and no invented depth. Returns a no-Body reason, or ``None`` when a
+    Body was authored.
+    """
+
+    if isinstance(geometry, Box3D):
+        return _assign_box_body(ifc, product, context, geometry.size)
+    kind = getattr(geometry, "kind", "unknown")
+    return f"obstacle geometry is a {kind}; no canonical volumetric extent"
 
 
 def _polygon_plan_area(points: Any) -> float:

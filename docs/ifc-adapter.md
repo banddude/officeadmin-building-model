@@ -77,6 +77,27 @@ The reason is recorded on its `OABM_Adapter` property set (`Body=no` plus
 `BodyReason`, for example a ceiling without `thickness_m` or a space without
 `height_m`). Entities with a Body record `Body=yes`.
 
+The per-kind picture, including every recorded reason:
+
+| Canonical kind | `Axis` | `Body` | `BodyReason` when there is no Body |
+| --- | --- | --- | --- |
+| wall | centerline | rectangle per straight segment, `thickness_m` wide, extruded up `height_m` | `centerline segment is vertical; no plan rectangle to sweep`, or `centerline is not horizontal; the wall base has no single elevation` |
+| slab | footprint | footprint extruded down `thickness_m` | `footprint is not planar; the extrusion plane is ambiguous`, or `footprint has no plan area to extrude` |
+| ceiling | footprint | footprint extruded down `thickness_m` | `no canonical thickness`, or the slab footprint reasons |
+| space | footprint | footprint extruded up `height_m` | `no canonical height`, or the slab footprint reasons |
+| opening | — | void box `size.x` × host wall `thickness_m` × `size.z`, centered on the pose, local coordinates | `opening host is not a wall; no canonical wall thickness`, or `opening host not found in the model; no canonical wall thickness` |
+| electrical device | — | centered box `size.x` × `size.y` × `size.z`, local coordinates | `no canonical size` |
+| electrical equipment | — | centered box `size.x` × `size.y` × `size.z`, local coordinates | `no canonical size` |
+| obstacle | — | centered box from its `box3d` geometry, local coordinates; the placement carries the box pose | `obstacle geometry is a polyline3d; no canonical volumetric extent` (likewise `polygon3d`) |
+| route span | two-point span | swept disk of `nominal_diameter_m` along the span | — |
+| route fitting | — | none by decision — placement-only occurrence | `fitting is a placement-only occurrence on its conduit run` |
+| conductor | route centerline | none by decision — wires are drawn by the GLB export, not in IFC | `conductor is represented by its route's conduit solid; see route_ids` |
+
+Device, equipment and obstacle boxes are authored in the product's local
+coordinates because the product's `ObjectPlacement` already carries the
+canonical pose; a Bonsai move of the product moves its solid with it, and the
+moved placement flows back into the canonical pose on import.
+
 ## Identity and lossless round trip
 
 Every canonical entity that becomes an IFC rooted object receives a deterministic `GlobalId` computed from its canonical ID. Renaming or moving an object therefore does not change identity. Import rejects a canonical object whose `GlobalId` no longer matches its canonical ID instead of treating replacement as an edit.

@@ -10,7 +10,13 @@ from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, Na
 from oabm.model import BuildingModel, validate_model
 from oabm.importers.pdf_architecture import ImportOptions, LevelOverride, RegistrationHint, ScaleOverride
 from oabm.importers.pdf_architecture.extract import _group_words, _unique_lines, extract_pdf
-from oabm.importers.pdf_architecture.importer import classify_page, import_architectural_pdf, import_observations
+from oabm.importers.pdf_architecture.importer import (
+    _Transform2D,
+    _dimension_marker_evidence_ids,
+    classify_page,
+    import_architectural_pdf,
+    import_observations,
+)
 from oabm.importers.pdf_architecture.types import (
     PdfDocumentObservation,
     PdfLineObservation,
@@ -2181,3 +2187,189 @@ def test_multiple_ordinary_vector_enclosures_are_explicitly_ambiguous() -> None:
         model.attributes["pdf_architecture"]["pages"][0]["status"]
         == "no_supported_geometry_recognized"
     )
+
+
+# --- wall corners and jamb returns are not dimension markers -----------------
+
+_QUARTER_INCH_SCALE_MPP = 0.0254 / 72 * 48  # 1/4" = 1'-0" plan
+_JR_TRANSFORM = _Transform2D(
+    meters_per_point=_QUARTER_INCH_SCALE_MPP,
+    rotation_radians=0.0,
+    tx_m=0.0,
+    ty_m=0.0,
+    method="test",
+    confidence=1.0,
+)
+
+
+def _jamb_return_wall_lines() -> list[PdfLineObservation]:
+    """One 20 ft synthetic wall, two 3 ft door gaps, 5.5 in faces.
+
+    1/4" = 1'-0" geometry in PDF points, so 1 world inch = 1.5 pt. Each face
+    piece ends in a jamb return (or end cap) whose endpoint coincides with the
+    face endpoint - an L joint, not a dimension marker.
+
+    An 18 in pier also grows outward from the upper face at every segment
+    end, the way a plan draws piers between doors. Piers are junction
+    evidence: 5.5 in jamb returns sit below the pair stage's 12 in
+    eligible-run floor (a pre-existing threshold this regression does not
+    move), so without them the partial-wall gate would reject every piece
+    for reasons the dimension-marker fix cannot reach.
+    """
+    thickness_pt = 5.5 * 1.5
+    pier_length_pt = 18.0 * 1.5
+    lower_y = 100.0
+    upper_y = lower_y + thickness_pt
+    x_start, x_end = 100.0, 460.0  # 20 ft = 360 pt
+    gaps = ((180.0, 234.0), (326.0, 380.0))  # two 3 ft door gaps = 54 pt
+    edges = [x_start, *(x for gap in gaps for x in gap), x_end]
+    lines: list[PdfLineObservation] = []
+    for side, y in (("l", lower_y), ("u", upper_y)):
+        for index in range(0, len(edges), 2):
+            lines.append(
+                PdfLineObservation(
+                    element_id=f"jr:face-{side}{index // 2}",
+                    start_pt=(edges[index], y),
+                    end_pt=(edges[index + 1], y),
+                    source_layers=("A-WALL",),
+                )
+            )
+    for index, x in enumerate(edges):
+        role = "jamb" if 0 < index < len(edges) - 1 else "cap"
+        lines.append(
+            PdfLineObservation(
+                element_id=f"jr:{role}-{index}",
+                start_pt=(x, lower_y),
+                end_pt=(x, upper_y),
+                source_layers=("A-WALL",),
+            )
+        )
+        lines.append(
+            PdfLineObservation(
+                element_id=f"jr:pier-{index}",
+                start_pt=(x, upper_y),
+                end_pt=(x, upper_y + pier_length_pt),
+                source_layers=("A-WALL",),
+            )
+        )
+    return lines
+
+
+def test_wall_corners_and_jamb_returns_are_not_dimension_markers() -> None:
+    lines = _jamb_return_wall_lines()
+    face_ids = {
+        f"jr:face-{side}{index}" for side in ("l", "u") for index in range(3)
+    }
+
+    result, exempt_count = _dimension_marker_evidence_ids(lines, _JR_TRANSFORM)
+
+    assert result.isdisjoint(face_ids)
+    # The jamb returns, caps, and piers survive with the faces: none of the
+    # wall geometry is thrown out as dimension evidence.
+    assert result == set()
+    # Lower faces see one exempt L joint per end (jamb/cap); upper faces see
+    # two per end (jamb/cap plus the pier that grows from their shared
+    # endpoint). Piers are too far from the lower faces to be candidates.
+    assert exempt_count == 18
+
+
+def test_dimension_ticks_and_extension_lines_stay_dimension_evidence() -> None:
+    # 10 ft dimension string at 1/4" = 1'-0" (1 world inch = 1.5 pt): 45-degree
+    # ticks centred on both ends, extension lines crossing each end with a
+    # 2 in overshoot.
+    line = _line("dim:line", (100.0, 100.0), (280.0, 100.0))
+    tick_offset = 6.0  # half diagonal of an ~5.7 in tick
+    lines = [
+        line,
+        _line("dim:tick-a", (100.0 - tick_offset, 100.0 - tick_offset), (100.0 + tick_offset, 100.0 + tick_offset)),
+        _line("dim:tick-b", (280.0 - tick_offset, 100.0 - tick_offset), (280.0 + tick_offset, 100.0 + tick_offset)),
+        _line("dim:ext-a", (100.0, 97.0), (100.0, 109.0)),
+        _line("dim:ext-b", (280.0, 97.0), (280.0, 109.0)),
+    ]
+
+    result, exempt_count = _dimension_marker_evidence_ids(lines, _JR_TRANSFORM)
+
+    assert result == {
+        "dim:line",
+        "dim:tick-a",
+        "dim:tick-b",
+        "dim:ext-a",
+        "dim:ext-b",
+    }
+    # Ticks and extension lines never end on the dimension line, so nothing
+    # is exempted.
+    assert exempt_count == 0
+
+
+def test_arrowhead_v_pairs_stay_dimension_evidence() -> None:
+    # Same string with an arrowhead V at each end instead of ticks: both
+    # strokes of each V end ON the dimension-line end (the tip), which the
+    # corner exemption must not swallow.
+    stroke_length_pt = 6.0  # 4 in arrowhead stroke
+    stroke_dx = stroke_length_pt * math.cos(math.radians(30.0))
+    stroke_dy = stroke_length_pt * math.sin(math.radians(30.0))
+    lines = [
+        _line("ar:line", (100.0, 100.0), (280.0, 100.0)),
+        _line("ar:ext-a", (100.0, 97.0), (100.0, 109.0)),
+        _line("ar:ext-b", (280.0, 97.0), (280.0, 109.0)),
+        _line("ar:head-a1", (100.0, 100.0), (100.0 + stroke_dx, 100.0 + stroke_dy)),
+        _line("ar:head-a2", (100.0, 100.0), (100.0 + stroke_dx, 100.0 - stroke_dy)),
+        _line("ar:head-b1", (280.0, 100.0), (280.0 - stroke_dx, 100.0 + stroke_dy)),
+        _line("ar:head-b2", (280.0, 100.0), (280.0 - stroke_dx, 100.0 - stroke_dy)),
+    ]
+
+    result, exempt_count = _dimension_marker_evidence_ids(lines, _JR_TRANSFORM)
+
+    assert result == {
+        "ar:line",
+        "ar:ext-a",
+        "ar:ext-b",
+        "ar:head-a1",
+        "ar:head-a2",
+        "ar:head-b1",
+        "ar:head-b2",
+    }
+    # Mirrored V strokes are hits, not exemptions.
+    assert exempt_count == 0
+
+
+def test_wall_with_door_jamb_returns_reaches_walls() -> None:
+    lines = _jamb_return_wall_lines()
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=600,
+        height_pt=400,
+        texts=(
+            _text("jr:title", "A201 FLOOR PLAN", 10, 380),
+            _text("jr:level", "LEVEL: 1", 10, 366),
+            _text("jr:elev", "ELEVATION: 0'-0\"", 10, 354),
+        ),
+        lines=tuple(lines),
+    )
+    options = ImportOptions(
+        scale_overrides=(ScaleOverride(1, _QUARTER_INCH_SCALE_MPP),),
+        level_overrides=(
+            LevelOverride(
+                page_number=1,
+                elevation_m=0.0,
+                height_m=2.7,
+                note="synthetic jamb-return regression override",
+            ),
+        ),
+    )
+    document = _document(page, source_id="fixture:jamb-return-wall")
+
+    model = import_observations(document, options=options)
+
+    validate_model(model)
+    # Before the fix the middle face pieces, with a jamb return at both ends,
+    # were rejected as dimension evidence along with the jambs themselves.
+    assert len(model.walls) == 3
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["dimension_evidence_rejected_count"] == 0
+    assert diagnostics["dimension_marker_corner_exempt_count"] == 18
+
+    replay = import_observations(document, options=options)
+    assert replay.to_json() == model.to_json()

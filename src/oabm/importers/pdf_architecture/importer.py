@@ -2820,6 +2820,55 @@ def _source_point_to_segment_distance(
     return (math.dist(point, nearest), raw_t)
 
 
+def _segments_intersect_pt(
+    first_start: tuple[float, float],
+    first_end: tuple[float, float],
+    second_start: tuple[float, float],
+    second_end: tuple[float, float],
+) -> bool:
+    def direction(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    first_start_dir = direction(second_start, second_end, first_start)
+    first_end_dir = direction(second_start, second_end, first_end)
+    second_start_dir = direction(first_start, first_end, second_start)
+    second_end_dir = direction(first_start, first_end, second_end)
+    if (
+        (first_start_dir > 0 > first_end_dir or first_start_dir < 0 < first_end_dir)
+        and (second_start_dir > 0 > second_end_dir or second_start_dir < 0 < second_end_dir)
+    ):
+        return True
+    for point, a, b in (
+        (first_start, second_start, second_end),
+        (first_end, second_start, second_end),
+        (second_start, first_start, first_end),
+        (second_end, first_start, first_end),
+    ):
+        if (
+            direction(a, b, point) == 0.0
+            and min(a[0], b[0]) <= point[0] <= max(a[0], b[0])
+            and min(a[1], b[1]) <= point[1] <= max(a[1], b[1])
+        ):
+            return True
+    return False
+
+
+def _segment_to_segment_distance_pt(
+    first_start: tuple[float, float],
+    first_end: tuple[float, float],
+    second_start: tuple[float, float],
+    second_end: tuple[float, float],
+) -> float:
+    if _segments_intersect_pt(first_start, first_end, second_start, second_end):
+        return 0.0
+    return min(
+        _source_point_to_segment_distance(first_start, second_start, second_end)[0],
+        _source_point_to_segment_distance(first_end, second_start, second_end)[0],
+        _source_point_to_segment_distance(second_start, first_start, first_end)[0],
+        _source_point_to_segment_distance(second_end, first_start, first_end)[0],
+    )
+
+
 def _is_dimension_pattern_text(text: str) -> bool:
     cleaned = _clean_text(text)
     if _find_dimension(cleaned) is not None:
@@ -3591,10 +3640,15 @@ def _geometric_wall_face_pairs(
 
     unique_best: dict[int, int] = {}
     ambiguous_best_run_count = 0
+    ambiguous_run_segments: list[
+        tuple[tuple[float, float], tuple[float, float]]
+    ] = []
     for run_index, indexes in by_run.items():
         ordered = sorted(indexes, key=lambda index: candidates[index][6])
         if len(ordered) > 1 and candidates[ordered[0]][6] == candidates[ordered[1]][6]:
             ambiguous_best_run_count += 1
+            run = eligible_runs[run_index]
+            ambiguous_run_segments.append((run.start_pt, run.end_pt))
             continue
         unique_best[run_index] = ordered[0]
 
@@ -3665,6 +3719,11 @@ def _geometric_wall_face_pairs(
                 1 for pair in accepted if pair.junction_supported
             ),
             "ambiguous_best_run_count": ambiguous_best_run_count,
+            # Internal only: source-point geometry of each tied run, consumed
+            # by the local partial-wall ambiguity gate in
+            # _geometric_wall_loop_entities and popped before diagnostics
+            # reach the serialized model metadata.
+            "_ambiguous_run_segments": ambiguous_run_segments,
             "rejected": {
                 "parallel": rejected_parallel,
                 "overlap_ratio": rejected_overlap,
@@ -3992,6 +4051,9 @@ def _geometric_wall_loop_entities(
         "explicit_wall_layers" if pair_page is not page else "all_source_vectors"
     )
     diagnostics["explicit_wall_source_segment_count"] = len(explicit_wall_lines)
+    ambiguous_run_segments: tuple[
+        tuple[tuple[float, float], tuple[float, float]], ...
+    ] = diagnostics.pop("_ambiguous_run_segments", ()) or ()
     if not pairs:
         diagnostics["closed_loop_pair_count"] = 0
         diagnostics["partial_pair_count"] = 0
@@ -4060,12 +4122,31 @@ def _geometric_wall_loop_entities(
         - short_partial_pair_indexes
         - no_junction_partial_pair_indexes
     )
-    allow_partial_pairs = (
-        allow_partial_faces
-        and int(diagnostics.get("ambiguous_best_run_count", 0)) == 0
-    )
+    # A tie on one face run only hides the wall evidence it could plausibly
+    # belong to: partial pairs near that ambiguous run stay suppressed, while
+    # unaffected partial walls elsewhere on the drawing are still promoted.
+    ambiguity_radius_pt = max(
+        options.max_wall_thickness_m, 12.0 * _INCH_M
+    ) / transform.meters_per_point
+
+    def _near_ambiguous_run(index: int) -> bool:
+        pair = pairs[index]
+        return any(
+            _segment_to_segment_distance_pt(
+                pair.start_pt, pair.end_pt, run_start, run_end
+            )
+            <= ambiguity_radius_pt
+            for run_start, run_end in ambiguous_run_segments
+        )
+
+    ambiguity_near_partial_pair_indexes = {
+        index
+        for index in evidence_supported_partial_pair_indexes
+        if _near_ambiguous_run(index)
+    }
+    allow_partial_pairs = allow_partial_faces
     promoted_partial_pair_indexes = (
-        evidence_supported_partial_pair_indexes
+        evidence_supported_partial_pair_indexes - ambiguity_near_partial_pair_indexes
         if allow_partial_pairs
         else set()
     )
@@ -4074,6 +4155,9 @@ def _geometric_wall_loop_entities(
     diagnostics["partial_short_rejected_count"] = len(short_partial_pair_indexes)
     diagnostics["partial_no_junction_rejected_count"] = len(
         no_junction_partial_pair_indexes
+    )
+    diagnostics["partial_ambiguity_suppressed_count"] = len(
+        ambiguity_near_partial_pair_indexes
     )
     diagnostics["partial_pair_count"] = len(promoted_partial_pair_indexes)
     diagnostics["suppressed_partial_pair_count"] = (

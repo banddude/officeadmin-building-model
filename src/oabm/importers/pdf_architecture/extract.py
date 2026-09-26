@@ -41,13 +41,18 @@ def _element_id(kind: str, page_number: int, signature: str) -> str:
     return f"p{page_number}:{kind}:{digest}"
 
 
+def _is_wall_pattern_layer(layer: str) -> bool:
+    # A wall-pattern layer carries the poché of drawn walls: it extends the
+    # wall layer it belongs to rather than being a separate drawing family.
+    name = layer.rsplit("|", 1)[-1].upper().lstrip("_")
+    return name.startswith(("A-WALL-PATT", "AE-WALL-PATT"))
+
+
 def _is_wall_source_layer(layer: str) -> bool:
     name = layer.rsplit("|", 1)[-1].upper().lstrip("_")
     if name in {"A-WALL", "AE-WALL"}:
         return True
-    # A wall-pattern layer carries the poché of drawn walls: it extends the
-    # wall layer it belongs to rather than being a separate drawing family.
-    return name.startswith(("A-WALL-PATT", "AE-WALL-PATT"))
+    return _is_wall_pattern_layer(layer)
 
 
 def _native_id(obj: dict[str, object], kind: str) -> str | None:

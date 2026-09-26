@@ -30,7 +30,11 @@ from oabm.model import (
     stable_id,
 )
 
-from .extract import PdfPageDisplayTransform, page_display_transform
+from oabm.importers.pdf_display import (
+    SHX_TEXT_ANNOTATION_AUTHOR,
+    PdfPageDisplayTransform,
+    page_display_transform,
+)
 
 POINT_TO_M = 0.0254 / 72.0
 
@@ -3563,7 +3567,7 @@ def _cluster_small_vector_glyphs(
     )
 
 
-_SHX_TEXT_AUTHOR = "AutoCAD SHX Text"
+_SHX_TEXT_AUTHOR = SHX_TEXT_ANNOTATION_AUTHOR
 # Letter strokes are drawn inside their string's outline; a hairline of slack
 # absorbs stroke width without reaching outside the drawn text.
 _SHX_TEXT_BOX_TOLERANCE_PT = 0.5

@@ -5,7 +5,15 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, NameObject, TextStringObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    FloatObject,
+    NameObject,
+    NumberObject,
+    TextStringObject,
+)
 
 from oabm.model import BuildingModel, validate_model
 from oabm.importers.pdf_architecture import ImportOptions, LevelOverride, RegistrationHint, ScaleOverride
@@ -14,6 +22,7 @@ from oabm.importers.pdf_architecture.importer import (
     _Transform2D,
     _dimension_marker_evidence_ids,
     classify_page,
+    drawing_level_names,
     import_architectural_pdf,
     import_observations,
 )
@@ -2564,3 +2573,163 @@ def test_wall_with_door_jamb_returns_reaches_walls() -> None:
 
     replay = import_observations(document, options=options)
     assert replay.to_json() == model.to_json()
+
+
+# --- AutoCAD SHX annotation text ---------------------------------------------
+
+_SHX_TITLE_RAW_RECT = (40.0, 232.0, 60.0, 372.0)
+_SHX_TITLE_BLOCK_RAW_RECT = (30.0, 32.0, 50.0, 192.0)
+# Displayed /Rect of the drawing-title annotation, by page /Rotate. The raw
+# rectangle is fixed; only the display transform changes the answer.
+_SHX_TITLE_DISPLAYED_BBOX = {
+    0: (40.0, 232.0, 60.0, 372.0),
+    90: (232.0, 552.0, 372.0, 572.0),
+    270: (420.0, 40.0, 560.0, 60.0),  # under the drawing on a rotated sheet
+}
+
+
+def _write_shx_title_source(
+    path: Path,
+    *,
+    rotation: int = 270,
+    author: str = "AutoCAD SHX Text",
+    hidden: bool = False,
+) -> None:
+    """Synthetic AutoCAD-style sheet whose titles exist only as SHX annotations.
+
+    The wall rectangle and the scale string are real content; no real text
+    contains "PLAN", so without the annotation pass the page cannot classify
+    as a floor plan.
+    """
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    wall_group = DictionaryObject({
+        NameObject("/Type"): NameObject("/OCG"),
+        NameObject("/Name"): TextStringObject("A-WALL"),
+    })
+    wall_ref = writer._add_object(wall_group)
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)}),
+        NameObject("/Properties"): DictionaryObject({NameObject("/WALL"): wall_ref}),
+    })
+    writer._root_object[NameObject("/OCProperties")] = DictionaryObject({
+        NameObject("/OCGs"): ArrayObject([wall_ref]),
+        NameObject("/D"): DictionaryObject({NameObject("/BaseState"): NameObject("/ON")}),
+    })
+    page[NameObject("/Rotate")] = NumberObject(rotation)
+    commands = [
+        "BT /F1 10 Tf 1 0 0 1 100 700 Tm (SCALE: 1/4\" = 1'-0\") Tj ET",
+        "/OC /WALL BDC",
+        "100 100 m 300 100 l S", "100 104 m 300 104 l S",
+        "100 100 m 100 500 l S", "104 100 m 104 500 l S",
+        "100 500 m 300 500 l S", "100 496 m 300 496 l S",
+        "300 100 m 300 500 l S", "296 100 m 296 500 l S",
+        "EMC",
+    ]
+    stream = DecodedStreamObject()
+    stream.set_data(("\n".join(commands) + "\n").encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+
+    for rect, contents in (
+        (_SHX_TITLE_RAW_RECT, "FIRST FLOOR PLAN"),
+        (_SHX_TITLE_BLOCK_RAW_RECT, "PROPOSED FLOOR PLAN"),
+    ):
+        annotation = DictionaryObject({
+            NameObject("/Type"): NameObject("/Annot"),
+            NameObject("/Subtype"): NameObject("/Square"),
+            NameObject("/T"): TextStringObject(author),
+            NameObject("/Contents"): TextStringObject(contents),
+            NameObject("/Rect"): ArrayObject([FloatObject(value) for value in rect]),
+        })
+        if hidden:
+            annotation[NameObject("/F")] = NumberObject(2)
+        reference = writer._add_object(annotation)
+        if "/Annots" in page:
+            page["/Annots"].append(reference)
+        else:
+            page[NameObject("/Annots")] = ArrayObject([reference])
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def _shx_text_observations(page_observations) -> tuple:
+    return tuple(
+        item
+        for item in page_observations.texts
+        if item.native_id is not None and item.native_id.endswith(":shx")
+    )
+
+
+@pytest.mark.parametrize("rotation", (0, 90, 270))
+def test_shx_annotation_titles_map_into_displayed_space(tmp_path: Path, rotation: int) -> None:
+    source = tmp_path / f"synthetic-shx-titles-rot{rotation}.pdf"
+    _write_shx_title_source(source, rotation=rotation)
+    assert not source.with_suffix(".expected.json").exists()
+
+    first = extract_pdf(source, source_id="fixture:shx-titles")
+    second = extract_pdf(source, source_id="fixture:shx-titles")
+
+    titles = [
+        item
+        for item in _shx_text_observations(first.pages[0])
+        if item.text == "FIRST FLOOR PLAN"
+    ]
+    assert len(titles) == 1
+    assert titles[0].bbox_pt == pytest.approx(
+        _SHX_TITLE_DISPLAYED_BBOX[rotation],
+        abs=1e-6,
+    )
+    # Determinism: element ids and geometry are stable across extractions.
+    assert [
+        (item.element_id, item.text, item.bbox_pt)
+        for item in _shx_text_observations(first.pages[0])
+    ] == [
+        (item.element_id, item.text, item.bbox_pt)
+        for item in _shx_text_observations(second.pages[0])
+    ]
+
+
+def test_shx_annotation_titles_classify_sheet_and_name_level(tmp_path: Path) -> None:
+    source = tmp_path / "synthetic-shx-titles-plan.pdf"
+    _write_shx_title_source(source, rotation=270)
+    extracted = extract_pdf(source, source_id="fixture:shx-titles-plan")
+    page = extracted.pages[0]
+
+    # The annotation rect maps under the drawing in displayed space, which
+    # only the /Rotate 270 mapping can produce.
+    titles = [
+        item
+        for item in _shx_text_observations(page)
+        if item.text == "FIRST FLOOR PLAN"
+    ]
+    assert len(titles) == 1
+    assert titles[0].bbox_pt == pytest.approx((420.0, 40.0, 560.0, 60.0), abs=1e-6)
+
+    assert classify_page(page).kind == "architectural_plan"
+    assert drawing_level_names(page) == ("First Floor",)
+
+    model = import_observations(extracted)
+    validate_model(model)
+    assert any(level.name == "First Floor" for level in model.levels)
+
+
+@pytest.mark.parametrize("author_hidden", (("Some Reviewer", False), ("AutoCAD SHX Text", True)))
+def test_non_shx_or_hidden_annotations_are_not_drawing_text(
+    tmp_path: Path,
+    author_hidden: tuple[str, bool],
+) -> None:
+    author, hidden = author_hidden
+    source = tmp_path / f"synthetic-shx-ignored-{hidden}.pdf"
+    _write_shx_title_source(source, rotation=0, author=author, hidden=hidden)
+
+    extracted = extract_pdf(source, source_id="fixture:shx-ignored")
+    page = extracted.pages[0]
+
+    assert _shx_text_observations(page) == ()
+    # Without the SHX titles the page never classifies as a floor plan.
+    assert classify_page(page).kind == "other"

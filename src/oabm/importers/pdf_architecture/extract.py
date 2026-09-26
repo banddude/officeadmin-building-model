@@ -16,6 +16,12 @@ import pdfplumber
 from pdfminer.pdfinterp import PDFPageInterpreter
 from pdfminer.pdftypes import PDFObjRef, resolve1
 from pdfplumber.page import PDFPageAggregatorWithMarkedContent, Page
+from pypdf import PdfReader
+
+from oabm.importers.pdf_display import (
+    SHX_TEXT_ANNOTATION_AUTHOR,
+    page_display_transform,
+)
 
 from .types import (
     PdfDocumentObservation,
@@ -113,6 +119,88 @@ def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ..
                     font_size_pt=median(font_sizes) if font_sizes else None,
                 )
             )
+    return tuple(result)
+
+
+def _annotation_string(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("latin-1")
+    return str(value)
+
+
+def _shx_annotation_texts(
+    reader_page: object,
+    page_number: int,
+    document: object,
+) -> tuple[PdfTextObservation, ...]:
+    """Read AutoCAD SHX text annotations as displayed-space text observations.
+
+    AutoCAD draws SHX-font strings as vector strokes, and its PDF export adds
+    one invisible /Square annotation per string so the text stays selectable.
+    For SHX sheets those annotations are the only text a drawing title, room
+    name, or note ever gets, so they are read as first-class text observations
+    in displayed, bottom-origin page space.
+
+    Only annotations authored by CAD SHX text are accepted - other authors,
+    other subtypes, hidden annotations, and annotations whose optional-content
+    group defaults to OFF are ignored, because reviewer markups are not
+    drawing text. The author string itself is never copied into an
+    observation.
+    """
+    display_transform = page_display_transform(reader_page)
+    annotations = reader_page.get("/Annots") or ()
+    result: list[PdfTextObservation] = []
+    for annotation_index, annotation_ref in enumerate(annotations, start=1):
+        try:
+            annotation = annotation_ref.get_object()
+        except AttributeError:
+            annotation = annotation_ref
+        if _annotation_string(annotation.get("/T")) != SHX_TEXT_ANNOTATION_AUTHOR:
+            continue
+        if _annotation_string(annotation.get("/Subtype")) != "/Square":
+            continue
+        contents = _annotation_string(annotation.get("/Contents")).strip()
+        if not contents:
+            continue
+        try:
+            if int(annotation.get("/F", 0)) & 2:  # flag bit 2: Hidden
+                continue
+        except (TypeError, ValueError):
+            continue
+        group = annotation.get("/OC")
+        if group is not None and not _optional_group_state(document, group):
+            continue
+        rect = annotation.get("/Rect")
+        if rect is None or len(rect) < 4:
+            continue
+        # /Rect corners may be reversed; normalize into displayed space.
+        corner_first = display_transform.apply(float(rect[0]), float(rect[1]))
+        corner_second = display_transform.apply(float(rect[2]), float(rect[3]))
+        bbox = (
+            min(corner_first[0], corner_second[0]),
+            min(corner_first[1], corner_second[1]),
+            max(corner_first[0], corner_second[0]),
+            max(corner_first[1], corner_second[1]),
+        )
+        text = " ".join(contents.split())
+        if not text:
+            continue
+        signature = (
+            f"shx|{text}|{bbox[0]:.3f}|{bbox[1]:.3f}|{bbox[2]:.3f}|{bbox[3]:.3f}"
+        )
+        font_size = min(bbox[2] - bbox[0], bbox[3] - bbox[1])
+        result.append(
+            PdfTextObservation(
+                element_id=_element_id("text", page_number, signature),
+                text=text,
+                bbox_pt=bbox,
+                native_id=f"annotation:{annotation_index:04d}:shx",
+                font_size_pt=font_size if font_size > 0 else None,
+            )
+        )
+    result.sort(key=lambda item: (item.bbox_pt, item.element_id))
     return tuple(result)
 
 
@@ -273,7 +361,14 @@ def _optional_group_state(document: object, group: object) -> bool:
     base = getattr(config.get("BaseState"), "name", "ON")
     if base not in {"ON", "OFF", "Unchanged"}:
         return False
-    group_id = group.objid if isinstance(group, PDFObjRef) else None
+    # The group ref may come from pdfminer (PDFObjRef.objid) or from the
+    # pypdf annotation pass (IndirectObject.idnum); both are object numbers
+    # in the same file, so they resolve against the same ON/OFF lists.
+    group_id = (
+        group.objid
+        if isinstance(group, PDFObjRef)
+        else getattr(group, "idnum", None)
+    )
     if group_id is None:
         return base == "ON" and not config.get("ON") and not config.get("OFF")
     on_ids = _reference_ids(config.get("ON", []))
@@ -368,6 +463,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
     logical_source_id = source_id or f"pdf:{_token(pdf_path.stem) or 'document'}"
 
     pages: list[PdfPageObservation] = []
+    reader = PdfReader(pdf_path)
     with pdfplumber.open(pdf_path) as document:
         for index, original_page in enumerate(document.pages, start=1):
             layered_page = _LayerPage(document, original_page.page_obj, index, original_page.initial_doctop)
@@ -383,7 +479,15 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                     page_number=index,
                     width_pt=float(page.width),
                     height_pt=float(page.height),
-                    texts=_group_words(page, index),
+                    texts=(
+                        *_group_words(page, index),
+                        # SHX text reaches the lane only through annotations.
+                        *_shx_annotation_texts(
+                            reader.pages[index - 1],
+                            index,
+                            document.doc,
+                        ),
+                    ),
                     lines=_unique_lines(
                         (
                             *(

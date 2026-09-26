@@ -45,6 +45,7 @@ from .drawing_regions import (
     split_drawing_regions,
 )
 from .extract import (
+    _is_wall_pattern_layer,
     _is_wall_source_layer,
     _rect_edge_segments,
     _wall_layer_rects,
@@ -282,6 +283,34 @@ class _PocheStripLeg:
     source_layers: tuple[str, ...]
     dashed: bool
     polygon_leg_count: int
+    triangle_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _PocheTrianglePiece:
+    """One poché fill rebuilt from a connected set of triangles.
+
+    Triangles are unioned through identical shared edges, so pieces that
+    only touch at a point or at a T-vertex stay separate.  ``outline_keys``
+    are the edges exactly one of the piece's triangles uses; ``interior_keys``
+    (shared diagonals and seams) are used by two.
+    """
+
+    edge_keys: tuple[tuple[tuple[float, float], tuple[float, float]], ...]
+    outline_keys: tuple[tuple[tuple[float, float], tuple[float, float]], ...]
+    interior_keys: tuple[tuple[tuple[float, float], tuple[float, float]], ...]
+    triangle_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PochePieceStats:
+    """Page-level counts for triangulated poché reconstruction."""
+
+    triangle_count: int = 0
+    piece_count: int = 0
+    piece_accepted_count: int = 0
+    piece_not_simple_count: int = 0
+    junction_fill_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -4506,64 +4535,120 @@ def _join_collinear_poche_legs(
             polygon_leg_count=(
                 leg.polygon_leg_count + other.polygon_leg_count
             ),
+            triangle_count=leg.triangle_count + other.triangle_count,
         )
     return tuple(joined)
 
 
-def _poche_strip_polygons(
-    lines: tuple[PdfLineObservation, ...],
-    transform: _Transform2D,
-    options: ImportOptions,
-    page_number: int,
-) -> tuple[tuple[_PocheStripLeg, ...], list[dict[str, object]], frozenset[str]]:
-    """Assemble filled closed polygons into wall-poché strips and wall legs.
+def _poche_edge_key(
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """One canonical segment key, endpoints rounded like a vertex key."""
 
-    A partition drawn as filled poché arrives as the edges of one closed
-    strip polygon.  Boundary runs that meet collinearly at a shared vertex
-    are joined, then runs are grouped where endpoints coincide.  A group is
-    a strip only when it forms one simple closed loop that is rectilinear:
-    each edge lies along, or across, whichever edge is longest, staying
-    inside the pairing angle tolerance.  A band split in the strip frame
-    cuts such a loop into rectangular legs, so straight, L, T, and U shapes
-    each resolve to one leg per wall.  A leg's long sides act as the wall
-    faces; their midline is the centerline and their spacing the thickness.
-    Legs of collinear strips that touch, or sit within the six-inch join
-    gap, merge into one wall, like collinear CAD segments in the pipeline.
-
-    Everything else fails closed with a code instead of guessing: not
-    rectilinear (a symbol), no elongated leg (a column, a solid), or a leg
-    width outside the wall-thickness range.  Returns accepted legs, the
-    ambiguity records, and every accepted strip's element ids, so the face
-    pairing cannot see that poché again as half of a phantom pair.
-    """
-    candidates = [
-        line
-        for line in lines
-        if line.filled and line.primitive_family in {"polyline", "rect"}
-    ]
-    if not candidates:
-        return (), [], frozenset()
-
-    runs = [
-        _PocheEdgeRun(
-            start_pt=first,
-            end_pt=second,
-            element_ids=(line.element_id,),
+    first, second = sorted(
+        (
+            (round(start[0], 6), round(start[1], 6)),
+            (round(end[0], 6), round(end[1], 6)),
         )
-        for line in candidates
-        for first, second in (_canonical_segment(line.start_pt, line.end_pt),)
-    ]
-    runs = _merge_touching_poche_runs(runs)
+    )
+    return (first, second)
 
-    def vertex_key(point: tuple[float, float]) -> tuple[float, float]:
-        return (round(point[0], 6), round(point[1], 6))
 
-    endpoint_runs: dict[tuple[float, float], list[int]] = {}
-    for index, run in enumerate(runs):
-        for point in (run.start_pt, run.end_pt):
-            endpoint_runs.setdefault(vertex_key(point), []).append(index)
+def _triangulated_poche_pieces(
+    lines: tuple[PdfLineObservation, ...],
+) -> tuple[
+    list[_PocheTrianglePiece],
+    dict[
+        tuple[tuple[float, float], tuple[float, float]],
+        tuple[PdfLineObservation, ...],
+    ],
+]:
+    """Group wall-pattern triangles into poché fill pieces.
 
-    parent = list(range(len(runs)))
+    A triangle is three of the passed wall-layer segments that close a
+    3-cycle on shared endpoints with non-zero area.  Every edge must carry a
+    wall-pattern layer and at least one edge must be a filled polyline or
+    rect edge: the extractor merges a triangle edge that coincides exactly
+    with an unfilled line on another layer, so not every edge of a drawn
+    triangle still arrives filled.  Triangles sharing an identical edge
+    union into one piece; pieces that touch only at a point, or whose
+    corner is a T-vertex on another triangle's edge, stay separate.
+    """
+
+    pattern_lines = sorted(
+        (
+            line
+            for line in lines
+            if any(_is_wall_pattern_layer(layer) for layer in line.source_layers)
+        ),
+        key=lambda item: item.element_id,
+    )
+    observations_by_key: dict[
+        tuple[tuple[float, float], tuple[float, float]],
+        list[PdfLineObservation],
+    ] = {}
+    for line in pattern_lines:
+        observations_by_key.setdefault(
+            _poche_edge_key(line.start_pt, line.end_pt), []
+        ).append(line)
+    if len(observations_by_key) < 3:
+        return [], {}
+
+    edges_at_vertex: dict[
+        tuple[float, float],
+        list[tuple[tuple[float, float], tuple[float, float]]],
+    ] = {}
+    for key in observations_by_key:
+        edges_at_vertex.setdefault(key[0], []).append(key)
+        edges_at_vertex.setdefault(key[1], []).append(key)
+
+    triangle_edges: dict[
+        tuple[tuple[float, float], ...],
+        tuple[tuple[tuple[float, float], tuple[float, float]], ...],
+    ] = {}
+    for vertex in sorted(edges_at_vertex):
+        incident = sorted(edges_at_vertex[vertex])
+        for first_position, first in enumerate(incident):
+            first_far = first[1] if first[0] == vertex else first[0]
+            for second in incident[first_position + 1 :]:
+                second_far = second[1] if second[0] == vertex else second[0]
+                if first_far == second_far:
+                    continue
+                closing = _poche_edge_key(first_far, second_far)
+                if closing not in observations_by_key:
+                    continue
+                corners = tuple(sorted((vertex, first_far, second_far)))
+                triangle_edges.setdefault(corners, (first, closing, second))
+    if not triangle_edges:
+        return [], {}
+
+    valid_triangles: list[
+        tuple[tuple[float, float], tuple[float, float], ...]
+    ] = []
+    for corners, keys in sorted(triangle_edges.items()):
+        (ax, ay), (bx, by), (cx, cy) = corners
+        if abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) <= 1e-9:
+            # Collinear corners enclose no area and are no triangle fill.
+            continue
+        if not any(
+            observation.filled
+            and observation.primitive_family in {"polyline", "rect"}
+            for key in keys
+            for observation in observations_by_key[key]
+        ):
+            continue
+        valid_triangles.append(keys)
+
+    key_owners: dict[
+        tuple[tuple[float, float], tuple[float, float]],
+        list[int],
+    ] = {}
+    for index, keys in enumerate(valid_triangles):
+        for key in keys:
+            key_owners.setdefault(key, []).append(index)
+
+    parent = list(range(len(valid_triangles)))
 
     def find(index: int) -> int:
         while parent[index] != index:
@@ -4576,249 +4661,642 @@ def _poche_strip_polygons(
         if first_root != second_root:
             parent[max(first_root, second_root)] = min(first_root, second_root)
 
-    for members in endpoint_runs.values():
-        for other in members[1:]:
-            union(members[0], other)
+    for owners in key_owners.values():
+        for other in owners[1:]:
+            union(owners[0], other)
 
-    components: dict[int, list[int]] = {}
-    for index in range(len(runs)):
-        components.setdefault(find(index), []).append(index)
+    groups: dict[int, list[int]] = {}
+    for index in range(len(valid_triangles)):
+        groups.setdefault(find(index), []).append(index)
 
+    pieces: list[_PocheTrianglePiece] = []
+    for root in sorted(groups):
+        members = sorted(groups[root])
+        use_counts: dict[
+            tuple[tuple[float, float], tuple[float, float]],
+            int,
+        ] = {}
+        for index in members:
+            for key in valid_triangles[index]:
+                use_counts[key] = use_counts.get(key, 0) + 1
+        pieces.append(
+            _PocheTrianglePiece(
+                edge_keys=tuple(sorted(use_counts)),
+                outline_keys=tuple(
+                    key
+                    for key, count in sorted(use_counts.items())
+                    if count == 1
+                ),
+                interior_keys=tuple(
+                    key
+                    for key, count in sorted(use_counts.items())
+                    if count > 1
+                ),
+                triangle_count=len(members),
+            )
+        )
+    frozen_observations = {
+        key: tuple(observations)
+        for key, observations in observations_by_key.items()
+    }
+    return pieces, frozen_observations
+
+
+def _outline_edges_cross(
+    first: tuple[tuple[float, float], tuple[float, float]],
+    second: tuple[tuple[float, float], tuple[float, float]],
+) -> bool:
+    """True when two outline edges cross or overlap collinearly.
+
+    Edges that only share an endpoint, or continue collinearly from it, are
+    ordinary loop neighbours.  An interior crossing, an edge ending in the
+    interior of the other, and a positive-length collinear overlap all make
+    the outline not one simple loop.
+    """
+
+    (ax, ay), (bx, by) = first
+    (cx, cy), (dx, dy) = second
+    r_x, r_y = bx - ax, by - ay
+    s_x, s_y = dx - cx, dy - cy
+    first_length = math.hypot(r_x, r_y)
+    second_length = math.hypot(s_x, s_y)
+    if first_length <= 1e-12 or second_length <= 1e-12:
+        return False
+    denominator = r_x * s_y - r_y * s_x
+    parallel_limit = math.sin(_POCHE_RECTILINEAR_TOLERANCE_RAD)
+    if abs(denominator) <= parallel_limit * first_length * second_length:
+        # Near-parallel: only a collinear overlap of positive length fails,
+        # and only where the edges really lie on one line.
+        offset = abs((cx - ax) * r_y - (cy - ay) * r_x) / first_length
+        if offset > 1e-3:
+            return False
+        first_span = ((cx - ax) * r_x + (cy - ay) * r_y) / (first_length**2)
+        second_span = ((dx - ax) * r_x + (dy - ay) * r_y) / (first_length**2)
+        low, high = sorted((first_span, second_span))
+        return min(1.0, high) - max(0.0, low) > 1e-9
+    t = ((cx - ax) * s_y - (cy - ay) * s_x) / denominator
+    u = ((cx - ax) * r_y - (cy - ay) * r_x) / denominator
+    if 1e-9 < t < 1.0 - 1e-9 and 1e-9 < u < 1.0 - 1e-9:
+        return True
+    interior_first = 1e-9 < t < 1.0 - 1e-9 and (
+        abs(u) <= 1e-9 or abs(u - 1.0) <= 1e-9
+    )
+    interior_second = 1e-9 < u < 1.0 - 1e-9 and (
+        abs(t) <= 1e-9 or abs(t - 1.0) <= 1e-9
+    )
+    return interior_first or interior_second
+
+
+def _outline_is_one_simple_loop(
+    outline_keys: tuple[tuple[tuple[float, float], tuple[float, float]], ...],
+) -> bool:
+    """Decide whether a piece's outline edges form exactly one simple loop.
+
+    One simple closed loop: every vertex meets exactly two outline edges,
+    the edges walk one connected cycle, and no two edges cross or overlap
+    collinearly.  A ring of poché around a room walks two cycles here and
+    fails, and overlapping or crossing fills fail on the geometric checks.
+    """
+
+    if len(outline_keys) < 3:
+        return False
+    incident: dict[tuple[float, float], list[int]] = {}
+    for index, key in enumerate(outline_keys):
+        for vertex in key:
+            incident.setdefault(vertex, []).append(index)
+    if len(incident) != len(outline_keys):
+        return False
+    if any(len(members) != 2 for members in incident.values()):
+        return False
+    start = min(incident)
+    walked_edges = 0
+    current = start
+    previous_edge = -1
+    while True:
+        step = next(
+            (index for index in incident[current] if index != previous_edge),
+            None,
+        )
+        if step is None:
+            return False
+        walked_edges += 1
+        key = outline_keys[step]
+        next_vertex = key[1] if key[0] == current else key[0]
+        if next_vertex == start:
+            break
+        current = next_vertex
+        previous_edge = step
+    if walked_edges != len(outline_keys):
+        return False
+    for first in range(len(outline_keys)):
+        for second in range(first + 1, len(outline_keys)):
+            if _outline_edges_cross(outline_keys[first], outline_keys[second]):
+                return False
+    return True
+
+
+def _poche_strip_loop_legs(
+    runs: list[_PocheEdgeRun],
+    member_ids: tuple[str, ...],
+    candidates: tuple[PdfLineObservation, ...],
+    transform: _Transform2D,
+    options: ImportOptions,
+    page_number: int,
+    rejections: list[dict[str, object]],
+    *,
+    triangle_count: int = 0,
+) -> tuple[list[_PocheStripLeg], int]:
+    """Gate one candidate poché loop and split it into rectangular legs.
+
+    ``runs`` are the collinear-merged boundary runs of one closed candidate,
+    ``member_ids`` every element id the loop owns (a triangulated piece also
+    owns its interior diagonals and seams), and ``candidates`` the source
+    observations those ids name.  The ring walk, rectilinear check, band
+    split, and elongation and thickness gates are the shared strip gates.
+    A loop that yields no leg records an ambiguity code, except a corner or
+    junction fill whose every span stays within the wall-thickness ceiling:
+    it only marks a wall junction and is counted, not recorded, so a
+    triangulated sheet does not emit one record per corner square.  Returns
+    the accepted legs and the junction-fill count.
+    """
+
+    member_set = set(member_ids)
+    member_layers = tuple(
+        sorted(
+            {
+                layer
+                for line in candidates
+                if line.element_id in member_set
+                for layer in line.source_layers
+            }
+        )
+    )
+    member_dashed = any(
+        line.dashed for line in candidates if line.element_id in member_set
+    )
+
+    def vertex_key(point: tuple[float, float]) -> tuple[float, float]:
+        return (round(point[0], 6), round(point[1], 6))
+
+    vertex_runs: dict[tuple[float, float], list[int]] = {}
+    for index, run in enumerate(runs):
+        for point in (run.start_pt, run.end_pt):
+            vertex_runs.setdefault(vertex_key(point), []).append(index)
+    if len(vertex_runs) != len(runs) or any(
+        len(indexes) != 2 for indexes in vertex_runs.values()
+    ):
+        # Not one simple closed loop (open chain, crossing strips, or a
+        # shared vertex); the generic face pairing keeps this evidence.
+        return [], 0
+
+    # Walk the cycle to order the polygon vertices.
+    ring: list[tuple[float, float]] = [min(vertex_runs)]
+    previous_run = -1
+    while True:
+        step = next(
+            (
+                index
+                for index in vertex_runs[ring[-1]]
+                if index != previous_run
+            ),
+            None,
+        )
+        if step is None:
+            break
+        run = runs[step]
+        next_key = vertex_key(
+            run.end_pt
+            if vertex_key(run.start_pt) == ring[-1]
+            else run.start_pt
+        )
+        if next_key == ring[0]:
+            break
+        ring.append(next_key)
+        previous_run = step
+    if len(ring) != len(runs):
+        return [], 0
+
+    # The strip frame rests on the loop's longest edge.
+    corner_count = len(ring)
+    longest = max(
+        range(corner_count),
+        key=lambda index: math.dist(
+            ring[index], ring[(index + 1) % corner_count]
+        ),
+    )
+    dx = ring[(longest + 1) % corner_count][0] - ring[longest][0]
+    dy = ring[(longest + 1) % corner_count][1] - ring[longest][1]
+    edge_length = math.hypot(dx, dy)
+    if edge_length <= _POCHE_VERTEX_TOLERANCE_PT:
+        return [], 0
+    ux, uy = dx / edge_length, dy / edge_length
+    nx, ny = -uy, ux
+    sin_tolerance = math.sin(_POCHE_RECTILINEAR_TOLERANCE_RAD)
+    rectilinear = True
+    for index in range(corner_count):
+        span_x = ring[(index + 1) % corner_count][0] - ring[index][0]
+        span_y = ring[(index + 1) % corner_count][1] - ring[index][1]
+        along = span_x * ux + span_y * uy
+        across = span_x * nx + span_y * ny
+        if abs(along) > sin_tolerance and abs(across) > sin_tolerance:
+            rectilinear = False
+            break
+    if not rectilinear:
+        rejections.append(
+            {
+                "page": page_number,
+                "code": "poche_polygon_not_rectilinear",
+                "detail": (
+                    "a filled closed polygon on a wall layer is not a "
+                    "rectilinear strip; it stays unresolved wall evidence"
+                ),
+                "polygon_edge_count": corner_count,
+            }
+        )
+        return [], 0
+
+    frame = [
+        (point[0] * ux + point[1] * uy, point[0] * nx + point[1] * ny)
+        for point in ring
+    ]
+    levels = sorted({round(point[1], 6) for point in frame})
+    verticals = []
+    for index in range(corner_count):
+        first, second = frame[index], frame[(index + 1) % corner_count]
+        if abs(first[0] - second[0]) <= _POCHE_VERTEX_TOLERANCE_PT:
+            verticals.append(
+                (first[0], min(first[1], second[1]), max(first[1], second[1]))
+            )
+    band_legs: list[list[float]] = []
+    open_legs: dict[tuple[float, float], list[float]] = {}
+    for y_low, y_high in zip(levels, levels[1:]):
+        if y_high - y_low <= _POCHE_VERTEX_TOLERANCE_PT:
+            continue
+        crossings = sorted(
+            x
+            for x, low, high in verticals
+            if low <= y_low + _POCHE_VERTEX_TOLERANCE_PT
+            and high >= y_high - _POCHE_VERTEX_TOLERANCE_PT
+        )
+        band_keys: set[tuple[float, float]] = set()
+        for position in range(0, len(crossings) - 1, 2):
+            x_a, x_b = crossings[position], crossings[position + 1]
+            if x_b - x_a <= _POCHE_VERTEX_TOLERANCE_PT:
+                continue
+            key = (round(x_a, 6), round(x_b, 6))
+            band_keys.add(key)
+            existing = open_legs.pop(key, None)
+            if existing is not None and (
+                abs(existing[3] - y_low) <= _POCHE_VERTEX_TOLERANCE_PT
+            ):
+                existing[3] = y_high
+                open_legs[key] = existing
+            else:
+                if existing is not None:
+                    band_legs.append(existing)
+                open_legs[key] = [x_a, x_b, y_low, y_high]
+        for key in [key for key in open_legs if key not in band_keys]:
+            band_legs.append(open_legs.pop(key))
+    band_legs.extend(open_legs.values())
+
+    polygon_legs: list[_PocheStripLeg] = []
+    saw_not_elongated = False
+    saw_out_of_range = False
+    measured_legs: list[list[float]] = []
+    meters_per_point = transform.meters_per_point
+    for x_a, x_b, y_low, y_high in sorted(band_legs):
+        span_x = x_b - x_a
+        span_y = y_high - y_low
+        thickness_m = min(span_x, span_y) * meters_per_point
+        length_m = max(span_x, span_y) * meters_per_point
+        elongated = (
+            length_m >= _POCHE_MIN_LEG_LENGTH_M
+            and length_m >= _POCHE_MIN_ELONGATION_RATIO * thickness_m
+        )
+        in_range = (
+            options.min_wall_thickness_m - 1e-9
+            <= thickness_m
+            <= options.max_wall_thickness_m + 1e-9
+        )
+        measured_legs.append([round(thickness_m, 6), round(length_m, 6)])
+        if not elongated:
+            saw_not_elongated = True
+        if not in_range:
+            saw_out_of_range = True
+        if not (elongated and in_range):
+            continue
+        if span_x >= span_y:
+            first_frame = (x_a, (y_low + y_high) / 2.0)
+            second_frame = (x_b, (y_low + y_high) / 2.0)
+        else:
+            first_frame = ((x_a + x_b) / 2.0, y_low)
+            second_frame = ((x_a + x_b) / 2.0, y_high)
+        polygon_legs.append(
+            _PocheStripLeg(
+                start_pt=(
+                    first_frame[0] * ux + first_frame[1] * nx,
+                    first_frame[0] * uy + first_frame[1] * ny,
+                ),
+                end_pt=(
+                    second_frame[0] * ux + second_frame[1] * nx,
+                    second_frame[0] * uy + second_frame[1] * ny,
+                ),
+                thickness_m=thickness_m,
+                length_m=length_m,
+                element_ids=member_ids,
+                source_layers=member_layers,
+                dashed=member_dashed,
+                polygon_leg_count=0,
+                triangle_count=triangle_count,
+            )
+        )
+    if not polygon_legs:
+        thickness_ceiling = options.max_wall_thickness_m + 1e-9
+        if all(
+            span[0] <= thickness_ceiling and span[1] <= thickness_ceiling
+            for span in measured_legs
+        ):
+            # A corner or junction fill: both spans of every leg stay inside
+            # the wall-thickness ceiling, so the fill only marks a wall
+            # junction and is counted in the diagnostics, not recorded.
+            return [], 1
+        if saw_not_elongated:
+            code = "poche_strip_not_elongated"
+            detail = (
+                "a filled closed polygon on a wall layer has no elongated "
+                "strip leg; it is not wall evidence"
+            )
+        else:
+            code = "poche_strip_thickness_out_of_range"
+            detail = (
+                "a filled closed strip polygon on a wall layer has a "
+                "width outside the wall-thickness range; it is not wall "
+                "evidence"
+            )
+        rejections.append(
+            {
+                "page": page_number,
+                "code": code,
+                "detail": detail,
+                "leg_thickness_and_length_m": sorted(measured_legs),
+            }
+        )
+        return [], 0
+    return (
+        [
+            replace(leg, polygon_leg_count=len(polygon_legs))
+            for leg in polygon_legs
+        ],
+        0,
+    )
+
+
+def _poche_strip_polygons(
+    lines: tuple[PdfLineObservation, ...],
+    transform: _Transform2D,
+    options: ImportOptions,
+    page_number: int,
+) -> tuple[
+    tuple[_PocheStripLeg, ...],
+    list[dict[str, object]],
+    frozenset[str],
+    _PochePieceStats,
+]:
+    """Assemble filled poché into wall strips and wall legs.
+
+    Poché often arrives triangulated: a strip is filled as separate filled
+    triangles, and the extractor merges identical segments, so a shared
+    diagonal or seam arrives once and no closed polygon is left for the
+    loop walk.  Wall-pattern triangles are therefore rebuilt into pieces
+    first, and each piece is processed on its own.  A piece whose outline
+    is one simple closed loop runs the shared strip gates — the collinear
+    merge, the ring walk, the rectilinear check, the band split, and the
+    elongation and thickness gates — and an accepted piece is consumed
+    whole, outline and interior, so no part of it re-enters the face
+    pairing.  A piece whose outline is not one simple loop (a hole such as
+    a ring of poché around a room, or fills that overlap or cross) records
+    ``poche_polygon_not_simple`` and only its interior edges are consumed:
+    its outline edges stay wall evidence for the face pairing, and a
+    triangulation diagonal must never become a wall face.  Pieces that fail
+    the gates keep the existing codes, with corner and junction fills only
+    counted.  Filled edges that belong to no triangle keep the original
+    closed-polygon path, and legs of all pieces join collinearly as before.
+
+    Everything else fails closed with a code instead of guessing: not
+    rectilinear (a symbol), no elongated leg (a column, a solid), or a leg
+    width outside the wall-thickness range.  Returns accepted legs, the
+    ambiguity records, every consumed strip's element ids, and the piece
+    counts, so the face pairing cannot see consumed poché again as half of
+    a phantom pair.
+    """
     legs: list[_PocheStripLeg] = []
     rejections: list[dict[str, object]] = []
     consumed: set[str] = set()
-    meters_per_point = transform.meters_per_point
-    sin_tolerance = math.sin(_POCHE_RECTILINEAR_TOLERANCE_RAD)
-    for root in sorted(components):
-        members = sorted(components[root])
-        if len(members) < 3:
-            continue
-        vertex_runs: dict[tuple[float, float], list[int]] = {}
-        for index in members:
-            for point in (runs[index].start_pt, runs[index].end_pt):
-                vertex_runs.setdefault(vertex_key(point), []).append(index)
-        if len(vertex_runs) != len(members) or any(
-            len(indexes) != 2 for indexes in vertex_runs.values()
-        ):
-            # Not one simple closed loop (open chain, crossing strips, or a
-            # shared vertex); the generic face pairing keeps this evidence.
-            continue
+    junction_fill_count = 0
 
-        # Walk the cycle to order the polygon vertices.
-        ring: list[tuple[float, float]] = [min(vertex_runs)]
-        previous_run = -1
-        while True:
-            step = next(
-                (
-                    index
-                    for index in vertex_runs[ring[-1]]
-                    if index != previous_run
-                ),
-                None,
+    pieces, piece_observations = _triangulated_poche_pieces(lines)
+    piece_edge_ids: set[str] = set()
+    for piece in pieces:
+        for key in piece.edge_keys:
+            piece_edge_ids.update(
+                observation.element_id
+                for observation in piece_observations.get(key, ())
             )
-            if step is None:
-                break
-            run = runs[step]
-            next_key = vertex_key(
-                run.end_pt
-                if vertex_key(run.start_pt) == ring[-1]
-                else run.start_pt
-            )
-            if next_key == ring[0]:
-                break
-            ring.append(next_key)
-            previous_run = step
-        if len(ring) != len(members):
-            continue
+    piece_stats = _PochePieceStats(
+        triangle_count=sum(piece.triangle_count for piece in pieces),
+        piece_count=len(pieces),
+    )
 
-        # The strip frame rests on the loop's longest edge.
-        corner_count = len(ring)
-        longest = max(
-            range(corner_count),
-            key=lambda index: math.dist(
-                ring[index], ring[(index + 1) % corner_count]
-            ),
-        )
-        dx = ring[(longest + 1) % corner_count][0] - ring[longest][0]
-        dy = ring[(longest + 1) % corner_count][1] - ring[longest][1]
-        edge_length = math.hypot(dx, dy)
-        if edge_length <= _POCHE_VERTEX_TOLERANCE_PT:
-            continue
-        ux, uy = dx / edge_length, dy / edge_length
-        nx, ny = -uy, ux
-        rectilinear = True
-        for index in range(corner_count):
-            span_x = ring[(index + 1) % corner_count][0] - ring[index][0]
-            span_y = ring[(index + 1) % corner_count][1] - ring[index][1]
-            along = span_x * ux + span_y * uy
-            across = span_x * nx + span_y * ny
-            if abs(along) > sin_tolerance and abs(across) > sin_tolerance:
-                rectilinear = False
-                break
-        if not rectilinear:
+    for piece in sorted(pieces, key=lambda item: item.edge_keys):
+        if not _outline_is_one_simple_loop(piece.outline_keys):
+            piece_stats = replace(
+                piece_stats,
+                piece_not_simple_count=piece_stats.piece_not_simple_count + 1,
+            )
             rejections.append(
                 {
                     "page": page_number,
-                    "code": "poche_polygon_not_rectilinear",
+                    "code": "poche_polygon_not_simple",
                     "detail": (
-                        "a filled closed polygon on a wall layer is not a "
-                        "rectilinear strip; it stays unresolved wall evidence"
+                        "a triangulated poché piece's outline is not one "
+                        "simple closed loop (a hole, or overlapping or "
+                        "crossing fills); only its interior edges stay "
+                        "consumed and its outline stays wall evidence"
                     ),
-                    "polygon_edge_count": corner_count,
+                    "poche_triangle_count": piece.triangle_count,
                 }
             )
-            continue
-
-        frame = [
-            (point[0] * ux + point[1] * uy, point[0] * nx + point[1] * ny)
-            for point in ring
-        ]
-        levels = sorted({round(point[1], 6) for point in frame})
-        verticals = []
-        for index in range(corner_count):
-            first, second = frame[index], frame[(index + 1) % corner_count]
-            if abs(first[0] - second[0]) <= _POCHE_VERTEX_TOLERANCE_PT:
-                verticals.append(
-                    (first[0], min(first[1], second[1]), max(first[1], second[1]))
+            for key in piece.interior_keys:
+                consumed.update(
+                    observation.element_id
+                    for observation in piece_observations.get(key, ())
                 )
-        band_legs: list[list[float]] = []
-        open_legs: dict[tuple[float, float], list[float]] = {}
-        for y_low, y_high in zip(levels, levels[1:]):
-            if y_high - y_low <= _POCHE_VERTEX_TOLERANCE_PT:
-                continue
-            crossings = sorted(
-                x
-                for x, low, high in verticals
-                if low <= y_low + _POCHE_VERTEX_TOLERANCE_PT
-                and high >= y_high - _POCHE_VERTEX_TOLERANCE_PT
+            continue
+        runs = _merge_touching_poche_runs(
+            [
+                _PocheEdgeRun(
+                    start_pt=key[0],
+                    end_pt=key[1],
+                    element_ids=(piece_observations[key][0].element_id,),
+                )
+                for key in piece.outline_keys
+            ]
+        )
+        piece_observations_by_id = {
+            observation.element_id: observation
+            for key in piece.edge_keys
+            for observation in piece_observations.get(key, ())
+        }
+        member_ids = tuple(sorted(piece_observations_by_id))
+        piece_legs, fills = _poche_strip_loop_legs(
+            runs,
+            member_ids,
+            tuple(piece_observations_by_id.values()),
+            transform,
+            options,
+            page_number,
+            rejections,
+            triangle_count=piece.triangle_count,
+        )
+        junction_fill_count += fills
+        if piece_legs:
+            piece_stats = replace(
+                piece_stats,
+                piece_accepted_count=piece_stats.piece_accepted_count + 1,
             )
-            band_keys: set[tuple[float, float]] = set()
-            for position in range(0, len(crossings) - 1, 2):
-                x_a, x_b = crossings[position], crossings[position + 1]
-                if x_b - x_a <= _POCHE_VERTEX_TOLERANCE_PT:
-                    continue
-                key = (round(x_a, 6), round(x_b, 6))
-                band_keys.add(key)
-                existing = open_legs.pop(key, None)
-                if existing is not None and (
-                    abs(existing[3] - y_low) <= _POCHE_VERTEX_TOLERANCE_PT
-                ):
-                    existing[3] = y_high
-                    open_legs[key] = existing
-                else:
-                    if existing is not None:
-                        band_legs.append(existing)
-                    open_legs[key] = [x_a, x_b, y_low, y_high]
-            for key in [key for key in open_legs if key not in band_keys]:
-                band_legs.append(open_legs.pop(key))
-        band_legs.extend(open_legs.values())
+            legs.extend(piece_legs)
+            consumed.update(member_ids)
 
-        member_runs = [runs[index] for index in members]
-        member_ids = tuple(
-            sorted(
-                {
-                    element_id
-                    for run in member_runs
-                    for element_id in run.element_ids
-                }
+    def vertex_key(point: tuple[float, float]) -> tuple[float, float]:
+        return (round(point[0], 6), round(point[1], 6))
+
+    remaining = tuple(
+        line for line in lines if line.element_id not in piece_edge_ids
+    )
+    candidates = [
+        line
+        for line in remaining
+        if line.filled and line.primitive_family in {"polyline", "rect"}
+    ]
+    if candidates:
+        runs = [
+            _PocheEdgeRun(
+                start_pt=first,
+                end_pt=second,
+                element_ids=(line.element_id,),
             )
-        )
-        member_layers = tuple(
-            sorted(
-                {
-                    layer
-                    for line in candidates
-                    if line.element_id in set(member_ids)
-                    for layer in line.source_layers
-                }
-            )
-        )
-        member_dashed = any(
-            line.dashed
             for line in candidates
-            if line.element_id in set(member_ids)
-        )
+            for first, second in (_canonical_segment(line.start_pt, line.end_pt),)
+        ]
+        runs = _merge_touching_poche_runs(runs)
 
-        polygon_legs: list[_PocheStripLeg] = []
-        saw_not_elongated = False
-        saw_out_of_range = False
-        measured_legs: list[list[float]] = []
-        for x_a, x_b, y_low, y_high in sorted(band_legs):
-            span_x = x_b - x_a
-            span_y = y_high - y_low
-            thickness_m = min(span_x, span_y) * meters_per_point
-            length_m = max(span_x, span_y) * meters_per_point
-            elongated = (
-                length_m >= _POCHE_MIN_LEG_LENGTH_M
-                and length_m >= _POCHE_MIN_ELONGATION_RATIO * thickness_m
-            )
-            in_range = (
-                options.min_wall_thickness_m - 1e-9
-                <= thickness_m
-                <= options.max_wall_thickness_m + 1e-9
-            )
-            measured_legs.append([round(thickness_m, 6), round(length_m, 6)])
-            if not elongated:
-                saw_not_elongated = True
-            if not in_range:
-                saw_out_of_range = True
-            if not (elongated and in_range):
+        endpoint_runs: dict[tuple[float, float], list[int]] = {}
+        for index, run in enumerate(runs):
+            for point in (run.start_pt, run.end_pt):
+                endpoint_runs.setdefault(vertex_key(point), []).append(index)
+
+        parent = list(range(len(runs)))
+
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        def union(first: int, second: int) -> None:
+            first_root, second_root = find(first), find(second)
+            if first_root != second_root:
+                parent[max(first_root, second_root)] = min(first_root, second_root)
+
+        for members in endpoint_runs.values():
+            for other in members[1:]:
+                union(members[0], other)
+
+        components: dict[int, list[int]] = {}
+        for index in range(len(runs)):
+            components.setdefault(find(index), []).append(index)
+
+        for root in sorted(components):
+            members = sorted(components[root])
+            if len(members) < 3:
                 continue
-            if span_x >= span_y:
-                first_frame = (x_a, (y_low + y_high) / 2.0)
-                second_frame = (x_b, (y_low + y_high) / 2.0)
-            else:
-                first_frame = ((x_a + x_b) / 2.0, y_low)
-                second_frame = ((x_a + x_b) / 2.0, y_high)
-            polygon_legs.append(
-                _PocheStripLeg(
-                    start_pt=(
-                        first_frame[0] * ux + first_frame[1] * nx,
-                        first_frame[0] * uy + first_frame[1] * ny,
-                    ),
-                    end_pt=(
-                        second_frame[0] * ux + second_frame[1] * nx,
-                        second_frame[0] * uy + second_frame[1] * ny,
-                    ),
-                    thickness_m=thickness_m,
-                    length_m=length_m,
-                    element_ids=member_ids,
-                    source_layers=member_layers,
-                    dashed=member_dashed,
-                    polygon_leg_count=0,
+            member_ids = tuple(
+                sorted(
+                    {
+                        element_id
+                        for index in members
+                        for element_id in runs[index].element_ids
+                    }
                 )
             )
-        if not polygon_legs:
-            if saw_not_elongated:
-                code = "poche_strip_not_elongated"
-                detail = (
-                    "a filled closed polygon on a wall layer has no elongated "
-                    "strip leg; it is not wall evidence"
-                )
-            else:
-                code = "poche_strip_thickness_out_of_range"
-                detail = (
-                    "a filled closed strip polygon on a wall layer has a "
-                    "width outside the wall-thickness range; it is not wall "
-                    "evidence"
-                )
-            rejections.append(
-                {
-                    "page": page_number,
-                    "code": code,
-                    "detail": detail,
-                    "leg_thickness_and_length_m": sorted(measured_legs),
-                }
+            component_legs, fills = _poche_strip_loop_legs(
+                [runs[index] for index in members],
+                member_ids,
+                candidates,
+                transform,
+                options,
+                page_number,
+                rejections,
             )
-            continue
-        legs.extend(
-            replace(leg, polygon_leg_count=len(polygon_legs))
-            for leg in polygon_legs
-        )
-        consumed.update(member_ids)
-    legs = list(_join_collinear_poche_legs(tuple(legs), transform))
-    legs.sort(key=lambda leg: (leg.start_pt, leg.end_pt))
-    return tuple(legs), rejections, frozenset(consumed)
+            junction_fill_count += fills
+            if component_legs:
+                legs.extend(component_legs)
+                consumed.update(member_ids)
+    piece_stats = replace(
+        piece_stats, junction_fill_count=junction_fill_count
+    )
+
+    joined = list(_join_collinear_poche_legs(tuple(legs), transform))
+    joined.sort(key=lambda leg: (leg.start_pt, leg.end_pt))
+    return tuple(joined), rejections, frozenset(consumed), piece_stats
+
+
+def _pair_ends_on_poche_leg(
+    pair: _WallFacePair,
+    legs: tuple[_PocheStripLeg, ...],
+    transform: _Transform2D,
+) -> bool:
+    """Decide whether a partial pair ends on an accepted poché leg.
+
+    One of the pair's endpoints must lie within the twelve-inch junction
+    tolerance of the leg's rectangle (the centerline, ± half the thickness,
+    over its length) while the leg crosses the pair at fifteen degrees or
+    more, the same crossing an endpoint junction of drawn wall faces needs.
+    """
+
+    if not legs:
+        return False
+    dx = pair.end_pt[0] - pair.start_pt[0]
+    dy = pair.end_pt[1] - pair.start_pt[1]
+    length = math.hypot(dx, dy)
+    if length <= 1e-12:
+        return False
+    vx, vy = dx / length, dy / length
+    minimum_cross = math.sin(math.radians(15.0))
+    junction_tolerance_pt = (12.0 * _INCH_M) / transform.meters_per_point
+    for endpoint in (pair.start_pt, pair.end_pt):
+        for leg in legs:
+            leg_dx = leg.end_pt[0] - leg.start_pt[0]
+            leg_dy = leg.end_pt[1] - leg.start_pt[1]
+            leg_length_sq = leg_dx * leg_dx + leg_dy * leg_dy
+            if leg_length_sq <= 1e-12:
+                continue
+            if abs(vx * leg_dy - vy * leg_dx) < minimum_cross:
+                continue
+            t = (
+                (endpoint[0] - leg.start_pt[0]) * leg_dx
+                + (endpoint[1] - leg.start_pt[1]) * leg_dy
+            ) / leg_length_sq
+            t = max(0.0, min(1.0, t))
+            qx = leg.start_pt[0] + t * leg_dx
+            qy = leg.start_pt[1] + t * leg_dy
+            distance = (
+                math.hypot(endpoint[0] - qx, endpoint[1] - qy)
+                - leg.thickness_m / (2.0 * transform.meters_per_point)
+            )
+            if max(0.0, distance) <= junction_tolerance_pt:
+                return True
+    return False
 
 
 def _geometric_wall_loop_entities(
@@ -4878,7 +5356,12 @@ def _geometric_wall_loop_entities(
             "detail": "hidden wall-layer geometry was excluded; visible wall evidence is insufficient",
         })
         return (), (), diagnostics
-    poche_legs, poche_rejections, poche_strip_edge_ids = _poche_strip_polygons(
+    (
+        poche_legs,
+        poche_rejections,
+        poche_strip_edge_ids,
+        poche_piece_stats,
+    ) = _poche_strip_polygons(
         explicit_wall_lines,
         transform,
         options,
@@ -4991,11 +5474,24 @@ def _geometric_wall_loop_entities(
         * transform.meters_per_point
         < partial_min_length_m
     }
+    # Line-drawn partitions often end on a poché wall: once the strips are
+    # consumed as walls, their edges no longer give those partitions an
+    # endpoint junction.  A partial pair still counts as junction supported
+    # when one of its endpoints lies within the junction tolerance of an
+    # accepted poché leg's rectangle while the leg crosses the pair like a
+    # wall would.
+    poche_junction_pair_indexes = {
+        index
+        for index in sorted(partial_pair_indexes)
+        if not pairs[index].junction_supported
+        and _pair_ends_on_poche_leg(pairs[index], poche_legs, transform)
+    }
     no_junction_partial_pair_indexes = {
         index
         for index in partial_pair_indexes
         if index not in short_partial_pair_indexes
         and not pairs[index].junction_supported
+        and index not in poche_junction_pair_indexes
     }
     evidence_supported_partial_pair_indexes = (
         partial_pair_indexes
@@ -5086,6 +5582,14 @@ def _geometric_wall_loop_entities(
                 "of parallel PDF wall faces after joining collinear source segments; "
                 "no closed enclosure was proven"
             )
+        pair_junction_supported = (
+            pair.junction_supported or index in poche_junction_pair_indexes
+        )
+        junction_source_attributes = (
+            {"junction_source": "poche_leg"}
+            if index in poche_junction_pair_indexes
+            else {}
+        )
 
         wall = Wall(
             id=wall_id,
@@ -5107,13 +5611,16 @@ def _geometric_wall_loop_entities(
                     confidence=wall_confidence,
                     source_element_id="+".join(pair.source_element_ids),
                     attributes={
-                        "source_boundaries": list(pair.source_element_ids),
-                        "geometry_anchor": pair.geometry_anchor,
-                        "primitive_families": list(pair.primitive_families),
-                        "dashed_source": pair.dashed,
-                        "junction_supported": pair.junction_supported,
-                        "closed_loop": index in loop_pair_indexes,
-                        "source_layers": source_layer_names,
+                        **{
+                            "source_boundaries": list(pair.source_element_ids),
+                            "geometry_anchor": pair.geometry_anchor,
+                            "primitive_families": list(pair.primitive_families),
+                            "dashed_source": pair.dashed,
+                            "junction_supported": pair_junction_supported,
+                            "closed_loop": index in loop_pair_indexes,
+                            "source_layers": source_layer_names,
+                        },
+                        **junction_source_attributes,
                     },
                 )
                 + _level_measurement_provenance(
@@ -5124,14 +5631,17 @@ def _geometric_wall_loop_entities(
             ),
             attributes={
                 "pdf_architecture": {
-                    "recognition": recognition,
-                    "geometry_anchor": pair.geometry_anchor,
-                    "source_boundaries": list(pair.source_element_ids),
-                    "primitive_families": list(pair.primitive_families),
-                    "dashed_source": pair.dashed,
-                    "junction_supported": pair.junction_supported,
-                    "closed_loop": index in loop_pair_indexes,
-                    "source_layers": source_layer_names,
+                    **{
+                        "recognition": recognition,
+                        "geometry_anchor": pair.geometry_anchor,
+                        "source_boundaries": list(pair.source_element_ids),
+                        "primitive_families": list(pair.primitive_families),
+                        "dashed_source": pair.dashed,
+                        "junction_supported": pair_junction_supported,
+                        "closed_loop": index in loop_pair_indexes,
+                        "source_layers": source_layer_names,
+                    },
+                    **junction_source_attributes,
                 }
             },
         )
@@ -5175,6 +5685,18 @@ def _geometric_wall_loop_entities(
         )
         wall_id = stable_id("wall", wall_identity)
         wall_confidence = min(transform.confidence, height_confidence, 0.78)
+        if leg.triangle_count > 0:
+            leg_method = (
+                "wall centerline from a filled poché strip's parallel faces; "
+                "the strip was rebuilt from a triangulated fill and split "
+                "into rectangular legs at its corners"
+            )
+        else:
+            leg_method = (
+                "wall centerline from a filled poché strip's parallel "
+                "faces; the closed strip polygon was split into "
+                "rectangular legs at its corners"
+            )
         wall = Wall(
             id=wall_id,
             level_id=level.id,
@@ -5191,11 +5713,7 @@ def _geometric_wall_loop_entities(
                 _provenance(
                     source_id,
                     page.page_number,
-                    method=(
-                        "wall centerline from a filled poché strip's parallel "
-                        "faces; the closed strip polygon was split into "
-                        "rectangular legs at its corners"
-                    ),
+                    method=leg_method,
                     confidence=wall_confidence,
                     source_element_id="+".join(leg.element_ids),
                     attributes={
@@ -5208,6 +5726,7 @@ def _geometric_wall_loop_entities(
                         "source_layers": list(leg.source_layers),
                         "poche_leg_count": leg.polygon_leg_count,
                         "poche_leg_length_m": round(leg.length_m, 6),
+                        "poche_triangle_count": leg.triangle_count,
                     },
                 )
                 + _level_measurement_provenance(
@@ -5228,6 +5747,7 @@ def _geometric_wall_loop_entities(
                     "source_layers": list(leg.source_layers),
                     "poche_leg_count": leg.polygon_leg_count,
                     "poche_leg_length_m": round(leg.length_m, 6),
+                    "poche_triangle_count": leg.triangle_count,
                 }
             },
         )
@@ -5241,6 +5761,17 @@ def _geometric_wall_loop_entities(
     diagnostics["poche_strip_leg_count"] = len(poche_legs)
     diagnostics["poche_strip_wall_count"] = poche_wall_count
     diagnostics["poche_strip_rejected_count"] = len(poche_rejections)
+    diagnostics["poche_triangle_count"] = poche_piece_stats.triangle_count
+    diagnostics["poche_piece_count"] = poche_piece_stats.piece_count
+    diagnostics["poche_piece_accepted_count"] = (
+        poche_piece_stats.piece_accepted_count
+    )
+    diagnostics["poche_piece_not_simple_count"] = (
+        poche_piece_stats.piece_not_simple_count
+    )
+    diagnostics["poche_junction_fill_count"] = (
+        poche_piece_stats.junction_fill_count
+    )
 
     for loop_indexes, polygon_xy, _ in loops:
         wall_ids: list[str] = []

@@ -2897,3 +2897,192 @@ def test_non_shx_or_hidden_annotations_are_not_drawing_text(
     assert _shx_text_observations(page) == ()
     # Without the SHX titles the page never classifies as a floor plan.
     assert classify_page(page).kind == "other"
+
+
+def _write_line_art_source(
+    path: Path,
+    segments: tuple[tuple[tuple[float, float], tuple[float, float]], ...],
+) -> None:
+    """Synthetic CAD-like source PDF made only of straight line segments."""
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)}),
+    })
+    commands = [
+        "BT /F1 10 Tf 1 0 0 1 25 740 Tm (A310 FLOOR PLAN) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 25 722 Tm (SCALE: 1:100) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 25 708 Tm (LEVEL: GROUND) Tj ET",
+    ]
+    for (start_x, start_y), (end_x, end_y) in segments:
+        commands.append(
+            f"{start_x:.3f} {start_y:.3f} m {end_x:.3f} {end_y:.3f} l S"
+        )
+    stream = DecodedStreamObject()
+    stream.set_data(("\n".join(commands) + "\n").encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def _orthogonal_room_segments() -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+    thickness_pt = 0.15 / (100.0 * 0.0254 / 72.0)
+    return (
+        ((40.0, 40.0), (300.0, 40.0)),
+        ((300.0, 40.0), (300.0, 200.0)),
+        ((300.0, 200.0), (40.0, 200.0)),
+        ((40.0, 200.0), (40.0, 40.0)),
+        ((40.0 + thickness_pt, 40.0 + thickness_pt), (300.0 - thickness_pt, 40.0 + thickness_pt)),
+        ((300.0 - thickness_pt, 40.0 + thickness_pt), (300.0 - thickness_pt, 200.0 - thickness_pt)),
+        ((300.0 - thickness_pt, 200.0 - thickness_pt), (40.0 + thickness_pt, 200.0 - thickness_pt)),
+        ((40.0 + thickness_pt, 200.0 - thickness_pt), (40.0 + thickness_pt, 40.0 + thickness_pt)),
+    )
+
+
+def test_diagonal_hatch_family_is_not_wall_faces_but_room_loop_is(tmp_path: Path) -> None:
+    meters_per_point = 100.0 * 0.0254 / 72.0
+    thickness_pt = 0.15 / meters_per_point
+    step_pt = thickness_pt * math.sqrt(2.0)
+    lengths = (120.0, 100.0, 110.0, 95.0, 105.0, 115.0, 90.0, 100.0)
+    hatch = tuple(
+        (
+            (40.0 + thickness_pt + index * step_pt, 40.0 + thickness_pt),
+            (
+                40.0 + thickness_pt + index * step_pt + length * math.sqrt(0.5),
+                40.0 + thickness_pt + length * math.sqrt(0.5),
+            ),
+        )
+        for index, length in enumerate(lengths)
+    )
+    source = tmp_path / "synthetic-room-diagonal-hatch.pdf"
+    _write_line_art_source(source, _orthogonal_room_segments() + hatch)
+
+    model = import_observations(extract_pdf(source, source_id="fixture:room-diagonal-hatch"))
+    validate_model(model)
+
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["hatch_family_line_count"] == 8
+    assert diagnostics["hatch_family_excluded_line_count"] == 8
+    assert diagnostics["accepted_pair_count"] == 4
+    assert len(model.walls) == 4
+    assert all(
+        _wall_is_horizontal(wall) or _wall_is_vertical(wall)
+        for wall in model.walls
+    )
+
+
+def test_hatch_family_import_is_deterministic(tmp_path: Path) -> None:
+    lengths = (120.0, 100.0, 110.0, 95.0, 105.0, 115.0, 90.0, 100.0)
+    meters_per_point = 100.0 * 0.0254 / 72.0
+    step_pt = (0.15 / meters_per_point) * math.sqrt(2.0)
+    hatch = tuple(
+        (
+            (40.0 + 0.15 / meters_per_point + index * step_pt, 40.0 + 0.15 / meters_per_point),
+            (
+                40.0 + 0.15 / meters_per_point + index * step_pt + length * math.sqrt(0.5),
+                40.0 + 0.15 / meters_per_point + length * math.sqrt(0.5),
+            ),
+        )
+        for index, length in enumerate(lengths)
+    )
+    segments = _orthogonal_room_segments() + hatch
+    source = tmp_path / "synthetic-room-diagonal-hatch.pdf"
+    _write_line_art_source(source, segments)
+
+    first = import_observations(extract_pdf(source, source_id="fixture:hatch-determinism"))
+    second = import_observations(extract_pdf(source, source_id="fixture:hatch-determinism"))
+
+    assert first.to_json() == second.to_json()
+    assert "_ambiguous_run_segments" not in first.to_json()
+
+
+def test_real_diagonal_wall_with_two_faces_is_kept(tmp_path: Path) -> None:
+    meters_per_point = 100.0 * 0.0254 / 72.0
+    thickness_pt = 0.15 / meters_per_point
+    offset_x = thickness_pt * math.sqrt(0.5)
+    face_a = ((100.0, 100.0), (150.0, 150.0))
+    face_b = ((100.0 + offset_x, 100.0 - offset_x), (150.0 + offset_x, 150.0 - offset_x))
+    jamb = ((151.5, 148.5), (151.5, 180.0))
+    source = tmp_path / "synthetic-diagonal-wall.pdf"
+    _write_line_art_source(source, (face_a, face_b, jamb))
+
+    model = import_observations(extract_pdf(source, source_id="fixture:diagonal-wall"))
+    validate_model(model)
+
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["hatch_family_line_count"] == 0
+    assert diagnostics["hatch_family_excluded_line_count"] == 0
+    assert len(model.walls) == 1
+    assert model.walls[0].thickness_m == pytest.approx(0.15, rel=1e-3)
+    assert not _wall_is_horizontal(model.walls[0])
+    assert not _wall_is_vertical(model.walls[0])
+
+
+def test_wall_with_single_parallel_neighbor_line_is_kept(tmp_path: Path) -> None:
+    meters_per_point = 100.0 * 0.0254 / 72.0
+    thickness_pt = 0.15 / meters_per_point
+    neighbor_offset_pt = 0.30 / meters_per_point
+    segments = (
+        ((40.0, 40.0), (180.0, 40.0)),
+        ((40.0, 40.0 + thickness_pt), (180.0, 40.0 + thickness_pt)),
+        ((40.0, 40.0 + thickness_pt / 2.0), (40.0, 70.0)),
+        ((55.0, 40.0 + thickness_pt + neighbor_offset_pt), (150.0, 40.0 + thickness_pt + neighbor_offset_pt)),
+    )
+    source = tmp_path / "synthetic-wall-single-neighbor.pdf"
+    _write_line_art_source(source, segments)
+
+    model = import_observations(extract_pdf(source, source_id="fixture:wall-single-neighbor"))
+    validate_model(model)
+
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["hatch_family_line_count"] == 0
+    assert diagnostics["hatch_family_excluded_line_count"] == 0
+    assert diagnostics["accepted_pair_count"] == 1
+    assert len(model.walls) == 1
+    assert _wall_is_horizontal(model.walls[0])
+    assert model.walls[0].thickness_m == pytest.approx(0.15, rel=1e-3)
+
+
+def test_wall_face_inside_hatch_family_keeps_real_partner(tmp_path: Path) -> None:
+    meters_per_point = 100.0 * 0.0254 / 72.0
+    thickness_pt = 0.15 / meters_per_point
+    pitch_pt = 0.20 / meters_per_point
+    hatch = tuple(
+        (
+            (60.0, 40.0 + thickness_pt + (index + 1) * pitch_pt),
+            (60.0 + length, 40.0 + thickness_pt + (index + 1) * pitch_pt),
+        )
+        for index, length in enumerate((140.0, 110.0, 135.0, 100.0, 130.0, 105.0))
+    )
+    segments = (
+        ((40.0, 40.0), (260.0, 40.0)),
+        ((40.0, 40.0 + thickness_pt), (260.0, 40.0 + thickness_pt)),
+        ((40.0, 40.0 + thickness_pt / 2.0), (40.0, 70.0)),
+        *hatch,
+    )
+    source = tmp_path / "synthetic-wall-in-hatch-family.pdf"
+    _write_line_art_source(source, segments)
+
+    model = import_observations(extract_pdf(source, source_id="fixture:wall-in-hatch-family"))
+    validate_model(model)
+
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["hatch_family_line_count"] == 7
+    assert diagnostics["hatch_family_excluded_line_count"] == 6
+    assert diagnostics["accepted_pair_count"] == 1
+    assert len(model.walls) == 1
+    assert _wall_is_horizontal(model.walls[0])
+    assert model.walls[0].thickness_m == pytest.approx(0.15, rel=1e-3)

@@ -68,6 +68,17 @@ _COLOURS = {
     "slab": (0.55, 0.55, 0.55),
     "space": (0.45, 0.50, 0.55),
     "route": (0.60, 0.60, 0.62),
+    # Conductor wire colours follow the common convention: phases cycle
+    # black/red/blue by order within the circuit, neutral is white/grey,
+    # ground is green, and an unknown role gets a neutral purple (and keeps
+    # its role in extras). These are display colours, not an electrical
+    # classification.
+    "wire-phase-1": (0.05, 0.05, 0.05),
+    "wire-phase-2": (0.80, 0.10, 0.10),
+    "wire-phase-3": (0.15, 0.25, 0.85),
+    "wire-neutral": (0.85, 0.85, 0.87),
+    "wire-ground": (0.10, 0.65, 0.15),
+    "wire-unknown": (0.50, 0.35, 0.70),
 }
 _TRANSLUCENT_ALPHA = 0.35
 
@@ -104,6 +115,16 @@ _LUMINAIRE_HEIGHT_M = 0.02
 _SENSOR_RADIUS_M = 0.05
 _SENSOR_HEIGHT_M = 0.04
 _DEFAULT_ROUTE_DIAMETER_M = 0.021  # 3/4"
+
+#: Every drawn wire shares one visual diameter. It is a display constant so
+#: wires stay visible inside a drawn conduit; it deliberately carries no AWG
+#: size table — canonical conductor ``size`` strings travel in ``extras``.
+_WIRE_DIAMETER_M = 0.003
+_WIRE_RADIUS_M = _WIRE_DIAMETER_M / 2.0
+
+#: Bundle radius the wires of one route are laid out in when the route
+#: carries no ``nominal_diameter_m`` to fit inside.
+_WIRE_BUNDLE_RADIUS_M = 0.005
 
 
 def to_glb(model: BuildingModel, path: str | Path) -> dict[str, Any]:
@@ -227,6 +248,9 @@ def _build_document(
             "derived": _is_derived(entity.provenance, entity.attributes),
             "extras": _route_extras(model, entity),
         })
+    wire_entries = _wire_entries(model)
+    for entry in wire_entries:
+        add(entry)
 
     # Second pass: assemble glTF structures deterministically.
     entries.sort(key=lambda entry: entry["name"])
@@ -311,6 +335,7 @@ def _build_document(
         "devices": len(model.electrical_devices),
         "equipment": len(model.electrical_equipment),
         "routes": len(model.routes),
+        "conductor_wires": len(wire_entries),
     }
     return document, bytes(buffer), counts
 
@@ -399,6 +424,133 @@ def _route_level_id(model: BuildingModel, route: Route) -> str | None:
         None,
     )
     return getattr(owner, "level_id", None)
+
+
+_WIRE_GROUND_ROLES = frozenset({
+    "ground", "equipment-ground", "equipment_ground", "grounding", "earth", "egc",
+})
+_WIRE_NEUTRAL_ROLES = frozenset({"neutral", "grounded", "grounded-conductor", "grounded_conductor"})
+_WIRE_PHASE_ROLES = frozenset({"phase", "line", "hot", "ungrounded", "live"})
+
+
+def _is_phase_role(token: str) -> bool:
+    return token in _WIRE_PHASE_ROLES or (token.startswith("l") and token[1:].isdigit())
+
+
+def _wire_material_class(role: str, phase_index: int | None) -> str:
+    """Visual material class for a conductor role.
+
+    A phase conductor cycles black/red/blue by its order among the phase
+    conductors of its circuit; neutral, ground and everything else map to
+    their convention colours. Role classification stays a display concern:
+    the canonical role string travels unchanged in ``extras``.
+    """
+
+    token = role.strip().lower()
+    if token in _WIRE_GROUND_ROLES:
+        return "wire-ground"
+    if token in _WIRE_NEUTRAL_ROLES:
+        return "wire-neutral"
+    if _is_phase_role(token) and phase_index is not None:
+        return f"wire-phase-{phase_index % 3 + 1}"
+    return "wire-unknown"
+
+
+def _wire_node_name(conductor_id: str, route_id: str, index: int) -> str:
+    """``conductor:<id>#route:<route_id>#<n>`` with scheme prefixes never doubled."""
+
+    prefix = "" if conductor_id.startswith("conductor:") else "conductor:"
+    return f"{prefix}{conductor_id}#route:{route_id.removeprefix('route:')}#{index}"
+
+
+def _wire_entries(model: BuildingModel) -> list[dict[str, Any]]:
+    """One wire mesh per conductor per route it rides, bundled in the conduit.
+
+    Layout is deterministic: the wires of one route are ordered by conductor
+    id, then by the index within ``count``, and sit on a ring at half the
+    remaining radius, perpendicular to each segment, so the bundle fits the
+    conduit bore and no two wires land on the same spot. A route without a
+    ``nominal_diameter_m`` still carries its wires, laid out in a fixed 5 mm
+    bundle.
+    """
+
+    route_by_id = {route.id: route for route in model.routes}
+    phase_seen: dict[str, int] = {}
+    material_by_conductor: dict[str, str] = {}
+    bundle: dict[str, list[tuple[str, int, Any]]] = {}
+    for conductor in sorted(model.conductors, key=lambda item: item.id):
+        token = conductor.role.strip().lower()
+        phase_index = None
+        if _is_phase_role(token):
+            phase_index = phase_seen.get(conductor.circuit_id, 0)
+            phase_seen[conductor.circuit_id] = phase_index + 1
+        material_by_conductor[conductor.id] = _wire_material_class(conductor.role, phase_index)
+        for route_id in dict.fromkeys(conductor.route_ids):
+            route = route_by_id.get(route_id)
+            if route is None:
+                continue
+            for index in range(conductor.count):
+                bundle.setdefault(route_id, []).append((conductor.id, index, conductor))
+
+    entries: list[dict[str, Any]] = []
+    for route_id in sorted(bundle):
+        wires = bundle[route_id]
+        route = route_by_id[route_id]
+        conduit_radius = (
+            route.nominal_diameter_m / 2.0 if route.nominal_diameter_m is not None else None
+        )
+        max_offset = (
+            conduit_radius - _WIRE_RADIUS_M if conduit_radius is not None
+            else _WIRE_BUNDLE_RADIUS_M
+        )
+        max_offset = max(max_offset, 0.0)
+        total = len(wires)
+        for position, (conductor_id, index, conductor) in enumerate(wires):
+            # One wire sits on the axis; several share a ring at half the
+            # remaining radius, so every vertex stays inside the conduit.
+            offset = 0.0 if total == 1 else max_offset / 2.0
+            derivation = _derivation(conductor.provenance)
+            extras: dict[str, Any] = {
+                "circuit_id": conductor.circuit_id,
+                "role": conductor.role,
+                "route_id": route_id,
+                "canonical_id": conductor.id,
+            }
+            if conductor.size:
+                extras["size"] = conductor.size
+            if derivation is not None:
+                extras["derivation"] = derivation
+            entries.append({
+                "name": _wire_node_name(conductor.id, route_id, index),
+                "vertices": _wire_vertices(route, offset, 2.0 * math.pi * position / total),
+                "material_class": material_by_conductor[conductor.id],
+                "derived": _is_derived(conductor.provenance, conductor.attributes),
+                "extras": extras,
+            })
+    return entries
+
+
+def _wire_vertices(
+    route: Route, offset_radius: float, angle: float
+) -> list[tuple[float, float, float]]:
+    """Wire tube vertices following a route's centerline at a fixed offset."""
+
+    cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+    vertices: list[tuple[float, float, float]] = []
+    for start, end in zip(route.centerline.points, route.centerline.points[1:]):
+        frame = _segment_frame(start, end)
+        if frame is None:
+            continue
+        _dx, _dy, _dz, ux, uy, uz, vx, vy, vz = frame
+        offset = (
+            offset_radius * (cos_angle * ux + sin_angle * vx),
+            offset_radius * (cos_angle * uy + sin_angle * vy),
+            offset_radius * (cos_angle * uz + sin_angle * vz),
+        )
+        center_a = Point3(x=start.x + offset[0], y=start.y + offset[1], z=start.z + offset[2])
+        center_b = Point3(x=end.x + offset[0], y=end.y + offset[1], z=end.z + offset[2])
+        vertices.extend(_cylinder_vertices(center_a, center_b, _WIRE_RADIUS_M, _CYLINDER_SIDES))
+    return vertices
 
 
 def _device_class(device_type: str) -> str:
@@ -581,18 +733,21 @@ def _route_vertices(route: Route) -> list[tuple[float, float, float]]:
     return vertices
 
 
-def _cylinder_vertices(
-    start: Point3, end: Point3, radius: float, sides: int
-) -> list[tuple[float, float, float]]:
-    """Cylinder between two world-space points (canonical, +Z up)."""
+def _segment_frame(
+    start: Point3, end: Point3
+) -> tuple[float, float, float, float, float, float, float, float, float] | None:
+    """Deterministic orthonormal segment frame ``(d, u, v)``, or None.
+
+    Zero-length segments have no direction, so they cannot carry a tube. The
+    basis picks the reference cardinal axis least aligned with the segment
+    direction, the same rule conduit tubes and wire offsets share.
+    """
 
     axis = (end.x - start.x, end.y - start.y, end.z - start.z)
     length = math.sqrt(sum(component * component for component in axis))
     if length <= 1e-12:
-        return []
+        return None
     dx, dy, dz = (component / length for component in axis)
-    # Deterministic orthonormal basis: pick the reference cardinal axis that
-    # is least aligned with the segment direction.
     ref = (1.0, 0.0, 0.0) if abs(dx) < 0.9 else (0.0, 1.0, 0.0)
     ux = ref[1] * dz - ref[2] * dy
     uy = ref[2] * dx - ref[0] * dz
@@ -600,6 +755,18 @@ def _cylinder_vertices(
     u_norm = math.sqrt(ux * ux + uy * uy + uz * uz)
     ux, uy, uz = ux / u_norm, uy / u_norm, uz / u_norm
     vx, vy, vz = dy * uz - dz * uy, dz * ux - dx * uz, dx * uy - dy * ux
+    return (dx, dy, dz, ux, uy, uz, vx, vy, vz)
+
+
+def _cylinder_vertices(
+    start: Point3, end: Point3, radius: float, sides: int
+) -> list[tuple[float, float, float]]:
+    """Cylinder between two world-space points (canonical, +Z up)."""
+
+    frame = _segment_frame(start, end)
+    if frame is None:
+        return []
+    dx, dy, dz, ux, uy, uz, vx, vy, vz = frame
 
     def ring(point: Point3) -> list[tuple[float, float, float]]:
         return [

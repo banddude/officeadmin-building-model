@@ -165,6 +165,109 @@ def _supported_opening_closures(
     return tuple(sorted(result))
 
 
+def _wall_face_spans(
+    walls: tuple[PdfLineObservation, ...],
+) -> dict[str, list[tuple[float, float, float]]]:
+    """Straight wall-face spans per axis as ``(fixed, low, high)`` in points."""
+
+    spans: dict[str, list[tuple[float, float, float]]] = {"h": [], "v": []}
+    for line in walls:
+        (ax, ay), (bx, by) = line.start_pt, line.end_pt
+        if abs(ay - by) <= 1.5 and abs(ax - bx) > 3:
+            spans["h"].append(((ay + by) / 2.0, min(ax, bx), max(ax, bx)))
+        if abs(ax - bx) <= 1.5 and abs(ay - by) > 3:
+            spans["v"].append(((ax + bx) / 2.0, min(ay, by), max(ay, by)))
+    return spans
+
+
+def _door_leaf_closures(
+    walls: tuple[PdfLineObservation, ...],
+    openings: tuple[PdfLineObservation, ...],
+    meters_per_point: float,
+) -> tuple[tuple[str, float, float, float, tuple[str, ...]], ...]:
+    """Close a wall gap jamb-to-jamb only where door-leaf evidence supports it.
+
+    A straight opening-layer line that starts at, or within a small tolerance
+    of, one jamb of a 0.6 m to 1.2 m gap and is about the gap width (a door
+    leaf) closes that opening. The barrier is drawn across the gap between the
+    jambs, never along the leaf. Gaps without that evidence stay open.
+    """
+
+    if not openings:
+        return ()
+    minimum_door_pt = 0.6 / meters_per_point
+    maximum_door_pt = 1.2 / meters_per_point
+    jamb_tol = max(3.0, min(12.0, 0.15 / meters_per_point))
+    width_tol = max(6.0, 0.12 / meters_per_point)
+    leaves: list[tuple[PdfLineObservation, float]] = []
+    for line in openings:
+        length = math.hypot(
+            line.end_pt[0] - line.start_pt[0], line.end_pt[1] - line.start_pt[1]
+        )
+        if minimum_door_pt <= length <= maximum_door_pt:
+            leaves.append((line, length))
+    if not leaves:
+        return ()
+    result: dict[tuple[str, float, float, float], set[str]] = {}
+    for axis, axis_spans in _wall_face_spans(walls).items():
+        ordered = sorted(axis_spans)
+        faces: list[list[tuple[float, float, float]]] = []
+        for span in ordered:
+            if faces and abs(span[0] - faces[-1][-1][0]) <= 2.0:
+                faces[-1].append(span)
+            else:
+                faces.append([span])
+        for face in faces:
+            face_spans = sorted((low, high, fixed) for fixed, low, high in face)
+            for (_, left_end, left_fixed), (right_start, _, right_fixed) in zip(
+                face_spans, face_spans[1:]
+            ):
+                gap = right_start - left_end
+                if not minimum_door_pt <= gap <= maximum_door_pt:
+                    continue
+                # A parallel face covering the gap means solid wall, not an opening.
+                if any(
+                    other_low <= left_end + 1 and other_high >= right_start - 1
+                    for other_low, other_high, _ in face_spans
+                ):
+                    continue
+                fixed = (left_fixed + right_fixed) / 2.0
+                first = (left_end, fixed) if axis == "h" else (fixed, left_end)
+                second = (right_start, fixed) if axis == "h" else (fixed, right_start)
+                for line, length in leaves:
+                    if abs(length - gap) > width_tol:
+                        continue
+                    if (
+                        min(math.dist(first, line.start_pt), math.dist(first, line.end_pt))
+                        <= jamb_tol
+                        or min(math.dist(second, line.start_pt), math.dist(second, line.end_pt))
+                        <= jamb_tol
+                    ):
+                        result.setdefault(
+                            (axis, float(fixed), left_end, right_start), set()
+                        ).add(line.element_id)
+                        break
+    return tuple(
+        (axis, fixed, low, high, tuple(sorted(evidence)))
+        for (axis, fixed, low, high), evidence in sorted(result.items())
+    )
+
+
+def _merge_closures(
+    *closure_groups: tuple[tuple[str, float, float, float, tuple[str, ...]], ...],
+) -> tuple[tuple[str, float, float, float, tuple[str, ...]], ...]:
+    """Union closure groups by geometry so one opening yields one closure."""
+
+    merged: dict[tuple[str, float, float, float], set[str]] = {}
+    for closures in closure_groups:
+        for axis, fixed, low, high, evidence in closures:
+            merged.setdefault((axis, fixed, low, high), set()).update(evidence)
+    return tuple(
+        (axis, fixed, low, high, tuple(sorted(evidence)))
+        for (axis, fixed, low, high), evidence in sorted(merged.items())
+    )
+
+
 def _flood(
     pixels: object,
     width: int,
@@ -259,7 +362,15 @@ def find_layered_room_regions(
         line for line in page.lines
         if any(_is_opening_layer(layer) for layer in line.source_layers)
     )
-    if len(walls) < 4 or len(openings) < 2 or not seeds:
+    opening_rects = tuple(sorted(
+        (
+            rect
+            for rect in page.rects
+            if rect.source_layer is not None and _is_opening_layer(rect.source_layer)
+        ),
+        key=lambda rect: (rect.bbox_pt, rect.element_id),
+    ))
+    if len(walls) < 4 or len(openings) + len(opening_rects) < 2 or not seeds:
         return ()
     if has_multiple_wall_regions(page, meters_per_point):
         return ()
@@ -280,7 +391,10 @@ def find_layered_room_regions(
              line.end_pt[0] - left, top - line.end_pt[1]),
             fill=0, width=3,
         )
-    closures = _supported_opening_closures(walls, openings, meters_per_point)
+    closures = _merge_closures(
+        _supported_opening_closures(walls, openings, meters_per_point),
+        _door_leaf_closures(walls, openings, meters_per_point),
+    )
     for axis, fixed, low, high, _ in closures:
         points = (
             (low - left, top - fixed, high - left, top - fixed)
@@ -288,6 +402,14 @@ def find_layered_room_regions(
             (fixed - left, top - low, fixed - left, top - high)
         )
         draw.line(points, fill=0, width=3)
+    # Openings drawn as rectangles (a garage door) are closed barriers across
+    # the opening; their outline seals the wall line they interrupt.
+    for rect in opening_rects:
+        x0, y0, x1, y1 = rect.bbox_pt
+        draw.rectangle(
+            (x0 - left, top - y1, x1 - left, top - y0),
+            outline=0, width=3,
+        )
 
     pixels = mask.load()
     components: list[tuple[set[tuple[int, int]], list[str]]] = []

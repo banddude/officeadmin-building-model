@@ -20,6 +20,11 @@ Design notes:
   generated geometry cannot masquerade as observed geometry. Every node also
   carries canonical identity in its name and provenance data in ``extras``,
   which Blender shows as custom properties.
+- Optional display features are opt-in, labeled rendering parameters (the
+  issue #88 ruling on display choices): every option is keyword-only and
+  defaults off, with all options at their defaults the output is
+  byte-identical, and none of them flow back into the canonical model, IFC
+  or quantities.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ import json
 import math
 import struct
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, NamedTuple
 
 from oabm.model import (
     BuildingModel,
@@ -64,6 +69,11 @@ _COLOURS = {
     "sensor": (0.20, 0.65, 0.30),
     "panel": (0.55, 0.55, 0.55),
     "other": (0.55, 0.55, 0.55),
+    # Low-voltage device work (data, TV, telephone, speakers, access control)
+    # reads apart from power devices at a glance. A display colour class only:
+    # it changes no geometry, and a caller-dimmed device keeps the dimmed
+    # style instead.
+    "low_voltage": (0.10, 0.65, 0.70),
     "wall": (0.72, 0.72, 0.70),
     "slab": (0.55, 0.55, 0.55),
     "space": (0.45, 0.50, 0.55),
@@ -82,6 +92,15 @@ _COLOURS = {
 }
 _TRANSLUCENT_ALPHA = 0.35
 
+#: Light neutral grey for the opt-in reference planes. Display colour only;
+#: each plane's translucency is a caller parameter (floor and ceiling alphas),
+#: disclosed per plane in its ``extras``.
+_REFERENCE_PLANE_COLOUR = (0.82, 0.82, 0.80)
+
+#: The ``extras["display"]`` value on caller-dimmed entities. It states who
+#: chose the dimming: the caller, never the exporter.
+_DIMMED_DISPLAY = "dimmed (caller-supplied)"
+
 # Device/equipment classification mirrors the canonical tokens understood by
 # the IFC adapter, so both derived views agree on what a type token means.
 _OUTLET_TYPES = frozenset({
@@ -98,6 +117,13 @@ _SENSOR_TYPES = frozenset({
 _PANEL_TYPES = frozenset({
     "panel", "panelboard", "distribution-board", "distribution_board",
     "switchboard", "switchgear",
+})
+# Colour class only: these types draw teal instead of their geometry class
+# colour. ``_device_class`` stays the sole shaper of geometry, and a dimmed
+# device keeps the dimmed style instead of this colour.
+_LOW_VOLTAGE_TYPES = frozenset({
+    "data_outlet", "catv_outlet", "telephone_outlet", "junction_box_data",
+    "speaker", "access_control_device",
 })
 
 # Fallback primitive dimensions (metres) in the entity's local frame
@@ -127,15 +153,68 @@ _WIRE_RADIUS_M = _WIRE_DIAMETER_M / 2.0
 _WIRE_BUNDLE_RADIUS_M = 0.005
 
 
-def to_glb(model: BuildingModel, path: str | Path) -> dict[str, Any]:
+class _DisplayOptions(NamedTuple):
+    """Labeled rendering parameters for the optional display-only features.
+
+    Every field is a viewer concern disclosed by an explicit keyword-only
+    ``to_glb`` option, never a silent constant (the issue #88 ruling on
+    display choices). None of them flow back into the canonical model, IFC or
+    quantities, and with every option at its default the exported bytes are
+    unchanged.
+    """
+
+    reference_planes: bool = False
+    reference_floor_alpha: float = 0.25
+    reference_ceiling_alpha: float = 0.08
+    reference_margin_m: float = 0.5
+    dimmed_ids: frozenset[str] = frozenset()
+    dimmed_alpha: float = 0.3
+    dimmed_color: tuple[float, float, float] = (0.62, 0.62, 0.62)
+
+
+def to_glb(
+    model: BuildingModel,
+    path: str | Path,
+    *,
+    reference_planes: bool = False,
+    reference_floor_alpha: float = 0.25,
+    reference_ceiling_alpha: float = 0.08,
+    reference_margin_m: float = 0.5,
+    dimmed_ids: Iterable[str] = (),
+    dimmed_alpha: float = 0.3,
+    dimmed_color: tuple[float, float, float] = (0.62, 0.62, 0.62),
+) -> dict[str, Any]:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
 
     The export is a deterministic derived view: walls, slabs, space floor
     plates, devices, electrical equipment and conduit routes become meshes;
     canonical identity and provenance travel in node names and ``extras``.
+
+    The keyword-only options are display-only rendering parameters, each
+    defaulting off:
+
+    - ``reference_planes`` adds a translucent floor plane per level that has
+      no canonical slab, and — where the level height is known — a fainter
+      ceiling plane per level that has no canonical ceiling, so heights have
+      something to be read against in the viewer. The planes span the level's
+      plan bounding box plus ``reference_margin_m``; the two alphas set their
+      translucency. Levels with no drawn content get no plane.
+    - ``dimmed_ids`` lists canonical device, equipment or route ids the
+      caller wants drawn in a grey translucent style shaped by
+      ``dimmed_color`` and ``dimmed_alpha``. Which ids to dim, and why,
+      is the caller's decision; ids that match nothing are ignored.
     """
 
-    document, binary, summary_counts = _build_document(model)
+    options = _DisplayOptions(
+        reference_planes=reference_planes,
+        reference_floor_alpha=reference_floor_alpha,
+        reference_ceiling_alpha=reference_ceiling_alpha,
+        reference_margin_m=reference_margin_m,
+        dimmed_ids=frozenset(dimmed_ids),
+        dimmed_alpha=dimmed_alpha,
+        dimmed_color=dimmed_color,
+    )
+    document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
         document, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
@@ -170,6 +249,7 @@ def to_glb(model: BuildingModel, path: str | Path) -> dict[str, Any]:
 
 def _build_document(
     model: BuildingModel,
+    options: _DisplayOptions,
 ) -> tuple[dict[str, Any], bytes, dict[str, int]]:
     """Return (glTF JSON dict, BIN chunk bytes, per-kind summary counts)."""
 
@@ -194,11 +274,11 @@ def _build_document(
         height_m, height_source = _wall_height(entity, level_heights)
         extras = _extras(entity, "wall", entity.level_id)
         extras["height_source"] = height_source
+        _add_name(extras, entity)
         add({
             "name": entity.id,
             "vertices": _wall_vertices(entity, height_m),
-            "material_class": "wall",
-            "derived": _is_derived(entity.provenance, entity.attributes),
+            "material_key": ("wall", _is_derived(entity.provenance, entity.attributes)),
             "extras": extras,
         })
     for entity in model.slabs:
@@ -209,8 +289,7 @@ def _build_document(
                 min(point.z for point in entity.footprint.points),
                 min(point.z for point in entity.footprint.points) + entity.thickness_m,
             ),
-            "material_class": "slab",
-            "derived": _is_derived(entity.provenance, entity.attributes),
+            "material_key": ("slab", _is_derived(entity.provenance, entity.attributes)),
             "extras": _extras(entity, "slab", entity.level_id),
         })
     for entity in model.spaces:
@@ -226,43 +305,63 @@ def _build_document(
                 base,
                 base + _SPACE_PLATE_THICKNESS_M,
             ),
-            "material_class": "space",
-            "derived": _is_derived(entity.provenance, entity.attributes),
+            "material_key": ("space", _is_derived(entity.provenance, entity.attributes)),
             "extras": _extras(entity, "space", entity.level_id),
         })
+    dimmed_count = 0
     for entity in (*model.electrical_devices, *model.electrical_equipment):
         device_type = getattr(entity, "device_type", None) or getattr(
             entity, "equipment_type", ""
         )
+        extras = _extras(
+            entity,
+            device_type,
+            entity.level_id if entity.level_id in level_ids else None,
+        )
+        _add_name(extras, entity)
+        if entity.id in options.dimmed_ids:
+            dimmed_count += 1
+            extras["display"] = _DIMMED_DISPLAY
+            material_key: tuple[Any, ...] = ("dimmed", _device_colour_class(device_type))
+        else:
+            material_key = (
+                _device_colour_class(device_type),
+                _is_derived(entity.provenance, entity.attributes),
+            )
         add({
             "name": entity.id,
             "vertices": _device_vertices(entity, device_type),
-            "material_class": _device_class(device_type),
-            "derived": _is_derived(entity.provenance, entity.attributes),
-            "extras": _extras(
-                entity,
-                device_type,
-                entity.level_id if entity.level_id in level_ids else None,
-            ),
+            "material_key": material_key,
+            "extras": extras,
             "pose": entity.pose,
         })
     for entity in model.routes:
+        extras = _route_extras(model, entity)
+        _add_name(extras, entity)
+        if entity.id in options.dimmed_ids:
+            dimmed_count += 1
+            extras["display"] = _DIMMED_DISPLAY
+            material_key = ("dimmed", "route")
+        else:
+            material_key = ("route", _is_derived(entity.provenance, entity.attributes))
         add({
             "name": entity.id,
             "vertices": _route_vertices(entity),
-            "material_class": "route",
-            "derived": _is_derived(entity.provenance, entity.attributes),
-            "extras": _route_extras(model, entity),
+            "material_key": material_key,
+            "extras": extras,
         })
     wire_entries = _wire_entries(model)
     for entry in wire_entries:
         add(entry)
+    reference_entries: list[dict[str, Any]] = []
+    if options.reference_planes:
+        reference_entries = _reference_plane_entries(model, options)
+        for entry in reference_entries:
+            add(entry)
 
     # Second pass: assemble glTF structures deterministically.
     entries.sort(key=lambda entry: entry["name"])
-    material_keys = sorted({
-        (entry["material_class"], entry["derived"]) for entry in entries
-    })
+    material_keys = sorted({entry["material_key"] for entry in entries})
     material_index = {key: index for index, key in enumerate(material_keys)}
 
     nodes: list[dict[str, Any]] = []
@@ -293,7 +392,7 @@ def _build_document(
         meshes.append({
             "primitives": [{
                 "attributes": {"POSITION": len(accessors) - 1},
-                "material": material_index[(entry["material_class"], entry["derived"])],
+                "material": material_index[entry["material_key"]],
                 "mode": 4,
             }],
         })
@@ -325,8 +424,7 @@ def _build_document(
         "nodes": nodes,
         "meshes": meshes,
         "materials": [
-            _material(material_class, derived)
-            for material_class, derived in material_keys
+            _material_for_key(key, options) for key in material_keys
         ],
     }
     if buffer:
@@ -342,6 +440,8 @@ def _build_document(
         "equipment": len(model.electrical_equipment),
         "routes": len(model.routes),
         "conductor_wires": len(wire_entries),
+        "reference_planes": len(reference_entries),
+        "dimmed": dimmed_count,
     }
     return document, bytes(buffer), counts
 
@@ -361,6 +461,56 @@ def _material(material_class: str, derived: bool) -> dict[str, Any]:
     if derived:
         material["alphaMode"] = "BLEND"
     return material
+
+
+def _material_for_key(key: tuple[Any, ...], options: _DisplayOptions) -> dict[str, Any]:
+    """Material for a sorted material key: plain, caller-dimmed or reference."""
+
+    if key[0] == "dimmed":
+        return _dimmed_material(key[1], options)
+    if key[0] == "reference":
+        return _reference_material(key[1], options)
+    return _material(key[0], key[1])
+
+
+def _dimmed_material(material_class: str, options: _DisplayOptions) -> dict[str, Any]:
+    """Caller-supplied dimmed style: grey, translucent (BLEND), per class.
+
+    The colour and alpha are the caller's ``dimmed_color``/``dimmed_alpha``
+    parameters, so both the choice of what to dim and its look stay outside
+    the exporter.
+    """
+
+    red, green, blue = options.dimmed_color
+    return {
+        "name": f"{material_class}-dimmed",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [red, green, blue, options.dimmed_alpha],
+            "metallicFactor": 0.6 if material_class == "route" else 0.0,
+            "roughnessFactor": 0.4 if material_class == "route" else 0.9,
+        },
+        "alphaMode": "BLEND",
+        "doubleSided": True,
+    }
+
+
+def _reference_material(kind: str, options: _DisplayOptions) -> dict[str, Any]:
+    """Translucent BLEND material for a labeled reference plane."""
+
+    alpha = (
+        options.reference_floor_alpha if kind == "floor"
+        else options.reference_ceiling_alpha
+    )
+    return {
+        "name": f"reference-{kind}",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [*_REFERENCE_PLANE_COLOUR, alpha],
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.9,
+        },
+        "alphaMode": "BLEND",
+        "doubleSided": True,
+    }
 
 
 def _is_derived(provenance: tuple, attributes: dict[str, Any]) -> bool:
@@ -394,6 +544,18 @@ def _extras(entity: Any, canonical_type: str, level_id: str | None) -> dict[str,
     if scope_status is not None:
         extras["scope_status"] = scope_status
     return extras
+
+
+def _add_name(extras: dict[str, Any], entity: Any) -> None:
+    """Carry a canonical entity's non-empty ``name`` into ``extras``.
+
+    The name stays exactly as the model holds it — for walls, devices,
+    equipment and routes — so a labeled route such as a low-voltage stub-up
+    shows its label among Blender's custom properties.
+    """
+
+    if entity.name:
+        extras["name"] = entity.name
 
 
 def _route_extras(model: BuildingModel, route: Route) -> dict[str, Any]:
@@ -430,6 +592,136 @@ def _route_level_id(model: BuildingModel, route: Route) -> str | None:
         None,
     )
     return getattr(owner, "level_id", None)
+
+
+def _horizontal_quad(
+    min_x: float, min_y: float, max_x: float, max_y: float, z: float,
+) -> list[tuple[float, float, float]]:
+    """A horizontal rectangle at height ``z`` as two triangles (+Z up)."""
+
+    corners = [
+        (min_x, min_y, z),
+        (max_x, min_y, z),
+        (max_x, max_y, z),
+        (min_x, max_y, z),
+    ]
+    return [corners[0], corners[1], corners[2], corners[0], corners[2], corners[3]]
+
+
+def _level_plan_bbox(
+    model: BuildingModel, level_id: str
+) -> tuple[float, float, float, float] | None:
+    """Plan bounding box ``(min_x, min_y, max_x, max_y)`` of a level's contents.
+
+    Covers everything the export draws on the level: wall centerlines, slab
+    and space footprints, device and equipment positions, and the centerline
+    points of routes assigned to the level by the existing route-level helper.
+    ``None`` when nothing is drawn on the level.
+    """
+
+    xs: list[float] = []
+    ys: list[float] = []
+
+    def take(x: float, y: float) -> None:
+        xs.append(x)
+        ys.append(y)
+
+    for wall in model.walls:
+        if wall.level_id == level_id:
+            for point in wall.centerline.points:
+                take(point.x, point.y)
+    for slab in model.slabs:
+        if slab.level_id == level_id:
+            for point in slab.footprint.points:
+                take(point.x, point.y)
+    for space in model.spaces:
+        if space.level_id == level_id:
+            for point in space.footprint.points:
+                take(point.x, point.y)
+    for entity in (*model.electrical_devices, *model.electrical_equipment):
+        if entity.level_id == level_id:
+            take(entity.pose.position.x, entity.pose.position.y)
+    for route in model.routes:
+        if _route_level_id(model, route) == level_id:
+            for point in route.centerline.points:
+                take(point.x, point.y)
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _reference_plane_entries(
+    model: BuildingModel, options: _DisplayOptions
+) -> list[dict[str, Any]]:
+    """Labeled floor and ceiling reference planes per level, never canonical.
+
+    A level with no canonical slab gets a floor plane at its elevation; one
+    with no canonical ceiling and a known height gets a ceiling plane at
+    elevation + height — never a hard-coded height. Both span the level's
+    plan bounding box plus the caller's margin, both carry their parameters
+    in ``extras`` with ``canonical: false``, and nothing here flows back into
+    the canonical model.
+    """
+
+    slab_levels = {slab.level_id for slab in model.slabs}
+    ceiling_levels = {ceiling.level_id for ceiling in model.ceilings}
+    entries: list[dict[str, Any]] = []
+    for level in model.levels:
+        bbox = _level_plan_bbox(model, level.id)
+        if bbox is None:
+            # Nothing is drawn on the level, so there is no extent to anchor
+            # a plane to and no heights to read against it.
+            continue
+        min_x, min_y, max_x, max_y = bbox
+        min_x -= options.reference_margin_m
+        min_y -= options.reference_margin_m
+        max_x += options.reference_margin_m
+        max_y += options.reference_margin_m
+        wants_floor = level.id not in slab_levels
+        wants_ceiling = level.id not in ceiling_levels and level.height_m is not None
+        if wants_floor:
+            extras: dict[str, Any] = {
+                "reference_plane": "floor",
+                "canonical": False,
+                "source": "level elevation_m",
+                "extent": "plan bbox of the level's contents + margin",
+                "margin_m": options.reference_margin_m,
+                "alpha": options.reference_floor_alpha,
+                "level_id": level.id,
+                "level_confidence": level.confidence,
+            }
+            if not wants_ceiling and level.height_m is None:
+                # The level height is unknown, so no ceiling plane can be
+                # placed; the floor plane records why instead of inventing one.
+                extras["ceiling"] = "no level height"
+            entries.append({
+                "name": f"reference:floor#{level.id}",
+                "vertices": _horizontal_quad(
+                    min_x, min_y, max_x, max_y, level.elevation_m
+                ),
+                "material_key": ("reference", "floor"),
+                "extras": extras,
+            })
+        if wants_ceiling:
+            entries.append({
+                "name": f"reference:ceiling#{level.id}",
+                "vertices": _horizontal_quad(
+                    min_x, min_y, max_x, max_y,
+                    level.elevation_m + level.height_m,
+                ),
+                "material_key": ("reference", "ceiling"),
+                "extras": {
+                    "reference_plane": "ceiling",
+                    "canonical": False,
+                    "source": "level elevation_m + height_m",
+                    "extent": "plan bbox of the level's contents + margin",
+                    "margin_m": options.reference_margin_m,
+                    "alpha": options.reference_ceiling_alpha,
+                    "level_id": level.id,
+                    "level_confidence": level.confidence,
+                },
+            })
+    return entries
 
 
 _WIRE_GROUND_ROLES = frozenset({
@@ -529,8 +821,10 @@ def _wire_entries(model: BuildingModel) -> list[dict[str, Any]]:
             entries.append({
                 "name": _wire_node_name(conductor.id, route_id, index),
                 "vertices": _wire_vertices(route, offset, 2.0 * math.pi * position / total),
-                "material_class": material_by_conductor[conductor.id],
-                "derived": _is_derived(conductor.provenance, conductor.attributes),
+                "material_key": (
+                    material_by_conductor[conductor.id],
+                    _is_derived(conductor.provenance, conductor.attributes),
+                ),
                 "extras": extras,
             })
     return entries
@@ -572,6 +866,20 @@ def _device_class(device_type: str) -> str:
     if token in _PANEL_TYPES:
         return "panel"
     return "other"
+
+
+def _device_colour_class(device_type: str) -> str:
+    """Display material class of a device: geometry class, low-voltage teal.
+
+    A colour choice only: geometry keeps coming from ``_device_class``, so a
+    low-voltage device draws exactly the primitive it always drew, and the
+    dimmed style (applied by the caller) wins over this colour.
+    """
+
+    token = device_type.lower()
+    if token in _LOW_VOLTAGE_TYPES:
+        return "low_voltage"
+    return _device_class(token)
 
 
 def _device_vertices(entity: Any, device_type: str) -> list[tuple[float, float, float]]:

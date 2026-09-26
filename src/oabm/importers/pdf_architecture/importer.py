@@ -44,7 +44,12 @@ from .drawing_regions import (
     signatures_repeat,
     split_drawing_regions,
 )
-from .extract import _is_wall_source_layer, extract_pdf
+from .extract import (
+    _is_wall_source_layer,
+    _rect_edge_segments,
+    _wall_layer_rects,
+    extract_pdf,
+)
 from .layered_rooms import (
     LayeredRoomRegion,
     find_layered_room_regions,
@@ -4011,10 +4016,24 @@ def _geometric_wall_loop_entities(
         return (), (), {}
 
     diagnostics: dict[str, object] = {}
-    explicit_wall_lines = tuple(
-        line
-        for line in page.lines
-        if any(_is_wall_source_layer(layer) for layer in line.source_layers)
+    # Rectangles on an accepted wall layer are wall evidence too (a wall drawn
+    # as one thin rectangle): their outline segments pair like drawn lines.
+    # Sheet-frame rectangles stay out; they locate the media, not a building.
+    rect_wall_segments = _rect_edge_segments(
+        (
+            rect
+            for rect in _wall_layer_rects(page)
+            if not _is_sheet_frame_enclosure(page, rect.bbox_pt)
+        ),
+        page.page_number,
+    )
+    explicit_wall_lines = (
+        *(
+            line
+            for line in page.lines
+            if any(_is_wall_source_layer(layer) for layer in line.source_layers)
+        ),
+        *rect_wall_segments,
     )
     if page.hidden_wall_source_present and len(explicit_wall_lines) < 4:
         diagnostics.update({
@@ -4676,11 +4695,24 @@ def _drawing_region_evidence(
 ) -> tuple[str, tuple[RegionEvidence, ...]]:
     """Wall evidence that says where building drawings sit on a sheet."""
 
-    wall_lines = tuple(
-        line for line in page.lines
-        if any(_is_wall_source_layer(layer) for layer in line.source_layers)
-        and line.element_id not in excluded_line_ids
-        and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
+    # Wall-layer rectangles count as wall evidence here too, for the same
+    # reason as the wall-loop path; sheet frames are not a drawing location.
+    wall_rect_segments = _rect_edge_segments(
+        (
+            rect
+            for rect in _wall_layer_rects(page)
+            if not _is_sheet_frame_enclosure(page, rect.bbox_pt)
+        ),
+        page.page_number,
+    )
+    wall_lines = (
+        *(
+            line for line in page.lines
+            if any(_is_wall_source_layer(layer) for layer in line.source_layers)
+            and line.element_id not in excluded_line_ids
+            and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
+        ),
+        *wall_rect_segments,
     )
     if use_wall_layers and len(wall_lines) >= _REGION_MIN_WALL_LAYER_SEGMENTS:
         return "visible_wall_layer", tuple(

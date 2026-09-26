@@ -205,7 +205,7 @@ def _shx_annotation_texts(
 
 
 def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple[PdfRectObservation, ...]:
-    seen: set[tuple[float, float, float, float]] = set()
+    seen: set[tuple[float, float, float, float, str | None]] = set()
     result: list[PdfRectObservation] = []
     for obj in rects:
         bbox = (
@@ -214,19 +214,77 @@ def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple
             round(float(obj["x1"]), 4),
             round(float(obj["y1"]), 4),
         )
-        if bbox in seen or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        layer_value = obj.get("_oabm_source_layer")
+        source_layer = layer_value if isinstance(layer_value, str) and layer_value else None
+        # Identical outlines on different optional-content layers are distinct
+        # source evidence and must not dedupe into one rectangle.
+        if (*bbox, source_layer) in seen or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
             continue
-        seen.add(bbox)
+        seen.add((*bbox, source_layer))
         signature = "|".join(f"{value:.4f}" for value in bbox)
+        if source_layer is not None:
+            signature = f"{signature}|{source_layer}"
         result.append(
             PdfRectObservation(
                 element_id=_element_id("rect", page_number, signature),
                 bbox_pt=bbox,
                 native_id=_native_id(obj, "rect"),
                 filled=bool(obj.get("fill", False)),
+                source_layer=source_layer,
             )
         )
-    return tuple(sorted(result, key=lambda item: item.bbox_pt))
+    return tuple(sorted(result, key=lambda item: (item.bbox_pt, item.source_layer or "")))
+
+
+def _wall_layer_rects(page: PdfPageObservation) -> tuple[PdfRectObservation, ...]:
+    """Rectangles on a source layer already accepted as a wall layer."""
+
+    return tuple(sorted(
+        (
+            rect
+            for rect in page.rects
+            if rect.source_layer is not None and _is_wall_source_layer(rect.source_layer)
+        ),
+        key=lambda rect: (rect.bbox_pt, rect.element_id),
+    ))
+
+
+def _rect_edge_segments(
+    rects: Iterable[PdfRectObservation],
+    page_number: int,
+) -> tuple[PdfLineObservation, ...]:
+    """Turn rectangles into the four outline segments as line primitives.
+
+    The segment family stays ``rect`` so diagnostics can tell rectangle-derived
+    wall evidence apart from drawn lines, and the layer rides along in
+    ``source_layers`` so wall-layer provenance is preserved.
+    """
+
+    segments: list[PdfLineObservation] = []
+    for rect in rects:
+        x0, y0, x1, y1 = rect.bbox_pt
+        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        for index in range(4):
+            start, end = sorted((corners[index], corners[(index + 1) % 4]))
+            segments.append(
+                PdfLineObservation(
+                    element_id=_element_id(
+                        "rect-edge", page_number, f"{rect.element_id}|{index}"
+                    ),
+                    start_pt=start,
+                    end_pt=end,
+                    primitive_family="rect",
+                    filled=rect.filled,
+                    source_layers=(rect.source_layer,) if rect.source_layer else (),
+                )
+            )
+    return tuple(sorted(segments, key=lambda item: (item.start_pt, item.end_pt)))
+
+
+def _wall_layer_rect_segments(page: PdfPageObservation) -> tuple[PdfLineObservation, ...]:
+    """Outline segments of wall-layer rectangles, ready for wall evidence."""
+
+    return _rect_edge_segments(_wall_layer_rects(page), page.page_number)
 
 
 def _dash_present(value: object) -> bool:

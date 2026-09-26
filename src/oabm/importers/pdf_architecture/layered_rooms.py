@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageDraw
 
-from .extract import _is_wall_source_layer
+from .extract import _is_wall_source_layer, _wall_layer_rect_segments
 from .types import PdfLineObservation, PdfPageObservation
 
 
@@ -32,6 +32,18 @@ def _is_opening_layer(layer: str) -> bool:
     }
 
 
+def _wall_layer_lines(page: PdfPageObservation) -> tuple[PdfLineObservation, ...]:
+    """Wall-layer lines plus the outline segments of wall-layer rectangles."""
+
+    return (
+        *(
+            line for line in page.lines
+            if any(_is_wall_source_layer(layer) for layer in line.source_layers)
+        ),
+        *_wall_layer_rect_segments(page),
+    )
+
+
 def has_multiple_wall_regions(page: PdfPageObservation, meters_per_point: float) -> bool:
     """Withhold a shared level/frame when two large drawings are separated on a sheet."""
     level_names: set[str] = set()
@@ -46,10 +58,7 @@ def has_multiple_wall_regions(page: PdfPageObservation, meters_per_point: float)
     if len(level_names) > 1:
         return True
 
-    walls = tuple(
-        line for line in page.lines
-        if any(_is_wall_source_layer(layer) for layer in line.source_layers)
-    )
+    walls = _wall_layer_lines(page)
     if len(walls) < 8:
         return False
     minimum_gap = max(30.0, 1.0 / meters_per_point)
@@ -245,10 +254,7 @@ def find_layered_room_regions(
     seeds: tuple[tuple[str, tuple[float, float]], ...],
 ) -> tuple[LayeredRoomRegion, ...]:
     """Return uniquely labeled, closed interiors; unresolved regions stay absent."""
-    walls = tuple(
-        line for line in page.lines
-        if any(_is_wall_source_layer(layer) for layer in line.source_layers)
-    )
+    walls = _wall_layer_lines(page)
     openings = tuple(
         line for line in page.lines
         if any(_is_opening_layer(layer) for layer in line.source_layers)

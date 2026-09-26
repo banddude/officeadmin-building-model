@@ -59,6 +59,9 @@ class PdfRectObservation:
     bbox_pt: tuple[float, float, float, float]
     native_id: str | None = None
     filled: bool = False
+    # Optional-content layer name when the source rectangle sits on one, so
+    # wall-layer filtering can treat rectangles the way it treats lines.
+    source_layer: str | None = None
 
     def __post_init__(self) -> None:
         x0, y0, x1, y1 = self.bbox_pt

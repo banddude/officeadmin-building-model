@@ -36,6 +36,10 @@ CANONICAL_PSET = "OABM_Canonical"
 ADAPTER_PSET = "OABM_Adapter"
 _IFC_NAMESPACE = uuid.UUID("0c569baf-3d91-5d5e-a755-9eb9435c67ae")
 _EPS = 1e-7
+# Planarity/horizontality slop for derived Body authoring, in metres. Canonical
+# architecture geometry sits on level planes; anything beyond this is treated as
+# not determinable rather than approximated.
+_BODY_SLOP_M = 1e-6
 
 _COLLECTION_BY_KIND = {
     "level": "levels",
@@ -76,6 +80,20 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
     ports, systems, and connectivity are authored where IFC has an equivalent.
     The ``OABM_Canonical`` property set stores only the lossless contract shadow
     needed for fields IFC does not carry directly (for example provenance).
+
+    Architecture entities carry two independent shape representations. The
+    ``Axis`` curve (wall centerline, space/slab/ceiling footprint) is the
+    canonical geometry Bonsai may edit. The ``Body`` swept solid is a viewer
+    view derived from the canonical dimension fields only: a wall is an
+    ``IfcExtrudedAreaSolid`` rectangle per straight centerline segment
+    extruded up ``height_m``, slabs and ceilings extrude the footprint polygon
+    down ``thickness_m``, spaces extrude it up ``height_m`` — all authored in
+    world coordinates — and an opening gets a void box (``size.x`` x host wall
+    ``thickness_m`` x ``size.z``) authored in its product-local coordinates,
+    because its ``ObjectPlacement`` already carries the canonical pose, so
+    ``IfcRelVoidsElement`` actually cuts. An entity missing a dimension its
+    Body needs gets no Body and no invented default; the reason is recorded on
+    its ``OABM_Adapter`` property set (``Body=no`` with ``BodyReason``).
     """
 
     ifc = ifcopenshell.api.project.create_file(version=IFC_SCHEMA)
@@ -151,6 +169,13 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             (*space.footprint.points, space.footprint.points[0]),
             identifier="Axis",
         )
+        if space.height_m is None:
+            _mark_adapter(ifc, item, Body="no", BodyReason="no canonical height")
+        else:
+            reason = _assign_polygon_extrusion_body(
+                ifc, item, body_context, space.footprint, space.height_m, upward=True
+            )
+            _mark_body(ifc, item, reason)
         ifcopenshell.api.aggregate.assign_object(
             ifc, relating_object=storeys[space.level_id], products=[item]
         )
@@ -191,6 +216,7 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
     for ordinal, wall in enumerate(model.walls):
         item = add_product(wall, "wall", ordinal, "IfcWall")
         _assign_polyline_representation(ifc, item, axis_context, wall.centerline.points)
+        _mark_body(ifc, item, _assign_wall_body(ifc, item, body_context, wall))
 
     for ordinal, slab in enumerate(model.slabs):
         item = add_product(slab, "slab", ordinal, "IfcSlab", predefined_type="FLOOR")
@@ -200,6 +226,10 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             axis_context,
             (*slab.footprint.points, slab.footprint.points[0]),
         )
+        reason = _assign_polygon_extrusion_body(
+            ifc, item, body_context, slab.footprint, slab.thickness_m, upward=False
+        )
+        _mark_body(ifc, item, reason)
 
     for ordinal, ceiling in enumerate(model.ceilings):
         item = add_product(
@@ -215,6 +245,13 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             axis_context,
             (*ceiling.footprint.points, ceiling.footprint.points[0]),
         )
+        if ceiling.thickness_m is None:
+            _mark_adapter(ifc, item, Body="no", BodyReason="no canonical thickness")
+        else:
+            reason = _assign_polygon_extrusion_body(
+                ifc, item, body_context, ceiling.footprint, ceiling.thickness_m, upward=False
+            )
+            _mark_body(ifc, item, reason)
 
     for ordinal, opening in enumerate(model.openings):
         item = add_product(
@@ -228,6 +265,27 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
         host = entity_ifc.get(opening.host_id)
         if host is not None:
             ifcopenshell.api.feature.add_feature(ifc, feature=item, element=host)
+        host_wall = next((w for w in model.walls if w.id == opening.host_id), None)
+        if host_wall is not None:
+            _mark_body(ifc, item, _assign_opening_body(ifc, item, body_context, opening, host_wall))
+        else:
+            known_host = any(
+                entity.id == opening.host_id
+                for collection in (
+                    model.slabs,
+                    model.ceilings,
+                    model.spaces,
+                    model.electrical_equipment,
+                    model.electrical_devices,
+                )
+                for entity in collection
+            )
+            reason = (
+                "opening host is not a wall; no canonical wall thickness"
+                if known_host
+                else "opening host not found in the model; no canonical wall thickness"
+            )
+            _mark_adapter(ifc, item, Body="no", BodyReason=reason)
 
     for ordinal, obstacle in enumerate(model.obstacles):
         add_product(obstacle, "obstacle", ordinal, "IfcBuildingElementProxy")
@@ -575,6 +633,12 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
     OABM round-trip metadata is not guessed into canonical semantics. Bonsai may
     freely edit and save an OABM IFC as long as canonical entities and their
     stable GlobalIds / metadata are retained.
+
+    Only ``Axis`` shape representations are read back as geometry (wall
+    centerlines, footprints, route spans). ``Body`` solids are a derived export
+    view authored from canonical dimension fields; they are never read back as
+    canonical geometry, so a Bonsai edit of the axis stays authoritative and
+    the derived solid can never contradict the contract.
     """
 
     ifc = ifcopenshell.open(str(source)) if isinstance(source, (str, Path)) else source
@@ -922,6 +986,223 @@ def _assign_round_body(
     ifcopenshell.api.geometry.assign_representation(
         ifc, product=product, representation=representation
     )
+
+
+def _cartesian_point(
+    ifc: ifcopenshell.file, coordinates: tuple[float, float, float]
+) -> Any:
+    return ifc.create_entity(
+        "IfcCartesianPoint",
+        Coordinates=(
+            float(coordinates[0]),
+            float(coordinates[1]),
+            float(coordinates[2]),
+        ),
+    )
+
+
+def _placement_3d(
+    ifc: ifcopenshell.file,
+    location: tuple[float, float, float],
+    axis: tuple[float, float, float],
+    ref_direction: tuple[float, float, float],
+) -> Any:
+    return ifc.create_entity(
+        "IfcAxis2Placement3D",
+        Location=_cartesian_point(ifc, location),
+        Axis=ifc.create_entity("IfcDirection", DirectionRatios=axis),
+        RefDirection=ifc.create_entity("IfcDirection", DirectionRatios=ref_direction),
+    )
+
+
+def _mark_body(ifc: ifcopenshell.file, product: Any, reason: str | None) -> None:
+    """Record whether a product got a derived Body solid, and why not.
+
+    ``OABM_Adapter`` carries ``Body=yes`` or ``Body=no`` plus a ``BodyReason``
+    string. A missing Body is never silently defaulted; the reason names the
+    canonical dimension that was absent.
+    """
+
+    if reason is None:
+        _mark_adapter(ifc, product, Body="yes")
+    else:
+        _mark_adapter(ifc, product, Body="no", BodyReason=reason)
+
+
+def _assign_body_representation(
+    ifc: ifcopenshell.file, product: Any, context: Any, solids: list[Any]
+) -> None:
+    """Attach ``solids`` as the product's ``Body`` representation.
+
+    The architecture solids arrive in world coordinates (like the Axis
+    curves), so identity is the correct ObjectPlacement for them; the opening
+    void arrives in its product's local coordinates, where the placement
+    carries the canonical pose.
+    """
+
+    _ensure_placement(ifc, product)
+    representation = ifc.create_entity(
+        "IfcShapeRepresentation",
+        ContextOfItems=context,
+        RepresentationIdentifier="Body",
+        RepresentationType="SweptSolid",
+        Items=list(solids),
+    )
+    ifcopenshell.api.geometry.assign_representation(
+        ifc, product=product, representation=representation
+    )
+
+
+def _assign_wall_body(
+    ifc: ifcopenshell.file,
+    product: Any,
+    context: Any,
+    wall: Any,
+) -> str | None:
+    """Author a wall Body: an extruded rectangle per straight centerline
+    segment (explicit ``IfcExtrudedAreaSolid``, not
+    ``add_wall_representation``).
+
+    Each segment contributes its plan rectangle (its length by
+    ``thickness_m``, centered across it) extruded upward through
+    ``height_m``. The result rests on the canonical axis at the storey
+    elevation, in canonical metres. Returns a no-Body reason, or ``None``
+    when a Body was authored.
+    """
+
+    points = wall.centerline.points
+    for start, end in zip(points, points[1:]):
+        plan_length = math.hypot(end.x - start.x, end.y - start.y)
+        if plan_length <= _EPS:
+            return "centerline segment is vertical; no plan rectangle to sweep"
+        if abs(end.z - start.z) > _BODY_SLOP_M:
+            return "centerline is not horizontal; the wall base has no single elevation"
+    solids: list[Any] = []
+    for start, end in zip(points, points[1:]):
+        plan_length = math.hypot(end.x - start.x, end.y - start.y)
+        direction = ((end.x - start.x) / plan_length, (end.y - start.y) / plan_length)
+        profile = ifc.create_entity(
+            "IfcRectangleProfileDef",
+            ProfileType="AREA",
+            XDim=float(plan_length),
+            YDim=float(wall.thickness_m),
+        )
+        solid = ifc.create_entity(
+            "IfcExtrudedAreaSolid",
+            SweptArea=profile,
+            Position=_placement_3d(
+                ifc,
+                ((start.x + end.x) / 2.0, (start.y + end.y) / 2.0, float(start.z)),
+                (0.0, 0.0, 1.0),
+                (direction[0], direction[1], 0.0),
+            ),
+            ExtrudedDirection=ifc.create_entity(
+                "IfcDirection", DirectionRatios=(0.0, 0.0, 1.0)
+            ),
+            Depth=float(wall.height_m),
+        )
+        solids.append(solid)
+    _assign_body_representation(ifc, product, context, solids)
+    return None
+
+
+def _assign_polygon_extrusion_body(
+    ifc: ifcopenshell.file,
+    product: Any,
+    context: Any,
+    polygon: Any,
+    depth_m: float,
+    *,
+    upward: bool,
+) -> str | None:
+    """Extrude a canonical footprint polygon into a Body solid.
+
+    The footprint is the profile on its own plane. ``upward=True`` extrudes
+    toward +Z (a space volume rises from its floor plane); ``upward=False``
+    extrudes below the plane (a slab or ceiling plate hangs beneath its
+    footprint plane, which is the plate's top face). Returns a no-Body
+    reason, or ``None`` when a Body was authored.
+    """
+
+    elevations = [float(point.z) for point in polygon.points]
+    if max(elevations) - min(elevations) > _BODY_SLOP_M:
+        return "footprint is not planar; the extrusion plane is ambiguous"
+    if _polygon_plan_area(polygon.points) <= _EPS:
+        return "footprint has no plan area to extrude"
+    # IfcArbitraryClosedProfileDef.OuterCurve must be 2D (Dim == 2), so the
+    # profile polyline drops Z: the solid Position carries the elevation.
+    curve_points = [
+        ifc.create_entity("IfcCartesianPoint", Coordinates=(float(point.x), float(point.y)))
+        for point in polygon.points
+    ]
+    curve_points.append(curve_points[0])
+    curve = ifc.create_entity("IfcPolyline", Points=curve_points)
+    profile = ifc.create_entity("IfcArbitraryClosedProfileDef", ProfileType="AREA", OuterCurve=curve)
+    direction_z = 1.0 if upward else -1.0
+    solid = ifc.create_entity(
+        "IfcExtrudedAreaSolid",
+        SweptArea=profile,
+        Position=_placement_3d(
+            ifc, (0.0, 0.0, elevations[0]), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)
+        ),
+        ExtrudedDirection=ifc.create_entity(
+            "IfcDirection", DirectionRatios=(0.0, 0.0, direction_z)
+        ),
+        Depth=float(depth_m),
+    )
+    _assign_body_representation(ifc, product, context, [solid])
+    return None
+
+
+def _assign_opening_body(
+    ifc: ifcopenshell.file,
+    product: Any,
+    context: Any,
+    opening: Any,
+    host_wall: Any,
+) -> str | None:
+    """Author the opening's void Body: width x host thickness x height box.
+
+    The box follows the canonical centered pose + size convention every lane
+    reads: ``size.x`` along the pose X axis, the host wall ``thickness_m``
+    along the pose Y axis and ``size.z`` along the pose Z axis, centered on
+    ``pose.position``. Unlike the architecture solids it is authored in the
+    opening product's LOCAL coordinates, because the product's
+    ``ObjectPlacement`` already carries the canonical pose — authoring in
+    world coordinates would apply the pose twice, and a Bonsai move of the
+    opening then moves its void with it, which is the correct native
+    behavior. The opening's own ``size.y`` depth is deliberately not the void
+    depth: the host wall thickness is the canonical dimension that determines
+    a cut-through.
+    """
+
+    height = float(opening.size.z)
+    profile = ifc.create_entity(
+        "IfcRectangleProfileDef",
+        ProfileType="AREA",
+        XDim=float(opening.size.x),
+        YDim=float(host_wall.thickness_m),
+    )
+    solid = ifc.create_entity(
+        "IfcExtrudedAreaSolid",
+        SweptArea=profile,
+        Position=_placement_3d(
+            ifc, (0.0, 0.0, -height / 2.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)
+        ),
+        ExtrudedDirection=ifc.create_entity(
+            "IfcDirection", DirectionRatios=(0.0, 0.0, 1.0)
+        ),
+        Depth=height,
+    )
+    _assign_body_representation(ifc, product, context, [solid])
+    return None
+
+
+def _polygon_plan_area(points: Any) -> float:
+    area = 0.0
+    for first, second in zip(points, (*points[1:], points[0])):
+        area += first.x * second.y - second.x * first.y
+    return abs(area) / 2.0
 
 
 def _equipment_ifc_type(token: str) -> tuple[str, str | None]:
@@ -1315,6 +1596,14 @@ def _apply_ifc_overrides(
     native_connections: Mapping[str, set[str]],
     canonical_items: Mapping[str, tuple[Any, dict[str, Any], int, str]],
 ) -> None:
+    """Override the canonical JSON shadow with native, Bonsai-editable values.
+
+    Only ``Axis`` shape representations are read back as geometry (see
+    ``_polyline_points``). ``Body`` solids are a derived export view; they are
+    deliberately never read as canonical geometry so a native solid can never
+    overwrite or contradict the canonical dimension fields.
+    """
+
     if "name" in data:
         data["name"] = item.Name
 

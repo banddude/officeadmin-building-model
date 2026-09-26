@@ -2836,11 +2836,23 @@ def _is_dimension_pattern_text(text: str) -> bool:
 def _dimension_marker_evidence_ids(
     lines: list[PdfLineObservation],
     transform: _Transform2D,
-) -> set[str]:
+) -> tuple[set[str], int]:
+    """Return (dimension-evidence ids, corner-exempt candidate count).
+
+    The count is the number of (line endpoint, marker candidate) pairs that
+    were skipped by the L-joint exemption below. It is deterministic for a
+    given line set.
+    """
     if not lines:
-        return set()
+        return set(), 0
 
     endpoint_tolerance_pt = (3.0 * _INCH_M) / transform.meters_per_point
+    # A wall corner or a jamb return puts the short perpendicular wall line's
+    # OWN endpoint on the face endpoint (an L joint). A real dimension marker
+    # never ends there: a tick is centred on the line end, an extension line
+    # overshoots it, and arrow strokes are covered by the mirrored-V exception
+    # below. Candidates this close to the line end are exempt.
+    corner_tolerance_pt = (1.0 * _INCH_M) / transform.meters_per_point
     marker_max_length_m = 36.0 * _INCH_M
     marker_max_length_pt = marker_max_length_m / transform.meters_per_point
     cell_size = max(marker_max_length_pt, 1.0)
@@ -2862,6 +2874,10 @@ def _dimension_marker_evidence_ids(
 
     result: set[str] = set()
     minimum_cross = math.sin(math.radians(20.0))
+    # Arrowhead strokes leave the tip at 20-60 degrees off the dimension line
+    # and are the one L-shaped case that still counts as a marker (below).
+    arrow_max_cross = math.sin(math.radians(60.0))
+    corner_exempt_count = 0
     for index, line in enumerate(lines):
         line_length_m = lengths_m[index]
         max_marker_m = min(marker_max_length_m, line_length_m * 0.45)
@@ -2873,7 +2889,7 @@ def _dimension_marker_evidence_ids(
         for endpoint in (line.start_pt, line.end_pt):
             cell_x = math.floor(endpoint[0] / cell_size)
             cell_y = math.floor(endpoint[1] / cell_size)
-            hit = False
+            candidates: dict[int, float] = {}
             for nearby_x in range(cell_x - 1, cell_x + 2):
                 for nearby_y in range(cell_y - 1, cell_y + 2):
                     for other_index in marker_cells.get((nearby_x, nearby_y), ()):
@@ -2881,7 +2897,8 @@ def _dimension_marker_evidence_ids(
                             continue
                         other = lines[other_index]
                         oux, ouy, _, _, _ = _line_record(other)
-                        if abs(ux * ouy - uy * oux) < minimum_cross:
+                        angle_cross = abs(ux * ouy - uy * oux)
+                        if angle_cross < minimum_cross:
                             continue
                         distance, _ = _source_point_to_segment_distance(
                             endpoint,
@@ -2889,29 +2906,60 @@ def _dimension_marker_evidence_ids(
                             other.end_pt,
                         )
                         if distance <= endpoint_tolerance_pt:
-                            hit = True
-                            matched_marker_ids.add(other.element_id)
+                            candidates[other_index] = angle_cross
+            # Split the candidates into plain hits and L-joint exemptions.
+            # An exempt candidate only stays a hit when it is one stroke of a
+            # mirrored V (an arrowhead): both strokes meet the line at the
+            # tip, at an acute 20-60 degree angle, on opposite sides.
+            corner_exempt: set[int] = set()
+            arrow_sides: dict[int, int] = {}
+            for other_index, angle_cross in candidates.items():
+                other = lines[other_index]
+                start_dist = math.dist(endpoint, other.start_pt)
+                end_dist = math.dist(endpoint, other.end_pt)
+                if min(start_dist, end_dist) > corner_tolerance_pt:
+                    continue
+                corner_exempt.add(other_index)
+                if angle_cross > arrow_max_cross:
+                    continue
+                far = other.start_pt if start_dist > end_dist else other.end_pt
+                side_cross = ux * (far[1] - endpoint[1]) - uy * (far[0] - endpoint[0])
+                arrow_sides[other_index] = 1 if side_cross >= 0 else -1
+            hit = False
+            for other_index in candidates:
+                if other_index in corner_exempt:
+                    mirrored = other_index in arrow_sides and any(
+                        mirror_index != other_index
+                        and arrow_sides[mirror_index] != arrow_sides[other_index]
+                        for mirror_index in arrow_sides
+                    )
+                    if not mirrored:
+                        # Wall corner or jamb return: not a dimension marker.
+                        corner_exempt_count += 1
+                        continue
+                hit = True
+                matched_marker_ids.add(lines[other_index].element_id)
             if hit:
                 endpoint_hits += 1
         if endpoint_hits == 2:
             result.add(line.element_id)
             result.update(matched_marker_ids)
-    return result
+    return result, corner_exempt_count
 
 
 def _dimension_evidence_ids(
     page: PdfPageObservation,
     lines: list[PdfLineObservation],
     transform: _Transform2D,
-) -> set[str]:
-    result = _dimension_marker_evidence_ids(lines, transform)
+) -> tuple[set[str], int]:
+    result, corner_exempt_count = _dimension_marker_evidence_ids(lines, transform)
     dimension_texts = [
         observation
         for observation in page.texts
         if _is_dimension_pattern_text(observation.text)
     ]
     if not dimension_texts:
-        return result
+        return result, corner_exempt_count
 
     perpendicular_tolerance_pt = (12.0 * _INCH_M) / transform.meters_per_point
     along_margin_pt = (6.0 * _INCH_M) / transform.meters_per_point
@@ -2930,7 +2978,7 @@ def _dimension_evidence_ids(
             ):
                 result.add(line.element_id)
                 break
-    return result
+    return result, corner_exempt_count
 
 
 def _hatch_evidence_ids(
@@ -3106,7 +3154,11 @@ def _collinear_wall_face_runs(
         for line in page.lines
         if line.element_id not in excluded_element_ids
     ]
-    dimension_evidence_ids = _dimension_evidence_ids(page, input_lines, transform)
+    dimension_evidence_ids, corner_exempt_count = _dimension_evidence_ids(
+        page,
+        input_lines,
+        transform,
+    )
     hatch_evidence_ids = _hatch_evidence_ids(
         page,
         [
@@ -3153,6 +3205,7 @@ def _collinear_wall_face_runs(
             "dashed_input_segment_count": sum(1 for line in input_lines if line.dashed),
             "filled_input_segment_count": sum(1 for line in input_lines if line.filled),
             "dimension_evidence_rejected_count": len(dimension_evidence_ids),
+            "dimension_marker_corner_exempt_count": corner_exempt_count,
             "hatch_evidence_rejected_count": len(hatch_evidence_ids),
             "duplicate_geometry_segment_count": sum(
                 len(by_geometry[key]) for key in duplicate_geometry

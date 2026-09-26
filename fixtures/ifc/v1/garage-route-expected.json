@@ -9,7 +9,7 @@
     "IfcDistributionPort": 12,
     "IfcElectricDistributionBoard": 1,
     "IfcOutlet": 1,
-    "IfcRelConnectsPorts": 12
+    "IfcRelConnectsPorts": 6
   },
   "route": {
     "canonical_id": "route:panel-evse",
@@ -18,5 +18,6 @@
     "ifc_segment_predefined_type": "CONDUITSEGMENT",
     "segment_count": 3,
     "fitting_count": 2
-  }
+  },
+  "note_ifc_rel_connects_ports": "One IfcRelConnectsPorts per logical connection. IFC4 bounds IfcPort.ConnectedTo and IfcPort.ConnectedFrom at SET [0:1] each, so a reciprocal pair per connection would saturate both role slots on both ports. The previous count of 12 pinned the doubled reciprocal pairs the old connect_port helper wrote for 6 logical connections."
 }

@@ -167,7 +167,10 @@ def test_explicit_canonical_port_connectivity_is_ifc_native_and_round_trips() ->
 
     ifc = to_ifc(model)
     connections = ifc.by_type("IfcRelConnectsPorts")
-    assert len(connections) == 2
+    # One relationship per logical connection. The previous count of 2 pinned
+    # the reciprocal pair the old connect_port helper wrote for one logical
+    # connection, saturating both IFC4 role slots on both ports.
+    assert len(connections) == 1
     connected_guids = {
         connections[0].RelatingPort.GlobalId,
         connections[0].RelatedPort.GlobalId,
@@ -206,11 +209,14 @@ def test_unexpected_native_connectivity_export_failure_is_not_swallowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = _connected_port_model()
+    from oabm.ifc import adapter as ifc_adapter
 
-    def fail_connect_port(*args: object, **kwargs: object) -> None:
-        raise RuntimeError("synthetic connect_port failure")
+    def fail_create_port_connection(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("synthetic connection write failure")
 
-    monkeypatch.setattr(ifcopenshell.api.system, "connect_port", fail_connect_port)
+    monkeypatch.setattr(
+        ifc_adapter, "_create_port_connection", fail_create_port_connection
+    )
 
     with pytest.raises(
         IfcAdapterError,
@@ -298,3 +304,86 @@ def test_route_types_use_expected_ifc_distribution_classes(
     ]
     assert all(item.is_a(fitting_class) for item in fittings)
     assert from_ifc(ifc).to_dict() == model.to_dict()
+
+
+_GOLDEN_ROOT = ROOT / "fixtures" / "golden" / "v1"
+
+
+def _panel_to_evse() -> BuildingModel:
+    from oabm.qa import load_golden_cases, load_golden_model
+
+    case = next(c for c in load_golden_cases(_GOLDEN_ROOT) if c.name == "panel-to-evse")
+    return load_golden_model(case)
+
+
+def test_panel_to_evse_connects_each_logical_connection_exactly_once() -> None:
+    """panel-to-evse has one peer link and two route links: three connections.
+
+    The old export doubled every logical connection into reciprocal pairs and
+    then purged the peer link, so the file held neither the exact pairs nor the
+    canonical connectivity. The pairs are asserted exactly, by GlobalId, not by
+    count.
+    """
+
+    ifc = to_ifc(_panel_to_evse())
+    panel = canonical_id_to_ifc_guid("port:ev-panel-load")
+    evse = canonical_id_to_ifc_guid("port:evse-feed")
+    segment_start = canonical_id_to_ifc_guid("route:panel-evse-direct#segment:0#port:start")
+    segment_end = canonical_id_to_ifc_guid("route:panel-evse-direct#segment:0#port:end")
+
+    pairs = sorted(
+        (rel.RelatingPort.GlobalId, rel.RelatedPort.GlobalId)
+        for rel in ifc.by_type("IfcRelConnectsPorts")
+    )
+    assert pairs == sorted(
+        [
+            (panel, evse),
+            (segment_start, panel),
+            (evse, segment_end),
+        ]
+    )
+
+
+def test_canonical_port_flow_direction_reaches_the_file() -> None:
+    """``_flow_direction`` was dead code: connect_port overwrote every
+    FlowDirection with NOTDEFINED. Direct IfcRelConnectsPorts writes leave the
+    port's own FlowDirection alone."""
+
+    ifc = to_ifc(_panel_to_evse())
+    assert (
+        ifc.by_guid(canonical_id_to_ifc_guid("port:ev-panel-load")).FlowDirection == "SOURCE"
+    )
+    assert ifc.by_guid(canonical_id_to_ifc_guid("port:evse-feed")).FlowDirection == "SINK"
+
+
+@pytest.mark.parametrize("model", [_garage(), _panel_to_evse()], ids=["garage", "panel-to-evse"])
+def test_every_system_is_served_to_the_one_building(model: BuildingModel) -> None:
+    """Every IfcSystem gets exactly one IfcRelServicesBuildings to the emitted
+    IfcBuilding; an unserved system is dropped by viewers and MVD checkers."""
+
+    ifc = to_ifc(model)
+    buildings = ifc.by_type("IfcBuilding")
+    assert len(buildings) == 1
+
+    systems = ifc.by_type("IfcSystem")
+    assert systems
+    services = ifc.by_type("IfcRelServicesBuildings")
+    assert sorted(rel.RelatingSystem.GlobalId for rel in services) == sorted(
+        system.GlobalId for system in systems
+    )
+    for rel in services:
+        assert [building.id() for building in rel.RelatedBuildings] == [buildings[0].id()]
+
+
+def test_relationship_guids_are_deterministic_across_exports() -> None:
+    """Two exports of one model give identical GlobalIds for the relationships
+    this port introduces."""
+
+    def _guids() -> list[str]:
+        ifc = to_ifc(_panel_to_evse())
+        return sorted(
+            rel.GlobalId
+            for rel in (*ifc.by_type("IfcRelConnectsPorts"), *ifc.by_type("IfcRelServicesBuildings"))
+        )
+
+    assert _guids() == _guids()

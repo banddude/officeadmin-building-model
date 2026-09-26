@@ -174,6 +174,9 @@ def _build_document(
     """Return (glTF JSON dict, BIN chunk bytes, per-kind summary counts)."""
 
     level_ids = {level.id for level in model.levels}
+    level_heights: dict[str, float | None] = {
+        level.id: level.height_m for level in model.levels
+    }
     # Space floor plates sit on the level's highest slab top so they never
     # z-fight inside a slab; footprint z is the fallback.
     slab_top: dict[str, float] = {}
@@ -188,12 +191,15 @@ def _build_document(
         entries.append(entry)
 
     for entity in model.walls:
+        height_m, height_source = _wall_height(entity, level_heights)
+        extras = _extras(entity, "wall", entity.level_id)
+        extras["height_source"] = height_source
         add({
             "name": entity.id,
-            "vertices": _wall_vertices(entity),
+            "vertices": _wall_vertices(entity, height_m),
             "material_class": "wall",
             "derived": _is_derived(entity.provenance, entity.attributes),
-            "extras": _extras(entity, "wall", entity.level_id),
+            "extras": extras,
         })
     for entity in model.slabs:
         add({
@@ -587,7 +593,34 @@ def _device_vertices(entity: Any, device_type: str) -> list[tuple[float, float, 
     return _local_box_vertices(width, depth, height)
 
 
-def _wall_vertices(wall: Wall) -> list[tuple[float, float, float]]:
+def _wall_height(
+    wall: Wall, level_heights: dict[str, float | None]
+) -> tuple[float | None, str]:
+    """Canonical wall height in metres, plus where it came from.
+
+    The wall's own ``height_m`` wins (source ``"wall"``). Without one, the
+    wall's canonical ``Level`` height applies (source ``"level"``). With
+    neither, the export keeps the historical flat strip (source ``"none"``)
+    rather than inventing a default height.
+    """
+
+    if wall.height_m is not None:
+        return wall.height_m, "wall"
+    if level_heights.get(wall.level_id) is not None:
+        return level_heights[wall.level_id], "level"
+    return None, "none"
+
+
+def _wall_vertices(
+    wall: Wall, height_m: float | None
+) -> list[tuple[float, float, float]]:
+    """Vertical prisms, one per centerline segment, of the canonical height.
+
+    Each segment extrudes up from its own base — the lower of the segment's
+    two endpoint heights — by the wall's canonical height (its own, else its
+    level's). ``height_m`` of ``None`` keeps the historical flat strip.
+    """
+
     vertices: list[tuple[float, float, float]] = []
     half = wall.thickness_m / 2.0
     for start, end in zip(wall.centerline.points, wall.centerline.points[1:]):
@@ -596,13 +629,15 @@ def _wall_vertices(wall: Wall) -> list[tuple[float, float, float]]:
         if length <= 1e-12:
             continue
         nx, ny = -dy / length * half, dx / length * half
+        z_bottom = min(start.z, end.z)
+        z_top = (z_bottom + height_m) if height_m is not None else z_bottom
         vertices.extend(
             _oriented_box_vertices(
                 (start.x, start.y),
                 (end.x, end.y),
                 (nx, ny),
-                start.z,
-                end.z,
+                z_bottom,
+                z_top,
             )
         )
     return vertices

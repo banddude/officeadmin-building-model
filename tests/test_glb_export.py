@@ -763,6 +763,7 @@ def _default_options() -> dict:
         "dimmed_ids": (),
         "dimmed_alpha": 0.3,
         "dimmed_color": (0.62, 0.62, 0.62),
+        "emphasized_ids": (),
     }
 
 
@@ -1292,3 +1293,164 @@ def test_emphasized_export_is_deterministic(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
     assert summary["emphasized"] == 3
     assert summary["dimmed"] == 1
+
+
+_ALTERNATE_GROUP = ("device:garage-evse", "route:garage-panel-evse")
+_GARAGE_WIRE_NAMES = {
+    f"conductor:{conductor_id}#route:garage-panel-evse#0"
+    for conductor_id in ("garage-l1", "garage-l2", "garage-egc")
+}
+
+
+def test_groups_default_to_plain_bytes(tmp_path: Path) -> None:
+    model = _golden_garage()
+    to_glb(model, tmp_path / "plain.glb")
+    to_glb(model, tmp_path / "none.glb", groups=None)
+    to_glb(model, tmp_path / "empty.glb", groups={}, hidden_groups=("ALTERNATES",))
+    assert (tmp_path / "plain.glb").read_bytes() == (tmp_path / "none.glb").read_bytes()
+    assert (tmp_path / "plain.glb").read_bytes() == (tmp_path / "empty.glb").read_bytes()
+
+
+def test_caller_group_reparents_members_and_their_wires(tmp_path: Path) -> None:
+    model = _golden_garage()
+    summary = to_glb(
+        model,
+        tmp_path / "grouped.glb",
+        groups={"ALTERNATES": _ALTERNATE_GROUP},
+    )
+    parsed = _parse_glb(tmp_path / "grouped.glb")
+    gltf = parsed["gltf"]
+    by_name = _by_name(parsed)
+    group_index = by_name["group:ALTERNATES"]
+    group_node = gltf["nodes"][group_index]
+
+    # One group node, disclosed in extras, named exactly group:ALTERNATES.
+    assert group_node["extras"] == {
+        "group": "ALTERNATES",
+        "display": "caller-supplied group",
+        "members": 5,
+    }
+    # The children are exactly the device, the route, and the route's three
+    # drawn wire nodes.
+    children = group_node["children"]
+    child_names = {gltf["nodes"][index]["name"] for index in children}
+    assert child_names == {"device:garage-evse", "route:garage-panel-evse"} | _GARAGE_WIRE_NAMES
+
+    # Twelve original nodes, six of them reparented, then the group node at
+    # the end of the scene root.
+    root = gltf["scenes"][0]["nodes"]
+    expected_root = [
+        index for index in range(len(gltf["nodes"]) - 1) if index not in set(children)
+    ] + [group_index]
+    assert root == expected_root
+
+    # The report names the group with its member count.
+    assert summary["groups"] == {"ALTERNATES": 5}
+    assert summary["unmatched_group_ids"] == 0
+
+
+def test_group_ids_matching_nothing_are_ignored_and_counted(tmp_path: Path) -> None:
+    model = _golden_garage()
+    summary = to_glb(
+        model,
+        tmp_path / "grouped.glb",
+        groups={"ALTERNATES": (*_ALTERNATE_GROUP, "wall:does-not-exist")},
+    )
+    parsed = _parse_glb(tmp_path / "grouped.glb")
+    group_node = parsed["gltf"]["nodes"][_by_name(parsed)["group:ALTERNATES"]]
+    assert group_node["extras"]["members"] == 5
+    assert summary["unmatched_group_ids"] == 1
+
+
+def test_id_in_two_groups_is_rejected(tmp_path: Path) -> None:
+    model = _golden_garage()
+    with pytest.raises(ValueError):
+        to_glb(
+            model,
+            tmp_path / "dup.glb",
+            groups={
+                "ALTERNATES": _ALTERNATE_GROUP,
+                "PHASE": ["device:garage-evse"],
+            },
+        )
+
+
+def test_hidden_groups_disclose_flag_and_visibility_extension(tmp_path: Path) -> None:
+    model = _golden_garage()
+    to_glb(
+        model,
+        tmp_path / "hidden.glb",
+        groups={"ALTERNATES": _ALTERNATE_GROUP, "SHOWN": ("equip:garage-panel",)},
+        hidden_groups=("ALTERNATES",),
+    )
+    parsed = _parse_glb(tmp_path / "hidden.glb")
+    gltf = parsed["gltf"]
+    hidden = gltf["nodes"][_by_name(parsed)["group:ALTERNATES"]]
+    shown = gltf["nodes"][_by_name(parsed)["group:SHOWN"]]
+
+    assert hidden["extras"]["hidden_by_default"] is True
+    assert hidden["extensions"] == {"KHR_node_visibility": {"visible": False}}
+    # The extension is optional: used, never required, and only when a group
+    # is hidden.
+    assert gltf["extensionsUsed"] == ["KHR_node_visibility"]
+    assert "extensionsRequired" not in gltf
+    assert "hidden_by_default" not in shown["extras"]
+    assert "extensions" not in shown
+
+
+def test_grouped_export_json_and_bin_chunks_stay_consistent(tmp_path: Path) -> None:
+    model = _golden_garage()
+    to_glb(
+        model,
+        tmp_path / "grouped.glb",
+        groups={"ALTERNATES": _ALTERNATE_GROUP},
+        hidden_groups=("ALTERNATES",),
+    )
+    parsed = _parse_glb(tmp_path / "grouped.glb")
+    gltf = parsed["gltf"]
+    # _parse_glb already asserted the GLB header and chunk boundaries; here
+    # the JSON-side buffer description must match the BIN chunk it points at.
+    assert gltf["buffers"][0]["byteLength"] == len(parsed["bin"])
+    for view in gltf["bufferViews"]:
+        assert view["buffer"] == 0
+        assert view["byteOffset"] % 4 == 0
+        assert view["byteOffset"] + view["byteLength"] <= len(parsed["bin"])
+    for mesh in gltf["meshes"]:
+        for primitive in mesh["primitives"]:
+            accessor = gltf["accessors"][primitive["attributes"]["POSITION"]]
+            assert accessor["count"] >= 3
+            assert accessor["bufferView"] < len(gltf["bufferViews"])
+    # Every non-group node keeps exactly one mesh; group parents carry none.
+    for node in gltf["nodes"]:
+        if node["name"].startswith("group:"):
+            assert "mesh" not in node
+        else:
+            assert "mesh" in node
+
+
+def test_grouped_export_is_deterministic(tmp_path: Path) -> None:
+    model = _golden_garage()
+    options: dict = {
+        "groups": {"ALTERNATES": _ALTERNATE_GROUP, "PHASE-2": ("equip:garage-panel",)},
+        "hidden_groups": ("ALTERNATES",),
+    }
+    to_glb(model, tmp_path / "first.glb", **options)
+    to_glb(model, tmp_path / "second.glb", **options)
+    assert (tmp_path / "first.glb").read_bytes() == (tmp_path / "second.glb").read_bytes()
+
+
+def test_group_nodes_are_sorted_by_name_after_all_roots(tmp_path: Path) -> None:
+    model = _golden_garage()
+    to_glb(
+        model,
+        tmp_path / "grouped.glb",
+        groups={
+            "ZULU": ("device:garage-evse",),
+            "ALPHA": ("equip:garage-panel",),
+        },
+    )
+    parsed = _parse_glb(tmp_path / "grouped.glb")
+    gltf = parsed["gltf"]
+    root = gltf["scenes"][0]["nodes"]
+    names = [gltf["nodes"][index]["name"] for index in root]
+    assert names[-2:] == ["group:ALPHA", "group:ZULU"]

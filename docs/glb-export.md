@@ -50,7 +50,8 @@ and with all options at their defaults the output is byte-identical to the
 plain export. Display choices are labeled rendering parameters, never silent
 constants, and none of them flow back into the canonical model, IFC or
 quantities (the #88 ruling). The summary dict reports `reference_planes`,
-`dimmed` and `emphasized` counts.
+`dimmed` and `emphasized` counts, and — when grouping is requested — the
+`groups` member counts and `unmatched_group_ids`.
 
 ### Reference planes
 
@@ -101,6 +102,32 @@ that its mounting height is a rule even though it draws at full colour. When
 an id is in both sets, dimmed wins and the report counts it only as dimmed.
 Ids that match nothing are ignored, and the summary reports how many entities
 were actually emphasized as `emphasized`.
+
+### Caller-supplied node groups
+
+`groups` maps a caller-chosen group name (for example `"ALTERNATES"`) to the
+canonical entity ids in it — devices, equipment, routes, walls, any exported
+entity. Each group becomes one parent node named `group:<name>`, placed at
+the scene root after all the other root nodes, with the groups sorted by
+name; the members' nodes are reparented under it. A route member brings its
+drawn wire nodes (`conductor:<id>#route:<route id>#<n>`) with it, so hiding
+one group hides the alternate devices *and their conduit with the wires
+inside*. The exporter never decides what belongs together — it only draws
+the grouping the caller names, and the group node says so in its `extras`:
+`group` (the name), `display` = `"caller-supplied group"`, and `members`
+(the child count).
+
+An id may belong to at most one group; a duplicate raises `ValueError`. Ids
+that match nothing are ignored and counted in the summary as
+`unmatched_group_ids`, and the summary reports each group as
+`groups: {name: member_count}`.
+
+`hidden_groups` names the groups that start hidden: the group node gets
+`extras["hidden_by_default"] = true` and the ratified `KHR_node_visibility`
+extension with `"visible": false`, which hides the node and its whole
+subtree in supporting viewers (Blender, three.js). The extension is listed
+in `extensionsUsed` and never in `extensionsRequired`, so a viewer without
+it still loads the file and simply shows the group — one click to hide.
 
 ### Low-voltage device colour
 

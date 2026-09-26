@@ -801,6 +801,177 @@ def test_isolated_open_wall_pair_without_junction_is_not_promoted() -> None:
     assert diagnostics["partial_pair_count"] == 0
 
 
+def test_isolated_open_wall_pair_without_junction_is_not_promoted() -> None:
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=300,
+        height_pt=200,
+        texts=(
+            _text("isolated:title", "A55 FLOOR PLAN", 10, 180),
+            _text("isolated:scale", "SCALE: 1:100", 10, 166),
+            _text("isolated:level", "LEVEL: GROUND", 10, 152),
+        ),
+        lines=(
+            _line("isolated:face-a", (40.0, 40.0), (160.0, 40.0)),
+            _line("isolated:face-b", (40.0, 44.0), (160.0, 44.0)),
+        ),
+    )
+
+    model = import_observations(
+        _document(page, source_id="fixture:isolated-partial-wall-face")
+    )
+
+    validate_model(model)
+    assert not model.walls
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    assert diagnostics["accepted_pair_count"] == 1
+    assert diagnostics["partial_candidate_pair_count"] == 1
+    assert diagnostics["partial_no_junction_rejected_count"] == 1
+    assert diagnostics["partial_pair_count"] == 0
+
+
+def _local_ambiguity_lines(
+    *,
+    tied_run_y: float = 40.0,
+    tied_run_x0: float = 240.0,
+) -> tuple[PdfLineObservation, ...]:
+    """Two separate wall assemblies at 1/8" = 1'-0" (1.3333 in per point).
+
+    Assembly A is an L of two 5-inch walls, 10 ft and 8 ft long, meeting at a
+    corner; each pair is junction-supported by the other wall's faces.
+
+    Assembly B is one face run with two candidate faces at exactly the same
+    5-inch offset on either side and equal overlap, so its best pairing ties
+    and the run must stay ambiguous. ``tied_run_y``/``tied_run_x0`` move the
+    tied run: the default keeps it far from A; ``tied_run_y=95.5`` with
+    ``tied_run_x0=100`` puts it 6 in from A's south wall (overlapping it in
+    plan) while the west wall stays beyond the 18 in ambiguity radius.
+    """
+
+    offset = 3.75  # 5 in of real wall per face pair
+    lines = (
+        # Assembly A: south wall faces (10 ft along x at y=100..100+offset).
+        _line("amb:a-south-face-1", (60.0, 100.0), (150.0, 100.0)),
+        _line("amb:a-south-face-2", (60.0, 100.0 + offset), (150.0, 100.0 + offset)),
+        # Assembly A: west wall faces (8 ft along y at x=60..60+offset).
+        _line("amb:a-west-face-1", (60.0, 100.0), (60.0, 172.0)),
+        _line("amb:a-west-face-2", (60.0 + offset, 100.0), (60.0 + offset, 172.0)),
+    )
+    tied_lines = (
+        _line("amb:b-tied-face", (tied_run_x0, tied_run_y), (tied_run_x0 + 70.0, tied_run_y)),
+        _line(
+            "amb:b-upper-face",
+            (tied_run_x0, tied_run_y + offset),
+            (tied_run_x0 + 70.0, tied_run_y + offset),
+        ),
+        _line(
+            "amb:b-lower-face",
+            (tied_run_x0, tied_run_y - offset),
+            (tied_run_x0 + 70.0, tied_run_y - offset),
+        ),
+    )
+    return (*lines, *tied_lines)
+
+
+def _local_ambiguity_page(**kwargs) -> PdfPageObservation:
+    return PdfPageObservation(
+        page_number=1,
+        width_pt=400,
+        height_pt=220,
+        texts=(
+            _text("amb:title", "A55 FLOOR PLAN", 10, 200),
+            _text("amb:scale", "SCALE: 1/8\" = 1'-0\"", 10, 186),
+            _text("amb:level", "LEVEL: GROUND", 10, 172),
+        ),
+        lines=_local_ambiguity_lines(**kwargs),
+    )
+
+
+def _wall_pair_diagnostics(model: BuildingModel) -> dict:
+    return model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+
+
+def _wall_length_m(wall) -> float:
+    first, last = wall.centerline.points
+    return math.dist((first.x, first.y), (last.x, last.y))
+
+
+def _wall_is_horizontal(wall) -> bool:
+    first, last = wall.centerline.points
+    return abs(first.y - last.y) < 1e-9
+
+
+def _wall_is_vertical(wall) -> bool:
+    first, last = wall.centerline.points
+    return abs(first.x - last.x) < 1e-9
+
+
+def test_tied_run_elsewhere_does_not_suppress_unrelated_partial_walls() -> None:
+    model = import_observations(
+        _document(_local_ambiguity_page(), source_id="fixture:partial-wall-local-ambiguity")
+    )
+
+    validate_model(model)
+    assert len(model.walls) == 2
+    horizontal = next(wall for wall in model.walls if _wall_is_horizontal(wall))
+    vertical = next(wall for wall in model.walls if _wall_is_vertical(wall))
+    for wall in model.walls:
+        assert wall.attributes["pdf_architecture"]["recognition"] == (
+            "geometric_parallel_wall_face_partial"
+        )
+        assert wall.thickness_m == pytest.approx(0.127)  # 5 in faces
+    assert _wall_length_m(horizontal) == pytest.approx(3.048)  # 10 ft
+    assert _wall_length_m(vertical) == pytest.approx(2.4384)  # 8 ft
+
+    diagnostics = _wall_pair_diagnostics(model)
+    # Assembly B's tie is recorded, and B's run stays unpaired...
+    assert diagnostics["ambiguous_best_run_count"] >= 1
+    assert diagnostics["accepted_pair_count"] == 2
+    # ...but assembly A's two junction-supported partials survive.
+    assert diagnostics["partial_ambiguity_suppressed_count"] == 0
+    assert diagnostics["partial_pair_count"] == 2
+    assert diagnostics["suppressed_partial_pair_count"] == 0
+
+
+def test_partial_wall_next_to_tied_run_is_still_suppressed_locally() -> None:
+    # The tied run of assembly B sits 6 in from assembly A's south wall.
+    model = import_observations(
+        _document(
+            _local_ambiguity_page(tied_run_y=95.5, tied_run_x0=100.0),
+            source_id="fixture:partial-wall-local-ambiguity-near",
+        )
+    )
+
+    validate_model(model)
+    assert len(model.walls) == 1
+    survivor = model.walls[0]
+    assert _wall_is_vertical(survivor)
+    assert _wall_length_m(survivor) == pytest.approx(2.4384)  # the 8 ft west wall
+
+    diagnostics = _wall_pair_diagnostics(model)
+    assert diagnostics["ambiguous_best_run_count"] >= 1
+    assert diagnostics["partial_ambiguity_suppressed_count"] == 1
+    assert diagnostics["partial_pair_count"] == 1
+    assert diagnostics["suppressed_partial_pair_count"] == 1
+
+
+def test_local_ambiguity_import_is_deterministic() -> None:
+    first = import_observations(
+        _document(_local_ambiguity_page(), source_id="fixture:partial-wall-local-ambiguity")
+    )
+    second = import_observations(
+        _document(_local_ambiguity_page(), source_id="fixture:partial-wall-local-ambiguity")
+    )
+
+    assert first.to_json() == second.to_json()
+    # The internal per-run ambiguity geometry must never reach the model.
+    assert "_ambiguous_run_segments" not in first.to_json()
+
+
 def test_short_open_wall_pair_with_junction_is_not_promoted() -> None:
     page = PdfPageObservation(
         page_number=1,
@@ -1325,10 +1496,30 @@ def test_cad_derived_geometric_pairing_fails_closed_on_ambiguous_parallel_face()
     )
 
     validate_model(model)
-    assert not model.walls
+    diagnostics = model.attributes["pdf_architecture"]["pages"][0][
+        "geometric_wall_pair_diagnostics"
+    ]
+    # The extra south face ties the middle south run, so the closed loop is
+    # gone, no space is claimed, and the south faces have no accepted pair.
+    assert diagnostics["ambiguous_best_run_count"] >= 1
+    assert diagnostics["accepted_pair_count"] == 3
     assert not model.spaces
+    # Fail closed stays local: the east and west walls run right through the
+    # tied run's neighborhood (its ambiguity radius), so neither is promoted
+    # on the tie's behalf...
+    assert diagnostics["partial_ambiguity_suppressed_count"] == 2
+    assert diagnostics["suppressed_partial_pair_count"] == 2
+    # ...but the north wall, 90 pt (3.2 m) away across the rectangle, is
+    # independent unambiguous evidence and is still emitted as a partial.
+    assert diagnostics["partial_pair_count"] == 1
+    assert len(model.walls) == 1
+    north = model.walls[0]
+    assert north.attributes["pdf_architecture"]["recognition"] == (
+        "geometric_parallel_wall_face_partial"
+    )
+    assert north.attributes["pdf_architecture"]["junction_supported"] is True
     assert model.attributes["pdf_architecture"]["pages"][0]["status"] == (
-        "no_supported_geometry_recognized"
+        "geometry_imported"
     )
 
 

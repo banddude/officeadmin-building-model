@@ -2,8 +2,9 @@
 
 ``extract_tables`` reads ruled legends, panel schedules and title-block
 grids out of vector PDF pages without any AI step. It is a building block
-for the PDF lanes; wiring it into the legend and schedule code paths is a
-separate, later task, and this module changes no existing behavior.
+for the PDF lanes. Extraction never raises for content problems: a page
+or region without tables returns ``[]``, and a failed backend flavor is
+recorded as a warning while the other flavor's result is kept.
 """
 
 from __future__ import annotations
@@ -47,6 +48,7 @@ def extract_tables(
     regions_pt: list[RegionBox] | None = None,
     flavor: str = "auto",
     backend: str = "camelot",
+    diagnostics: list[str] | None = None,
 ) -> list[ExtractedTable]:
     """Extract tables from one PDF page into deterministic value types.
 
@@ -66,20 +68,37 @@ def extract_tables(
             ``docling`` (optional, heavier layout models). Both backends
             import lazily and raise an :class:`ImportError` naming their
             extra (``tables`` / ``docling``) when it is missing.
+        diagnostics: optional list owned by the caller. With the ``camelot``
+            backend, every flavor failure is appended here as one warning
+            string naming the flavor and the exception, so a page or region
+            with no surviving table still reports why. The ``docling``
+            backend records no diagnostics.
 
     Returns:
         Tables with ``bbox_pt`` and cell boxes in displayed, bottom-origin
         PDF points, rows in reading order, cell text whitespace-normalized
-        and otherwise untouched. Pages with no table return ``[]``; a
-        missing or degenerate grid is dropped rather than guessed into a
-        table. Output is identical across runs on the same input.
+        and otherwise untouched. A page or region with no table returns
+        ``[]``; a missing or degenerate grid is dropped rather than guessed
+        into a table. Output is identical across runs on the same input.
+
+        Never-raise contract (``camelot`` backend): a flavor that finds no
+        table, and a flavor or single region whose extraction raises inside
+        camelot, never propagates as an exception. Each failure becomes one
+        warning string naming the flavor and the exception, for example
+        ``"stream region 1: TypeError: cannot unpack non-iterable NoneType
+        object"``; it is appended to ``diagnostics`` when given and to the
+        ``warnings`` of every kept table, the other flavor's result is
+        kept, and a page or region where no flavor yields a table simply
+        contributes nothing. Only invalid arguments (below) and a missing
+        backend extra raise.
 
     Raises:
-        ValueError: bad ``flavor``/``backend``, malformed region box, or an
-            out-of-range ``page_number``.
+        ValueError: bad ``flavor``/``backend``, malformed region box,
+            out-of-range ``page_number``, or a ``diagnostics`` that is
+            neither a list nor ``None``.
         ImportError: the requested backend's extra is not installed.
-        RuntimeError: the chosen backend failed in a way that is not
-            simply "no table here".
+        RuntimeError: the ``docling`` backend's conversion produced no
+            document; the ``camelot`` backend never raises this way.
     """
 
     if flavor not in _FLAVORS:
@@ -90,6 +109,8 @@ def extract_tables(
         raise ValueError(
             f"backend must be one of {_BACKENDS}, got {backend!r}"
         )
+    if diagnostics is not None and not isinstance(diagnostics, list):
+        raise ValueError("diagnostics must be a list of strings or None")
     regions = _validate_regions(regions_pt)
     if not isinstance(page_number, int) or isinstance(page_number, bool):
         raise ValueError("page_number must be an int")
@@ -114,6 +135,7 @@ def extract_tables(
         transform=transform,
         regions_pt=regions,
         flavor=flavor,
+        diagnostics=diagnostics,
     )
 
 

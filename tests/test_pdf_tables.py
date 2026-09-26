@@ -370,3 +370,182 @@ def test_argument_validation(tmp_path: Path) -> None:
 
     reader = PdfReader(str(pdf))
     assert len(reader.pages) == 1
+
+
+# --- never-raise contract: per-flavor, per-region fail closed --------------
+
+_CRASH_CLASS = "TypeError"
+_CRASH_MESSAGE = "cannot unpack non-iterable NoneType object"
+
+
+def _crash_one_flavor(
+    monkeypatch: pytest.MonkeyPatch,
+    crashing_flavor: str,
+    crash_area: str | None = None,
+) -> None:
+    """Make camelot raise a parser-style TypeError on one flavor.
+
+    ``crash_area``, when given, limits the crash to the per-region call
+    whose ``table_areas`` string matches, leaving the other regions and
+    calls alive. Everything else runs the real camelot.
+    """
+
+    camelot_mod = importlib.import_module("camelot")
+    real_read_pdf = camelot_mod.read_pdf
+
+    def fake_read_pdf(path, *, pages, flavor, **kwargs):
+        if flavor == crashing_flavor and (
+            crash_area is None or kwargs.get("table_areas") == [crash_area]
+        ):
+            raise TypeError(_CRASH_MESSAGE)
+        return real_read_pdf(path, pages=pages, flavor=flavor, **kwargs)
+
+    monkeypatch.setattr(camelot_mod, "read_pdf", fake_read_pdf)
+
+
+def test_rotated_region_crash_returns_empty_with_warning(tmp_path: Path) -> None:
+    """Natural reproduction, pinned against camelot-py 2.0.0.
+
+    A ``/Rotate`` 270 page whose region holds only two short text columns
+    makes the stream parser raise ``TypeError`` inside ``read_pdf``. The
+    call must return ``[]`` and record the failure, never raise. If a
+    newer camelot stops crashing here, the same outcome is covered by the
+    monkeypatched tests below; update this one to the new pinned truth.
+    """
+
+    commands = [
+        "BT /F1 10 Tf 100 520 Td (ZZ-1) Tj ET",
+        "BT /F1 10 Tf 180 520 Td (THING) Tj ET",
+        "BT /F1 10 Tf 100 480 Td (ZZ-2) Tj ET",
+        "BT /F1 10 Tf 180 480 Td (PART) Tj ET",
+    ]
+    pdf = _write_pdf(tmp_path / "rot270-region.pdf", commands, rotate=270)
+
+    diagnostics: list[str] = []
+    for _ in range(2):  # two identical runs, identical recorded outcome
+        assert extract_tables(
+            pdf,
+            1,
+            regions_pt=[(60.0, 450.0, 290.0, 560.0)],
+            diagnostics=diagnostics,
+        ) == []
+    assert diagnostics == [
+        f"stream region 1: {_CRASH_CLASS}: {_CRASH_MESSAGE}"
+    ] * 2
+
+
+def test_explicit_flavor_crash_returns_empty_with_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands, _ = _kv_text_commands(72.0, 216.0, 560.0, 18.0, TITLE_PAIRS)
+    pdf = _write_pdf(tmp_path / "title.pdf", commands)
+    _crash_one_flavor(monkeypatch, "stream")
+
+    diagnostics: list[str] = []
+    assert extract_tables(
+        pdf, 1, flavor="stream", diagnostics=diagnostics
+    ) == []
+    assert diagnostics == [f"stream: {_CRASH_CLASS}: {_CRASH_MESSAGE}"]
+
+
+def test_lattice_survives_stream_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands, _ = _ruled_grid_commands(72.0, 520.0, [72.0, 200.0], 24.0, LEGEND_TEXTS)
+    pdf = _write_pdf(tmp_path / "legend.pdf", commands)
+    _crash_one_flavor(monkeypatch, "stream")
+
+    diagnostics: list[str] = []
+    tables = extract_tables(pdf, 1, diagnostics=diagnostics)
+
+    assert len(tables) == 1
+    table = tables[0]
+    assert _matrix(table) == LEGEND_TEXTS
+    assert table.flavor == "lattice"
+    assert diagnostics == [f"stream: {_CRASH_CLASS}: {_CRASH_MESSAGE}"]
+    assert (
+        f"flavor stream failed: stream: {_CRASH_CLASS}: {_CRASH_MESSAGE}"
+        in "; ".join(table.warnings)
+    )
+
+
+def test_stream_survives_lattice_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands, _ = _kv_text_commands(72.0, 216.0, 560.0, 18.0, TITLE_PAIRS)
+    pdf = _write_pdf(tmp_path / "title.pdf", commands)
+    _crash_one_flavor(monkeypatch, "lattice")
+
+    diagnostics: list[str] = []
+    tables = extract_tables(pdf, 1, diagnostics=diagnostics)
+
+    assert len(tables) == 1
+    table = tables[0]
+    assert _matrix(table) == [list(pair) for pair in TITLE_PAIRS]
+    assert table.flavor == "stream"
+    assert diagnostics == [f"lattice: {_CRASH_CLASS}: {_CRASH_MESSAGE}"]
+    assert (
+        f"flavor lattice failed: lattice: {_CRASH_CLASS}: {_CRASH_MESSAGE}"
+        in "; ".join(table.warnings)
+    )
+
+
+def test_region_crash_is_isolated_per_region(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One raising region must not discard the other regions' tables."""
+
+    upper, _ = _kv_text_commands(72.0, 216.0, 560.0, 18.0, TITLE_PAIRS)
+    lower_texts = [["P-1", "ONE"], ["P-2", "TWO"], ["P-3", "THREE"]]
+    lower, _ = _kv_text_commands(72.0, 216.0, 300.0, 18.0, lower_texts)
+    pdf = _write_pdf(tmp_path / "two-kv.pdf", upper + lower)
+
+    upper_region = (40.0, 490.0, 330.0, 620.0)
+    lower_region = (40.0, 240.0, 330.0, 320.0)
+    # Mirror the adapter's region formatting so the fake can target the
+    # first region's camelot call only.
+    upper_area = ",".join(str(round(v, 3)) for v in upper_region)
+    _crash_one_flavor(monkeypatch, "stream", crash_area=upper_area)
+
+    diagnostics: list[str] = []
+    tables = extract_tables(
+        pdf, 1, regions_pt=[upper_region, lower_region], diagnostics=diagnostics
+    )
+    assert len(tables) == 1
+    assert _matrix(tables[0]) == lower_texts
+    assert tables[0].flavor == "stream"
+    assert diagnostics == [f"stream region 1: {_CRASH_CLASS}: {_CRASH_MESSAGE}"]
+    assert "flavor stream kept" in "; ".join(tables[0].warnings)
+
+    diagnostics_explicit: list[str] = []
+    explicit = extract_tables(
+        pdf,
+        1,
+        regions_pt=[upper_region, lower_region],
+        flavor="stream",
+        diagnostics=diagnostics_explicit,
+    )
+    assert len(explicit) == 1
+    assert _matrix(explicit[0]) == lower_texts
+    assert explicit[0].warnings == ()
+    assert diagnostics_explicit == [
+        f"stream region 1: {_CRASH_CLASS}: {_CRASH_MESSAGE}"
+    ]
+
+
+def test_clean_call_leaves_diagnostics_untouched(tmp_path: Path) -> None:
+    commands, _ = _ruled_grid_commands(72.0, 520.0, [72.0, 200.0], 24.0, LEGEND_TEXTS)
+    pdf = _write_pdf(tmp_path / "legend.pdf", commands)
+
+    diagnostics: list[str] = []
+    tables = extract_tables(pdf, 1, diagnostics=diagnostics)
+    assert len(tables) == 1
+    assert diagnostics == []
+
+
+def test_diagnostics_argument_validation(tmp_path: Path) -> None:
+    commands, _ = _ruled_grid_commands(72.0, 520.0, [72.0, 200.0], 24.0, LEGEND_TEXTS)
+    pdf = _write_pdf(tmp_path / "legend.pdf", commands)
+
+    with pytest.raises(ValueError, match="diagnostics"):
+        extract_tables(pdf, 1, diagnostics="not-a-list")  # type: ignore[arg-type]

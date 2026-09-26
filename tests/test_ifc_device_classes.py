@@ -33,6 +33,7 @@ EXPECTED_MAPPINGS = [
     ("junction_box_power", "IfcJunctionBox", "POWER"),
     ("junction_box_data", "IfcJunctionBox", "DATA"),
     ("luminaire", "IfcLightFixture", None),
+    ("exit_sign", "IfcLightFixture", "SECURITYLIGHTING"),
     ("switch", "IfcSwitchingDevice", None),
     ("disconnect", "IfcSwitchingDevice", None),
     ("occupancy_sensor", "IfcSensor", "MOVEMENTSENSOR"),
@@ -97,8 +98,15 @@ def test_every_device_type_exports_its_ifc4_class_and_predefined_type() -> None:
     model = _device_model()
     ifc = to_ifc(model)
 
-    # Seven power-outlet types, one each data, CATV/TV and telephone.
+    # Seven power-outlet types, one each data, CATV/TV and telephone; two
+    # luminaire-family types with the exit sign carrying SECURITYLIGHTING.
     assert len(ifc.by_type("IfcOutlet")) == 10
+    assert len(ifc.by_type("IfcLightFixture")) == 2
+    exit_sign = next(
+        item for item in ifc.by_type("IfcLightFixture")
+        if item.ObjectType == "exit_sign"
+    )
+    assert exit_sign.PredefinedType == "SECURITYLIGHTING"
     for device_type, ifc_class, predefined in EXPECTED_MAPPINGS:
         device = next(
             item for item in model.electrical_devices if item.device_type == device_type

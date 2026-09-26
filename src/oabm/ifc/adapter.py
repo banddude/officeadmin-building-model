@@ -909,11 +909,15 @@ def _device_ifc_type(token: str) -> tuple[str, str | None]:
         return "IfcJunctionBox", "DATA"
     if token in {"luminaire", "light", "light-fixture", "light_fixture"}:
         return "IfcLightFixture", None
+    if token == "exit_sign":
+        return "IfcLightFixture", "SECURITYLIGHTING"
     if token in {"switch", "disconnect"}:
         return "IfcSwitchingDevice", None
-    # IFC4 has no OCCUPANCYSENSOR and no smoke, heat or CO alarm members in
-    # IfcSensorTypeEnum / IfcAlarmTypeEnum, so these take the nearest IFC4
-    # sensor class; the canonical type stays in ObjectType.
+    # IFC4's IfcSensorTypeEnum carries the smoke (SMOKESENSOR), heat
+    # (HEATSENSOR) and CO (COSENSOR) members these devices need, but it has
+    # no OCCUPANCYSENSOR, and IfcAlarmTypeEnum has no smoke or heat members,
+    # so alarms are sensors here and occupancy takes its nearest member. The
+    # canonical type stays in ObjectType either way.
     if token == "occupancy_sensor":
         return "IfcSensor", "MOVEMENTSENSOR"
     if token in {"smoke_alarm", "smoke_co_alarm"}:

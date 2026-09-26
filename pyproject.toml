@@ -24,6 +24,7 @@ tables = ["camelot-py>=2,<3"]
 docling = ["docling>=2,<3"]
 dev = [
   "pytest>=8,<10",
+  "pytest-xdist>=3,<4",
   "jsonschema>=4.23,<5",
   "ifcopenshell>=0.8.5,<0.9",
   "numpy>=1.26,<3",

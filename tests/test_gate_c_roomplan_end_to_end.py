@@ -226,6 +226,21 @@ def _ifc_port_graph(ifc: ifcopenshell.file) -> dict[int, set[int]]:
             left, right = ports
             graph.setdefault(left, set()).add(right)
             graph.setdefault(right, set()).add(left)
+
+    # A route end attaches to its own adapter port nested on the endpoint
+    # element, not to the element's canonical port, so that one canonical panel
+    # port can start any number of home runs within IFC4's one-relationship-
+    # per-role port bound. Flow between an endpoint element's ports passes
+    # through that element, so join the ports each such element owns, just as
+    # the loop above joins the two ports a conduit span or fitting owns.
+    for product in ifc.by_type("IfcDistributionElement"):
+        if product.is_a("IfcCableCarrierSegment") or product.is_a("IfcCableCarrierFitting"):
+            continue
+        ports = sorted(_product_ports(ifc, product))
+        for left in ports:
+            for right in ports:
+                if left != right:
+                    graph.setdefault(left, set()).add(right)
     return graph
 
 

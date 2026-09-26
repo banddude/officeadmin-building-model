@@ -6,10 +6,10 @@
     "IfcCableCarrierSegment": 3,
     "IfcCableSegment": 3,
     "IfcDistributionCircuit": 1,
-    "IfcDistributionPort": 12,
+    "IfcDistributionPort": 14,
     "IfcElectricDistributionBoard": 1,
     "IfcOutlet": 1,
-    "IfcRelConnectsPorts": 12
+    "IfcRelConnectsPorts": 6
   },
   "route": {
     "canonical_id": "route:panel-evse",
@@ -18,5 +18,7 @@
     "ifc_segment_predefined_type": "CONDUITSEGMENT",
     "segment_count": 3,
     "fitting_count": 2
-  }
+  },
+  "note_ifc_rel_connects_ports": "One IfcRelConnectsPorts per logical connection. IFC4 bounds IfcPort.ConnectedTo and IfcPort.ConnectedFrom at SET [0:1] each, so a reciprocal pair per connection would saturate both role slots on both ports. The previous count of 12 pinned the doubled reciprocal pairs the old connect_port helper wrote for 6 logical connections.",
+  "note_ifc_distribution_port": "14 = 2 canonical ports + 6 route-span ports + 4 fitting ports + 2 route attachment ports. Each route end attaches to an adapter-owned port of its own, nested on the canonical port's owner at the canonical port's position, instead of to the canonical port itself; otherwise a canonical panel port could start at most two home runs within IFC4's per-role bound. The route-end connections moved to the attachment ports, so IfcRelConnectsPorts stays 6. The previous count of 12 had no attachment ports."
 }

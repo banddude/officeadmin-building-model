@@ -260,12 +260,15 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             item.ObjectType = device.device_type
 
     canonical_ports: dict[str, Any] = {}
+    canonical_port_owners: dict[str, Any] = {}
+    model_ports = {port.id: port for port in model.ports}
     for ordinal, port in enumerate(model.ports):
         owner = entity_ifc.get(port.owner_id)
         if owner is None or not owner.is_a("IfcDistributionElement"):
             raise IfcAdapterError(
                 f"port {port.id!r} owner {port.owner_id!r} is not an IFC distribution element"
             )
+        canonical_port_owners[port.id] = owner
         item = ifcopenshell.api.system.add_port(ifc, element=owner)
         item.GlobalId = canonical_id_to_ifc_guid(port.id)
         item.Name = port.name
@@ -292,40 +295,24 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             f"IFC ports support one connected peer: {fanout_ports!r}"
         )
 
+    # Port connections are collected and materialized once, at the end.
+    # ``ifcopenshell.api.system.connect_port`` is not used: it purges existing
+    # connections on either port and writes two reciprocal relationships for one
+    # logical connection, which is how canonical peer links were silently lost.
+    #
+    # Canonical ports carry canonical peer connectivity only. Route ends attach
+    # to adapter-owned ports of their own (see the route loop), because IFC4
+    # gives a port one relationship per role and a panel port is routinely the
+    # start of many home runs.
+    port_links: list[tuple[Any, Any]] = []
     linked: set[tuple[str, str]] = set()
     for port in model.ports:
         for other_id in port.connected_port_ids:
             pair = tuple(sorted((port.id, other_id)))
             if pair in linked:
                 continue
-            try:
-                ifcopenshell.api.system.connect_port(
-                    ifc,
-                    port1=canonical_ports[port.id],
-                    port2=canonical_ports[other_id],
-                    direction="NOTDEFINED",
-                )
-            except Exception as exc:
-                raise IfcAdapterError(
-                    "failed to materialize canonical port connection "
-                    f"{port.id!r} <-> {other_id!r}"
-                ) from exc
+            port_links.append((canonical_ports[port.id], canonical_ports[other_id]))
             linked.add(pair)
-
-    expected_connections = {
-        port.id: set(port.connected_port_ids) for port in model.ports
-    }
-    native_connections = _native_port_connections(ifc, canonical_ports)
-    if native_connections != expected_connections:
-        mismatched = sorted(
-            port_id
-            for port_id, expected in expected_connections.items()
-            if native_connections.get(port_id, set()) != expected
-        )
-        raise IfcAdapterError(
-            "canonical port connectivity cannot be represented natively without loss "
-            f"for ports {mismatched!r}"
-        )
 
     fitting_ifc: dict[str, Any] = {}
     fitting_ports: dict[str, tuple[Any, Any]] = {}
@@ -438,8 +425,27 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             )
 
         if segment_ports:
-            _connect(ifc, canonical_ports[route.start_port_id], segment_ports[0][0])
-            _connect(ifc, segment_ports[-1][1], canonical_ports[route.end_port_id])
+            # Each route end gets its own attachment port, nested on the
+            # canonical port's owner at the canonical port's position. Wiring
+            # the span to the canonical port itself would spend one of that
+            # port's two IFC4 role slots per route end, so a panel port that
+            # starts more than two home runs could not be exported.
+            start_attachment = _add_route_attachment_port(
+                ifc,
+                canonical_port_owners[route.start_port_id],
+                model_ports[route.start_port_id],
+                route_id=route.id,
+                end="start",
+            )
+            end_attachment = _add_route_attachment_port(
+                ifc,
+                canonical_port_owners[route.end_port_id],
+                model_ports[route.end_port_id],
+                route_id=route.id,
+                end="end",
+            )
+            _connect(port_links, start_attachment, segment_ports[0][0])
+            _connect(port_links, segment_ports[-1][1], end_attachment)
             boundary_fittings = _fittings_by_boundary(points, route_fittings)
             for boundary in range(len(segment_ports) - 1):
                 left = segment_ports[boundary][1]
@@ -448,9 +454,9 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
                 previous = left
                 for fitting in chain:
                     ports = fitting_ports[fitting.id]
-                    _connect(ifc, previous, ports[0])
+                    _connect(port_links, previous, ports[0])
                     previous = ports[1]
-                _connect(ifc, previous, right)
+                _connect(port_links, previous, right)
 
         level_id = _route_level_id(model, route)
         if level_id and level_id in storeys:
@@ -519,6 +525,43 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
         circuit = circuit_ifc.get(conductor.circuit_id)
         if circuit is not None:
             ifcopenshell.api.system.assign_system(ifc, products=[item], system=circuit)
+
+    # An IfcSystem is only reachable to a consumer once it is declared to serve
+    # a spatial structure. Without IfcRelServicesBuildings a route or circuit is
+    # present in the file but belongs to no building, so viewers and MVD
+    # checkers drop it.
+    for canonical_id in (
+        *(route.id for route in model.routes),
+        *(circuit.id for circuit in model.circuits),
+    ):
+        system = entity_ifc.get(canonical_id)
+        if system is None or not system.is_a("IfcSystem"):
+            continue
+        ifc.create_entity(
+            "IfcRelServicesBuildings",
+            GlobalId=canonical_id_to_ifc_guid(f"{canonical_id}#services-building"),
+            RelatingSystem=system,
+            RelatedBuildings=[building],
+        )
+
+    _materialize_port_connections(ifc, port_links)
+
+    # Verify canonical port connectivity LAST, once every native connection has
+    # been written. Anything that drops a link must surface here, not silently.
+    expected_connections = {
+        port.id: set(port.connected_port_ids) for port in model.ports
+    }
+    native_connections = _native_port_connections(ifc, canonical_ports)
+    if native_connections != expected_connections:
+        mismatched = sorted(
+            port_id
+            for port_id, expected in expected_connections.items()
+            if native_connections.get(port_id, set()) != expected
+        )
+        raise IfcAdapterError(
+            "canonical port connectivity cannot be represented natively without loss "
+            f"for ports {mismatched!r}"
+        )
 
     if destination is not None:
         ifc.write(str(Path(destination)))
@@ -802,6 +845,20 @@ def _quaternion_from_matrix(rotation: np.ndarray) -> tuple[float, float, float, 
     return tuple(float(v) for v in values)  # type: ignore[return-value]
 
 
+def _ensure_placement(ifc: ifcopenshell.file, product: Any) -> None:
+    """Give a product an identity placement when it does not already have one.
+
+    IFC4 ``IfcProduct.PlacementForShapeRepresentation`` requires any product
+    carrying an ``IfcShapeRepresentation`` to also carry an ``ObjectPlacement``.
+    Canonical geometry is authored in world coordinates, so identity is the
+    correct placement and moves nothing.
+    """
+
+    if getattr(product, "ObjectPlacement", None) is not None:
+        return
+    _set_pose(ifc, product, Pose(position=Point3(x=0.0, y=0.0, z=0.0)))
+
+
 def _assign_polyline_representation(
     ifc: ifcopenshell.file,
     product: Any,
@@ -813,6 +870,7 @@ def _assign_polyline_representation(
     points = tuple(points)
     if len(points) < 2:
         return
+    _ensure_placement(ifc, product)
     cartesian = [
         ifc.create_entity("IfcCartesianPoint", Coordinates=(float(p.x), float(p.y), float(p.z)))
         for p in points
@@ -840,6 +898,7 @@ def _assign_round_body(
 ) -> None:
     if nominal_diameter_m is None or nominal_diameter_m <= 0:
         return
+    _ensure_placement(ifc, product)
     cartesian = [
         ifc.create_entity("IfcCartesianPoint", Coordinates=(float(p.x), float(p.y), float(p.z)))
         for p in (start, end)
@@ -1012,6 +1071,7 @@ def _add_adapter_port(
     *,
     route_id: str,
     role: str,
+    **metadata: Any,
 ) -> Any:
     port = ifcopenshell.api.system.add_port(ifc, element=owner)
     port.GlobalId = canonical_id_to_ifc_guid(stable_key)
@@ -1023,14 +1083,121 @@ def _add_adapter_port(
     except (AttributeError, TypeError, ValueError):
         pass
     _set_pose(ifc, port, Pose(position=position))
-    _mark_adapter(ifc, port, Role=role, RouteId=route_id, StableKey=stable_key)
+    _mark_adapter(
+        ifc, port, Role=role, RouteId=route_id, StableKey=stable_key, **metadata
+    )
     return port
 
 
-def _connect(ifc: ifcopenshell.file, first: Any, second: Any) -> None:
-    ifcopenshell.api.system.connect_port(
-        ifc, port1=first, port2=second, direction="NOTDEFINED"
+def _add_route_attachment_port(
+    ifc: ifcopenshell.file,
+    owner: Any,
+    canonical_port: Any,
+    *,
+    route_id: str,
+    end: str,
+) -> Any:
+    """Add the adapter port where one route end meets its canonical port.
+
+    The attachment port is nested on the canonical port's owner at the
+    canonical port's position and carries only ``OABM_Adapter`` metadata, so
+    ``from_ifc`` never mistakes it for a canonical entity. Its GlobalId comes
+    from ``{route_id}#attach:{end}``, so it is stable across exports and
+    independent of how many other routes share the canonical port.
+    """
+
+    return _add_adapter_port(
+        ifc,
+        owner,
+        f"{route_id}#attach:{end}",
+        canonical_port.pose.position,
+        canonical_port.direction,
+        route_id=route_id,
+        role=f"route-attach-{end}",
+        CanonicalPortId=canonical_port.id,
     )
+
+
+def _connect(port_links: list[tuple[Any, Any]], first: Any, second: Any) -> None:
+    port_links.append((first, second))
+
+
+def _port_label(port: Any) -> str:
+    """Name a port in an error by its canonical id, else its adapter key.
+
+    Canonical ports carry the canonical ``name`` (often null) as their IFC
+    Name, so the Name alone cannot identify them; adapter ports use their
+    stable key as their Name.
+    """
+
+    try:
+        meta = _canonical_metadata(port)
+    except IfcAdapterError:
+        meta = None
+    if meta is not None and meta["kind"] == "port" and meta["json"].get("id"):
+        return str(meta["json"]["id"])
+    return str(port.Name or port.GlobalId)
+
+
+def _create_port_connection(
+    ifc: ifcopenshell.file, relating: Any, related: Any, stable_key: str
+) -> Any:
+    """Write one IfcRelConnectsPorts directly.
+
+    ``ifcopenshell.api.system.connect_port`` is deliberately not used: it purges
+    any existing connection on either port first, and for a NOTDEFINED direction
+    it writes two reciprocal relationships for a single logical connection while
+    also overwriting ``FlowDirection`` with NOTDEFINED.
+    """
+
+    return ifc.create_entity(
+        "IfcRelConnectsPorts",
+        GlobalId=canonical_id_to_ifc_guid(stable_key),
+        RelatingPort=relating,
+        RelatedPort=related,
+    )
+
+
+def _materialize_port_connections(
+    ifc: ifcopenshell.file, port_links: list[tuple[Any, Any]]
+) -> None:
+    """Write every collected port connection as one IfcRelConnectsPorts.
+
+    IFC4 bounds ``IfcPort.ConnectedTo`` (as RelatingPort) and
+    ``IfcPort.ConnectedFrom`` (as RelatedPort) at SET [0:1] each, so each
+    relationship consumes one role slot on each of its two ports. Slot use is
+    read from the file's own inverse attributes, so a relationship already in
+    the file counts. Each link is oriented as given when both slots are free,
+    flipped when only the opposite orientation fits, and refused with the ports
+    named when neither does.
+
+    ``to_ifc`` never reaches the refusal: canonical ports carry only canonical
+    peer links, which the fanout guard bounds at one, and every adapter port
+    (segment end, fitting end, route attachment) takes part in at most one link.
+    """
+
+    for first, second in port_links:
+        if first.id() == second.id():
+            continue
+        if not first.ConnectedTo and not second.ConnectedFrom:
+            pair = (first, second)
+        elif not first.ConnectedFrom and not second.ConnectedTo:
+            pair = (second, first)
+        else:
+            raise IfcAdapterError(
+                "canonical port connectivity cannot be represented natively without "
+                "loss; IFC4 IfcPort bounds ConnectedTo and ConnectedFrom at one "
+                f"relationship each, and ports {_port_label(first)!r} <-> "
+                f"{_port_label(second)!r} cannot be oriented within that bound"
+            )
+        key = f"portlink:{pair[0].GlobalId}:{pair[1].GlobalId}"
+        try:
+            _create_port_connection(ifc, pair[0], pair[1], key)
+        except Exception as exc:
+            raise IfcAdapterError(
+                "failed to materialize canonical port connection "
+                f"{_port_label(first)!r} <-> {_port_label(second)!r}"
+            ) from exc
 
 
 def _direction(start: Point3, end: Point3) -> Vector3:

@@ -878,14 +878,58 @@ def _equipment_ifc_type(token: str) -> tuple[str, str | None]:
 
 def _device_ifc_type(token: str) -> tuple[str, str | None]:
     token = token.lower()
-    if token in {"receptacle", "outlet", "power-outlet", "power_outlet"}:
+    # Convenience receptacles, special-purpose outlets and EVSE are all power
+    # outlets in IFC4; data, TV and telephone outlets get their own outlet
+    # PredefinedType. The canonical device_type stays in ObjectType either way.
+    if token in {
+        "receptacle",
+        "outlet",
+        "power-outlet",
+        "power_outlet",
+        "receptacle_duplex",
+        "receptacle_quad",
+        "combination_outlet",
+        "special_purpose_outlet",
+        "evse",
+    }:
         return "IfcOutlet", "POWEROUTLET"
+    if token == "data_outlet":
+        return "IfcOutlet", "DATAOUTLET"
+    if token in {"catv_outlet", "tv_outlet"}:
+        return "IfcOutlet", "AUDIOVISUALOUTLET"
+    if token in {"telephone_outlet", "telephone"}:
+        # IFC4 defines TELEPHONEOUTLET in IfcOutletTypeEnum; it is more
+        # precise than the generic COMMUNICATIONSOUTLET.
+        return "IfcOutlet", "TELEPHONEOUTLET"
     if token in {"junction-box", "junction_box", "jbox"}:
         return "IfcJunctionBox", None
+    if token in {"junction_box_power", "power_junction_box"}:
+        return "IfcJunctionBox", "POWER"
+    if token in {"junction_box_data", "data_junction_box", "telephone_junction_box"}:
+        return "IfcJunctionBox", "DATA"
     if token in {"luminaire", "light", "light-fixture", "light_fixture"}:
         return "IfcLightFixture", None
     if token in {"switch", "disconnect"}:
         return "IfcSwitchingDevice", None
+    # IFC4 has no OCCUPANCYSENSOR and no smoke, heat or CO alarm members in
+    # IfcSensorTypeEnum / IfcAlarmTypeEnum, so these take the nearest IFC4
+    # sensor class; the canonical type stays in ObjectType.
+    if token == "occupancy_sensor":
+        return "IfcSensor", "MOVEMENTSENSOR"
+    if token in {"smoke_alarm", "smoke_co_alarm"}:
+        return "IfcSensor", "SMOKESENSOR"
+    if token == "heat_detector":
+        return "IfcSensor", "HEATSENSOR"
+    if token == "access_control_device":
+        return "IfcSensor", "IDENTIFIERSENSOR"
+    if token == "speaker":
+        return "IfcAudioVisualAppliance", "SPEAKER"
+    # IFC4's IfcFanTypeEnum describes fan mechanics, not application, so
+    # exhaust and ceiling fans keep the class without a PredefinedType.
+    if token in {"exhaust_fan", "ceiling_fan"}:
+        return "IfcFan", None
+    if token in {"panelboard", "distribution-board", "distribution_board"}:
+        return "IfcElectricDistributionBoard", "DISTRIBUTIONBOARD"
     return "IfcElectricAppliance", None
 
 

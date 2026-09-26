@@ -15,12 +15,23 @@ The current mapping is:
 - slab -> `IfcSlab`
 - ceiling -> `IfcCovering`
 - opening -> `IfcOpeningElement` / void relationship
-- electrical panel or distribution board -> `IfcElectricDistributionBoard`
-- EVSE and otherwise-unclassified electrical endpoint equipment -> `IfcElectricAppliance`
-- receptacle -> `IfcOutlet`
-- junction box -> `IfcJunctionBox`
+- electrical panel or distribution board (equipment or device) -> `IfcElectricDistributionBoard` with `DISTRIBUTIONBOARD`
+- receptacle, convenience/special-purpose outlet or EVSE -> `IfcOutlet` with `POWEROUTLET`
+- data outlet -> `IfcOutlet` with `DATAOUTLET`
+- CATV/TV outlet -> `IfcOutlet` with `AUDIOVISUALOUTLET`
+- telephone outlet -> `IfcOutlet` with `TELEPHONEOUTLET` (the type IFC4 actually defines)
+- junction box -> `IfcJunctionBox`, with `POWER` or `DATA` when the canonical type distinguishes them
 - luminaire -> `IfcLightFixture`
-- switch -> `IfcSwitchingDevice`
+- switch or disconnect -> `IfcSwitchingDevice`
+- occupancy sensor -> `IfcSensor` with `MOVEMENTSENSOR` (IFC4 has no `OCCUPANCYSENSOR` member)
+- smoke and smoke/CO alarms -> `IfcSensor` with `SMOKESENSOR`; heat detector -> `IfcSensor` with `HEATSENSOR` (IFC4's `IfcAlarmTypeEnum` has no smoke or heat members)
+- access control device -> `IfcSensor` with `IDENTIFIERSENSOR`
+- speaker -> `IfcAudioVisualAppliance` with `SPEAKER`
+- exhaust or ceiling fan -> `IfcFan` (IFC4's fan types describe mechanics, not application, so no `PredefinedType`)
+- any other device or equipment type -> `IfcElectricAppliance`
+
+The canonical `device_type` or `equipment_type` is always kept in the IFC object's `ObjectType`, so no distinction is lost even where IFC4 has only a nearest enum member. Exported device classes round-trip: `from_ifc` restores the same canonical types.
+
 - canonical port -> `IfcDistributionPort`, nested under its owner
 - EMT/PVC conduit route span -> `IfcCableCarrierSegment` with `CONDUITSEGMENT`
 - tray route span -> `IfcCableCarrierSegment` with `CABLETRAYSEGMENT`

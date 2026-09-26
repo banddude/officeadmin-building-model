@@ -78,7 +78,10 @@ def test_ifc_materialization_matches_expected_electrical_shape() -> None:
     evse = ifc.by_guid(canonical_id_to_ifc_guid("device:evse"))
     assert panel.is_a("IfcElectricDistributionBoard")
     assert panel.PredefinedType == "DISTRIBUTIONBOARD"
-    assert evse.is_a("IfcElectricAppliance")
+    # EVSE is a power outlet in IFC4; its canonical type stays in ObjectType.
+    assert evse.is_a("IfcOutlet")
+    assert evse.PredefinedType == "POWEROUTLET"
+    assert evse.ObjectType == "evse"
 
     carrier_segments = ifc.by_type("IfcCableCarrierSegment")
     assert all(segment.PredefinedType == "CONDUITSEGMENT" for segment in carrier_segments)

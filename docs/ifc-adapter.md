@@ -44,6 +44,39 @@ The canonical `device_type` is always kept in the IFC device's `ObjectType`, so 
 
 Route spans and fittings have native `IfcDistributionPort` objects and explicit `IfcRelConnectsPorts` links so they are editable as a connected distribution path in Bonsai. Each route end attaches to an adapter-owned attachment port of its own (stable key `{route_id}#attach:start` or `#attach:end`), nested on the canonical endpoint port's owner at that port's position, and the first or last route span connects to that attachment port. Canonical ports carry only canonical peer connectivity. IFC4 bounds `IfcPort.ConnectedTo` and `IfcPort.ConnectedFrom` at one relationship each, so wiring route ends to the canonical port itself would cap a panel port at two home runs. Every logical connection is exactly one `IfcRelConnectsPorts` with a deterministic `GlobalId`, and every route and circuit `IfcSystem` serves the emitted `IfcBuilding` through `IfcRelServicesBuildings`.
 
+## Axis and Body representations
+
+Architecture entities carry two independent shape representations:
+
+- `Axis` — the canonical centerline or footprint curve. This is the only
+  representation `from_ifc` reads back as geometry: a native wall-axis or
+  footprint edit in Bonsai flows into the canonical model through
+  `_apply_ifc_overrides`.
+- `Body` — a swept solid derived from the canonical dimension fields, written
+  so viewers (Blender, Bonsai, Revit, Navisworks) see surfaces instead of
+  lines or nothing. The Body is a view, never a second source of truth: it is
+  authored in canonical metres on the canonical axes from canonical fields
+  only, and import ignores it entirely, so `round_trip` stays exact.
+
+Bodies are written only where the canonical fields fully determine them
+(`IfcExtrudedAreaSolid` throughout; every product with a Body also carries the
+`ObjectPlacement` the IFC4 `PlacementForShapeRepresentation` rule requires):
+
+- wall: per straight centerline segment, the plan rectangle (segment length ×
+  `thickness_m`) centered across the centerline and extruded up `height_m`;
+- slab and ceiling: the `footprint` polygon extruded down `thickness_m` (the
+  footprint plane is the plate's top face);
+- space: the `footprint` polygon extruded up `height_m`;
+- opening: a void box `size.x` wide, the host wall `thickness_m` deep and
+  `size.z` high, centered on the opening pose (authored in the opening's local
+  coordinates, since its placement already carries the pose), so
+  `IfcRelVoidsElement` actually cuts the host.
+
+An entity missing a dimension its Body needs gets no Body and no default size.
+The reason is recorded on its `OABM_Adapter` property set (`Body=no` plus
+`BodyReason`, for example a ceiling without `thickness_m` or a space without
+`height_m`). Entities with a Body record `Body=yes`.
+
 ## Identity and lossless round trip
 
 Every canonical entity that becomes an IFC rooted object receives a deterministic `GlobalId` computed from its canonical ID. Renaming or moving an object therefore does not change identity. Import rejects a canonical object whose `GlobalId` no longer matches its canonical ID instead of treating replacement as an edit.

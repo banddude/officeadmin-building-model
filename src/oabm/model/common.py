@@ -7,11 +7,12 @@ import types
 import uuid
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import Any, Iterable, Mapping, Sequence, TypeVar, Union, get_args, get_origin, get_type_hints
 
 SCHEMA_VERSION = "1.0.0"
 ID_NAMESPACE = uuid.UUID("7ec97126-df4d-5bf7-b1b8-6c1f0b1265de")
 _ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
+_SCOPE_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _EPS = 1e-9
 
 
@@ -252,6 +253,7 @@ class Provenance:
     method: str | None = None
     confidence: float = 1.0
     derivation: str | None = None
+    scope_paths: tuple[str, ...] | None = None
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -264,6 +266,20 @@ class Provenance:
                 "Provenance.derivation must be one of "
                 f"{sorted(DERIVATION_CLASSES)!r}, got {self.derivation!r}"
             )
+        if self.scope_paths is not None:
+            if (
+                not isinstance(self.scope_paths, tuple)
+                or not self.scope_paths
+                or any(
+                    not isinstance(path, str)
+                    or _SCOPE_PATH_RE.fullmatch(path) is None
+                    for path in self.scope_paths
+                )
+                or len(set(self.scope_paths)) != len(self.scope_paths)
+            ):
+                raise ContractError(
+                    "Provenance.scope_paths must be a nonempty tuple of unique field paths"
+                )
         if self.page is not None:
             if isinstance(self.page, bool) or not isinstance(self.page, int) or self.page < 1:
                 raise ContractError("Provenance.page is a 1-based integer")
@@ -271,6 +287,36 @@ class Provenance:
         if not 0.0 <= confidence <= 1.0:
             raise ContractError("Provenance.confidence must be between 0 and 1")
         _validate_json_value(self.attributes)
+
+
+def provenance_applies_to(record: Provenance, consumed_paths: Iterable[str]) -> bool:
+    """Whether a record's canonical scope covers a consumed claim path.
+
+    An absent scope covers the whole owner. A stated scope covers its exact
+    field or a parent/child path. Empty and invalid scopes are rejected when
+    the record/model is constructed, never interpreted as permission to drop
+    an inferred record.
+    """
+    if record.scope_paths is None:
+        return True
+    # Materialize once: a caller may provide a generator, and each scope must
+    # be compared against the same consumed claims. Missing or malformed
+    # consumed claims cannot safely exclude an inferred record.
+    if isinstance(consumed_paths, str):
+        return True
+    consumed_paths = tuple(consumed_paths)
+    if not consumed_paths or any(
+        not isinstance(path, str) or _SCOPE_PATH_RE.fullmatch(path) is None
+        for path in consumed_paths
+    ):
+        return True
+    return any(
+        scope == consumed
+        or scope.startswith(consumed + ".")
+        or consumed.startswith(scope + ".")
+        for scope in record.scope_paths
+        for consumed in consumed_paths
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

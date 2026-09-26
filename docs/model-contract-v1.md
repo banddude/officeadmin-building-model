@@ -90,7 +90,31 @@ Every entity can carry:
 
 A provenance record identifies the source kind and source ID and may include a native element ID, 1-based page number, method, confidence, and attributes. Importers should retain source-native IDs here even when canonical IDs are opaque.
 
-`attributes` is an extension escape hatch, not a place to duplicate fields already defined by the contract. If multiple workstreams need the same attribute semantically, promote it into a future contract version.
+`Provenance.derivation` states whether the claim was observed, supplied by a
+user, or inferred. `Provenance.scope_paths` optionally names the canonical
+field paths that record qualifies, for example `("thickness_m",)` on a wall or
+`("attributes.mounting",)` on an entity that carries mounting in its source
+attributes. A path is relative to the record's owner. It must exist on that
+owner, and an explicit scope must be nonempty, unique, and syntactically valid.
+The owner and each path are validated when a `BuildingModel` is constructed.
+An omitted/null scope qualifies the whole owner. A consumer comparing a
+derived claim's consumed paths uses the canonical `provenance_applies_to()`
+rule: a scoped record applies when a consumed path is the same as, contains,
+or is contained by one of the record's paths. Unknown or empty typed scopes
+are invalid; they must never cause an inferred record to be ignored and a
+quantity to be promoted to observed.
+Missing or malformed consumed paths also cannot exclude a scoped record;
+`provenance_applies_to()` conservatively returns true for those inputs.
+
+This optional field is a compatible v1 extension. Legacy records without it
+remain byte-identical and are treated as entity-wide. RoomPlan's former
+`attributes.assumed_dimension` convention now emits `scope_paths` instead;
+consumers must not infer scope from a free-form attribute. Branches that used
+`assumed_field` or `assumed_dimension` for other claims should migrate to the
+same field before merging. This change does not assert that their payload
+fields, such as electrical box mounting, are otherwise canonical.
+
+`attributes` is an extension escape hatch, not a place to duplicate fields already defined by the contract. If multiple workstreams need the same attribute semantically, promote it into the canonical contract.
 
 ## Serialization invariants
 

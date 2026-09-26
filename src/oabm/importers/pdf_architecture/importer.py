@@ -3180,6 +3180,105 @@ def _hatch_evidence_ids(
     return result
 
 
+_HATCH_FAMILY_ANGLE_TOLERANCE = math.radians(1.0)
+_HATCH_FAMILY_PITCH_TOLERANCE = 0.10
+_HATCH_FAMILY_OVERLAP_RATIO = 0.5
+
+
+def _hatch_family_members(
+    runs: list[_WallFaceRun],
+    records: list[tuple[float, float, float, float, float]],
+) -> set[int]:
+    """Detect parallel constant-pitch run families (hatch/poché fields).
+
+    A family is three or more runs within about one degree of one direction,
+    stacked at a roughly constant perpendicular pitch (within about 10
+    percent) whose extents lie side by side covering one area.  Such lines
+    tile a surface; two neighbouring hatch lines only imitate the two faces
+    of a wall.  Returns the member run indexes; the family stays in the
+    candidate pool so equal-pitch groups that are genuinely ambiguous wall
+    evidence still fail closed, and every pairing is resolved before
+    membership is consulted.
+    """
+    members: set[int] = set()
+    if len(runs) < 3:
+        return members
+    bucket_count = int(round(math.pi / _HATCH_FAMILY_ANGLE_TOLERANCE))
+    buckets: dict[int, set[int]] = {}
+    for index, (ux, uy, _, _, _) in enumerate(records):
+        theta = math.atan2(uy, ux) % math.pi
+        base = int(round(theta / _HATCH_FAMILY_ANGLE_TOLERANCE)) % bucket_count
+        for bucket in {
+            (base - 1) % bucket_count,
+            base,
+            (base + 1) % bucket_count,
+        }:
+            buckets.setdefault(bucket, set()).add(index)
+    for bucket in sorted(buckets):
+        reference_angle = bucket * _HATCH_FAMILY_ANGLE_TOLERANCE
+        tx, ty = math.cos(reference_angle), math.sin(reference_angle)
+        nx, ny = -ty, tx
+        entries = []
+        for index in sorted(buckets[bucket]):
+            start, end = _canonical_segment(runs[index].start_pt, runs[index].end_pt)
+            tangent = sorted(
+                (start[0] * tx + start[1] * ty, end[0] * tx + end[1] * ty)
+            )
+            offset = (
+                ((start[0] + end[0]) / 2.0) * nx + ((start[1] + end[1]) / 2.0) * ny
+            )
+            entries.append((offset, tangent[0], tangent[1], index))
+        ordered = sorted(entries)
+        for first, second, third in zip(ordered, ordered[1:], ordered[2:]):
+            first_start, first_end = _canonical_segment(
+                runs[first[3]].start_pt, runs[first[3]].end_pt
+            )
+            dx = first_end[0] - first_start[0]
+            dy = first_end[1] - first_start[1]
+            length = math.hypot(dx, dy)
+            if length <= 1e-9:
+                continue
+            ux, uy = dx / length, dy / length
+            # Perpendicular spacing is measured exactly from the first line of
+            # the window.  Reusing the bucket reference for offsets would tilt
+            # long projections by sin(1 degree) and merge separate assemblies
+            # into one phantom family.
+            distances = []
+            for entry in (second, third):
+                start, _ = _canonical_segment(
+                    runs[entry[3]].start_pt, runs[entry[3]].end_pt
+                )
+                distances.append(
+                    abs(
+                        (start[0] - first_start[0]) * uy
+                        - (start[1] - first_start[1]) * ux
+                    )
+                )
+            first_gap = distances[0]
+            second_gap = distances[1] - distances[0]
+            if first_gap <= 1e-6 or second_gap <= 1e-6:
+                continue
+            pitch = (first_gap + second_gap) / 2.0
+            if (
+                abs(first_gap - second_gap)
+                > pitch * _HATCH_FAMILY_PITCH_TOLERANCE
+            ):
+                continue
+            first_overlap = min(first[2], second[2]) - max(first[1], second[1])
+            second_overlap = min(second[2], third[2]) - max(second[1], third[1])
+            if first_overlap < _HATCH_FAMILY_OVERLAP_RATIO * min(
+                first[2] - first[1], second[2] - second[1]
+            ):
+                continue
+            if second_overlap < _HATCH_FAMILY_OVERLAP_RATIO * min(
+                second[2] - second[1], third[2] - third[1]
+            ):
+                continue
+            for entry in (first, second, third):
+                members.add(entry[3])
+    return members
+
+
 def _wall_pair_has_endpoint_junction(
     start_pt: tuple[float, float],
     end_pt: tuple[float, float],
@@ -3521,6 +3620,8 @@ def _geometric_wall_face_pairs(
                 "candidate_pair_count": 0,
                 "parallel_gap_histogram_m": _gap_histogram([]),
                 "accepted_pair_count": 0,
+                "hatch_family_line_count": 0,
+                "hatch_family_excluded_line_count": 0,
                 "rejected": {
                     "parallel": 0,
                     "overlap_ratio": 0,
@@ -3532,6 +3633,8 @@ def _geometric_wall_face_pairs(
         return ()
 
     records = [_line_record(run) for run in eligible_runs]
+    hatch_family_members = _hatch_family_members(eligible_runs, records)
+    diagnostics["hatch_family_line_count"] = len(hatch_family_members)
     angle_tolerance = math.radians(2.0)
     orientation_bucket_count = max(1, int(round(math.pi / angle_tolerance)))
     diagnostic_max_offset_m = max(options.max_wall_thickness_m, 24.0 * _INCH_M)
@@ -3698,11 +3801,22 @@ def _geometric_wall_face_pairs(
     accepted: list[_WallFacePair] = []
     seen_anchors: set[str] = set()
     accepted_candidate_indexes: set[int] = set()
+    hatch_family_rejected_pair_count = 0
     for candidate_index, candidate in enumerate(candidates):
         first_index, second_index, _, thickness_m, start_source, end_source, _ = candidate
         if unique_best.get(first_index) != candidate_index:
             continue
         if unique_best.get(second_index) != candidate_index:
+            continue
+        if (
+            first_index in hatch_family_members
+            and second_index in hatch_family_members
+        ):
+            # Both faces belong to one hatch/poché family: neighbouring hatch
+            # lines imitate a wall pair, but a real wall face of such a field
+            # keeps its outside partner because that pairing is still mutual
+            # and is not dropped here.
+            hatch_family_rejected_pair_count += 1
             continue
         geometry_anchor = _rounded_wall_anchor(start_source, end_source, transform)
         if geometry_anchor in seen_anchors:
@@ -3737,15 +3851,27 @@ def _geometric_wall_face_pairs(
             )
         )
 
+    hatch_used_run_indexes: set[int] = set()
+    for candidate_index in accepted_candidate_indexes:
+        candidate = candidates[candidate_index]
+        hatch_used_run_indexes.add(candidate[0])
+        hatch_used_run_indexes.add(candidate[1])
     diagnostics.update(
         {
             "candidate_pair_count": len(candidate_pairs),
             "parallel_gap_histogram_m": _gap_histogram(gap_samples_m),
             "accepted_pair_count": len(accepted),
+            # Hatch-family lines that ended up on the wall-less side of the
+            # pairing: they are the hatch lines the field contributed to no
+            # accepted wall pair.
+            "hatch_family_excluded_line_count": len(
+                hatch_family_members - hatch_used_run_indexes
+            ),
             "accepted_pair_junction_supported_count": sum(
                 1 for pair in accepted if pair.junction_supported
             ),
             "ambiguous_best_run_count": ambiguous_best_run_count,
+            "hatch_family_excluded_pair_count": hatch_family_rejected_pair_count,
             # Internal only: source-point geometry of each tied run, consumed
             # by the local partial-wall ambiguity gate in
             # _geometric_wall_loop_entities and popped before diagnostics

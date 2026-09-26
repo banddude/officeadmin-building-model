@@ -23,6 +23,7 @@ from oabm.model import (
     Polyline3D,
     Port,
     Pose,
+    Provenance,
     Route,
     Slab,
     Vector3,
@@ -1116,3 +1117,178 @@ def test_named_entities_carry_name_in_extras(tmp_path: Path) -> None:
     wall_parsed = _parse_glb(tmp_path / "wall.glb")
     wall_node = wall_parsed["gltf"]["nodes"][_by_name(wall_parsed)["wall:south-run"]]
     assert wall_node["extras"]["name"] == "south run"
+
+
+# --- Caller-emphasized entities. Emphasis is the full-colour counterpart of
+# --- dimming: the caller picks the ids, the exporter only refuses to fade
+# --- them, and an id in both sets stays dimmed.
+
+
+def _emphasis_model() -> BuildingModel:
+    """A plan-derived (inferred) device and an observed device of the same
+    type, a panel equipment and one route between its ports: enough to
+    emphasize a device, an equipment and a route while the other device of
+    the same type keeps the default look. The inferred provenance record
+    stands in for any device whose mounting height is a rule, which is the
+    case emphasis exists for."""
+
+    def device(device_id: str, x: float, provenance: tuple = ()) -> ElectricalDevice:
+        return ElectricalDevice(
+            id=device_id,
+            device_type="receptacle_duplex",
+            pose=Pose(position=Point3(x=x, y=2.0, z=0.3)),
+            level_id="level:emph",
+            provenance=provenance,
+        )
+
+    equipment = ElectricalEquipment(
+        id="equip:emph-panel",
+        equipment_type="panelboard",
+        pose=Pose(position=Point3(x=0.0, y=0.0, z=1.0)),
+        level_id="level:emph",
+    )
+
+    def port(port_id: str, position: Point3) -> Port:
+        return Port(
+            id=port_id,
+            owner_id="equip:emph-panel",
+            domain="electrical",
+            role="source",
+            pose=Pose(position=position),
+            direction=Vector3(x=1.0, y=0.0, z=0.0),
+        )
+
+    return BuildingModel(
+        model_id="model:glb-emphasis-synth",
+        levels=(Level(id="level:emph", elevation_m=0.0, height_m=2.7),),
+        electrical_devices=(
+            device(
+                "device:emph-inferred",
+                4.0,
+                (Provenance(
+                    source_kind="synthetic",
+                    source_id="sheet:synth-emphasis",
+                    derivation="inferred",
+                ),),
+            ),
+            device("device:emph-plain", 6.0),
+        ),
+        electrical_equipment=(equipment,),
+        ports=(
+            port("port:emph-a", Point3(x=0.0, y=0.0, z=1.0)),
+            port("port:emph-b", Point3(x=3.0, y=1.5, z=1.0)),
+        ),
+        circuits=(Circuit(
+            id="circuit:emph-1",
+            source_port_id="port:emph-a",
+            load_port_ids=("port:emph-b",),
+            route_ids=("route:emph-1",),
+        ),),
+        routes=(Route(
+            id="route:emph-1",
+            route_type="emt",
+            start_port_id="port:emph-a",
+            end_port_id="port:emph-b",
+            centerline=Polyline3D(points=(
+                Point3(x=0.0, y=0.0, z=1.0),
+                Point3(x=3.0, y=1.5, z=1.0),
+            )),
+            nominal_diameter_m=0.021,
+        ),),
+    )
+
+
+def test_emphasized_inferred_device_draws_opaque_in_class_colour(tmp_path: Path) -> None:
+    summary = to_glb(
+        _emphasis_model(),
+        tmp_path / "emph.glb",
+        emphasized_ids=("device:emph-inferred",),
+    )
+    parsed = _parse_glb(tmp_path / "emph.glb")
+
+    material = _node_material(parsed, "device:emph-inferred")
+    assert material["name"] == "outlet-emphasized"
+    assert "alphaMode" not in material
+    red, green, blue = material["pbrMetallicRoughness"]["baseColorFactor"][:3]
+    assert red > green and red > blue  # the outlet class colour, not grey
+    assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == 1.0
+
+    extras = parsed["gltf"]["nodes"][_by_name(parsed)["device:emph-inferred"]]["extras"]
+    assert extras["display"] == "emphasized (caller-supplied)"
+    assert extras["derivation"] == "inferred"
+    assert summary["emphasized"] == 1
+    assert summary["dimmed"] == 0
+
+
+def test_unemphasized_inferred_device_keeps_translucent_look(tmp_path: Path) -> None:
+    to_glb(_emphasis_model(), tmp_path / "default.glb")
+    parsed = _parse_glb(tmp_path / "default.glb")
+
+    material = _node_material(parsed, "device:emph-inferred")
+    assert material["name"] == "outlet-inferred"
+    assert material["alphaMode"] == "BLEND"
+    assert material["pbrMetallicRoughness"]["baseColorFactor"][3] < 1.0
+    extras = parsed["gltf"]["nodes"][_by_name(parsed)["device:emph-inferred"]]["extras"]
+    assert extras["derivation"] == "inferred"
+    assert "display" not in extras
+
+
+def test_id_in_both_sets_draws_dimmed(tmp_path: Path) -> None:
+    summary = to_glb(
+        _emphasis_model(),
+        tmp_path / "both.glb",
+        dimmed_ids=("device:emph-inferred",),
+        emphasized_ids=("device:emph-inferred",),
+    )
+    parsed = _parse_glb(tmp_path / "both.glb")
+
+    material = _node_material(parsed, "device:emph-inferred")
+    assert material["name"] == "outlet-dimmed"
+    assert material["alphaMode"] == "BLEND"
+    extras = parsed["gltf"]["nodes"][_by_name(parsed)["device:emph-inferred"]]["extras"]
+    assert extras["display"] == "dimmed (caller-supplied)"
+    assert summary["dimmed"] == 1
+    assert summary["emphasized"] == 0
+
+
+def test_emphasized_equipment_and_route_draw_opaque(tmp_path: Path) -> None:
+    summary = to_glb(
+        _emphasis_model(),
+        tmp_path / "route.glb",
+        emphasized_ids=("equip:emph-panel", "route:emph-1"),
+    )
+    parsed = _parse_glb(tmp_path / "route.glb")
+
+    route = _node_material(parsed, "route:emph-1")
+    assert route["name"] == "route-emphasized"
+    assert "alphaMode" not in route
+    assert route["pbrMetallicRoughness"]["baseColorFactor"][3] == 1.0
+    route_extras = parsed["gltf"]["nodes"][_by_name(parsed)["route:emph-1"]]["extras"]
+    assert route_extras["display"] == "emphasized (caller-supplied)"
+
+    panel = _node_material(parsed, "equip:emph-panel")
+    assert panel["name"] == "panel-emphasized"
+    assert "alphaMode" not in panel
+    assert summary["emphasized"] == 2
+
+
+def test_empty_emphasis_option_gives_plain_bytes(tmp_path: Path) -> None:
+    model = _emphasis_model()
+    to_glb(model, tmp_path / "plain.glb")
+    to_glb(model, tmp_path / "empty-option.glb", emphasized_ids=())
+    assert (tmp_path / "plain.glb").read_bytes() == (tmp_path / "empty-option.glb").read_bytes()
+
+
+def test_emphasized_export_is_deterministic(tmp_path: Path) -> None:
+    model = _emphasis_model()
+    options: dict = {
+        "dimmed_ids": ("device:emph-plain",),
+        "emphasized_ids": ("device:emph-inferred", "equip:emph-panel", "route:emph-1"),
+    }
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    summary = to_glb(model, first, **options)
+    to_glb(model, second, **options)
+    assert first.read_bytes() == second.read_bytes()
+    assert summary["emphasized"] == 3
+    assert summary["dimmed"] == 1

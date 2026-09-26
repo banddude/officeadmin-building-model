@@ -101,6 +101,12 @@ _REFERENCE_PLANE_COLOUR = (0.82, 0.82, 0.80)
 #: chose the dimming: the caller, never the exporter.
 _DIMMED_DISPLAY = "dimmed (caller-supplied)"
 
+#: The ``extras["display"]`` value on caller-emphasized entities. It states
+#: who chose the emphasis: the caller, never the exporter. The node's
+#: ``extras["derivation"]`` is untouched, so the provenance is still
+#: disclosed even though the drawing reads as full colour.
+_EMPHASIZED_DISPLAY = "emphasized (caller-supplied)"
+
 # Device/equipment classification mirrors the canonical tokens understood by
 # the IFC adapter, so both derived views agree on what a type token means.
 _OUTLET_TYPES = frozenset({
@@ -170,6 +176,7 @@ class _DisplayOptions(NamedTuple):
     dimmed_ids: frozenset[str] = frozenset()
     dimmed_alpha: float = 0.3
     dimmed_color: tuple[float, float, float] = (0.62, 0.62, 0.62)
+    emphasized_ids: frozenset[str] = frozenset()
 
 
 def to_glb(
@@ -183,6 +190,7 @@ def to_glb(
     dimmed_ids: Iterable[str] = (),
     dimmed_alpha: float = 0.3,
     dimmed_color: tuple[float, float, float] = (0.62, 0.62, 0.62),
+    emphasized_ids: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
 
@@ -203,6 +211,13 @@ def to_glb(
       caller wants drawn in a grey translucent style shaped by
       ``dimmed_color`` and ``dimmed_alpha``. Which ids to dim, and why,
       is the caller's decision; ids that match nothing are ignored.
+    - ``emphasized_ids`` lists canonical device, equipment or route ids the
+      caller wants drawn opaque in their normal class colour, whatever their
+      provenance, so new work reads in full colour while ``dimmed_ids`` ids
+      stay faded. Which ids to emphasize, and why, is again the caller's
+      decision; an id in both sets is dimmed. The node still discloses its
+      provenance: ``extras["derivation"]`` is unchanged and the emphasis
+      itself travels in ``extras["display"]``.
     """
 
     options = _DisplayOptions(
@@ -213,6 +228,7 @@ def to_glb(
         dimmed_ids=frozenset(dimmed_ids),
         dimmed_alpha=dimmed_alpha,
         dimmed_color=dimmed_color,
+        emphasized_ids=frozenset(emphasized_ids),
     )
     document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
@@ -309,6 +325,7 @@ def _build_document(
             "extras": _extras(entity, "space", entity.level_id),
         })
     dimmed_count = 0
+    emphasized_count = 0
     for entity in (*model.electrical_devices, *model.electrical_equipment):
         device_type = getattr(entity, "device_type", None) or getattr(
             entity, "equipment_type", ""
@@ -323,6 +340,13 @@ def _build_document(
             dimmed_count += 1
             extras["display"] = _DIMMED_DISPLAY
             material_key: tuple[Any, ...] = ("dimmed", _device_colour_class(device_type))
+        elif entity.id in options.emphasized_ids:
+            # Emphasis never wins over the dimmed style (checked above), and
+            # it discloses itself in ``display`` while ``derivation`` — set
+            # by ``_extras`` — stays exactly as the provenance holds it.
+            emphasized_count += 1
+            extras["display"] = _EMPHASIZED_DISPLAY
+            material_key = ("emphasized", _device_colour_class(device_type))
         else:
             material_key = (
                 _device_colour_class(device_type),
@@ -342,6 +366,10 @@ def _build_document(
             dimmed_count += 1
             extras["display"] = _DIMMED_DISPLAY
             material_key = ("dimmed", "route")
+        elif entity.id in options.emphasized_ids:
+            emphasized_count += 1
+            extras["display"] = _EMPHASIZED_DISPLAY
+            material_key = ("emphasized", "route")
         else:
             material_key = ("route", _is_derived(entity.provenance, entity.attributes))
         add({
@@ -442,6 +470,7 @@ def _build_document(
         "conductor_wires": len(wire_entries),
         "reference_planes": len(reference_entries),
         "dimmed": dimmed_count,
+        "emphasized": emphasized_count,
     }
     return document, bytes(buffer), counts
 
@@ -464,13 +493,37 @@ def _material(material_class: str, derived: bool) -> dict[str, Any]:
 
 
 def _material_for_key(key: tuple[Any, ...], options: _DisplayOptions) -> dict[str, Any]:
-    """Material for a sorted material key: plain, caller-dimmed or reference."""
+    """Material for a sorted material key: plain, dimmed, emphasized or reference."""
 
     if key[0] == "dimmed":
         return _dimmed_material(key[1], options)
+    if key[0] == "emphasized":
+        return _emphasized_material(key[1])
     if key[0] == "reference":
         return _reference_material(key[1], options)
     return _material(key[0], key[1])
+
+
+def _emphasized_material(material_class: str) -> dict[str, Any]:
+    """Caller-supplied emphasis: the normal class colour, opaque, no BLEND.
+
+    The caller decides which ids to emphasize; the exporter only refuses to
+    fade them, so a plan-derived device whose mounting height is a rule still
+    reads as new work in full colour. The material keeps the plain opaque
+    style's colours and route finish and is named ``<class>-emphasized`` so
+    the choice is visible in the viewer.
+    """
+
+    red, green, blue = _COLOURS[material_class]
+    return {
+        "name": f"{material_class}-emphasized",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [red, green, blue, 1.0],
+            "metallicFactor": 0.6 if material_class == "route" else 0.0,
+            "roughnessFactor": 0.4 if material_class == "route" else 0.9,
+        },
+        "doubleSided": True,
+    }
 
 
 def _dimmed_material(material_class: str, options: _DisplayOptions) -> dict[str, Any]:

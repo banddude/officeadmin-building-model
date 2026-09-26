@@ -49,8 +49,8 @@ Every display option is a keyword-only `to_glb` parameter that defaults off,
 and with all options at their defaults the output is byte-identical to the
 plain export. Display choices are labeled rendering parameters, never silent
 constants, and none of them flow back into the canonical model, IFC or
-quantities (the #88 ruling). The summary dict reports `reference_planes` and
-`dimmed` counts.
+quantities (the #88 ruling). The summary dict reports `reference_planes`,
+`dimmed` and `emphasized` counts.
 
 ### Reference planes
 
@@ -87,6 +87,20 @@ Dimmed entities get a `"<class>-dimmed"` BLEND material and
 `extras["display"] = "dimmed (caller-supplied)"`; the dimmed style also wins
 over the low-voltage colour below. Ids that match nothing are ignored, and
 the summary reports how many entities were actually dimmed as `dimmed`.
+
+### Caller-emphasized entities
+
+`emphasized_ids` lists canonical device, equipment or route ids to draw in
+their normal class colour at full opacity, so new work reads in full colour
+while `dimmed_ids` ids stay faded. The caller decides which ids to emphasize
+and why; the exporter attaches no meaning to the choice and only draws the
+style. Emphasized entities get an opaque `"<class>-emphasized"` material with
+no BLEND and `extras["display"] = "emphasized (caller-supplied)"`; their
+`extras["derivation"]` is unchanged, so a plan-derived device still discloses
+that its mounting height is a rule even though it draws at full colour. When
+an id is in both sets, dimmed wins and the report counts it only as dimmed.
+Ids that match nothing are ignored, and the summary reports how many entities
+were actually emphasized as `emphasized`.
 
 ### Low-voltage device colour
 

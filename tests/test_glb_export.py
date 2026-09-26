@@ -15,12 +15,14 @@ from oabm.model import (
     Circuit,
     Conductor,
     ElectricalDevice,
+    Level,
     Point3,
     Polyline3D,
     Port,
     Pose,
     Route,
     Vector3,
+    Wall,
 )
 from oabm.qa import load_golden_cases, load_golden_model
 
@@ -556,3 +558,108 @@ def test_inferred_conductor_wire_draws_translucent(tmp_path: Path) -> None:
     material = parsed["gltf"]["materials"][parsed["gltf"]["meshes"][node["mesh"]]["primitives"][0]["material"]]
     assert material["alphaMode"] == "BLEND"
     assert material["pbrMetallicRoughness"]["baseColorFactor"][3] < 1.0
+
+
+def _wall_model(
+    *,
+    wall_height: float | None,
+    level_height: float | None,
+    elevation: float,
+) -> BuildingModel:
+    """One straight 4 m wall, 0.2 m thick, on one level.
+
+    ``wall_height`` of ``None`` simulates a producer that omitted the wall's
+    canonical height: the contract requires a positive one, so the check is
+    undone after construction to reach the exporter's fallback path.
+    """
+
+    level = Level(id="level:main", elevation_m=elevation, height_m=level_height)
+    wall = Wall(
+        id="wall:south-run",
+        level_id=level.id,
+        centerline=Polyline3D(points=(
+            Point3(x=0.0, y=0.0, z=elevation),
+            Point3(x=4.0, y=0.0, z=elevation),
+        )),
+        thickness_m=0.2,
+        height_m=2.7,
+    )
+    if wall_height is None:
+        object.__setattr__(wall, "height_m", None)
+    return BuildingModel(model_id="model:glb-wall-synth", levels=(level,), walls=(wall,))
+
+
+def _wall_vertex_ranges(parsed: dict) -> tuple[dict[str, float], dict[str, dict]]:
+    vertices = _node_positions(parsed, _by_name(parsed)["wall:south-run"])
+    node = parsed["gltf"]["nodes"][_by_name(parsed)["wall:south-run"]]
+    spans = {
+        axis: max(vertex[axis] for vertex in vertices) - min(vertex[axis] for vertex in vertices)
+        for axis in range(3)
+    }
+    bounds = {
+        axis: (min(vertex[axis] for vertex in vertices), max(vertex[axis] for vertex in vertices))
+        for axis in range(3)
+    }
+    return spans, {"extras": node["extras"], "bounds": bounds}
+
+
+def test_wall_extrudes_to_its_own_height(tmp_path: Path) -> None:
+    model = _wall_model(wall_height=2.7, level_height=None, elevation=0.0)
+    target = tmp_path / "walls.glb"
+    to_glb(model, target)
+    parsed = _parse_glb(target)
+
+    spans, info = _wall_vertex_ranges(parsed)
+    # glTF +Y is canonical +Z: the wall rises from the floor to its height.
+    (y_bottom, y_top) = info["bounds"][1]
+    assert y_bottom == pytest.approx(0.0, abs=1e-6)
+    assert y_top == pytest.approx(2.7, abs=1e-6)
+    # Plan footprint: 4 m along canonical x, 0.2 m across it.
+    assert spans[0] == pytest.approx(4.0, abs=1e-6)
+    assert spans[2] == pytest.approx(0.2, abs=1e-6)
+    assert info["extras"]["height_source"] == "wall"
+
+
+def test_wall_on_elevated_level_keeps_its_base(tmp_path: Path) -> None:
+    model = _wall_model(wall_height=2.7, level_height=3.05, elevation=-3.0)
+    to_glb(model, tmp_path / "walls.glb")
+    parsed = _parse_glb(tmp_path / "walls.glb")
+
+    _spans, info = _wall_vertex_ranges(parsed)
+    y_bottom, y_top = info["bounds"][1]
+    assert y_bottom == pytest.approx(-3.0, abs=1e-6)
+    assert y_top == pytest.approx(-0.3, abs=1e-6)
+    assert info["extras"]["height_source"] == "wall"
+
+
+def test_wall_without_height_uses_the_level_height(tmp_path: Path) -> None:
+    model = _wall_model(wall_height=None, level_height=3.05, elevation=0.0)
+    to_glb(model, tmp_path / "walls.glb")
+    parsed = _parse_glb(tmp_path / "walls.glb")
+
+    _spans, info = _wall_vertex_ranges(parsed)
+    y_bottom, y_top = info["bounds"][1]
+    assert y_bottom == pytest.approx(0.0, abs=1e-6)
+    assert y_top == pytest.approx(3.05, abs=1e-6)
+    assert info["extras"]["height_source"] == "level"
+
+
+def test_wall_with_no_height_anywhere_stays_a_flat_strip(tmp_path: Path) -> None:
+    model = _wall_model(wall_height=None, level_height=None, elevation=0.0)
+    to_glb(model, tmp_path / "walls.glb")
+    parsed = _parse_glb(tmp_path / "walls.glb")
+
+    _spans, info = _wall_vertex_ranges(parsed)
+    y_bottom, y_top = info["bounds"][1]
+    assert y_bottom == pytest.approx(0.0, abs=1e-6)
+    assert y_top == pytest.approx(0.0, abs=1e-6)
+    assert info["extras"]["height_source"] == "none"
+
+
+def test_wall_export_is_deterministic(tmp_path: Path) -> None:
+    model = _wall_model(wall_height=2.7, level_height=3.05, elevation=-3.0)
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first)
+    to_glb(model, second)
+    assert first.read_bytes() == second.read_bytes()

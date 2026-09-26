@@ -13,6 +13,14 @@ from the PDF layout instead of rasterizing the page: it is exact and fast on
 vector CAD output, avoids image-conversion backends entirely, and sidesteps
 a camelot 2.0.0 defect where the combined raster engine drops every
 ``table_areas`` request (a whole-page area yields zero tables there).
+
+Failures fail closed per flavor and per region: camelot can raise inside a
+flavor (for example the stream parser's ``TypeError`` when a ``table_areas``
+region on a ``/Rotate`` 270 page holds only sparse short text, seen with
+camelot-py 2.0.0). Each camelot call is isolated, the failure becomes a
+warning string naming the flavor and the exception, the other flavor's
+result is kept, and a page or region where no flavor yields a table
+returns ``[]`` instead of raising.
 """
 
 from __future__ import annotations
@@ -177,41 +185,57 @@ def _run_flavor(
     flavor: str,
     regions: list[tuple[float, float, float, float]] | None,
     transform: PdfPageDisplayTransform,
-) -> list[ExtractedTable]:
-    """Run one camelot flavor; never raises for 'no table found'."""
+) -> tuple[list[ExtractedTable], list[str]]:
+    """Run one camelot flavor; never raises for 'no table found'.
+
+    Returns the flavor's tables plus one failure string per camelot call
+    that raised. Each call (the whole page, or one region per call) is
+    isolated in its own try, so a raising call is recorded instead of
+    taking down the other calls of the same flavor, and its failure string
+    names the flavor, the region (when any) and the exception.
+    """
 
     kwargs: dict[str, Any] = {"pages": str(page_number), "flavor": flavor}
     if flavor == "lattice":
         kwargs["engine"] = "vector"
-    calls: list[dict[str, Any] | None] = [None]
+    calls: list[tuple[str, dict[str, Any] | None]] = [("", None)]
     if regions is not None:
         # One call per region: camelot merges multiple areas of one call into
         # a single junk table, and per-region calls keep region -> table
         # mapping unambiguous. The vector engine costs well under 0.1 s.
         calls = [
-            {"table_areas": [_region_to_camelot_area(region, transform)]}
-            for region in regions
+            (
+                f" region {index + 1}",
+                {"table_areas": [_region_to_camelot_area(region, transform)]},
+            )
+            for index, region in enumerate(regions)
         ]
 
     tables: list[ExtractedTable] = []
+    failures: list[str] = []
     with warnings.catch_warnings():
         # 'No tables found' arrives as a UserWarning; it is an expected,
         # structured outcome here, not something to spam onto stderr.
         warnings.simplefilter("ignore", UserWarning)
-        for area_kwargs in calls:
-            found = camelot.read_pdf(
-                pdf_path, **{**kwargs, **(area_kwargs or {})}
-            )
-            for camelot_table in found:
-                table = _build_table(
-                    camelot_table,
-                    backend="camelot",
-                    flavor=flavor,
-                    transform=transform,
+        for label, area_kwargs in calls:
+            try:
+                found = camelot.read_pdf(
+                    pdf_path, **{**kwargs, **(area_kwargs or {})}
                 )
-                if table is not None:
-                    tables.append(table)
-    return tables
+                for camelot_table in found:
+                    table = _build_table(
+                        camelot_table,
+                        backend="camelot",
+                        flavor=flavor,
+                        transform=transform,
+                    )
+                    if table is not None:
+                        tables.append(table)
+            except Exception as exc:
+                # Fail closed per call: record and move on; the caller
+                # keeps the surviving flavor's result.
+                failures.append(f"{flavor}{label}: {type(exc).__name__}: {exc}")
+    return tables, failures
 
 
 def extract_tables_camelot(
@@ -221,35 +245,32 @@ def extract_tables_camelot(
     transform: PdfPageDisplayTransform,
     regions_pt: list[tuple[float, float, float, float]] | None,
     flavor: str,
+    diagnostics: list[str] | None = None,
 ) -> list[ExtractedTable]:
-    """Extract tables with camelot, honoring the ``auto`` flavor contract."""
+    """Extract tables with camelot, honoring the ``auto`` flavor contract.
+
+    Never raises for content-driven failures: a flavor (or one region of a
+    flavor) whose extraction raises is recorded as a warning string naming
+    the flavor and the exception, appended to ``diagnostics`` when the
+    caller passes a list, while the surviving flavor's result is kept.
+    """
 
     camelot = import_camelot()
     requested: tuple[str, ...] = _FLAVORS if flavor == "auto" else (flavor,)
     results: dict[str, list[ExtractedTable]] = {}
-    failures: dict[str, str] = {}
+    failures: dict[str, list[str]] = {}
     for run in requested:
-        try:
-            results[run] = _run_flavor(
-                camelot, pdf_path, page_number, run, regions_pt, transform
-            )
-        except Exception as exc:  # surfaced below as a warning, or re-raised
-            failures[run] = f"{type(exc).__name__}: {exc}"
+        results[run], failures[run] = _run_flavor(
+            camelot, pdf_path, page_number, run, regions_pt, transform
+        )
+    run_failures = [message for run in requested for message in failures[run]]
+    if diagnostics is not None:
+        diagnostics.extend(run_failures)
 
     if flavor != "auto":
-        if flavor in failures:
-            raise RuntimeError(
-                f"camelot {flavor} extraction failed on page {page_number}: "
-                f"{failures[flavor]}"
-            ) from None
         return results[flavor]
 
-    if not results.get("lattice") and not results.get("stream"):
-        if failures:
-            raise RuntimeError(
-                f"camelot table extraction failed on page {page_number}: "
-                + "; ".join(f"{k}: {v}" for k, v in sorted(failures.items()))
-            ) from None
+    if not results["lattice"] and not results["stream"]:
         return []
 
     def mean_confidence(tables: list[ExtractedTable]) -> float:
@@ -257,16 +278,16 @@ def extract_tables_camelot(
             return -1.0
         return sum(t.confidence for t in tables) / len(tables)
 
-    lattice_mean = mean_confidence(results.get("lattice", []))
-    stream_mean = mean_confidence(results.get("stream", []))
+    lattice_mean = mean_confidence(results["lattice"])
+    stream_mean = mean_confidence(results["stream"])
     # Ties go to lattice, matching the flavor contract.
     chosen = "lattice" if lattice_mean >= stream_mean else "stream"
     other = "stream" if chosen == "lattice" else "lattice"
-    tables = results.get(chosen, [])
+    tables = results[chosen]
     note_bits = [f"flavor {chosen} kept"]
-    if other in failures:
-        note_bits.append(f"flavor {other} failed: {failures[other]}")
-    elif not results.get(other):
+    if failures[other]:
+        note_bits.append(f"flavor {other} failed: {'; '.join(failures[other])}")
+    elif not results[other]:
         note_bits.append(f"flavor {other} found no table grid")
     else:
         note_bits.append(

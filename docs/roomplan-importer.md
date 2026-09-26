@@ -37,6 +37,15 @@ It also attaches a second `Provenance` record to that wall or slab, with `deriva
 
 Canonical v1 has an intentional JSON-compatible `attributes` escape hatch for source-specific metadata. The importer retains native identifiers, categories, confidence labels, stories, dimensions, complete 4x4 transforms, local polygon corners, completed edges, exact curve metadata, source attributes, and unknown source fields there. Provenance records identify the RoomPlan source and native element ID.
 
+### Capture envelope
+
+A CapturedRoom exported inside a scan bundle carries raw capture-envelope fields on the room document. The importer never interprets them and never uses them to build geometry, so it does not copy them either:
+
+- The named envelope keys `coreModel` (an opaque, unbounded capture blob) and `referenceOriginTransform` (the capture's world placement) are recognized explicitly and recorded as digests at `model.attributes.roomplan.envelope[key]` as `{"present": true, "size_bytes": ..., "sha256": ...}`. The digest is over the value's canonical JSON: sorted keys, compact separators, UTF-8 — the same canonical form the model and the IFC adapter serialize with. If world placement from `referenceOriginTransform` is ever needed, it must arrive as a typed contract field through a contract change, not as an attribute.
+- Any other unrecognized top-level key still passes through into `attributes.roomplan.extra_fields` to avoid silent loss, except that a value whose canonical JSON exceeds 4096 bytes is replaced by the same digest record and its key name is listed, sorted, in `attributes.roomplan.envelope_digested_keys`.
+
+This applies to the top-level room document only; unknown fields on individual elements are retained verbatim as before. Recording that a raw envelope value was present, with its size and hash, keeps the fact auditable without carrying the capture itself into the model, its JSON, or the IFC export that embeds model attributes.
+
 Curved RoomPlan surfaces therefore preserve both representations needed by downstream consumers: the untouched native curve description for source fidelity and a deterministic canonical 3D polyline tessellation for geometry consumers. A future shared need for a first-class curve primitive would still require a versioned canonical contract change rather than a RoomPlan-only type.
 
 ## Derived confidence

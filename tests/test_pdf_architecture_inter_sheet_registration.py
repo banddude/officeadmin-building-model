@@ -720,6 +720,161 @@ def test_fallback_sheets_of_different_plans_never_share_wall_identity(
     _assert_previous_behavior_kept(path, model, monkeypatch)
 
 
+def test_unrelated_fallback_sheets_with_one_sheet_number_disambiguate_wall_identity(
+    tmp_path: Path,
+) -> None:
+    # Issue #120: the two later sheets print the SAME sheet number and are both
+    # refused registration, so both fall back to their lower-left frame, which
+    # puts their equal-width south wall at the same canonical spot. Wall stable
+    # ids derive from the sheet number and that canonical geometry, so both
+    # sheets claimed one id and the model failed validation with
+    # ContractError duplicate entity id 'wall:...'. An unrelated frame's wall
+    # is a real observation, so it is not merged and not dropped: it keeps its
+    # own id, extended by its drawing region's stable id.
+    first_plan, second_plan = (
+        Plan((900.0, 500.0), "NOTE: GRID", room=(260.0, 200.0), stub=(80.0, 40.0)),
+        Plan((200.0, 300.0), "NOTE: GRID", room=(260.0, 140.0), stub=(150.0, 100.0)),
+    )
+    path = _write(
+        tmp_path / "plans.pdf",
+        ("A101", (FIRST,)),
+        ("A102", (first_plan,)),
+        ("A102", (second_plan,)),
+    )
+    model = _import(path)
+
+    assert len(model.walls) == 12
+    assert len({wall.id for wall in model.walls}) == 12
+    first, second, third = _regions(model)
+    assert first["frame"]["basis"] == "project_origin"
+    for region in (second, third):
+        assert region["frame"]["basis"] == "sheet_geometry_fallback"
+        assert region["frame"]["evidence_roots"] == [f"region:{region['region_id']}"]
+        assert region["shared_wall_registration"]["reason_codes"] == [
+            "insufficient_matched_evidence"
+        ]
+        assert region["entity_counts"]["walls"] == 4
+    assert len(model.spaces) == 3
+
+    [collision] = _ambiguities(model, "wall_identity_collision_disambiguated")
+    assert collision["page"] == 3
+    assert collision["source_region_ids"] == sorted([second["region_id"], third["region_id"]])
+    [disambiguated] = collision["wall_ids"]
+    assert not _ambiguities(model, "duplicate_wall_identity_across_pages")
+    assert not _ambiguities(model, "duplicate_room_identity_across_pages")
+
+    # The second frame's south wall carries the disambiguated id, and its loop
+    # space names that id, not the first frame's wall.
+    [third_wall] = [wall for wall in model.walls if wall.id == disambiguated]
+    assert third_wall.provenance[0].page == 3
+    [third_space] = [space for space in model.spaces if space.provenance[0].page == 3]
+    assert disambiguated in third_space.attributes["pdf_architecture"]["wall_ids"]
+
+    # The first frame's ids are untouched: they equal the two-sheet import's.
+    two_sheets = _import(_write(
+        tmp_path / "two.pdf", ("A101", (FIRST,)), ("A102", (first_plan,)),
+    ))
+    assert {wall.id for wall in two_sheets.walls} <= {wall.id for wall in model.walls}
+    emitted = {wall.id for wall in model.walls}
+    for space in model.spaces:
+        lane = space.attributes["pdf_architecture"]
+        if "wall_ids" in lane:
+            assert set(lane["wall_ids"]) <= emitted
+    validate_model(model)
+
+
+def test_wall_identity_disambiguation_does_not_depend_on_the_later_sheets_order(
+    tmp_path: Path,
+) -> None:
+    # Swapping the two same-numbered fallback sheets must give the same set of
+    # ids and the same ambiguity records: the disambiguation extends the taken
+    # id with the drawing region's stable id, not with an order counter.
+    plans = (
+        Plan((900.0, 500.0), "NOTE: GRID", room=(260.0, 200.0), stub=(80.0, 40.0)),
+        Plan((200.0, 300.0), "NOTE: GRID", room=(260.0, 140.0), stub=(150.0, 100.0)),
+    )
+    straight = _import(_write(
+        tmp_path / "straight.pdf",
+        ("A101", (FIRST,)), ("A102", (plans[0],)), ("A102", (plans[1],)),
+    ))
+    swapped = _import(_write(
+        tmp_path / "swapped.pdf",
+        ("A101", (FIRST,)), ("A102", (plans[1],)), ("A102", (plans[0],)),
+    ))
+
+    def wall_geometry_by_id(model) -> dict:
+        return {
+            wall.id: (
+                tuple(sorted((round(p.x, 6), round(p.y, 6)) for p in wall.centerline.points)),
+                round(wall.thickness_m, 6),
+            )
+            for wall in model.walls
+        }
+
+    def footprint_by_id(model) -> dict:
+        return {
+            space.id: tuple(
+                sorted((round(p.x, 6), round(p.y, 6)) for p in space.footprint.points)
+            )
+            for space in model.spaces
+        }
+
+    assert {wall.id for wall in straight.walls} == {wall.id for wall in swapped.walls}
+    assert wall_geometry_by_id(straight) == wall_geometry_by_id(swapped)
+    assert {space.id for space in straight.spaces} == {space.id for space in swapped.spaces}
+    assert footprint_by_id(straight) == footprint_by_id(swapped)
+    assert _ambiguities(straight, "wall_identity_collision_disambiguated") == _ambiguities(
+        swapped, "wall_identity_collision_disambiguated",
+    )
+    assert [
+        region["entity_counts"]["walls"] for region in _regions(straight)
+    ] == [4, 4, 4] == [region["entity_counts"]["walls"] for region in _regions(swapped)]
+
+
+def test_a_labelled_near_copy_on_an_unrelated_fallback_frame_records_no_name_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The repeated_space_name_conflict gate claims a name conflict only between
+    # evidence-linked frames. Sheet 3 is sheet 2 mirrored and 1 pt wider with a
+    # different room label: refused, it falls back, and its room lands within
+    # the wall tolerance of sheet 2's room. The two fallback frames share no
+    # evidence, so both spaces stay and no name conflict is claimed.
+    second = Plan((250.0, 400.0), "ROOM: ATELIER", room=(260.0, 200.0), stub=(80.0, 40.0))
+    near = replace(
+        second, origin=(700.0, 250.0), room=(261.0, 200.0), mirrored=True,
+        label="ROOM: STUDIO",
+    )
+    path = _write(
+        tmp_path / "plans.pdf", ("A101", (FIRST,)), ("A102", (second,)), ("A103", (near,)),
+    )
+    model = _import(path)
+
+    assert sorted(space.name for space in model.spaces) == ["ATELIER", "OFFICE", "STUDIO"]
+    assert not _ambiguities(model, "repeated_space_name_conflict")
+    assert not _ambiguities(model, "wall_identity_collision_disambiguated")
+    assert len(model.walls) == 12
+    assert len({wall.id for wall in model.walls}) == 12
+
+    # The rooms really do coincide within the tolerance, so the gate had its
+    # chance: only the evidence link decides the conflict.
+    first, second_region, third = _regions(model)
+    assert (second_region["frame"]["basis"], third["frame"]["basis"]) == (
+        "sheet_geometry_fallback", "sheet_geometry_fallback",
+    )
+    assert second_region["frame"]["evidence_roots"] != third["frame"]["evidence_roots"]
+
+    def page_of(space) -> int:
+        return space.provenance[0].page
+
+    [atelier] = [space for space in model.spaces if page_of(space) == 2]
+    [studio] = [space for space in model.spaces if page_of(space) == 3]
+    assert architecture_importer._footprints_coincide(
+        studio, atelier, architecture_importer._REPEATED_WALL_TOLERANCE_M,
+    )
+    assert studio.footprint != atelier.footprint
+    _assert_previous_behavior_kept(path, model, monkeypatch)
+
+
 def test_a_mirrored_refused_sheet_keeps_all_of_its_walls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

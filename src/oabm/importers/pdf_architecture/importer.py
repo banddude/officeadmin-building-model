@@ -5857,6 +5857,10 @@ def import_observations(
     # space is only matched within tolerance to an earlier space of another
     # region whose frame shares evidence with its own.
     space_origins: dict[str, tuple[str, frozenset[str]]] = {}
+    # The region that emitted each wall id and its frame roots, so a wall of a
+    # second, unrelated frame that derives a taken stable id can be
+    # disambiguated by drawing region instead of emitted twice under one id.
+    wall_identity_origins: dict[str, tuple[str, frozenset[str]]] = {}
     # Every materialized wall and the region that emitted it, so a wall drawn
     # again by another region of the same level is materialized once.
     materialized_walls = _MaterializedWalls(
@@ -6033,12 +6037,24 @@ def import_observations(
         )
         slab_thickness = _slab_thickness_from_text(region_page)
         page_walls: list[_WallContext] = []
+        space_identity_collisions: list[str] = []
+        collision_holder_region_ids: set[str] = set()
         for shell in shells:
             prospective_space_id = stable_id(
                 "space",
                 f"{document.source_id}|level:{level_info.anchor}|room:{shell.room.anchor}",
             )
-            if prospective_space_id in used_space_ids:
+            taken_space_origin = space_origins.get(prospective_space_id)
+            shell_identity_collision: tuple[str, str] | None = None
+            if taken_space_origin is not None and not _frames_share_evidence(
+                taken_space_origin[1], region.frame_roots,
+            ):
+                # A second, unrelated frame derives a space id another region
+                # already emitted: the frames are unrelated guesses, so neither
+                # merges nor drops. This room keeps its own observation under a
+                # drawing-region-derived id.
+                shell_identity_collision = (prospective_space_id, taken_space_origin[0])
+            elif prospective_space_id in used_space_ids:
                 ambiguities.append(
                     {
                         "page": page.page_number,
@@ -6063,6 +6079,18 @@ def import_observations(
                 slab_thickness,
                 ambiguities,
             )
+            if shell_identity_collision is not None:
+                taken_id, holder_region_id = shell_identity_collision
+                region_suffix = f"|drawing-region:{region.region_id}"
+                space = replace(space, id=stable_id("space", f"{taken_id}{region_suffix}"))
+                if slab is not None:
+                    slab = replace(slab, id=stable_id("slab", f"{taken_id}|floor{region_suffix}"))
+                if ceiling is not None:
+                    ceiling = replace(
+                        ceiling, id=stable_id("ceiling", f"{taken_id}|ceiling{region_suffix}"),
+                    )
+                space_identity_collisions.append(space.id)
+                collision_holder_region_ids.add(holder_region_id)
             # A named room this region's frame put on the footprint of a room
             # another evidence-linked region already emitted under another
             # name: both are kept, and the unreconciled names are recorded.
@@ -6241,6 +6269,7 @@ def import_observations(
         repeated_sources: set[str] = set()
         repeated_wall_ids: list[str] = []
         dimension_conflicts: list[str] = []
+        wall_identity_collisions: list[str] = []
         for context in page_walls:
             repeat_index = materialized_walls.repeat_of(
                 context.wall, region.region_id, region.frame_roots,
@@ -6259,6 +6288,25 @@ def import_observations(
                 ):
                     dimension_conflicts.append(kept.wall.id)
                 continue
+            taken_wall_origin = wall_identity_origins.get(context.wall.id)
+            if taken_wall_origin is not None and not _frames_share_evidence(
+                taken_wall_origin[1], region.frame_roots,
+            ):
+                # A second, unrelated frame derives the stable id of a wall
+                # another region already emitted (two fallback sheets printing
+                # the same sheet number land their geometry on one canonical
+                # spot). The frames are unrelated guesses: neither merge nor
+                # drop, and the id cannot be emitted twice. The wall keeps its
+                # own observation under an id extended by this region's stable
+                # id, so the set of ids does not depend on the sheets' order.
+                disambiguated = stable_id(
+                    "wall", f"{context.wall.id}|drawing-region:{region.region_id}",
+                )
+                wall_id_map[context.wall.id] = disambiguated
+                wall_identity_collisions.append(disambiguated)
+                collision_holder_region_ids.add(taken_wall_origin[0])
+                context = replace(context, wall=replace(context.wall, id=disambiguated))
+            wall_identity_origins[context.wall.id] = (region.region_id, region.frame_roots)
             materialized_walls.add(context, region.region_id, region.frame_roots)
             fresh_walls.append(context)
             host_walls[context.wall.id] = context
@@ -6320,12 +6368,47 @@ def import_observations(
                 for other in level_spaces
             ):
                 continue
+            taken_space_origin = space_origins.get(geometric_space.id)
+            if taken_space_origin is not None and not _frames_share_evidence(
+                taken_space_origin[1], region.frame_roots,
+            ):
+                # Same rule as the walls above: an unrelated frame that derives
+                # a taken loop-space id keeps its observation under an id
+                # extended by this region's stable id.
+                disambiguated = stable_id(
+                    "space", f"{geometric_space.id}|drawing-region:{region.region_id}",
+                )
+                space_identity_collisions.append(disambiguated)
+                collision_holder_region_ids.add(taken_space_origin[0])
+                geometric_space = replace(geometric_space, id=disambiguated)
             geometric_space = _remap_space_wall_ids(geometric_space, wall_id_map)
             spaces.append(geometric_space)
             space_origins[geometric_space.id] = (region.region_id, region.frame_roots)
             level_spaces.append(geometric_space)
             existing_space_footprints.add(key)
             used_space_ids.add(geometric_space.id)
+
+        if wall_identity_collisions or space_identity_collisions:
+            collision_record: dict[str, object] = {
+                "page": page.page_number,
+                "code": "wall_identity_collision_disambiguated",
+                "detail": (
+                    f"{len(wall_identity_collisions)} wall(s) and "
+                    f"{len(space_identity_collisions)} space(s) of an unrelated "
+                    "fallback frame derived the stable id of entities another "
+                    "drawing region already emitted; the frames share no "
+                    "evidence, so nothing was merged and the second frame kept "
+                    "its own observation under drawing-region-derived ids"
+                ),
+                "source_region_ids": sorted(
+                    collision_holder_region_ids | {region.region_id}
+                ),
+            }
+            if wall_identity_collisions:
+                collision_record["wall_ids"] = sorted(wall_identity_collisions)
+            if space_identity_collisions:
+                collision_record["space_ids"] = sorted(space_identity_collisions)
+            ambiguities.append(collision_record)
 
         page_openings = _make_openings(
             region_page,

@@ -18,6 +18,7 @@ from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
     DictionaryObject,
+    FloatObject,
     NameObject,
     NumberObject,
     TextStringObject,
@@ -96,6 +97,10 @@ class Sheet:
     texts: tuple[str, ...] = (QUARTER,)
     sheet_number: str = "A9.1"
     extra: tuple[str, ...] = field(default_factory=tuple)
+    title_block: str = "DRAWING TITLE: PLANS"
+    # AutoCAD SHX text: ((x0, y0, x1, y1), contents) written only as invisible
+    # /Square annotations, the way AutoCAD exports SHX-font strings (#126).
+    shx: tuple[tuple[tuple[float, float, float, float], str], ...] = ()
 
 
 def _local(drawing: Drawing, point: tuple[float, float]) -> tuple[float, float]:
@@ -156,7 +161,7 @@ def _add_sheet(writer: PdfWriter, sheet: Sheet) -> None:
     commands = [
         "1400 40 300 360 re S",
         _text(1412, 370, "PROJECT: SYNTHETIC BUILDING"),
-        _text(1412, 340, "DRAWING TITLE: PLANS"),
+        _text(1412, 340, sheet.title_block),
         _text(1412, 310, f"SHEET NO: {sheet.sheet_number}"),
         *(_text(1412, 250 - 20 * index, value) for index, value in enumerate(sheet.texts)),
         *sheet.extra,
@@ -198,6 +203,17 @@ def _add_sheet(writer: PdfWriter, sheet: Sheet) -> None:
     stream = DecodedStreamObject()
     stream.set_data(("\n".join(commands) + "\n").encode())
     page[NameObject("/Contents")] = writer._add_object(stream)
+    if sheet.shx:
+        page[NameObject("/Annots")] = ArrayObject([
+            writer._add_object(DictionaryObject({
+                NameObject("/Type"): NameObject("/Annot"),
+                NameObject("/Subtype"): NameObject("/Square"),
+                NameObject("/T"): TextStringObject("AutoCAD SHX Text"),
+                NameObject("/Contents"): TextStringObject(contents),
+                NameObject("/Rect"): ArrayObject([FloatObject(value) for value in rect]),
+            }))
+            for rect, contents in sheet.shx
+        ])
 
 
 def _write(path: Path, *sheets: Sheet) -> Path:
@@ -1032,3 +1048,118 @@ def test_per_drawing_registration_is_deterministic(tmp_path: Path) -> None:
         electrical_path, source_id="fixture:electrical", page_transforms=second.page_transforms(),
     )
     assert one.to_json() == two.to_json()
+
+
+# --- #126 regression: SHX titles must not cost a named floor plan its frame --
+
+# An AutoCAD title under the drawing that exists only as an SHX annotation.
+_SHX_TITLE_RECT = (ARCH_ORIGIN[0], ARCH_ORIGIN[1] - 60.0, ARCH_ORIGIN[0] + 240.0, ARCH_ORIGIN[1] - 36.0)
+# A cover sheet: plan vocabulary in its sheet index, but no drawing, no printed
+# scale and no level name. It resolves the unlabeled placeholder level first.
+_COVER = Sheet((), texts=("SHEET INDEX", "A1.1 FLOOR PLAN"), sheet_number="A0.1")
+# A site plan whose only plan title is an SHX annotation, drawn at 1/8" with
+# its own linework (a lot outline), ahead of the floor plan in the set.
+_SITE = Sheet(
+    (Drawing((200.0, 300.0), rooms=(Room(0.0, 0.0, 1000.0, 700.0, "LOT"),), stub=False, scale=0.5),),
+    texts=(EIGHTH,),
+    title_block="DRAWING TITLE: SITE",
+    sheet_number="A0.2",
+    shx=(((200.0, 240.0, 440.0, 264.0), "SITE PLAN"),),
+)
+# The first-floor plan: its level name is printed only as SHX text.
+_FIRST_SHX = Sheet((Drawing(ARCH_ORIGIN),), shx=((_SHX_TITLE_RECT, "FIRST FLOOR PLAN"),))
+_FIRST_POWER = Drawing(
+    (ARCH_ORIGIN[0] + OFFSET[0], ARCH_ORIGIN[1] + OFFSET[1]),
+    title="FIRST FLOOR POWER PLAN",
+    evse=True,
+)
+
+
+def _region_on(architecture: BuildingModel, page: int) -> dict:
+    [region] = [
+        item for item in architecture.attributes["pdf_architecture"]["drawing_regions"]
+        if item["page"] == page
+    ]
+    return region
+
+
+def test_unlabeled_cover_sheet_does_not_take_the_datum_from_a_named_floor(tmp_path: Path) -> None:
+    """#126: an SHX-named floor plan after an unlabeled cover still resolves and registers."""
+
+    _, source, architecture = _architecture(tmp_path, _COVER, _FIRST_SHX)
+    cover, plan = _region_on(architecture, 1), _region_on(architecture, 2)
+    assert cover["status"] == "unresolved" and "scale_unresolved" in cover["reason_codes"]
+    # Before the fix: plan["reason_codes"] == ["level_elevation_unresolved"].
+    assert plan["status"] == "resolved", plan["reason_codes"]
+    assert plan["level"]["name"] == "First Floor"
+    assert plan["level"]["elevation_m"] == 0.0
+    assert plan["frame"]["basis"] == "project_origin"
+
+    result = _register(architecture, source, _electrical(tmp_path, _e_sheet(_FIRST_POWER)))
+    [page] = result.pages
+    # Before the fix: registration_pending, ("no_resolved_architectural_region",).
+    assert page.status == REGISTERED, page.reason_codes
+    registration = page.record["registration"]
+    assert registration["target_region_id"] == plan["region_id"]
+    assert registration["level_id"] == plan["level"]["level_id"]
+    assert registration["translation_pt"] == pytest.approx([-OFFSET[0], -OFFSET[1]], abs=1e-6)
+
+
+def test_elevation_printed_on_an_unlabeled_drawing_still_anchors_named_levels(tmp_path: Path) -> None:
+    """Only the assumed placeholder datum stops being a reference; a printed one still is."""
+
+    cover = Sheet(
+        (Drawing(ARCH_ORIGIN, notes=("ELEVATION: 10'-0\"",)),),
+        sheet_number="A0.1",
+    )
+    _, _, architecture = _architecture(tmp_path, cover, _FIRST_SHX)
+    plan = _region_on(architecture, 2)
+    assert plan["status"] == "unresolved"
+    assert plan["reason_codes"] == ["level_elevation_unresolved"]
+
+
+def test_site_plan_titled_only_by_shx_text_is_not_a_floor_plan(tmp_path: Path) -> None:
+    """#126: an SHX "SITE PLAN" title does not make a site plan the project origin."""
+
+    _, source, architecture = _architecture(tmp_path, _SITE, _FIRST_SHX)
+    pages = {item["page"]: item for item in architecture.attributes["pdf_architecture"]["pages"]}
+    # Before the fix: the site plan imports as the project origin.
+    assert pages[1]["status"] == "ignored_non_architectural_plan"
+    plan = _region_on(architecture, 2)
+    assert plan["status"] == "resolved", plan["reason_codes"]
+    assert plan["level"]["name"] == "First Floor"
+    assert plan["frame"]["basis"] == "project_origin"
+
+    result = _register(architecture, source, _electrical(tmp_path, _e_sheet(_FIRST_POWER)))
+    [page] = result.pages
+    assert page.status == REGISTERED, page.reason_codes
+    assert page.record["registration"]["target_region_id"] == plan["region_id"]
+
+
+def test_electrical_sheet_registers_after_cover_and_shx_site_sheets(tmp_path: Path) -> None:
+    """Cover sheet, SHX-titled site plan, then the SHX-named floor plan."""
+
+    _, source, architecture = _architecture(tmp_path, _COVER, _SITE, _FIRST_SHX)
+    plan = _region_on(architecture, 3)
+    assert plan["status"] == "resolved", plan["reason_codes"]
+    result = _register(architecture, source, _electrical(tmp_path, _e_sheet(_FIRST_POWER)))
+    [page] = result.pages
+    # Before the fix: registration_pending, ("insufficient_matched_evidence",),
+    # because the only resolved region is the site plan.
+    assert page.status == REGISTERED, page.reason_codes
+    assert page.record["registration"]["target_region_id"] == plan["region_id"]
+    assert page.record["registration"]["evidence_method"] == "wall_vectors"
+
+
+def test_named_sheet_without_geometry_does_not_displace_unlabeled_plans(tmp_path: Path) -> None:
+    """Guard: a named but geometry-less plan never takes the frame from unlabeled plans."""
+
+    named_empty = Sheet((Drawing(ARCH_ORIGIN, walls=False, stub=False, title="4TH FLOOR PLAN"),), sheet_number="A2.1")
+    unlabeled = Sheet((Drawing(ARCH_ORIGIN),), sheet_number="A3.1")
+    _, source, architecture = _architecture(tmp_path, _COVER, named_empty, unlabeled)
+    plan = _region_on(architecture, 3)
+    assert plan["status"] == "resolved", plan["reason_codes"]
+    assert plan["level"]["name"] == "Unlabeled Level"
+    assert plan["frame"]["basis"] == "project_origin"
+    result = _register(architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL)))
+    assert [page.status for page in result.pages] == [REGISTERED]

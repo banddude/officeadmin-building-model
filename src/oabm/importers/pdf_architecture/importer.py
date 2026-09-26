@@ -305,6 +305,12 @@ def _find_dimension(text: str) -> tuple[float, tuple[int, int]] | None:
     return ((feet * 12.0 + inches) * _INCH_M, match.span())
 
 
+# Plan drawings that are not floor plans. Their titles alone never make a sheet
+# a floor plan: a site or roof plan carries no building level, and taking one
+# as the first plan page would give it the project datum and XY origin.
+_NON_FLOOR_PLAN_TITLE_RE = re.compile(r"\b(?:SITE|PLOT|VICINITY|ROOF)\s+PLANS?\b")
+
+
 def classify_page(page: PdfPageObservation) -> SheetClassification:
     drawing_title = _explicit_drawing_title(page)
     if drawing_title and re.search(r"\b(?:DETAILS?|MILLWORK|INTERIOR ELEVATIONS?)\b", drawing_title):
@@ -340,7 +346,7 @@ def classify_page(page: PdfPageObservation) -> SheetClassification:
     if architectural_score >= 5:
         confidence = min(1.0, 0.7 + 0.03 * architectural_score)
         return SheetClassification("architectural_plan", confidence, architectural_score, electrical_score)
-    if "PLAN" in text and architectural_score > electrical_score:
+    if "PLAN" in _NON_FLOOR_PLAN_TITLE_RE.sub(" ", text) and architectural_score > electrical_score:
         return SheetClassification("architectural_plan", 0.6, architectural_score, electrical_score)
     return SheetClassification("other", 0.5, architectural_score, electrical_score)
 
@@ -1322,6 +1328,15 @@ def _level_name_evidence(
     return distinct[0], tuple(item for _, item in candidates), distinct
 
 
+_UNLABELED_LEVEL_NAME = "Unlabeled Level"
+
+
+def _elevation_anchor(anchor: str, info: _LevelInfo) -> bool:
+    """Whether a known level fixes the elevation other levels are stated against."""
+
+    return anchor != _anchor(_UNLABELED_LEVEL_NAME) or info.elevation.priority > 1
+
+
 def _resolve_level(
     page: PdfPageObservation,
     options: ImportOptions,
@@ -1361,7 +1376,7 @@ def _resolve_level(
             }
         )
         return None
-    name = parsed_name or "Unlabeled Level"
+    name = parsed_name or _UNLABELED_LEVEL_NAME
     anchor = _anchor(name)
     existing = known_levels.get(anchor)
 
@@ -1390,7 +1405,14 @@ def _resolve_level(
             source_element_id=parsed_elevation[1].element_id,
         )
     elif existing is None:
-        if not known_levels:
+        # The unlabeled placeholder only ever sits at the assumed local datum.
+        # It is not an elevation a named level can be stated against, so the
+        # first named level also takes the local datum while every known level
+        # is that assumed placeholder.
+        if not any(
+            _elevation_anchor(known_anchor, info)
+            for known_anchor, info in known_levels.items()
+        ):
             elevation_candidate = _Measurement(
                 value_m=0.0,
                 confidence=0.55,

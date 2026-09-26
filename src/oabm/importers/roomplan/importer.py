@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -33,6 +34,16 @@ _EPS = 1e-9
 _CONFIDENCE = {"low": 0.33, "medium": 0.66, "high": 1.0}
 _SURFACE_COLLECTIONS = ("walls", "floors", "doors", "windows", "openings")
 _ELEMENT_COLLECTIONS = (*_SURFACE_COLLECTIONS, "objects")
+# A CapturedRoom exported from a scan bundle carries raw capture-envelope
+# fields the importer never interprets and never uses to build geometry. They
+# are recognized by name and recorded as digests instead of being copied, so a
+# real capture's model JSON and every artifact derived from it (the IFC
+# adapter embeds model attributes) no longer carry the raw envelope.
+_ENVELOPE_KEYS = frozenset({"coreModel", "referenceOriginTransform"})
+# Unrecognized top-level keys still pass through to avoid silent loss, except
+# when the value is itself capture-envelope sized: past this limit the
+# pass-through is replaced by the same digest record.
+_ENVELOPE_DIGEST_MAX_PASSTHROUGH_BYTES = 4096
 
 
 class RoomPlanImportError(ValueError):
@@ -692,11 +703,32 @@ def import_captured_room(
         "objects",
         "sections",
     }
-    room_extras = {
-        key: _json_copy(value)
-        for key, value in document.items()
-        if key not in known_room_fields
-    }
+    envelope: dict[str, Any] = {}
+    envelope_digested_keys: list[str] = []
+    room_extras: dict[str, Any] = {}
+    for key, value in document.items():
+        if key in known_room_fields:
+            continue
+        canonical = _canonical_json_bytes(value)
+        if (
+            key in _ENVELOPE_KEYS
+            or len(canonical) > _ENVELOPE_DIGEST_MAX_PASSTHROUGH_BYTES
+        ):
+            envelope[key] = {
+                "present": True,
+                "size_bytes": len(canonical),
+                "sha256": hashlib.sha256(canonical).hexdigest(),
+            }
+            if key not in _ENVELOPE_KEYS:
+                envelope_digested_keys.append(key)
+            continue
+        room_extras[key] = _json_copy(value)
+    if envelope:
+        model_attributes["roomplan"]["envelope"] = envelope
+    if envelope_digested_keys:
+        model_attributes["roomplan"]["envelope_digested_keys"] = sorted(
+            envelope_digested_keys
+        )
     if room_extras:
         model_attributes["roomplan"]["extra_fields"] = room_extras
 
@@ -1479,6 +1511,26 @@ def _polygon_area_xy(polygon: Polygon3D) -> float:
 def _json_copy(value: Any) -> Any:
     try:
         return json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise RoomPlanImportError(
+            "RoomPlan source metadata must be JSON-compatible"
+        ) from exc
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    """Canonical JSON of a source value: sorted keys, compact separators.
+
+    This is the same canonical form the model and the IFC adapter serialize
+    with, so the recorded digest can be recomputed from the document by any
+    consumer without importing this module.
+    """
+    try:
+        return json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise RoomPlanImportError(
             "RoomPlan source metadata must be JSON-compatible"

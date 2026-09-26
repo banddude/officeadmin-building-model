@@ -81,8 +81,8 @@ custom properties.
 
 `dimmed_ids` lists canonical device, equipment or route ids to draw in a grey
 translucent style; `dimmed_color` (default grey) and `dimmed_alpha` (default
-0.3) shape that style. What dimming means — existing-to-remain, for example —
-is entirely the caller's decision; the exporter attaches no meaning to it.
+0.3) shape that style. The caller decides which ids to dim and why; the
+exporter attaches no meaning to the choice and only draws the style.
 Dimmed entities get a `"<class>-dimmed"` BLEND material and
 `extras["display"] = "dimmed (caller-supplied)"`; the dimmed style also wins
 over the low-voltage colour below. Ids that match nothing are ignored, and

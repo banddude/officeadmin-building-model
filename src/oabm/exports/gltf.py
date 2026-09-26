@@ -201,9 +201,8 @@ def to_glb(
       translucency. Levels with no drawn content get no plane.
     - ``dimmed_ids`` lists canonical device, equipment or route ids the
       caller wants drawn in a grey translucent style shaped by
-      ``dimmed_color`` and ``dimmed_alpha``. What dimming means (existing-
-      to-remain, for example) is the caller's decision; ids that match
-      nothing are ignored.
+      ``dimmed_color`` and ``dimmed_alpha``. Which ids to dim, and why,
+      is the caller's decision; ids that match nothing are ignored.
     """
 
     options = _DisplayOptions(

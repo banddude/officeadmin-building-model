@@ -42,3 +42,63 @@ keeps its `extras["conductors"]` list.
 
 The `to_glb` summary dict reports the drawn wire count as
 `conductor_wires`.
+
+## Display options
+
+Every display option is a keyword-only `to_glb` parameter that defaults off,
+and with all options at their defaults the output is byte-identical to the
+plain export. Display choices are labeled rendering parameters, never silent
+constants, and none of them flow back into the canonical model, IFC or
+quantities (the #88 ruling). The summary dict reports `reference_planes` and
+`dimmed` counts.
+
+### Reference planes
+
+`reference_planes=True` adds, per level:
+
+- a **floor plane** at the level's `elevation_m`, when the level has no
+  canonical slab (a canonical slab is already drawn);
+- a **ceiling plane** at `elevation_m + height_m`, when the level has no
+  canonical ceiling and a known `height_m` — never a hard-coded height. A
+  level without `height_m` gets no ceiling plane, and its floor plane's
+  extras carry `"ceiling": "no level height"` as the reason.
+
+Both span the plan bounding box of everything drawn on the level (wall
+centerlines, slab and space footprints, device and equipment positions, and
+route points of routes assigned via their start port's owner) plus
+`reference_margin_m` (default 0.5 m). Both are double-sided two-triangle
+quads in a light neutral grey, translucent BLEND materials whose alphas are
+the `reference_floor_alpha` (default 0.25) and `reference_ceiling_alpha`
+(default 0.08) parameters. A level with no drawn content gets no plane.
+
+Node names are `reference:floor#<level_id>` and
+`reference:ceiling#<level_id>`. Extras carry `reference_plane`, `canonical:
+false`, `source`, `extent`, `margin_m`, `alpha`, `level_id` and
+`level_confidence`, so every plane discloses its own parameters in Blender's
+custom properties.
+
+### Caller-dimmed entities
+
+`dimmed_ids` lists canonical device, equipment or route ids to draw in a grey
+translucent style; `dimmed_color` (default grey) and `dimmed_alpha` (default
+0.3) shape that style. What dimming means — existing-to-remain, for example —
+is entirely the caller's decision; the exporter attaches no meaning to it.
+Dimmed entities get a `"<class>-dimmed"` BLEND material and
+`extras["display"] = "dimmed (caller-supplied)"`; the dimmed style also wins
+over the low-voltage colour below. Ids that match nothing are ignored, and
+the summary reports how many entities were actually dimmed as `dimmed`.
+
+### Low-voltage device colour
+
+The device types `data_outlet`, `catv_outlet`, `telephone_outlet`,
+`junction_box_data`, `speaker` and `access_control_device` draw in teal
+instead of their geometry class colour. This is a colour class only: geometry
+comes from the unchanged shape classification, and `combination_outlet`
+stays an outlet (red). The colour applies whenever the device is not dimmed.
+
+### Names in extras
+
+When a wall, device, electrical equipment or route has a non-empty canonical
+`name`, it travels as `extras["name"]` and shows up among Blender's custom
+properties — so a labeled route such as a low-voltage stub-up can be read
+directly in the viewer.

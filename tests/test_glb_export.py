@@ -12,15 +12,19 @@ from oabm.exports import to_glb
 from oabm.exports.gltf import to_glb as to_glb_impl
 from oabm.model import (
     BuildingModel,
+    Ceiling,
     Circuit,
     Conductor,
     ElectricalDevice,
+    ElectricalEquipment,
     Level,
     Point3,
+    Polygon3D,
     Polyline3D,
     Port,
     Pose,
     Route,
+    Slab,
     Vector3,
     Wall,
 )
@@ -663,3 +667,452 @@ def test_wall_export_is_deterministic(tmp_path: Path) -> None:
     to_glb(model, first)
     to_glb(model, second)
     assert first.read_bytes() == second.read_bytes()
+
+
+# --- Display options: reference planes, dimmed entities, low-voltage colour,
+# --- names in extras. Every option is keyword-only and defaults off; with all
+# --- options at their defaults the bytes are identical to a plain export.
+
+
+def _plane_model(
+    *,
+    levels: tuple[tuple[float, float | None], ...] = ((0.0, 2.7),),
+    slab_on_levels: tuple[int, ...] = (),
+    ceiling_on_levels: tuple[int, ...] = (),
+) -> BuildingModel:
+    """Synthetic plan: per level one wall and one posed device, plus an
+    optional canonical slab or ceiling on the levels named by index.
+
+    Levels sit 10 m apart in plan so their bounding boxes never touch. Level
+    confidence is a distinctive 0.75 so the extras assertion proves the value
+    really travelled.
+    """
+
+    level_objs: list[Level] = []
+    walls: list[Wall] = []
+    devices: list[ElectricalDevice] = []
+    slabs: list[Slab] = []
+    ceilings: list[Ceiling] = []
+    for index, (elevation, height) in enumerate(levels):
+        level_id = f"level:ref-{index}"
+        level_objs.append(Level(
+            id=level_id, elevation_m=elevation, height_m=height, confidence=0.75,
+        ))
+        walls.append(Wall(
+            id=f"wall:ref-{index}",
+            level_id=level_id,
+            centerline=Polyline3D(points=(
+                Point3(x=10.0 * index, y=0.0, z=elevation),
+                Point3(x=10.0 * index + 4.0, y=0.0, z=elevation),
+            )),
+            thickness_m=0.15,
+            height_m=2.4,
+        ))
+        devices.append(ElectricalDevice(
+            id=f"device:ref-{index}",
+            device_type="receptacle_duplex",
+            pose=Pose(position=Point3(x=10.0 * index + 1.5, y=2.5, z=elevation + 0.3)),
+            level_id=level_id,
+        ))
+        if index in slab_on_levels:
+            slabs.append(Slab(
+                id=f"slab:ref-{index}",
+                level_id=level_id,
+                footprint=Polygon3D(points=(
+                    Point3(x=10.0 * index - 1.0, y=-1.0, z=elevation - 0.1),
+                    Point3(x=10.0 * index + 5.0, y=-1.0, z=elevation - 0.1),
+                    Point3(x=10.0 * index + 5.0, y=3.5, z=elevation - 0.1),
+                    Point3(x=10.0 * index - 1.0, y=3.5, z=elevation - 0.1),
+                )),
+                thickness_m=0.1,
+            ))
+        if index in ceiling_on_levels:
+            ceilings.append(Ceiling(
+                id=f"ceiling:ref-{index}",
+                level_id=level_id,
+                footprint=Polygon3D(points=(
+                    Point3(x=10.0 * index - 1.0, y=-1.0, z=elevation + 2.4),
+                    Point3(x=10.0 * index + 5.0, y=-1.0, z=elevation + 2.4),
+                    Point3(x=10.0 * index + 5.0, y=3.5, z=elevation + 2.4),
+                    Point3(x=10.0 * index - 1.0, y=3.5, z=elevation + 2.4),
+                )),
+            ))
+    return BuildingModel(
+        model_id="model:glb-planes-synth",
+        levels=tuple(level_objs),
+        walls=tuple(walls),
+        slabs=tuple(slabs),
+        ceilings=tuple(ceilings),
+        electrical_devices=tuple(devices),
+    )
+
+
+def _node_material(parsed: dict, node_name: str) -> dict:
+    node = parsed["gltf"]["nodes"][_by_name(parsed)[node_name]]
+    primitive = parsed["gltf"]["meshes"][node["mesh"]]["primitives"][0]
+    return parsed["gltf"]["materials"][primitive["material"]]
+
+
+def _default_options() -> dict:
+    return {
+        "reference_planes": False,
+        "reference_floor_alpha": 0.25,
+        "reference_ceiling_alpha": 0.08,
+        "reference_margin_m": 0.5,
+        "dimmed_ids": (),
+        "dimmed_alpha": 0.3,
+        "dimmed_color": (0.62, 0.62, 0.62),
+    }
+
+
+def test_all_options_at_defaults_give_plain_bytes(tmp_path: Path) -> None:
+    model = _plane_model(levels=((0.0, 2.7), (3.0, 2.6)))
+    to_glb(model, tmp_path / "plain.glb")
+    to_glb(model, tmp_path / "defaults.glb", **_default_options())
+    assert (tmp_path / "plain.glb").read_bytes() == (tmp_path / "defaults.glb").read_bytes()
+
+
+def test_reference_planes_one_level_geometry_and_materials(tmp_path: Path) -> None:
+    model = _plane_model()
+    options = _default_options() | {"reference_planes": True}
+    summary = to_glb(model, tmp_path / "planes.glb", **options)
+    parsed = _parse_glb(tmp_path / "planes.glb")
+    assert summary["reference_planes"] == 2
+
+    # The wall spans x 0..4, the device sits at (1.5, 2.5): the plan bbox is
+    # (0, 0)..(4, 2.5), so with the 0.5 m margin the quads span
+    # (-0.5, -0.5)..(4.5, 3.0) in plan. glTF: y is height, z is -plan-y.
+    floor = _node_positions(parsed, _by_name(parsed)["reference:floor#level:ref-0"])
+    ceiling = _node_positions(parsed, _by_name(parsed)["reference:ceiling#level:ref-0"])
+    assert len(floor) == 6 and len(ceiling) == 6  # two triangles each
+    # Positions are float32-packed, so assertions read at float32 precision.
+    assert all(point[1] == pytest.approx(0.0, abs=1e-6) for point in floor)
+    assert all(point[1] == pytest.approx(2.7, abs=1e-6) for point in ceiling)
+    for quad in (floor, ceiling):
+        assert min(point[0] for point in quad) == pytest.approx(-0.5, abs=1e-6)
+        assert max(point[0] for point in quad) == pytest.approx(4.5, abs=1e-6)
+        assert min(point[2] for point in quad) == pytest.approx(-3.0, abs=1e-6)
+        assert max(point[2] for point in quad) == pytest.approx(0.5, abs=1e-6)
+
+    floor_material = _node_material(parsed, "reference:floor#level:ref-0")
+    ceiling_material = _node_material(parsed, "reference:ceiling#level:ref-0")
+    assert floor_material["name"] == "reference-floor"
+    assert ceiling_material["name"] == "reference-ceiling"
+    assert floor_material["alphaMode"] == "BLEND"
+    assert ceiling_material["alphaMode"] == "BLEND"
+    assert floor_material["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.25)
+    assert ceiling_material["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.08)
+
+    floor_extras = parsed["gltf"]["nodes"][_by_name(parsed)["reference:floor#level:ref-0"]]["extras"]
+    assert floor_extras["reference_plane"] == "floor"
+    assert floor_extras["canonical"] is False
+    assert floor_extras["source"] == "level elevation_m"
+    assert floor_extras["extent"] == "plan bbox of the level's contents + margin"
+    assert floor_extras["margin_m"] == pytest.approx(0.5)
+    assert floor_extras["alpha"] == pytest.approx(0.25)
+    assert floor_extras["level_id"] == "level:ref-0"
+    assert floor_extras["level_confidence"] == pytest.approx(0.75)
+    ceiling_extras = parsed["gltf"]["nodes"][_by_name(parsed)["reference:ceiling#level:ref-0"]]["extras"]
+    assert ceiling_extras["reference_plane"] == "ceiling"
+    assert ceiling_extras["canonical"] is False
+    assert ceiling_extras["source"] == "level elevation_m + height_m"
+    assert ceiling_extras["alpha"] == pytest.approx(0.08)
+
+
+def test_reference_planes_two_levels_each_at_its_own_elevation(tmp_path: Path) -> None:
+    model = _plane_model(levels=((0.0, 2.7), (3.0, 2.6)))
+    summary = to_glb(model, tmp_path / "planes.glb", **(_default_options() | {"reference_planes": True}))
+    parsed = _parse_glb(tmp_path / "planes.glb")
+    assert summary["reference_planes"] == 4
+
+    heights = {}
+    for kind in ("floor", "ceiling"):
+        for level_index in (0, 1):
+            positions = _node_positions(parsed, _by_name(parsed)[f"reference:{kind}#level:ref-{level_index}"])
+            # float32-packed positions: compare within packing precision.
+            heights[f"{kind}-{level_index}"] = (
+                min(point[1] for point in positions),
+                max(point[1] for point in positions),
+            )
+    assert heights["floor-0"] == pytest.approx((0.0, 0.0), abs=1e-6)
+    assert heights["ceiling-0"] == pytest.approx((2.7, 2.7), abs=1e-6)
+    assert heights["floor-1"] == pytest.approx((3.0, 3.0), abs=1e-6)
+    assert heights["ceiling-1"] == pytest.approx((5.6, 5.6), abs=1e-6)
+
+
+def test_reference_planes_skip_floor_where_a_canonical_slab_exists(tmp_path: Path) -> None:
+    model = _plane_model(slab_on_levels=(0,))
+    summary = to_glb(model, tmp_path / "planes.glb", **(_default_options() | {"reference_planes": True}))
+    parsed = _parse_glb(tmp_path / "planes.glb")
+    names = _by_name(parsed)
+    assert summary["reference_planes"] == 1
+    assert not any(name.startswith("reference:floor#") for name in names)
+    assert "reference:ceiling#level:ref-0" in names
+
+
+def test_reference_planes_skip_ceiling_where_a_canonical_ceiling_exists(tmp_path: Path) -> None:
+    model = _plane_model(ceiling_on_levels=(0,))
+    summary = to_glb(model, tmp_path / "planes.glb", **(_default_options() | {"reference_planes": True}))
+    parsed = _parse_glb(tmp_path / "planes.glb")
+    names = _by_name(parsed)
+    assert summary["reference_planes"] == 1
+    assert "reference:floor#level:ref-0" in names
+    assert not any(name.startswith("reference:ceiling#") for name in names)
+
+
+def test_reference_planes_without_level_height_explain_in_extras(tmp_path: Path) -> None:
+    model = _plane_model(levels=((0.0, None),))
+    summary = to_glb(model, tmp_path / "planes.glb", **(_default_options() | {"reference_planes": True}))
+    parsed = _parse_glb(tmp_path / "planes.glb")
+    names = _by_name(parsed)
+    assert summary["reference_planes"] == 1
+    assert "reference:floor#level:ref-0" in names
+    assert not any(name.startswith("reference:ceiling#") for name in names)
+    floor_extras = parsed["gltf"]["nodes"][_by_name(parsed)["reference:floor#level:ref-0"]]["extras"]
+    assert floor_extras["ceiling"] == "no level height"
+
+
+def test_all_options_on_export_is_deterministic_and_valid(tmp_path: Path) -> None:
+    model = _plane_model(levels=((0.0, 2.7), (3.0, 2.6)))
+    options = _default_options() | {
+        "reference_planes": True,
+        "reference_floor_alpha": 0.4,
+        "reference_ceiling_alpha": 0.1,
+        "reference_margin_m": 0.75,
+        "dimmed_ids": ("device:ref-0", "device:ref-1", "device:missing"),
+        "dimmed_alpha": 0.2,
+        "dimmed_color": (0.5, 0.5, 0.55),
+    }
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    summary = to_glb(model, first, **options)
+    to_glb(model, second, **options)
+    assert first.read_bytes() == second.read_bytes()
+    # _parse_glb asserts the GLB header and chunk lengths are consistent.
+    parsed = _parse_glb(first)
+    assert summary["reference_planes"] == 4
+    assert summary["dimmed"] == 2  # the unknown id matches nothing
+    assert len(parsed["gltf"]["nodes"]) == summary["nodes"]
+
+
+def _dimmed_model() -> BuildingModel:
+    """Two same-type devices, one low-voltage device, a panel equipment with
+    two ports, and one route between them: enough to dim a device, equipment
+    and route while a same-type device stays undimmed."""
+
+    def device(device_id: str, x: float, device_type: str = "receptacle_duplex") -> ElectricalDevice:
+        return ElectricalDevice(
+            id=device_id,
+            device_type=device_type,
+            pose=Pose(position=Point3(x=x, y=2.0, z=0.3)),
+            level_id="level:dim",
+        )
+
+    equipment = ElectricalEquipment(
+        id="equip:dim-panel",
+        equipment_type="panelboard",
+        pose=Pose(position=Point3(x=0.0, y=0.0, z=1.0)),
+        level_id="level:dim",
+    )
+
+    def port(port_id: str, position: Point3) -> Port:
+        return Port(
+            id=port_id,
+            owner_id="equip:dim-panel",
+            domain="electrical",
+            role="source",
+            pose=Pose(position=position),
+            direction=Vector3(x=1.0, y=0.0, z=0.0),
+        )
+
+    return BuildingModel(
+        model_id="model:glb-dim-synth",
+        levels=(Level(id="level:dim", elevation_m=0.0, height_m=2.7),),
+        electrical_devices=(
+            device("device:dim-keep", 4.0),
+            device("device:dim-drop", 6.0),
+            device("device:dim-data", 8.0, "data_outlet"),
+        ),
+        electrical_equipment=(equipment,),
+        ports=(
+            port("port:dim-a", Point3(x=0.0, y=0.0, z=1.0)),
+            port("port:dim-b", Point3(x=3.0, y=1.5, z=1.0)),
+        ),
+        circuits=(Circuit(
+            id="circuit:dim-1",
+            source_port_id="port:dim-a",
+            load_port_ids=("port:dim-b",),
+            route_ids=("route:dim-1",),
+        ),),
+        routes=(Route(
+            id="route:dim-1",
+            route_type="emt",
+            start_port_id="port:dim-a",
+            end_port_id="port:dim-b",
+            centerline=Polyline3D(points=(
+                Point3(x=0.0, y=0.0, z=1.0),
+                Point3(x=3.0, y=1.5, z=1.0),
+            )),
+            nominal_diameter_m=0.021,
+        ),),
+    )
+
+
+def test_dimmed_device_gets_caller_grey_blend_and_extras(tmp_path: Path) -> None:
+    color = (0.4, 0.4, 0.45)
+    options = _default_options() | {
+        "dimmed_ids": ("device:dim-drop", "device:dim-data"),
+        "dimmed_alpha": 0.25,
+        "dimmed_color": color,
+    }
+    summary = to_glb(_dimmed_model(), tmp_path / "dim.glb", **options)
+    parsed = _parse_glb(tmp_path / "dim.glb")
+
+    dropped = _node_material(parsed, "device:dim-drop")
+    assert dropped["name"] == "outlet-dimmed"
+    assert dropped["alphaMode"] == "BLEND"
+    assert dropped["pbrMetallicRoughness"]["baseColorFactor"] == pytest.approx([*color, 0.25])
+    node = parsed["gltf"]["nodes"][_by_name(parsed)["device:dim-drop"]]
+    assert node["extras"]["display"] == "dimmed (caller-supplied)"
+
+    # The dimmed style wins over the low-voltage teal.
+    data = _node_material(parsed, "device:dim-data")
+    assert data["name"] == "low_voltage-dimmed"
+    assert data["pbrMetallicRoughness"]["baseColorFactor"] == pytest.approx([*color, 0.25])
+
+    # A non-dimmed device of the same type keeps its class colour, opaque.
+    kept = _node_material(parsed, "device:dim-keep")
+    assert kept["name"] == "outlet"
+    assert "alphaMode" not in kept
+    red, green, blue = kept["pbrMetallicRoughness"]["baseColorFactor"][:3]
+    assert red > green and red > blue
+    assert kept["pbrMetallicRoughness"]["baseColorFactor"][3] == 1.0
+    assert summary["dimmed"] == 2
+
+
+def test_dimmed_route_and_equipment_go_grey(tmp_path: Path) -> None:
+    options = _default_options() | {
+        "dimmed_ids": ("route:dim-1", "equip:dim-panel"),
+    }
+    summary = to_glb(_dimmed_model(), tmp_path / "dim.glb", **options)
+    parsed = _parse_glb(tmp_path / "dim.glb")
+
+    route = _node_material(parsed, "route:dim-1")
+    assert route["name"] == "route-dimmed"
+    assert route["alphaMode"] == "BLEND"
+    red, green, blue = route["pbrMetallicRoughness"]["baseColorFactor"][:3]
+    assert red == green == pytest.approx(0.62)
+    assert blue == pytest.approx(0.62)
+    assert route["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.3)
+
+    panel = _node_material(parsed, "equip:dim-panel")
+    assert panel["name"] == "panel-dimmed"
+    assert summary["dimmed"] == 2
+
+
+def test_dimmed_count_only_counts_matched_ids(tmp_path: Path) -> None:
+    options = _default_options() | {
+        "dimmed_ids": (
+            "device:dim-drop",
+            "device:does-not-exist",
+            "route:not-here",
+            "equip:dim-panel",
+        ),
+    }
+    summary = to_glb(_dimmed_model(), tmp_path / "dim.glb", **options)
+    assert summary["dimmed"] == 2
+    parsed = _parse_glb(tmp_path / "dim.glb")
+    assert "display" not in parsed["gltf"]["nodes"][_by_name(parsed)["device:dim-keep"]]["extras"]
+
+
+def _low_voltage_model() -> BuildingModel:
+    low_voltage_types = (
+        "data_outlet", "catv_outlet", "telephone_outlet",
+        "junction_box_data", "speaker", "access_control_device",
+    )
+    return BuildingModel(
+        model_id="model:glb-lowvolt-synth",
+        electrical_devices=tuple(
+            ElectricalDevice(
+                id=f"device:lv-{device_type}",
+                device_type=device_type,
+                pose=Pose(position=Point3(x=1.0, y=2.0, z=3.0)),
+            )
+            for device_type in low_voltage_types
+        ),
+    )
+
+
+def test_low_voltage_types_draw_teal_with_unchanged_geometry(tmp_path: Path) -> None:
+    to_glb(_low_voltage_model(), tmp_path / "lowvoltage.glb")
+    parsed = _parse_glb(tmp_path / "lowvoltage.glb")
+    gltf = parsed["gltf"]
+
+    vertex_counts = {
+        "device:lv-data_outlet": 36,        # outlet box, as before
+        "device:lv-catv_outlet": 36,        # outlet box, as before
+        "device:lv-telephone_outlet": 36,   # outlet box, as before
+        "device:lv-junction_box_data": 36,  # other box, as before
+        "device:lv-speaker": 36,            # other box, as before
+        "device:lv-access_control_device": 120,  # sensor cylinder, as before
+    }
+    for name, node in ((node["name"], node) for node in gltf["nodes"]):
+        primitive = gltf["meshes"][node["mesh"]]["primitives"][0]
+        accessor = gltf["accessors"][primitive["attributes"]["POSITION"]]
+        assert accessor["count"] == vertex_counts[name], name
+        material = gltf["materials"][primitive["material"]]
+        assert material["name"] == "low_voltage", name
+        red, green, blue = material["pbrMetallicRoughness"]["baseColorFactor"][:3]
+        assert (red, green, blue) == pytest.approx((0.10, 0.65, 0.70)), name
+
+
+def test_combination_outlet_stays_an_outlet(tmp_path: Path) -> None:
+    model = BuildingModel(
+        model_id="model:glb-combo-synth",
+        electrical_devices=(ElectricalDevice(
+            id="device:combo",
+            device_type="combination_outlet",
+            pose=Pose(position=Point3(x=1.0, y=2.0, z=3.0)),
+        ),),
+    )
+    to_glb(model, tmp_path / "combo.glb")
+    parsed = _parse_glb(tmp_path / "combo.glb")
+    material = _node_material(parsed, "device:combo")
+    assert material["name"] == "outlet"
+    red, green, blue = material["pbrMetallicRoughness"]["baseColorFactor"][:3]
+    assert red > green and red > blue
+
+
+def test_named_entities_carry_name_in_extras(tmp_path: Path) -> None:
+    model = _dimmed_model()
+    named = replace(
+        model,
+        electrical_devices=(
+            replace(model.electrical_devices[0], name="receptacle at the bench"),
+            *model.electrical_devices[1:],
+        ),
+        electrical_equipment=(
+            replace(model.electrical_equipment[0], name="main panelboard"),
+        ),
+        routes=(
+            replace(model.routes[0], name="low voltage stub-up, cabling by others"),
+        ),
+    )
+    to_glb(named, tmp_path / "named.glb")
+    parsed = _parse_glb(tmp_path / "named.glb")
+    nodes = {node["name"]: node for node in parsed["gltf"]["nodes"]}
+    assert nodes["device:dim-keep"]["extras"]["name"] == "receptacle at the bench"
+    assert nodes["equip:dim-panel"]["extras"]["name"] == "main panelboard"
+    assert nodes["route:dim-1"]["extras"]["name"] == "low voltage stub-up, cabling by others"
+    # Entities without a name claim none.
+    assert "name" not in nodes["device:dim-drop"]["extras"]
+
+    wall_model = _wall_model(wall_height=2.7, level_height=None, elevation=0.0)
+    wall_model = replace(
+        wall_model,
+        walls=(replace(wall_model.walls[0], name="south run"),),
+    )
+    to_glb(wall_model, tmp_path / "wall.glb")
+    wall_parsed = _parse_glb(tmp_path / "wall.glb")
+    wall_node = wall_parsed["gltf"]["nodes"][_by_name(wall_parsed)["wall:south-run"]]
+    assert wall_node["extras"]["name"] == "south run"

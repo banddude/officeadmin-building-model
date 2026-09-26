@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import re
@@ -1188,3 +1189,145 @@ def test_a_stated_identifier_still_records_the_file_in_provenance(
         record.source_id == str(FIXTURE)
         for record in model.walls[0].provenance
     )
+
+
+# --- Capture envelope digests (#90) -----------------------------------------
+#
+# A real Bundle v3 capture carries `coreModel` (an opaque, unbounded blob) and
+# `referenceOriginTransform` (the capture's world placement) on the room
+# document. The importer does not interpret either, so it no longer copies
+# either: both are recorded as digests. Every value used here is synthetic and
+# invented for these tests; none of it comes from a real capture.
+
+_CORE_MARKER = "SYNTHETIC-CORE-7Q4Z9B-MARKER"
+_BIG_BLOB_MARKER = "SYNTHETIC-BIGBLOB-3KQ8V-MARKER"
+
+
+def _envelope_source() -> dict:
+    """The synthetic room plus a fake 10 kB coreModel and a 16-number transform."""
+    source = _source()
+    filler = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=" * 300
+    blob = (_CORE_MARKER + filler)[:10240]
+    assert len(blob) == 10240 and _CORE_MARKER in blob
+    source["coreModel"] = blob
+    # Every value is an exact binary fraction, so the JSON text of the model is
+    # stable and the distinctive member can be searched for as a substring.
+    source["referenceOriginTransform"] = [
+        0.5,
+        -1.25,
+        0.75,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        -0.75,
+        0.0,
+        0.5,
+        0.0,
+        2.5,
+        424242.75,
+        -0.25,
+        1.0,
+    ]
+    return source
+
+
+def _expected_digest(value: object) -> dict:
+    canonical = json.dumps(
+        value, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "present": True,
+        "size_bytes": len(canonical),
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def test_named_envelope_keys_are_digested_and_never_copied() -> None:
+    source = _envelope_source()
+    model = import_captured_room(source, source_id="fixture:envelope")
+
+    model_json = model.to_json()
+    assert _CORE_MARKER not in model_json
+    assert "424242.75" not in model_json
+    assert "extra_fields" not in model.attributes["roomplan"]
+
+    envelope = model.attributes["roomplan"]["envelope"]
+    assert envelope["coreModel"] == _expected_digest(source["coreModel"])
+    assert envelope["coreModel"]["size_bytes"] >= 10240
+    assert envelope["referenceOriginTransform"] == _expected_digest(
+        source["referenceOriginTransform"]
+    )
+
+
+def test_small_unknown_top_level_key_still_passes_through() -> None:
+    source = _source()
+    source["scanNote"] = {"quality": "synthetic", "count": 3}
+
+    model = import_captured_room(source, source_id="fixture:envelope")
+
+    assert model.attributes["roomplan"]["extra_fields"]["scanNote"] == {
+        "quality": "synthetic",
+        "count": 3,
+    }
+    assert "envelope" not in model.attributes["roomplan"]
+
+
+def test_oversized_unknown_top_level_key_is_digested() -> None:
+    source = _source()
+    source["bigBlob"] = _BIG_BLOB_MARKER + "x" * 5000
+
+    model = import_captured_room(source, source_id="fixture:envelope")
+
+    roomplan = model.attributes["roomplan"]
+    assert roomplan["envelope"]["bigBlob"] == _expected_digest(source["bigBlob"])
+    assert roomplan["envelope_digested_keys"] == ["bigBlob"]
+    assert "extra_fields" not in roomplan
+    assert _BIG_BLOB_MARKER not in model.to_json()
+
+
+def test_envelope_passthrough_size_limit_is_4096_bytes_exclusive() -> None:
+    source = _source()
+    # Two quotes wrap each string, so a 4094-character value is exactly 4096
+    # canonical bytes and passes through; one more character tips it over.
+    source["atLimit"] = "y" * 4094
+    source["pastLimit"] = "z" * 4095
+
+    model = import_captured_room(source, source_id="fixture:envelope")
+
+    roomplan = model.attributes["roomplan"]
+    assert roomplan["extra_fields"]["atLimit"] == "y" * 4094
+    assert roomplan["envelope"]["pastLimit"] == _expected_digest("z" * 4095)
+    assert roomplan["envelope_digested_keys"] == ["pastLimit"]
+
+
+def test_envelope_digests_are_deterministic() -> None:
+    source = _envelope_source()
+    source["bigBlob"] = _BIG_BLOB_MARKER + "x" * 5000
+
+    first = import_captured_room(copy.deepcopy(source), source_id="fixture:envelope")
+    second = import_captured_room(copy.deepcopy(source), source_id="fixture:envelope")
+
+    assert first.to_json() == second.to_json()
+
+
+def test_ifc_export_does_not_carry_the_raw_envelope(tmp_path: Path) -> None:
+    """The IFC adapter embeds model attributes, so the envelope must be gone.
+
+    A raw `coreModel` used to ride into the canonical model through
+    `extra_fields` and from there into every entity shadow the IFC adapter
+    writes as `CanonicalJson` pset text. The written file must not carry it.
+    """
+    from oabm.ifc import to_ifc
+
+    model = import_captured_room(_envelope_source(), source_id="fixture:envelope")
+
+    destination = tmp_path / "envelope-model.ifc"
+    to_ifc(model, str(destination))
+    written = destination.read_text(encoding="utf-8", errors="replace")
+
+    assert _CORE_MARKER not in written
+    assert "424242.75" not in written
+    # The digest itself stays auditable in the embedded model attributes.
+    assert '"sha256"' in written

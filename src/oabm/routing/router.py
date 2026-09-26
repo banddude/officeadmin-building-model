@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import heapq
 import math
 from dataclasses import dataclass
@@ -80,6 +81,24 @@ class RoutingOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class BundleHints:
+    """Earlier runs a new route may follow at reduced cost. Caller input only; never persisted."""
+
+    paths: tuple[Polyline3D, ...] = ()
+    discount: float = 0.25
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.paths, tuple) or not all(
+            isinstance(item, Polyline3D) for item in self.paths
+        ):
+            raise RoutingError("paths must be a tuple of Polyline3D centerlines")
+        if isinstance(self.discount, bool) or not isinstance(self.discount, (int, float)):
+            raise RoutingError("discount must be an int or float")
+        if not math.isfinite(self.discount) or not 0 <= self.discount < 1:
+            raise RoutingError("discount must be finite and in [0, 1)")
+
+
+@dataclass(frozen=True, slots=True)
 class _Bounds:
     min_x: float
     min_y: float
@@ -122,6 +141,101 @@ class _RoutingGeometry:
     required: tuple[_Rule, ...]
     preferred: tuple[_Rule, ...]
     surfaces: tuple[_Rule, ...]
+    bundle: _BundleIndex | None = None
+
+
+# For an axis key, the two fixed coordinates in x, y, z order.
+_BUNDLE_FIXED_AXES = {0: (1, 2), 1: (0, 2), 2: (0, 1)}
+
+
+@dataclass(frozen=True, slots=True)
+class _BundleIndex:
+    lookup: dict
+    vertices: tuple
+    factor: float
+
+
+def _axis_key(a: Point3, b: Point3, precision: int) -> tuple | None:
+    """Return ``(key, lo, hi)`` when the segment is axis aligned, else ``None``.
+
+    ``key`` is ``(axis, c1, c2)``: the moving axis plus the other two
+    canonical coordinates in x, y, z order. ``lo < hi`` are the moving
+    coordinate's two canonical values.
+    """
+
+    first = (_canon(a.x, precision), _canon(a.y, precision), _canon(a.z, precision))
+    second = (_canon(b.x, precision), _canon(b.y, precision), _canon(b.z, precision))
+    differing = [axis for axis in range(3) if first[axis] != second[axis]]
+    if len(differing) != 1:
+        return None
+    axis = differing[0]
+    fixed_first, fixed_second = _BUNDLE_FIXED_AXES[axis]
+    key = (axis, first[fixed_first], first[fixed_second])
+    lo, hi = sorted((first[axis], second[axis]))
+    return (key, lo, hi)
+
+
+def _bundle_interval_point(key: tuple, moving: float) -> tuple[float, float, float]:
+    axis, c1, c2 = key
+    fixed_first, fixed_second = _BUNDLE_FIXED_AXES[axis]
+    coordinates = [0.0, 0.0, 0.0]
+    coordinates[axis] = moving
+    coordinates[fixed_first] = c1
+    coordinates[fixed_second] = c2
+    return (coordinates[0], coordinates[1], coordinates[2])
+
+
+def _bundle_index(hints: BundleHints | None, precision: int) -> _BundleIndex | None:
+    if hints is None or hints.discount == 0:
+        return None
+    intervals: dict[tuple, list[tuple[float, float]]] = {}
+    for path in hints.paths:
+        for a, b in zip(path.points, path.points[1:]):
+            axis_key = _axis_key(a, b, precision)
+            if axis_key is None:
+                continue
+            key, lo, hi = axis_key
+            intervals.setdefault(key, []).append((lo, hi))
+    if not intervals:
+        return None
+    lookup: dict[tuple, tuple[tuple[float, float], ...]] = {}
+    vertices: set[tuple[float, float, float]] = set()
+    for key in sorted(intervals):
+        merged: list[tuple[float, float]] = []
+        for lo, hi in sorted(intervals[key]):
+            if merged and lo <= merged[-1][1] + _EPS:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+            else:
+                merged.append((lo, hi))
+        lookup[key] = tuple(merged)
+        for lo, hi in merged:
+            vertices.add(_bundle_interval_point(key, lo))
+            vertices.add(_bundle_interval_point(key, hi))
+    return _BundleIndex(
+        lookup=lookup,
+        vertices=tuple(sorted(vertices)),
+        factor=1.0 - hints.discount,
+    )
+
+
+def _along_bundle(a: Point3, b: Point3, index: _BundleIndex, precision: int) -> bool:
+    axis_key = _axis_key(a, b, precision)
+    if axis_key is None:
+        return False
+    key, s, e = axis_key
+    return any(lo - _EPS <= s and e <= hi + _EPS for lo, hi in index.lookup.get(key, ()))
+
+
+def _bundle_shared_m(points, index: _BundleIndex, precision: int) -> float:
+    total = 0.0
+    for a, b in zip(points, points[1:]):
+        axis_key = _axis_key(a, b, precision)
+        if axis_key is None:
+            continue
+        key, s, e = axis_key
+        for lo, hi in index.lookup.get(key, ()):
+            total += max(0.0, min(e, hi) - max(s, lo))
+    return total
 
 
 def route_between_ports(
@@ -132,12 +246,17 @@ def route_between_ports(
     *,
     nominal_diameter_m: float | None = None,
     options: RoutingOptions | None = None,
+    bundle_hints: BundleHints | None = None,
 ) -> tuple[Route, tuple[RouteFitting, ...]]:
     """Route one canonical port-to-port connection deterministically.
 
     The input is the canonical ``BuildingModel``. The outputs are canonical
     ``Route`` and ``RouteFitting`` objects only; callers decide whether and how
     to attach them to a model document.
+
+    ``bundle_hints`` is optional caller input: earlier runs a new route may
+    follow at reduced cost. It never changes route identity or provenance and
+    is not persisted.
     """
 
     if not route_type:
@@ -159,6 +278,9 @@ def route_between_ports(
     diameter = _resolve_diameter(start_port, end_port, nominal_diameter_m)
     route_radius = (diameter or 0.0) / 2.0
     geometry = _collect_routing_geometry(model, route_type, route_radius, options)
+    bundle = _bundle_index(bundle_hints, options.coordinate_precision)
+    if bundle is not None:
+        geometry = dataclasses.replace(geometry, bundle=bundle)
 
     start = start_port.pose.position
     end = end_port.pose.position
@@ -226,6 +348,16 @@ def route_between_ports(
     )
     fittings = _build_fittings(route_id, points, diameter, provenance)
     length_m = sum(_distance(a, b) for a, b in zip(points, points[1:]))
+    attributes = {
+        "routing_engine": _ALGORITHM,
+        "bend_count": bend_count,
+        "length_m": round(length_m, options.coordinate_precision),
+        "required_constraint_ids": [item.id for item in geometry.required],
+    }
+    if bundle is not None:
+        p = options.coordinate_precision
+        attributes["bundle_hint_discount"] = float(bundle_hints.discount)
+        attributes["bundle_hint_shared_m"] = round(_bundle_shared_m(points, bundle, p), p)
     route = Route(
         id=route_id,
         route_type=route_type,
@@ -235,12 +367,7 @@ def route_between_ports(
         nominal_diameter_m=diameter,
         fitting_ids=tuple(fitting.id for fitting in fittings),
         provenance=provenance,
-        attributes={
-            "routing_engine": _ALGORITHM,
-            "bend_count": bend_count,
-            "length_m": round(length_m, options.coordinate_precision),
-            "required_constraint_ids": [item.id for item in geometry.required],
-        },
+        attributes=attributes,
     )
     return route, fittings
 
@@ -459,6 +586,14 @@ def _candidate_coordinates(
         if level.height_m is not None:
             zs.add(_canon(level.elevation_m + level.height_m, p))
 
+    if geometry.bundle is not None:
+        # Bundle vertices are already canonical; they open lattice lines along
+        # hinted trunks so the search can reach them.
+        for x, y, z in geometry.bundle.vertices:
+            xs.add(x)
+            ys.add(y)
+            zs.add(z)
+
     xs.update({_canon(min(xs) - options.search_margin_m, p), _canon(max(xs) + options.search_margin_m, p)})
     ys.update({_canon(min(ys) - options.search_margin_m, p), _canon(max(ys) + options.search_margin_m, p)})
     zs.update({_canon(min(zs) - options.search_margin_m, p), _canon(max(zs) + options.search_margin_m, p)})
@@ -656,6 +791,8 @@ def _edge_base_cost(
         cost *= 1.0 - options.preferred_corridor_discount
     if geometry.surfaces and any(_segment_midpoint_in_bounds(a, b, item.bounds) for item in geometry.surfaces):
         cost *= 1.0 - options.surface_path_discount
+    if geometry.bundle is not None and _along_bundle(a, b, geometry.bundle, options.coordinate_precision):
+        cost *= geometry.bundle.factor
     return cost
 
 

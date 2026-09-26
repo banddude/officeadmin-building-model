@@ -329,7 +329,13 @@ def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
         assert classify(port) == DERIVATION_INFERRED, port.id
     assert classify(elec) == DERIVATION_OBSERVED
 
-    # --- architecture: real input, so observed
+    # --- architecture: this plan prints no level or ceiling height, so the
+    # level, every wall, and every space that uses a height carries the
+    # importer's scoped inferred record for the assumed default.  What the
+    # sheet DID show -- centerlines, thicknesses, footprints, the room label --
+    # stays observed in the unscoped records, and the one assumption is stated
+    # per claim.  Folded to a single class the entity therefore reads inferred
+    # instead of overstating a wholly observed sheet.
     arch = import_architectural_pdf(
         Path("fixtures/pdf_architecture/v1/cad-export-geometry-plus-text.pdf"),
         source_id="fixture:classification-arch",
@@ -337,7 +343,18 @@ def test_classification_needs_only_the_canonical_field(tmp_path: Path) -> None:
     arch_entities = (*arch.levels, *arch.spaces, *arch.walls)
     assert arch_entities
     for entity in arch_entities:
-        assert classify(entity) == DERIVATION_OBSERVED, entity.id
+        assert classify(entity) == DERIVATION_INFERRED, entity.id
+        unscoped = [
+            record.derivation
+            for record in entity.provenance
+            if record.scope_paths is None
+        ]
+        assert unscoped and set(unscoped) == {DERIVATION_OBSERVED}, entity.id
+        assert [
+            record.derivation
+            for record in entity.provenance
+            if record.scope_paths == ("height_m",)
+        ] == [DERIVATION_INFERRED], entity.id
     assert classify(arch) == DERIVATION_OBSERVED
 
     # --- roomplan: observed in what it saw, inferred in what it had to supply

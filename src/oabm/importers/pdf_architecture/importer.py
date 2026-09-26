@@ -170,6 +170,12 @@ class _Measurement:
     page_number: int
     source_text: str | None = None
     source_element_id: str | None = None
+    # True when the value is the importer's assumed default rather than
+    # something printed on the sheet. It rides on the measurement so the flag
+    # survives whole-measurement reconciliation (a winning evidence value
+    # clears it, a default that wins keeps it) and so every entity that
+    # inherits the height can restate it as scoped inferred provenance.
+    assumed_default: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1533,6 +1539,7 @@ def _resolve_level(
                 "paired PDF wall faces when no explicit level/ceiling height is available"
             ),
             page_number=page.page_number,
+            assumed_default=True,
         )
         ambiguities.append(
             {
@@ -2754,6 +2761,11 @@ def _shell_entities(
     resolved_height_m = selected_height.value_m if selected_height is not None else None
     height_confidence = selected_height.confidence if selected_height is not None else 0.0
     height_provenance: tuple[Provenance, ...] = ()
+    # The scoped inferred record travels only to owners that canonically have
+    # a height_m field (the space and its walls). A ceiling has none -- its
+    # assumed condition is the footprint placement, which has no canonical
+    # height path to scope to -- so it keeps its existing records.
+    assumed_height_provenance: tuple[Provenance, ...] = ()
     if selected_height is not None:
         height_provenance = _provenance(
             source_id,
@@ -2767,6 +2779,10 @@ def _shell_entities(
                 "source_text": selected_height.source_text,
             },
         )
+        if selected_height.assumed_default:
+            assumed_height_provenance = (
+                _assumed_level_height_provenance(source_id, selected_height),
+            )
     space_confidence = (
         min(base_confidence, height_confidence)
         if resolved_height_m is not None
@@ -2841,6 +2857,7 @@ def _shell_entities(
                 attributes=space_source_attributes,
             )
             + height_provenance
+            + assumed_height_provenance
         ),
         attributes=space_attributes,
     )
@@ -2920,6 +2937,7 @@ def _shell_entities(
                         attributes={"room_anchor": room.anchor, "source_side": side},
                     )
                     + height_provenance
+                    + assumed_height_provenance
                 ),
                 attributes={"pdf_architecture": wall_attributes},
             )
@@ -6705,6 +6723,43 @@ def _region_record(
     return record
 
 
+def _assumed_level_height_provenance(
+    source_id: str,
+    measurement: _Measurement,
+) -> Provenance:
+    """Record that one entity's height is the importer's assumed level default.
+
+    A plan that prints no level or ceiling height still yields walls: the
+    importer assigns a low-confidence default so geometrically paired wall
+    faces can materialize. That value is not sheet evidence, and the unscoped
+    ``observed`` record these entities already carry says nothing about it, so
+    this second record states the assumption where the contract says it
+    belongs -- in ``derivation``, scoped to the single claim it covers. A
+    consumer deriving a wall face area from the drawn centerline and drawn
+    thickness is entitled to call that observed; one that extends the wall
+    through this height is not. Mirrors the RoomPlan importer's
+    ``_assumed_dimension_provenance``.
+    """
+
+    return Provenance(
+        source_kind="architectural_pdf",
+        derivation=DERIVATION_INFERRED,
+        source_id=source_id,
+        page=measurement.page_number,
+        method=(
+            "assumed default level height: no level or ceiling height was "
+            "printed on the plan; the importer's low-confidence default was "
+            "assigned so wall geometry could materialize"
+        ),
+        confidence=measurement.confidence,
+        scope_paths=("height_m",),
+        attributes={
+            "assumed_value_m": measurement.value_m,
+            "field": "height_m",
+        },
+    )
+
+
 def _level_measurement_provenance(
     source_id: str,
     measurement: _Measurement,
@@ -6716,7 +6771,7 @@ def _level_measurement_provenance(
         attributes["source_text"] = measurement.source_text
     if field == "height_m":
         attributes["scope"] = "level"
-    return _provenance(
+    records = _provenance(
         source_id,
         measurement.page_number,
         method=measurement.method,
@@ -6724,6 +6779,9 @@ def _level_measurement_provenance(
         source_element_id=measurement.source_element_id,
         attributes=attributes,
     )
+    if field == "height_m" and measurement.assumed_default:
+        records += (_assumed_level_height_provenance(source_id, measurement),)
+    return records
 
 
 # A wall drawn again by another drawing region is the same wall when its

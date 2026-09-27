@@ -108,6 +108,18 @@ _DISCIPLINE_WORD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bCIVIL\b", re.IGNORECASE), "civil"),
 )
 
+# An unnumbered drawing can name its trade in the drawing title even when
+# that title is outside the narrow title-block band. Require a drawing kind
+# as well as a discipline word so ordinary notes cannot supply an identity.
+_DRAWING_TITLE_RE = re.compile(
+    r"\b(?:PLAN|ELEVATION|SECTION|SCHEDULE|DIAGRAM|DETAIL|RCP)\b",
+    re.IGNORECASE,
+)
+_DRAWING_NOTE_START_RE = re.compile(
+    r"^(?:SEE|REFER|COORDINATE|NOTE|NOTES|VERIFY|PROVIDE)\b",
+    re.IGNORECASE,
+)
+
 # The title block is taken to be the band along the displayed right edge or
 # the displayed bottom edge of the sheet, each this fraction of the page's
 # width or height. Only text inside the band can decide the discipline-word
@@ -427,9 +439,11 @@ def sheet_identity(
     candidate, so such a sheet stays ``unknown`` unless a discipline word
     inside the title-block band decides it. When a page prints no sheet
     number, those discipline words decide (see
-    :data:`TITLE_BLOCK_BAND_FRACTION`); words elsewhere on the sheet are
-    ignored. When neither is present the discipline is ``unknown`` and the
-    sheet id is ``None``.
+    :data:`TITLE_BLOCK_BAND_FRACTION`); ordinary notes elsewhere are
+    ignored. When neither is present, a drawing title outside the band can
+    supply a discipline if it names both a trade and a drawing kind (for
+    example ``MECHANICAL PLAN``). The largest such title wins. Otherwise the
+    discipline is ``unknown`` and the sheet id is ``None``.
 
     Separators: the canonical id is ``PREFIX-number`` (``E-110``, ``FP-2``).
     A dotted number also accepts a missing, space, or en/em dash separator
@@ -463,7 +477,20 @@ def _identity_from_texts(
 ) -> tuple[str | None, str]:
     if not texts:
         return None, "unknown"
+    band = _title_block_band(document, page, texts)
+    band_texts = [item for item in texts if _in_band(item.x_pt, item.y_pt, band)]
     candidates = _sheet_id_candidates(texts)
+    band_candidates = _sheet_id_candidates(band_texts)
+    if not band_candidates:
+        band_discipline = _discipline_word_fallback(band_texts)
+        if band_discipline != "unknown":
+            return None, band_discipline
+        outside_texts = [
+            item for item in texts if not _in_band(item.x_pt, item.y_pt, band)
+        ]
+        title_discipline = _drawing_title_discipline(outside_texts)
+        if title_discipline != "unknown":
+            return None, title_discipline
     if candidates:
         sheet_id = _tally_candidates(
             candidates,
@@ -472,9 +499,7 @@ def _identity_from_texts(
         )
         prefix = sheet_id.split("-", 1)[0]
         return sheet_id, _SHEET_PREFIX_DISCIPLINES[prefix]
-    return None, _discipline_word_fallback(
-        _title_block_texts(document, page, texts)
-    )
+    return None, "unknown"
 
 
 # Kept for callers that used the private name before it became public.
@@ -656,3 +681,26 @@ def _discipline_word_fallback(texts: Sequence[PdfTextObservation]) -> str:
     if not tally:
         return "unknown"
     return min(tally, key=lambda discipline: (-tally[discipline], discipline))
+
+
+def _drawing_title_discipline(texts: Sequence[PdfTextObservation]) -> str:
+    """Discipline of the largest outside-band drawing title, if readable."""
+
+    candidates: list[tuple[float, float, str]] = []
+    for observation in texts:
+        label = observation.text.strip()
+        if (
+            len(label) > 100
+            or len(label.split()) > 10
+            or _DRAWING_NOTE_START_RE.search(label)
+            or not _DRAWING_TITLE_RE.search(label)
+        ):
+            continue
+        discipline = _discipline_word_fallback((observation,))
+        if discipline == "unknown":
+            continue
+        height = observation.font_size_pt or 0.0
+        candidates.append((-height, observation.y_pt, discipline))
+    if not candidates:
+        return "unknown"
+    return min(candidates)[2]

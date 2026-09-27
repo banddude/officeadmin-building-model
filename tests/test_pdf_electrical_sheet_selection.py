@@ -1004,6 +1004,48 @@ def test_large_sheet_number_beats_repeated_small_references() -> None:
     assert sheet_identity(document, 1) == ("E-2.1", "electrical")
 
 
+def test_large_electrical_number_beats_mechanical_cross_references() -> None:
+    document = _identity_document(
+        ("E-1.1", 560.0, 40.0, 85.0),
+        ("SEE M-2.1", 560.0, 700.0, 12.0),
+        ("SEE M-2.1", 560.0, 600.0, 12.0),
+        ("SEE M-2.1", 560.0, 500.0, 12.0),
+    )
+    assert sheet_identity(document, 1) == ("E-1.1", "electrical")
+
+
+def test_unnumbered_sheet_uses_largest_outside_band_drawing_title() -> None:
+    document = _identity_document(
+        ("MECHANICAL PLAN", 240.0, 350.0, 24.0),
+        ("ELECTRICAL DETAIL", 180.0, 300.0, 12.0),
+        ("See electrical plan for coordination", 250.0, 180.0, 10.0),
+    )
+    assert sheet_identity(document, 1) == (None, "mechanical")
+
+
+def test_unnumbered_title_fallback_requires_drawing_kind() -> None:
+    document = _identity_document(
+        ("MECHANICAL", 240.0, 350.0, 24.0),
+        ("Coordinate electrical work", 250.0, 180.0, 10.0),
+    )
+    assert sheet_identity(document, 1) == (None, "unknown")
+
+
+def test_outside_drawing_reference_is_not_a_title() -> None:
+    document = _identity_document(
+        ("SEE ELECTRICAL PLAN FOR LOCATIONS", 240.0, 350.0, 24.0),
+    )
+    assert sheet_identity(document, 1) == (None, "unknown")
+
+
+def test_band_discipline_precedes_outside_title() -> None:
+    document = _identity_document(
+        ("ELECTRICAL", 560.0, 40.0, 10.0),
+        ("MECHANICAL PLAN", 240.0, 350.0, 24.0),
+    )
+    assert sheet_identity(document, 1) == (None, "electrical")
+
+
 def test_small_repeated_number_wins_when_no_candidate_is_clearly_largest() -> None:
     # A 1.2x height advantage is under the clear-winner ratio, so the choice
     # falls back to frequency: three small references outvote one medium one.

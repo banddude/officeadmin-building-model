@@ -23,6 +23,7 @@ from oabm.model import (
     RouteFitting,
     validate_model,
 )
+from oabm.routing.overlap import RouteOverlap, find_overlapping_route_runs
 
 LENGTH_UNIT = "m"
 COUNT_UNIT = "ea"
@@ -295,6 +296,7 @@ def extract_quantities(
     group_summary = _group_summary(
         supplied_group_names, group_owner, groupable_ids, items
     )
+    warnings.extend(_overlap_warnings(model))
     return TakeoffReport(
         model_id=model.model_id,
         items=items,
@@ -302,6 +304,40 @@ def extract_quantities(
         group_summary=group_summary,
         unmatched_group_ids=unmatched_group_ids,
     )
+
+
+def _overlap_warnings(model: BuildingModel) -> list[QuantityWarning]:
+    """One warning per route type whose runs overlap geometrically.
+
+    Bundled per-circuit routes ride the same trunk until consolidation
+    lands, and a per-route length takeoff then over-reports conduit on the
+    shared stretches. Quantities themselves stay untouched: the warning only
+    says by how much they could be double-counted.
+    """
+
+    runs = find_overlapping_route_runs(model)
+    by_type: dict[str, list[RouteOverlap]] = {}
+    for run in runs:
+        by_type.setdefault(run.route_type, []).append(run)
+
+    result: list[QuantityWarning] = []
+    for route_type in sorted(by_type):
+        type_runs = by_type[route_type]
+        shared_total = math.fsum(run.shared_length_m for run in type_runs)
+        double_counted = math.fsum(run.double_counted_length_m for run in type_runs)
+        members = tuple(sorted({
+            route_id for run in type_runs for route_id in run.route_ids
+        }))
+        result.append(QuantityWarning(
+            code="overlapping_route_runs",
+            message=(
+                f"{len(type_runs)} overlapping {route_type} run(s) share "
+                f"{shared_total:.2f} m; per-route lengths count "
+                f"{double_counted:.2f} m more conduit than the shared runs occupy"
+            ),
+            source_entity_ids=members,
+        ))
+    return result
 
 
 def _group_ownership(

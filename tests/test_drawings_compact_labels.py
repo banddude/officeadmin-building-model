@@ -2,6 +2,8 @@
 
 The default label provider must stay unchanged; the compact provider swaps
 long legend-description names for tags or short type codes.
+
+Issue #215 adds the lighting-control device type abbreviations.
 """
 
 from __future__ import annotations
@@ -91,6 +93,11 @@ def _space(space_id: str, *, name: str | None = None) -> Space:
         ("smoke_detector", "SD"),
         ("duct_smoke_detector", "DSD"),
         ("panelboard", "PNL"),
+        ("occupancy_sensor", "OS"),
+        ("vacancy_sensor", "VS"),
+        ("daylight_sensor", "PC"),
+        ("wireless_remote", "RC"),
+        ("lighting_power_pack", "PP"),
     ],
 )
 def test_documented_abbreviations(device_type: str, expected: str) -> None:
@@ -106,6 +113,17 @@ def test_tagged_long_name_device_labels_with_tag() -> None:
     )
     assert default_label_provider(device, "plan") == LONG_DESCRIPTION
     assert compact_label_provider(device, "plan") == "LF-3"
+
+
+def test_tagged_lighting_control_device_labels_with_tag() -> None:
+    device = _device(
+        "d:lc-tagged",
+        device_type="occupancy_sensor",
+        name=LONG_DESCRIPTION,
+        attributes={"pdf_electrical": {"tag": "OSC-2"}},
+    )
+    assert default_label_provider(device, "plan") == LONG_DESCRIPTION
+    assert compact_label_provider(device, "plan") == "OSC-2"
 
 
 def test_nested_pdf_electrical_tag_is_used() -> None:

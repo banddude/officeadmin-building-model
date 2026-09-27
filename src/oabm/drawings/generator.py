@@ -197,6 +197,13 @@ _COMPACT_DEVICE_ABBREVIATIONS = {
     "smoke_detector": "SD",
     "duct_smoke_detector": "DSD",
     "panelboard": "PNL",
+    # Lighting-control device types (issue #215).  Truncated fallbacks
+    # (OCCUPANC, VACANCY_, ...) read as noise on a plan.
+    "occupancy_sensor": "OS",
+    "vacancy_sensor": "VS",
+    "daylight_sensor": "PC",
+    "wireless_remote": "RC",
+    "lighting_power_pack": "PP",
 }
 
 _COMPACT_TAG_MAX_CHARS = 8

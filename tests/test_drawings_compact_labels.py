@@ -62,9 +62,10 @@ def _wall(wall_id: str, *, name: str | None = None) -> Wall:
     )
 
 
-def _space(space_id: str) -> Space:
+def _space(space_id: str, *, name: str | None = None) -> Space:
     return Space(
         id=space_id,
+        name=name,
         level_id="level:ground",
         footprint=Polygon3D(
             points=(
@@ -160,8 +161,16 @@ def test_wall_gets_no_label_even_when_named() -> None:
     assert default_label_provider(wall, "plan") == "SAMPLE PARTITION WALL DESCRIPTION, SYNTHETIC"
 
 
-def test_space_keeps_its_name() -> None:
+def test_named_space_labels_with_its_name() -> None:
+    space = _space("space:suite-200", name="OFFICE (SYNTHETIC)")
+    assert default_label_provider(space, "plan") == "OFFICE (SYNTHETIC)"
+    assert compact_label_provider(space, "plan") == "OFFICE (SYNTHETIC)"
+    assert compact_label_provider(space, "plan") == default_label_provider(space, "plan")
+
+
+def test_unnamed_space_falls_back_to_id_like_default() -> None:
     space = _space("space:office-100")
+    assert default_label_provider(space, "plan") == "space:office-100"
     assert compact_label_provider(space, "plan") == "space:office-100"
     assert compact_label_provider(space, "plan") == default_label_provider(space, "plan")
 

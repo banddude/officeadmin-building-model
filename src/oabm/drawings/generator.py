@@ -250,8 +250,6 @@ def compact_label_provider(entity: Entity, view_type: str) -> str | None:
         if abbreviation is not None:
             return abbreviation
         return type_value[:_COMPACT_FALLBACK_CHARS].upper()
-    if isinstance(entity, Space):
-        return entity.id
     return default_label_provider(entity, view_type)
 
 

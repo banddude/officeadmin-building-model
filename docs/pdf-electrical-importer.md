@@ -728,8 +728,8 @@ printed sheet id to the id `sheet_identity` chose.
 
 `electrical_scope_types(document)` reads the electrical legend's scope from
 those electrical sheets. Every text row on an electrical sheet is classified
-with the default symbol rules, the same classification legend rows go through; an unambiguous
-row adds its canonical type to `defined`. A defined type also joins
+with the default symbol rules used for legend rows. An unambiguous row adds
+its canonical type to `defined`. A defined type also joins
 `cross_discipline` when the row's own text names the electrical side as
 responsible. The documented phrase list:
 
@@ -777,4 +777,3 @@ model = ElectricalPdfImporter().import_document(
     document, page_type_filters=filters
 )
 ```
-

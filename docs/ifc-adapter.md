@@ -25,6 +25,10 @@ The current mapping is:
 - exit sign -> `IfcLightFixture` with `SECURITYLIGHTING`
 - switch or disconnect -> `IfcSwitchingDevice`
 - occupancy sensor -> `IfcSensor` with `MOVEMENTSENSOR` (IFC4 has no `OCCUPANCYSENSOR` member)
+- vacancy sensor -> `IfcSensor` with `MOVEMENTSENSOR` (the occupancy sensor's nearest member; IFC4 has no `VACANCYSENSOR`)
+- daylight sensor -> `IfcSensor` with `LIGHTSENSOR`
+- wireless remote -> `IfcSwitchingDevice` with `KEYPAD`
+- lighting power pack -> `IfcSwitchingDevice` with `CONTACTOR` (the relay pack switching the lighting load)
 - smoke and smoke/CO alarms -> `IfcSensor` with `SMOKESENSOR`; heat detector -> `IfcSensor` with `HEATSENSOR` (IFC4's `IfcAlarmTypeEnum` has no smoke or heat members)
 - access control device -> `IfcSensor` with `IDENTIFIERSENSOR`
 - speaker -> `IfcAudioVisualAppliance` with `SPEAKER`

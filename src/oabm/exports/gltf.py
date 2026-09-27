@@ -104,6 +104,19 @@ _GLASS_ROUGHNESS = 0.05
 #: material key the export sorts it by.
 _GLAZED_MATERIAL = "wall-glazed"
 
+#: Darker blue for the opt-in line outline of a glazed wall, so storefronts
+#: and glass offices read at whole-floor zoom. Display material only, like
+#: the glass itself (issue #209).
+_GLAZED_OUTLINE_COLOUR = (0.15, 0.40, 0.70)
+
+#: Name of the one shared opaque outline material every glazed-wall outline
+#: uses, and the material key the export sorts it by.
+_GLAZED_OUTLINE_MATERIAL = "wall-glazed-outline"
+
+#: The ``extras["display"]`` value on a glazed wall's outline node. The
+#: node's ``extras["source"]`` names the wall it traces.
+_GLAZED_OUTLINE_DISPLAY = "glazed outline"
+
 #: Light neutral grey for the opt-in reference planes. Display colour only;
 #: each plane's translucency is a caller parameter (floor and ceiling alphas),
 #: disclosed per plane in its ``extras``.
@@ -203,6 +216,7 @@ class _DisplayOptions(NamedTuple):
     # (name, member ids) pairs sorted by name; empty means no grouping.
     groups: tuple[tuple[str, frozenset[str]], ...] = ()
     hidden_groups: frozenset[str] = frozenset()
+    glazed_outline: bool = False
 
 
 def to_glb(
@@ -219,6 +233,7 @@ def to_glb(
     emphasized_ids: Iterable[str] = (),
     groups: Mapping[str, Iterable[str]] | None = None,
     hidden_groups: Iterable[str] = (),
+    glazed_outline: bool = False,
 ) -> dict[str, Any]:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
 
@@ -269,6 +284,17 @@ def to_glb(
       hides the node and its whole subtree in supporting viewers. The
       extension is listed in ``extensionsUsed`` and never in
       ``extensionsRequired``, so viewers without it still load the file.
+    - ``glazed_outline`` draws one extra line-mode node per glazed wall —
+      named ``outline:<wall id>``, a line list (primitive ``mode: 1``)
+      tracing the wall prism's 12 edges with the one shared opaque
+      ``wall-glazed-outline`` material, a darker blue than the glass, so
+      storefronts and glass offices read at whole-floor zoom. The line
+      vertices are the same prism corners the wall mesh builds; the wall
+      mesh itself is unchanged. The outline node discloses itself in
+      ``extras`` (``display`` = "glazed outline", ``source`` = the wall id)
+      and follows its wall when a caller group reparents it. The summary
+      reports the outline count as ``glazed_outlines`` while the option is
+      on; with the option off the export is byte-identical.
     """
 
     owner_of: dict[str, str] = {}
@@ -304,6 +330,7 @@ def to_glb(
         hidden_groups=frozenset(
             name for name in hidden_groups if name in group_names
         ),
+        glazed_outline=glazed_outline,
     )
     document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
@@ -363,6 +390,7 @@ def _build_document(
 
     dimmed_count = 0
     emphasized_count = 0
+    glazed_outline_count = 0
     for entity in model.walls:
         height_m, height_source = _wall_height(entity, level_heights)
         extras = _extras(entity, "wall", entity.level_id)
@@ -393,6 +421,21 @@ def _build_document(
             "extras": extras,
             "construction": wall_token,
         })
+        if options.glazed_outline and wall_token == WALL_CONSTRUCTION_GLAZED:
+            # One line-mode outline per glazed wall, tracing the same prism
+            # the wall mesh builds, so the glazing reads at whole-floor zoom
+            # (issue #209). The wall mesh itself is untouched.
+            glazed_outline_count += 1
+            add({
+                "name": f"outline:{entity.id}",
+                "vertices": _wall_outline_vertices(entity, height_m),
+                "material_key": (_GLAZED_OUTLINE_MATERIAL,),
+                "extras": {
+                    "display": _GLAZED_OUTLINE_DISPLAY,
+                    "source": entity.id,
+                },
+                "mode": 1,
+            })
     for entity in model.slabs:
         extras = _extras(entity, "slab", entity.level_id)
         vertices, triangulation = _prism_vertices(
@@ -523,7 +566,7 @@ def _build_document(
             "primitives": [{
                 "attributes": {"POSITION": len(accessors) - 1},
                 "material": material_index[entry["material_key"]],
-                "mode": 4,
+                "mode": entry.get("mode", 4),
             }],
         }
         if entry.get("construction") is not None:
@@ -587,6 +630,18 @@ def _build_document(
         ] + list(range(len(nodes), len(nodes) + len(group_nodes)))
         nodes.extend(group_nodes)
 
+    materials = [_material_for_key(key, options) for key in material_keys]
+    outline_key = (_GLAZED_OUTLINE_MATERIAL,)
+    if outline_key in material_index and any(
+        "KHR_materials_unlit" in material.get("extensions", {})
+        for index, material in enumerate(materials)
+        if index != material_index[outline_key]
+    ):
+        # The file already draws unlit elsewhere, so the outline drops its
+        # lighting response too (issue #209); nothing emits that extension
+        # today, so in practice the outline stays plain PBR.
+        materials[material_index[outline_key]] = _glazed_outline_material(unlit=True)
+
     document: dict[str, Any] = {
         "asset": {
             "version": "2.0",
@@ -601,9 +656,7 @@ def _build_document(
         "scenes": [{"nodes": scene_root}],
         "nodes": nodes,
         "meshes": meshes,
-        "materials": [
-            _material_for_key(key, options) for key in material_keys
-        ],
+        "materials": materials,
     }
     if any("extensions" in node for node in group_nodes):
         # Optional extension: never in extensionsRequired, so a viewer
@@ -629,6 +682,8 @@ def _build_document(
     if options.groups:
         counts["groups"] = group_counts
         counts["unmatched_group_ids"] = unmatched_group_ids
+    if options.glazed_outline:
+        counts["glazed_outlines"] = glazed_outline_count
     return document, bytes(buffer), counts
 
 
@@ -640,13 +695,15 @@ def _group_member_indices(
     A canonical id names its own node; a route id additionally claims the
     route's drawn wire nodes (``conductor:<id>#route:<route id>#<n>``), so
     hiding the group hides the alternate devices *and their conduit with the
-    wires inside it*.
+    wires inside it*. A glazed-wall id likewise claims the wall's line-mode
+    outline node (``outline:<wall id>``), so the outline follows its wall.
     """
 
     indices: list[int] = []
     route_key = member_id.removeprefix("route:") if member_id.startswith("route:") else None
+    outline_name = f"outline:{member_id}"
     for index, node in enumerate(nodes):
-        if node["name"] == member_id:
+        if node["name"] == member_id or node["name"] == outline_name:
             indices.append(index)
         elif route_key is not None and _wire_route_segment(node["name"]) == route_key:
             indices.append(index)
@@ -703,6 +760,30 @@ def _glass_material(alpha: float, name: str = _GLAZED_MATERIAL) -> dict[str, Any
     }
 
 
+def _glazed_outline_material(unlit: bool = False) -> dict[str, Any]:
+    """The one shared opaque outline material for glazed walls.
+
+    A darker blue than the glass so the glazing reads at whole-floor zoom:
+    alpha 1 with ``alphaMode: "OPAQUE"``, unlit only when the file already
+    carries ``KHR_materials_unlit``, otherwise plain PBR (issue #209).
+    """
+
+    red, green, blue = _GLAZED_OUTLINE_COLOUR
+    material: dict[str, Any] = {
+        "name": _GLAZED_OUTLINE_MATERIAL,
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [red, green, blue, 1.0],
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.9,
+        },
+        "alphaMode": "OPAQUE",
+        "doubleSided": True,
+    }
+    if unlit:
+        material["extensions"] = {"KHR_materials_unlit": {}}
+    return material
+
+
 def _material_for_key(key: tuple[Any, ...], options: _DisplayOptions) -> dict[str, Any]:
     """Material for a sorted material key: plain, glazed, dimmed, emphasized or reference."""
 
@@ -721,6 +802,8 @@ def _material_for_key(key: tuple[Any, ...], options: _DisplayOptions) -> dict[st
         return _reference_material(key[1], options)
     if key[0] == _GLAZED_MATERIAL:
         return _glass_material(_GLASS_ALPHA)
+    if key[0] == _GLAZED_OUTLINE_MATERIAL:
+        return _glazed_outline_material()
     return _material(key[0], key[1])
 
 
@@ -1224,14 +1307,55 @@ def _wall_vertices(
     return vertices
 
 
-def _oriented_box_vertices(
+def _wall_outline_vertices(
+    wall: Wall, height_m: float | None
+) -> list[tuple[float, float, float]]:
+    """The wall prism's 12 edges as a line list: 24 vertices, 2 per edge.
+
+    The same per-segment prism ``_wall_vertices`` builds — shared
+    ``_prism_corners``, same base and height resolution — reduced to its
+    bottom ring, top ring and verticals, so the outline always sits exactly
+    on the wall mesh it makes readable (issue #209). Wall geometry itself is
+    untouched.
+    """
+
+    lines: list[tuple[float, float, float]] = []
+    half = wall.thickness_m / 2.0
+    for start, end in zip(wall.centerline.points, wall.centerline.points[1:]):
+        dx, dy = end.x - start.x, end.y - start.y
+        length = math.hypot(dx, dy)
+        if length <= 1e-12:
+            continue
+        nx, ny = -dy / length * half, dx / length * half
+        z_bottom = min(start.z, end.z)
+        z_top = (z_bottom + height_m) if height_m is not None else z_bottom
+        corners, top = _prism_corners(
+            (start.x, start.y),
+            (end.x, end.y),
+            (nx, ny),
+            z_bottom,
+            z_top,
+        )
+        for index in range(4):
+            nxt = (index + 1) % 4
+            lines += [corners[index], corners[nxt]]  # bottom ring
+            lines += [top[index], top[nxt]]  # top ring
+            lines += [corners[index], top[index]]  # verticals
+    return lines
+
+
+def _prism_corners(
     a: tuple[float, float],
     b: tuple[float, float],
     normal: tuple[float, float],
     z_bottom: float,
     z_top: float,
-) -> list[tuple[float, float, float]]:
-    """Vertices of the box swept along plan segment ``a``-``b``."""
+) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """Bottom and top corner rings of the box swept along plan segment ``a``-``b``.
+
+    Shared by the wall triangle mesh and its opt-in line outline, so both are
+    built from the literal same prism vertices.
+    """
 
     ax, ay = a
     bx, by = b
@@ -1243,6 +1367,19 @@ def _oriented_box_vertices(
         (ax - nx, ay - ny, z_bottom),
     ]
     top = [(x, y, z_top) for x, y, _ in corners]
+    return corners, top
+
+
+def _oriented_box_vertices(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    normal: tuple[float, float],
+    z_bottom: float,
+    z_top: float,
+) -> list[tuple[float, float, float]]:
+    """Vertices of the box swept along plan segment ``a``-``b``."""
+
+    corners, top = _prism_corners(a, b, normal, z_bottom, z_top)
     return [
         # bottom (facing down) and top (facing up)
         corners[0], corners[2], corners[1],

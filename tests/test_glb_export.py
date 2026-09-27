@@ -765,6 +765,7 @@ def _default_options() -> dict:
         "dimmed_alpha": 0.3,
         "dimmed_color": (0.62, 0.62, 0.62),
         "emphasized_ids": (),
+        "glazed_outline": False,
     }
 
 
@@ -1705,6 +1706,184 @@ def test_glazed_wall_in_a_group_is_still_reparented(tmp_path: Path) -> None:
         gltf["meshes"][south["mesh"]]["primitives"][0]["material"]
     ]
     assert material["name"] == "wall-glazed"
+
+
+# --- Glazed wall outline (issue #209): an opt-in line-mode node per glazed
+# --- wall so the glass reads at whole-floor zoom; default is byte-identical.
+
+
+def test_glazed_outline_off_gives_plain_bytes_and_no_report_key(
+    tmp_path: Path,
+) -> None:
+    model = _construction_model(south="glazed", north="glazed")
+    plain_summary = to_glb(model, tmp_path / "plain.glb")
+    off_summary = to_glb(model, tmp_path / "off.glb", glazed_outline=False)
+    assert (tmp_path / "plain.glb").read_bytes() == (tmp_path / "off.glb").read_bytes()
+    assert "glazed_outlines" not in plain_summary
+    assert "glazed_outlines" not in off_summary
+    parsed = _parse_glb(tmp_path / "plain.glb")
+    assert not any(
+        node["name"].startswith("outline:") for node in parsed["gltf"]["nodes"]
+    )
+
+
+def test_glazed_outline_draws_one_line_node_per_glazed_wall(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", east="framed")
+    summary = to_glb(model, tmp_path / "outline.glb", glazed_outline=True)
+    parsed = _parse_glb(tmp_path / "outline.glb")
+    gltf = parsed["gltf"]
+
+    assert summary["glazed_outlines"] == 1
+    outline_names = [
+        node["name"] for node in gltf["nodes"] if node["name"].startswith("outline:")
+    ]
+    assert outline_names == ["outline:wall:c-south"]
+    node = gltf["nodes"][_by_name(parsed)["outline:wall:c-south"]]
+    assert node["extras"] == {"display": "glazed outline", "source": "wall:c-south"}
+
+    mesh = gltf["meshes"][node["mesh"]]
+    assert "extras" not in mesh
+    primitive = mesh["primitives"][0]
+    assert primitive["mode"] == 1  # LINES
+    assert "indices" not in primitive
+    accessor = gltf["accessors"][primitive["attributes"]["POSITION"]]
+    # 12 prism edges, 2 vertices each, as a line list.
+    assert accessor["count"] == 24
+
+    # One shared opaque outline material with the factors the issue fixes.
+    material = gltf["materials"][primitive["material"]]
+    assert material == {
+        "name": "wall-glazed-outline",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": pytest.approx([0.15, 0.40, 0.70, 1.0]),
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.9,
+        },
+        "alphaMode": "OPAQUE",
+        "doubleSided": True,
+    }
+    assert [
+        item["name"] for item in gltf["materials"] if item["name"] == "wall-glazed-outline"
+    ] == ["wall-glazed-outline"]
+
+
+def test_glazed_outline_traces_the_wall_prism_edges(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed")
+    to_glb(model, tmp_path / "outline.glb", glazed_outline=True)
+    parsed = _parse_glb(tmp_path / "outline.glb")
+
+    lines = _node_positions(parsed, _by_name(parsed)["outline:wall:c-south"])
+    assert len(lines) == 24
+
+    def rounded(point: tuple[float, ...]) -> tuple[float, ...]:
+        return tuple(round(component, 6) for component in point)
+
+    # The south wall's prism: x 0..4, y -0.075..+0.075, z 0..2.7, drawn in
+    # glTF axes (y is canonical z, z is -plan-y). The line endpoints are
+    # exactly the prism's 8 corners.
+    corners = {
+        rounded((x, z, -y))
+        for x in (0.0, 4.0)
+        for y in (-0.075, 0.075)
+        for z in (0.0, 2.7)
+    }
+    assert {rounded(point) for point in lines} == corners
+    # 12 distinct edges, each drawn once as a 2-vertex pair: 4 bottom ring,
+    # 4 top ring, 4 verticals.
+    edges = {frozenset((lines[index], lines[index + 1])) for index in range(0, 24, 2)}
+    assert len(edges) == 12
+
+
+def test_glazed_outline_leaves_the_wall_mesh_unchanged(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed")
+    to_glb(model, tmp_path / "plain.glb")
+    to_glb(model, tmp_path / "outline.glb", glazed_outline=True)
+    plain = _parse_glb(tmp_path / "plain.glb")
+    outlined = _parse_glb(tmp_path / "outline.glb")
+    wall_name = "wall:c-south"
+
+    assert _node_positions(plain, _by_name(plain)[wall_name]) == _node_positions(
+        outlined, _by_name(outlined)[wall_name]
+    )
+    plain_node = plain["gltf"]["nodes"][_by_name(plain)[wall_name]]
+    outlined_node = outlined["gltf"]["nodes"][_by_name(outlined)[wall_name]]
+    assert plain_node["extras"] == outlined_node["extras"]
+    plain_material = plain["gltf"]["materials"][
+        plain["gltf"]["meshes"][plain_node["mesh"]]["primitives"][0]["material"]
+    ]
+    outlined_material = outlined["gltf"]["materials"][
+        outlined["gltf"]["meshes"][outlined_node["mesh"]]["primitives"][0]["material"]
+    ]
+    assert plain_material == outlined_material
+
+
+def test_glazed_outline_skips_walls_without_the_glazed_token(tmp_path: Path) -> None:
+    model = _construction_model(south="framed", east="masonry", north="concrete")
+    summary = to_glb(model, tmp_path / "outline.glb", glazed_outline=True)
+    parsed = _parse_glb(tmp_path / "outline.glb")
+
+    assert summary["glazed_outlines"] == 0
+    assert not any(
+        node["name"].startswith("outline:") for node in parsed["gltf"]["nodes"]
+    )
+    assert all(
+        material["name"] != "wall-glazed-outline"
+        for material in parsed["gltf"]["materials"]
+    )
+
+
+def test_glazed_outline_export_is_deterministic_and_consistent(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", north="glazed")
+    options: dict = {"glazed_outline": True}
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    summary = to_glb(model, first, **options)
+    to_glb(model, second, **options)
+    assert first.read_bytes() == second.read_bytes()
+    assert summary["glazed_outlines"] == 2
+
+    # _parse_glb asserts the GLB header and chunk lengths; here the JSON-side
+    # buffer description must match the BIN chunk it points at.
+    parsed = _parse_glb(first)
+    gltf = parsed["gltf"]
+    assert gltf["buffers"][0]["byteLength"] == len(parsed["bin"])
+    for view in gltf["bufferViews"]:
+        assert view["buffer"] == 0
+        assert view["byteOffset"] % 4 == 0
+        assert view["byteOffset"] + view["byteLength"] <= len(parsed["bin"])
+    for mesh in gltf["meshes"]:
+        primitive = mesh["primitives"][0]
+        accessor = gltf["accessors"][primitive["attributes"]["POSITION"]]
+        if primitive["mode"] == 1:
+            assert accessor["count"] % 2 == 0
+        assert accessor["bufferView"] < len(gltf["bufferViews"])
+    assert len(gltf["nodes"]) == summary["nodes"]
+
+
+def test_glazed_outline_follows_its_wall_into_a_group(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", north="glazed", east="framed")
+    summary = to_glb(
+        model,
+        tmp_path / "grouped.glb",
+        glazed_outline=True,
+        groups={"STOREFRONT": ("wall:c-south",)},
+    )
+    parsed = _parse_glb(tmp_path / "grouped.glb")
+    gltf = parsed["gltf"]
+
+    group_node = gltf["nodes"][_by_name(parsed)["group:STOREFRONT"]]
+    children = [gltf["nodes"][index]["name"] for index in group_node["children"]]
+    # The outline node follows its wall: both are reparented, and the
+    # ungrouped north glazed wall keeps its outline at the root.
+    assert children == ["outline:wall:c-south", "wall:c-south"]
+    assert group_node["extras"]["members"] == 2
+    assert summary["groups"] == {"STOREFRONT": 2}
+    assert summary["glazed_outlines"] == 2
+
+    root_names = [gltf["nodes"][index]["name"] for index in gltf["scenes"][0]["nodes"]]
+    assert "outline:wall:c-north" in root_names
+    assert "outline:wall:c-south" not in root_names
+    assert "wall:c-south" not in root_names
 
 
 def test_glazed_export_json_and_bin_chunks_stay_consistent(tmp_path: Path) -> None:

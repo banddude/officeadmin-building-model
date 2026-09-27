@@ -193,6 +193,81 @@ def test_region_scoping_and_degenerate_region():
     ))
 
 
+def _ambiguous_triple_page() -> PdfPageObservation:
+    """Two clean storeys plus a third level drawn as three strong lines.
+
+    The third level carries a slab edge, a finish-floor line, and a parapet
+    cap 1.5 pt above it, all inside one slab gap; all coordinates are
+    invented here.
+    """
+
+    ys = (100.0, 115.0, 280.0, 295.0, 460.0, 475.0, 476.5)
+    return PdfPageObservation(
+        page_number=1,
+        width_pt=PAGE_W,
+        height_pt=PAGE_H,
+        lines=tuple(_horizontal(y, index) for index, y in enumerate(ys)),
+    )
+
+
+def test_triple_strong_lines_within_slab_gap_warn_ambiguous_band():
+    result = find_section_level_lines(_ambiguous_triple_page())
+
+    # Today's deterministic bottom-up pairing is unchanged: 460/475 pair and
+    # the 476.5 line is left out of every band.
+    assert result.bands == (
+        (115.0, 100.0, 1000.0),
+        (295.0, 280.0, 1000.0),
+        (475.0, 460.0, 1000.0),
+    )
+    assert result.warnings == (
+        "ambiguous_band: strong lines at y=[460.0, 475.0, 476.5] pt "
+        "within 15.0 pt; paired (475.0, 460.0)",
+        "unpaired_strong_line: strong line at y=476.5 pt "
+        "with total length 500.0 pt is in no band",
+    )
+
+
+def test_isolated_strong_line_warns_unpaired():
+    page = PdfPageObservation(
+        page_number=1,
+        width_pt=PAGE_W,
+        height_pt=PAGE_H,
+        lines=(
+            _horizontal(88.0, 0),
+            _horizontal(100.0, 1),
+            _horizontal(300.0, 2),  # 200 pt above the band, nothing near it
+        ),
+    )
+    result = find_section_level_lines(page)
+    assert result.bands == ((100.0, 88.0, 1000.0),)
+    assert any(
+        warning.startswith("unpaired_strong_line: strong line at y=300.0 pt")
+        and "500.0 pt" in warning
+        for warning in result.warnings
+    )
+
+
+def test_clean_section_has_no_ambiguity_warnings():
+    result = find_section_level_lines(_section_page())
+    assert result.bands == EXPECTED_BANDS
+    assert result.warnings == ()
+
+
+def test_ambiguous_result_is_deterministic():
+    page = _ambiguous_triple_page()
+    first = find_section_level_lines(page)
+    assert find_section_level_lines(page) == first
+
+    reversed_page = PdfPageObservation(
+        page_number=1,
+        width_pt=PAGE_W,
+        height_pt=PAGE_H,
+        lines=tuple(reversed(page.lines)),
+    )
+    assert find_section_level_lines(reversed_page) == first
+
+
 def test_unusable_elevation_inputs_fail_closed():
     bands = EXPECTED_BANDS
     assert level_elevations_from_bands(bands, scale_m_per_pt=0.0) == []

@@ -75,6 +75,24 @@ and the displayed page dimensions. `PdfPageTransform` always consumes these
 displayed coordinates, so caller-supplied registration does not need to account
 for the PDF storage rotation separately.
 
+## Symbol shape classes
+
+`oabm.importers.pdf_electrical.shape_classes.symbol_shape_classes(document, page)`
+groups a page's vector paths into a deterministic table of small closed-shape
+classes: circles (closed bezier-flattened paths with a square bounding box),
+triangles and rectangles (closed straight paths with 3 and 4 distinct
+vertices; only axis-aligned 4-gons are rectangles), and other polygons
+(`polygon<n>`). Each `ShapeClass` row carries `kind`, `size_pt` (the bbox's
+larger side, rounded half-even to `size_step_pt`), `filled` (from the paint
+operator), bucketed `stroke_gray`/`fill_gray` when the observations carry
+them and `None` when they do not, a `count`, and up to five `sample_positions`
+(bbox centres, the first five by `(y, x)`). Open paths, non-square bezier
+paths, and shapes outside `[min_size_pt, max_size_pt]` are ignored. Classes
+sort by `count` descending, then by the class key, so identical pages give an
+identical table. The module is read-only observation evidence: the importer
+does not call it, imported models are unchanged, and a per-set parameter look
+can bind a class to a device meaning later.
+
 ## Ambiguity rules
 
 The importer does not create a circuit unless the same text evidence identifies

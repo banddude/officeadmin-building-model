@@ -81,14 +81,8 @@ _MATERIAL_BY_TOKEN: Mapping[str, tuple[str, str]] = {
 # marker that tells the determinism pass its GlobalId was already derived
 # from the token at creation.
 _WALL_MATERIAL_REL_DESCRIPTION = "wall material link"
-# GlobalId key prefix of a material association (#164). The literal is split
-# across two lines on purpose: its full run coincides with a generic trade
-# phrase the private-string pre-push guard matches, while the runtime value
-# is exactly the key the issue specifies.
-_WALL_MATERIAL_KEY_PREFIX = (
-    "wall-construction"
-    "-material:"
-)
+# GlobalId key prefix of a wall material association (#164).
+_WALL_MATERIAL_KEY_PREFIX = "wall-construction-material:"
 # The one shared translucent style a glazed wall's Body items carry, so Bonsai
 # draws glass: a light blue-grey surface at Transparency 0.65.
 _GLASS_STYLE_NAME = "OABM Glazed"

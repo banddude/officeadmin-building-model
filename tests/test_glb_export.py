@@ -293,6 +293,10 @@ def _synthetic_devices() -> BuildingModel:
             device("device:synth-luminaire", "luminaire"),
             device("device:synth-switch", "switch"),
             device("device:synth-occupancy", "occupancy_sensor"),
+            device("device:synth-vacancy", "vacancy_sensor"),
+            device("device:synth-daylight", "daylight_sensor"),
+            device("device:synth-remote", "wireless_remote"),
+            device("device:synth-power-pack", "lighting_power_pack"),
             device("device:synth-panelboard", "panelboard"),
             device("device:synth-unknown", "mystery_gizmo"),
         ),
@@ -310,6 +314,10 @@ def test_device_primitives_and_colours_by_type(tmp_path: Path) -> None:
         "device:synth-luminaire": 120,   # flat disc: 10-sided cylinder
         "device:synth-switch": 36,       # box
         "device:synth-occupancy": 120,   # small cylinder
+        "device:synth-vacancy": 120,     # sensor family: small cylinder
+        "device:synth-daylight": 120,    # sensor family: small cylinder
+        "device:synth-remote": 36,       # switch family: box
+        "device:synth-power-pack": 36,   # generic small box (other)
         "device:synth-panelboard": 36,   # box
         "device:synth-unknown": 36,      # other: box
     }
@@ -318,6 +326,10 @@ def test_device_primitives_and_colours_by_type(tmp_path: Path) -> None:
         "device:synth-luminaire": ("luminaire", lambda r, g, b: r > b and g > b),
         "device:synth-switch": ("switch", lambda r, g, b: b > r and b > g),
         "device:synth-occupancy": ("sensor", lambda r, g, b: g > r and g > b),
+        "device:synth-vacancy": ("sensor", lambda r, g, b: g > r and g > b),
+        "device:synth-daylight": ("sensor", lambda r, g, b: g > r and g > b),
+        "device:synth-remote": ("switch", lambda r, g, b: b > r and b > g),
+        "device:synth-power-pack": ("other", lambda r, g, b: r == g == b),
         "device:synth-panelboard": ("panel", lambda r, g, b: r == g == b),
         "device:synth-unknown": ("other", lambda r, g, b: r == g == b),
     }

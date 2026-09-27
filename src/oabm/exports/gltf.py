@@ -151,10 +151,12 @@ _OUTLET_TYPES = frozenset({
     "data_outlet", "catv_outlet", "tv_outlet", "telephone_outlet", "telephone",
 })
 _LUMINAIRE_TYPES = frozenset({"luminaire", "light", "light-fixture", "light_fixture", "exit_sign"})
-_SWITCH_TYPES = frozenset({"switch", "disconnect"})
+# Wireless lighting-control remotes read as the switch family; vacancy and
+# daylight sensors share the occupancy sensor's small ceiling cylinder.
+_SWITCH_TYPES = frozenset({"switch", "disconnect", "wireless_remote"})
 _SENSOR_TYPES = frozenset({
-    "occupancy_sensor", "smoke_alarm", "smoke_co_alarm", "heat_detector",
-    "access_control_device",
+    "occupancy_sensor", "vacancy_sensor", "daylight_sensor", "smoke_alarm",
+    "smoke_co_alarm", "heat_detector", "access_control_device",
 })
 _PANEL_TYPES = frozenset({
     "panel", "panelboard", "distribution-board", "distribution_board",
@@ -167,6 +169,14 @@ _LOW_VOLTAGE_TYPES = frozenset({
     "data_outlet", "catv_outlet", "telephone_outlet", "junction_box_data",
     "speaker", "access_control_device",
 })
+# Lighting-control devices (issue #213) keep their geometry family's own
+# colour: vacancy and daylight sensors draw exactly like the occupancy
+# sensor, and the wireless remote draws like a switch, so none of them join
+# the low-voltage teal family. A line-voltage lighting power pack has no
+# closer family here — it is not an outlet, switch plate or panel — so it
+# falls through to the generic small box (``other``, a neutral grey
+# 0.1 x 0.1 x 0.1 m cube). In IFC it is still a proper
+# IfcSwitchingDevice/CONTACTOR; only this display class is generic.
 
 # Fallback primitive dimensions (metres) in the entity's local frame
 # (width_x, depth_y, height_z), used when the entity carries no canonical size.

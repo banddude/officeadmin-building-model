@@ -201,6 +201,21 @@ instead of their geometry class colour. This is a colour class only: geometry
 comes from the unchanged shape classification, and `combination_outlet`
 stays an outlet (red). The colour applies whenever the device is not dimmed.
 
+### Lighting-control device types
+
+The lighting-control tokens follow the existing occupancy-sensor treatment,
+so none of them join the low-voltage teal family — the file already classifies
+the occupancy sensor in its geometry family's own colour, not teal:
+
+- `vacancy_sensor` and `daylight_sensor` draw exactly like the occupancy
+  sensor: the sensor class (a small ceiling cylinder) in sensor green.
+- `wireless_remote` draws in the switch class: the switch box in switch blue.
+- `lighting_power_pack` uses the generic small box — the `other` class, a
+  neutral grey 0.1 x 0.1 x 0.1 m cube. It is the closest existing class: the
+  pack is neither an outlet, a switch plate nor a panel. This is a display
+  choice only; IFC materializes the same device as a proper
+  `IfcSwitchingDevice` with `CONTACTOR` (see `ifc-adapter.md`).
+
 ### Names in extras
 
 When a wall, device, electrical equipment or route has a non-empty canonical

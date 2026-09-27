@@ -7,6 +7,7 @@ expected-output files are used.
 
 from __future__ import annotations
 
+import importlib.util
 import math
 import random
 from dataclasses import dataclass, field, replace
@@ -28,6 +29,8 @@ from oabm.importers.pdf_architecture import ImportOptions, RegistrationHint
 from oabm.importers.pdf_architecture.extract import extract_pdf as extract_sheets
 from oabm.importers.pdf_architecture.importer import import_observations
 from oabm.importers.pdf_convergence import PdfConvergenceError, converge_pdf_models
+from oabm.importers.pdf_convergence import mask_registration, sheet_registration
+from oabm.importers.pdf_convergence.mask_registration import MaskRegistration
 from oabm.importers.pdf_convergence.sheet_registration import (
     REGISTERED,
     REGISTRATION_PENDING,
@@ -1163,3 +1166,226 @@ def test_named_sheet_without_geometry_does_not_displace_unlabeled_plans(tmp_path
     assert plan["frame"]["basis"] == "project_origin"
     result = _register(architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL)))
     assert [page.status for page in result.pages] == [REGISTERED]
+
+
+# --- Optional phase-correlation cross-check and near-tie breaker -----------
+
+# The wall stub is the plan's one asymmetric element: the twin rooms tie on
+# their rectangles alone, and the stub rides only the true placement, so the
+# whole-mask correlation has a single clear peak.
+TWIN = Room(414.0, 0.0, 354.0, 236.0, "ROOM: STUDY")
+
+CV2_PRESENT = importlib.util.find_spec("cv2") is not None
+NEEDS_CV2 = pytest.mark.skipif(
+    not CV2_PRESENT, reason="opencv (the 'registration' extra) is not installed",
+)
+
+
+def _phase_options(**kwargs) -> SheetRegistrationOptions:
+    return SheetRegistrationOptions(phase_correlation=True, **kwargs)
+
+
+def _all_keys(value: object) -> set[str]:
+    """Every mapping key anywhere in a nested record."""
+
+    keys: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            keys.add(str(key))
+            keys |= _all_keys(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            keys |= _all_keys(item)
+    return keys
+
+
+def _tie_architecture(tmp_path: Path):
+    """MAIN plus an identical twin room: wall vectors alone cannot place one room."""
+
+    _, source, architecture = _architecture(tmp_path, Sheet((replace(SECOND, rooms=(MAIN, TWIN)),)))
+    return source, architecture
+
+
+def test_phase_correlation_defaults_stay_byte_identical(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path)
+    registered = _register(architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL))).to_dict()
+    (tmp_path / "tie").mkdir()
+    tie_source, tie_architecture = _tie_architecture(tmp_path / "tie")
+    refused = _register(
+        tie_architecture, tie_source, _electrical(tmp_path, _e_sheet(ELECTRICAL), name="tie.pdf"),
+    ).to_dict()
+
+    for record in (registered, refused):
+        assert "phase_correlation" not in _all_keys(record)
+    assert registered == _register(
+        architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL), name="off.pdf"),
+        options=SheetRegistrationOptions(phase_correlation=False),
+    ).to_dict()
+    assert refused == _register(
+        tie_architecture, tie_source, _electrical(tmp_path, _e_sheet(ELECTRICAL), name="tie-off.pdf"),
+        options=SheetRegistrationOptions(phase_correlation=False),
+    ).to_dict()
+
+
+def test_phase_correlation_options_are_validated() -> None:
+    with pytest.raises(ValueError, match="phase_correlation_min_peak"):
+        SheetRegistrationOptions(phase_correlation_min_peak=-1.0)
+    with pytest.raises(ValueError, match="phase_correlation_agree_tol_m"):
+        SheetRegistrationOptions(phase_correlation_agree_tol_m=0.0)
+
+
+def test_phase_correlation_without_cv2_names_the_extra(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, source, architecture = _architecture(tmp_path)
+
+    def missing() -> None:
+        raise ImportError(
+            "Mask-based phase-correlation registration needs the optional "
+            "'registration' extra (opencv-python-headless). Install it with: "
+            "pip install 'officeadmin-building-model[registration]'"
+        )
+
+    monkeypatch.setattr(mask_registration, "import_cv2", missing)
+    with pytest.raises(ImportError, match="registration"):
+        _register(
+            architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL), name="nocv.pdf"),
+            options=_phase_options(),
+        )
+
+
+@NEEDS_CV2
+def test_phase_correlation_breaks_a_repeated_module_tie(tmp_path: Path) -> None:
+    tie_source, tie_architecture = _tie_architecture(tmp_path)
+    # On main the stub rides one placement but the twin rectangle still
+    # explains nearly as many wall segments, so the page is refused.
+    [pending] = _register(
+        tie_architecture, tie_source, _electrical(tmp_path, _e_sheet(ELECTRICAL)),
+    ).pages
+    assert pending.status == REGISTRATION_PENDING
+    assert pending.reason_codes == ("competing_transforms",)
+    [candidate] = pending.record["candidates"]
+    assert candidate["competing_translation_pt"] is not None
+
+    result = _register(
+        tie_architecture, tie_source, _electrical(tmp_path, _e_sheet(ELECTRICAL), name="tiebreak.pdf"),
+        options=_phase_options(),
+    )
+    [page] = result.pages
+    assert page.status == REGISTERED
+    assert page.reason_codes == ()
+    registration = page.record["registration"]
+    assert registration["evidence_method"] == "wall_vectors_phase_correlation_tiebreak"
+    assert registration["tie_break"] is True
+    assert registration["translation_pt"] == pytest.approx([-OFFSET[0], -OFFSET[1]], abs=1e-6)
+    assert registration["wall_inlier_count"] == candidate["wall_inlier_count"]
+    assert registration["confidence"] <= 0.75
+    shift = page.record["phase_correlation"]
+    assert shift["converged"] is True
+    assert shift["agrees_with"] == 0
+    assert shift["dx_pt"] == pytest.approx(-OFFSET[0], abs=1.0)
+    assert shift["dy_pt"] == pytest.approx(-OFFSET[1], abs=1.0)
+    assert result.page_transforms() == {1: page.transform}
+
+
+@NEEDS_CV2
+def test_phase_correlation_disagreement_refuses_an_accept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, source, architecture = _architecture(tmp_path)
+
+    def far_shift(source_segments, target_segments, **kwargs):
+        # Converged, but one model metre left of the arch origin: the accepted
+        # candidate sits far outside the agreement tolerance.
+        return MaskRegistration(dx_pt=1.0 / MPP, dy_pt=0.0, peak=0.9, converged=True)
+
+    monkeypatch.setattr(sheet_registration, "register_by_phase_correlation", far_shift)
+    result = _register(
+        architecture, source, _electrical(tmp_path, _e_sheet(ELECTRICAL), name="disagree.pdf"),
+        options=_phase_options(),
+    )
+    [page] = result.pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("phase_correlation_disagrees",)
+    assert page.transform is None
+    assert "registration" not in page.record
+    shift = page.record["phase_correlation"]
+    assert shift["converged"] is True
+    assert shift["agrees_with"] is None
+
+
+@NEEDS_CV2
+def test_phase_correlation_weak_peak_only_records_diagnostics(tmp_path: Path) -> None:
+    _, source, architecture = _architecture(tmp_path)
+    # A min peak above any real response: the cross-check reports, never decides.
+    result = _register(
+        architecture,
+        source,
+        _electrical(tmp_path, _e_sheet(ELECTRICAL), name="weak.pdf"),
+        options=_phase_options(phase_correlation_min_peak=0.99),
+    )
+    [page] = result.pages
+    assert page.status == REGISTERED
+    registration = page.record["registration"]
+    assert registration["evidence_method"] == "wall_vectors"
+    shift = page.record["phase_correlation"]
+    assert shift["converged"] is False
+    assert 0.0 < shift["peak"] < 0.99
+    assert shift["agrees_with"] is None
+
+
+@NEEDS_CV2
+def test_phase_correlation_inconclusive_tie_stays_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Without the stub the twin rooms tie exactly; a converged shift that
+    # agrees with neither contested translation must keep the refusal.
+    _, source, architecture = _architecture(
+        tmp_path, Sheet((replace(SECOND, rooms=(MAIN, TWIN), stub=False),)),
+    )
+    plain = replace(ELECTRICAL, stub=False)
+
+    def between_shift(source_segments, target_segments, **kwargs):
+        return MaskRegistration(dx_pt=147.0, dy_pt=45.0, peak=0.9, converged=True)
+
+    monkeypatch.setattr(sheet_registration, "register_by_phase_correlation", between_shift)
+    result = _register(
+        architecture, source, _electrical(tmp_path, _e_sheet(plain)),
+        options=_phase_options(),
+    )
+    [page] = result.pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("competing_transforms", "phase_correlation_inconclusive")
+    assert page.record["phase_correlation"]["agrees_with"] is None
+    assert result.page_transforms() is None
+
+
+@NEEDS_CV2
+def test_phase_correlation_is_deterministic(tmp_path: Path) -> None:
+    tie_source, tie_architecture = _tie_architecture(tmp_path)
+    electrical_path = _electrical(tmp_path, _e_sheet(ELECTRICAL))
+    first = _register(tie_architecture, tie_source, electrical_path, options=_phase_options()).to_dict()
+    second = _register(tie_architecture, tie_source, electrical_path, options=_phase_options()).to_dict()
+    assert first == second
+
+
+@NEEDS_CV2
+def test_phase_correlation_records_each_drawings_own_cross_check(tmp_path: Path) -> None:
+    _, source, architecture = _distinct_floor_architecture(tmp_path)
+    [page] = _register(
+        architecture,
+        source,
+        _electrical(tmp_path, _e_sheet(LOWER, UPPER), name="perdrawing.pdf"),
+        options=_phase_options(),
+    ).pages
+    assert page.status == REGISTERED
+    lower, upper = page.record["drawings"]
+    for drawing in (lower, upper):
+        shift = drawing["phase_correlation"]
+        assert shift["converged"] is True
+        [chosen] = [
+            index
+            for index, item in enumerate(drawing["candidates"])
+            if item["target_region_id"] == drawing["registration"]["target_region_id"]
+        ]
+        assert shift["agrees_with"] == chosen
+    assert lower["registration"]["level_id"] == _levels(architecture)["Second Floor"].id
+    assert upper["registration"]["level_id"] == _levels(architecture)["Third Floor"].id

@@ -17,6 +17,14 @@ Gate D convergence refuses. The result never mutates either model. It returns
 proposals and, only when every page is registered, the ``PdfPageTransform``
 mapping the electrical importer accepts. Transforms carry ``inferred``
 registration evidence; the electrical source positions stay observed facts.
+
+An optional phase-correlation cross-check
+(:mod:`oabm.importers.pdf_convergence.mask_registration`, the ``registration``
+extra) runs the whole wall mask as an independent, global translation
+estimate. It never proposes a placement of its own: it breaks a
+``competing_transforms`` near-tie when it agrees with exactly one contested
+candidate, refuses an accepted candidate it confidently disagrees with, and
+otherwise only records diagnostics.
 """
 
 from __future__ import annotations
@@ -45,9 +53,14 @@ from oabm.importers.pdf_architecture.wall_registration import (
     WallMatch,
     WallMatchOptions,
     composed_frame,
+    map_segments,
     match_walls,
     register_walls,
     segments_from_evidence,
+)
+from oabm.importers.pdf_convergence.mask_registration import (
+    MaskRegistration,
+    register_by_phase_correlation,
 )
 from oabm.importers.pdf_electrical import DrawingRegionTransform, PdfPageTransform
 from oabm.model import DERIVATION_INFERRED, BuildingModel
@@ -60,6 +73,7 @@ _METHOD_CONFIDENCE = {
     "wall_vectors_and_grid_labels": 0.95,
     "wall_vectors": 0.85,
     "grid_labels": 0.8,
+    "wall_vectors_phase_correlation_tiebreak": 0.75,
 }
 
 
@@ -100,6 +114,12 @@ class SheetRegistrationOptions:
     min_grid_labels: int = 2
     electrical_scale_overrides: tuple[tuple[int, float], ...] = ()
     diagnostic_scale_ratios: tuple[float, ...] = (0.25, 1 / 3, 0.5, 2 / 3, 1.5, 2.0, 3.0, 4.0)
+    # Optional whole-mask phase-correlation cross-check. Off by default: with
+    # the default options, records and decisions are byte-identical to a run
+    # without it.
+    phase_correlation: bool = False
+    phase_correlation_min_peak: float = 0.10
+    phase_correlation_agree_tol_m: float = 0.10
 
     def __post_init__(self) -> None:
         if self.tolerance_m <= 0 or self.max_residual_m <= 0 or self.min_span_m <= 0:
@@ -113,6 +133,10 @@ class SheetRegistrationOptions:
         for page, meters_per_point in self.electrical_scale_overrides:
             if page < 1 or not math.isfinite(meters_per_point) or meters_per_point <= 0:
                 raise ValueError("electrical scale overrides need a 1-based page and a positive scale")
+        if not math.isfinite(self.phase_correlation_min_peak) or self.phase_correlation_min_peak < 0:
+            raise ValueError("phase_correlation_min_peak must be a non-negative number")
+        if not math.isfinite(self.phase_correlation_agree_tol_m) or self.phase_correlation_agree_tol_m <= 0:
+            raise ValueError("phase_correlation_agree_tol_m must be positive")
 
     @property
     def wall_options(self) -> WallMatchOptions:
@@ -630,6 +654,7 @@ def _evaluate_target(
             [round(value, 6) for value in runner_up.translation_pt] if runner_up else None
         ),
         "competing_inlier_count": len(runner_up.inliers) if runner_up else 0,
+        "_runner_up": runner_up,
         "grid_labels_shared": list(grid_shared),
         "grid_label_outliers": grid_outliers,
         "electrical_level_names": list(electrical_level_names),
@@ -692,6 +717,142 @@ def _diagnose(
     if ratios:
         return ["scale_incompatible"], {"matching_scale_ratio_to_printed": min(ratios)[1]}
     return [], {}
+
+
+_PHASE_MARGIN_PT = 8.0
+
+
+def _phase_correlation_mask(
+    candidate: Mapping[str, Any],
+    options: SheetRegistrationOptions,
+) -> MaskRegistration | None:
+    """The whole-mask translation estimate for one candidate, or ``None``.
+
+    Runs only when the option is on and both sides carried wall segments. The
+    electrical walls are scaled by the same printed-scale ratio the wall
+    candidates use, so the only remaining unknown is the translation, which
+    the correlation returns in architecture sheet points against the
+    architecture region's walls. Both masks rasterize onto one canvas spanning
+    their union; the equal offset applied to both leaves the measured shift
+    unchanged. A missing ``registration`` extra raises its ImportError.
+    """
+
+    walls: tuple[MatchSegment, ...] = candidate["_walls"]
+    architecture_walls: tuple[MatchSegment, ...] = candidate["_architecture_walls"]
+    if not walls or not architecture_walls:
+        return None
+    scale = float(candidate["scale_ratio"])
+    scaled = map_segments(walls, scale, 0, False)
+    points = [
+        point
+        for segments in (scaled, architecture_walls)
+        for item in segments
+        for point in (item.start, item.end)
+    ]
+    origin = (
+        math.floor(min(point[0] for point in points)) - _PHASE_MARGIN_PT,
+        math.floor(min(point[1] for point in points)) - _PHASE_MARGIN_PT,
+    )
+    size = (
+        math.ceil(max(point[0] for point in points)) + _PHASE_MARGIN_PT - origin[0],
+        math.ceil(max(point[1] for point in points)) + _PHASE_MARGIN_PT - origin[1],
+    )
+
+    def local(segments: tuple[MatchSegment, ...]) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+        return [
+            (
+                (item.start[0] - origin[0], item.start[1] - origin[1]),
+                (item.end[0] - origin[0], item.end[1] - origin[1]),
+            )
+            for item in segments
+        ]
+
+    return register_by_phase_correlation(
+        local(scaled),
+        local(architecture_walls),
+        page_size_pt=size,
+        min_peak=options.phase_correlation_min_peak,
+    )
+
+
+def _phase_agrees(
+    mask: MaskRegistration,
+    translation_pt: tuple[float, float],
+    target: _Target,
+    options: SheetRegistrationOptions,
+) -> bool:
+    """Does the correlation shift land within tolerance of one translation?
+
+    Both are architecture-sheet point translations; separating them by d
+    points displaces each mapped model point by d * meters_per_point, so
+    agreement is judged in metres via that scale.
+    """
+
+    shift_m = math.dist((mask.dx_pt, mask.dy_pt), translation_pt) * target.meters_per_point
+    return shift_m <= options.phase_correlation_agree_tol_m
+
+
+def _phase_correlation_record(mask: MaskRegistration, agreeing_index: int | None) -> dict[str, Any]:
+    """The recorded cross-check diagnostics for one decision.
+
+    ``agrees_with`` is the candidates-list index of the candidate whose
+    translation the shift agreed with (for a ``competing_transforms`` tie, the
+    contested translation belongs to that one candidate), or ``None``.
+    """
+
+    return {
+        "dx_pt": round(mask.dx_pt, 6),
+        "dy_pt": round(mask.dy_pt, 6),
+        "peak": round(mask.peak, 9),
+        "converged": mask.converged,
+        "agrees_with": agreeing_index,
+    }
+
+
+def _tie_break_registration(
+    best: Mapping[str, Any],
+    winning: WallMatch,
+    options: SheetRegistrationOptions,
+) -> dict[str, Any]:
+    """Accept the one contested translation the phase correlation agreed with."""
+
+    target: _Target = best["_target"]
+    scale = float(best["scale_ratio"])
+    method = "wall_vectors_phase_correlation_tiebreak"
+    registration = {
+        "method": "sheet registration by wall vectors with a phase-correlation tie-break",
+        "derivation": DERIVATION_INFERRED,
+        "evidence_method": method,
+        "tie_break": True,
+        "target_region_id": target.region_id,
+        "agreeing_region_ids": [target.region_id],
+        "target_page": target.page,
+        "level_id": target.level_id,
+        "level_elevation_m": target.level_elevation_m,
+        "scale_ratio": scale,
+        "rotation_degrees": 0,
+        "translation_pt": [round(value, 9) for value in winning.translation_pt],
+        "wall_inlier_count": len(winning.inliers),
+        "wall_coverage": round(winning.coverage, 6),
+        "wall_residual_rms_m": (
+            round(winning.residual_rms_pt * target.meters_per_point, 9)
+            if math.isfinite(winning.residual_rms_pt) else None
+        ),
+        "wall_inlier_span_m": [
+            round(value * target.meters_per_point, 6) for value in winning.span_pt
+        ],
+        "grid_labels_shared": best["grid_labels_shared"],
+        "matched_evidence_sample": [list(pair) for pair in winning.inliers[:20]],
+        "tolerance_m": options.tolerance_m,
+        "confidence": round(min(target.confidence, _METHOD_CONFIDENCE[method]), 6),
+    }
+    coefficients = {key: round(value, 12) for key, value in _compose(target, scale, winning.translation_pt).items()}
+    transform = PdfPageTransform(frame_id=target.frame_id, registration=registration, **coefficients)
+    return {
+        "registration": registration,
+        "page_transform": transform.to_attributes(),
+        "transform": transform,
+    }
 
 
 def _page_record_base(page: PdfPageObservation) -> dict[str, Any]:
@@ -843,6 +1004,12 @@ def _decide(
 ) -> dict[str, Any]:
     """Accept one drawing's placement, or say why not.
 
+    With ``phase_correlation``, the whole-mask shift is an independent,
+    global cross-check of every decision: it breaks a ``competing_transforms``
+    near-tie whose contested translations exactly one of them agrees with,
+    refuses an accepted placement it converged against, and otherwise only
+    records diagnostics under ``phase_correlation``.
+
     Returns ``record`` (the public candidates plus diagnostics or the accepted
     registration), ``reason_codes``, and ``transform`` (``None`` unless
     registered).
@@ -855,7 +1022,35 @@ def _decide(
             candidates,
             key=lambda item: (-item["wall_inlier_count"], -len(item["grid_labels_shared"]), item["target_region_id"]),
         )[0]
+        phase = _phase_correlation_mask(best, options) if options.phase_correlation else None
+        winning: WallMatch | None = None
+        tied = False
+        if phase is not None:
+            tied = phase.converged and set(best["reason_codes"]) == {"competing_transforms"}
+            if tied:
+                # The two contested translations are this candidate's best wall
+                # match and its runner-up; a shift agreeing with exactly one
+                # breaks the tie. Zero or several agreeing keep the refusal.
+                contested = [
+                    item for item in (best["_wall_match"], best["_runner_up"]) if item is not None
+                ]
+                agreeing = [
+                    item
+                    for item in contested
+                    if _phase_agrees(phase, item.translation_pt, best["_target"], options)
+                ]
+                if len(agreeing) == 1:
+                    winning = agreeing[0]
+            record["phase_correlation"] = _phase_correlation_record(
+                phase, candidates.index(best) if winning is not None else None
+            )
+        if winning is not None:
+            tie = _tie_break_registration(best, winning, options)
+            record.update({"registration": tie["registration"], "page_transform": tie["page_transform"]})
+            return {"record": record, "reason_codes": [], "transform": tie["transform"]}
         reasons = list(best["reason_codes"])
+        if tied:
+            reasons.append("phase_correlation_inconclusive")
         diagnostic_codes, diagnostics = (
             _diagnose(best, options)
             if reasons == ["insufficient_matched_evidence"]
@@ -887,6 +1082,17 @@ def _decide(
         key=lambda item: (-item["wall_inlier_count"], -len(item["grid_labels_shared"]), item["target_region_id"]),
     )
     chosen = ranked[0]
+    phase = _phase_correlation_mask(chosen, options) if options.phase_correlation else None
+    phase_agrees: bool | None = None
+    if phase is not None:
+        # Not converged (weak peak) records diagnostics only: no verdict.
+        phase_agrees = (
+            _phase_agrees(phase, chosen["_translation_pt"], chosen["_target"], options)
+            if phase.converged else None
+        )
+        record["phase_correlation"] = _phase_correlation_record(
+            phase, candidates.index(chosen) if phase_agrees else None
+        )
     probe_box = probe_box or (0.0, 0.0, 1.0, 1.0)
     corners = [
         (probe_box[0], probe_box[1]), (probe_box[2], probe_box[1]),
@@ -906,6 +1112,11 @@ def _decide(
     if disagreeing:
         record["competing_region_ids"] = sorted(agreeing + disagreeing)
         return {"record": record, "reason_codes": ["competing_targets"], "transform": None}
+    if phase_agrees is False:
+        # One accepted candidate, and the converged global mask places the
+        # page confidently elsewhere: refuse instead of registering a wrong
+        # accept.
+        return {"record": record, "reason_codes": ["phase_correlation_disagrees"], "transform": None}
 
     target: _Target = chosen["_target"]
     wall_match: WallMatch | None = chosen["_wall_match"]

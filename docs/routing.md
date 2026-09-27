@@ -51,6 +51,12 @@ Worked example (synthetic): a panel at `(0, 0, 2.7)` serves a luminaire at `(10,
 
 Callers own the hint list. Pass only earlier runs on the same routing plane, clipped to a window around the new run's endpoints, so the added lattice stays small. A route joins a hint only when the discount on the shared length beats the extra bends the join costs (`bend_penalty_m` each).
 
+## Overlapping runs (read-only)
+
+`find_overlapping_route_runs(model, tolerance_m=0.01)` reports where same-type routes share geometry: collinear, axis-aligned centerline spans whose intersection is longer than the tolerance. Pairwise spans merge into maximal shared runs listing the union of member routes, each a `RouteOverlap` carrying sorted `route_ids`, the `route_type`, `shared_length_m`, and the span endpoints. Ordering is deterministic and the model is never mutated. Runs that only touch at a point, cross perpendicularly, sit farther apart than the tolerance, or carry different `route_type`s never overlap.
+
+`extract_quantities` emits one `overlapping_route_runs` warning per affected route type, naming the member routes, the total shared length, and the potential double count: the sum over runs of `(members - 1) x run length`. Quantities themselves are unchanged, so reports without overlaps are byte-identical. Consolidating shared runs into trunk routes is #196's separate, opt-in post-process; this helper only tells consumers the overlap is there.
+
 ## Bend limits and fitting decisions
 
 `RoutingOptions` controls bend penalty, maximum bend count, port-stub length, clearances, search margin, soft preferences, and the glazed-wall penalty (default 4.0, must be positive). These are algorithm controls, not a replacement for canonical model fields.

@@ -11,6 +11,7 @@ from .design import (
     CircuitDesignRules, design_proposed_circuits,
     propose_architectural_electrical_design,
 )
+from .overlap import RouteOverlap, find_overlapping_route_runs
 
 __all__ = [
     "BundleHints", "NoRouteError", "RoutingError", "RoutingOptions", "route_between_ports",
@@ -18,4 +19,5 @@ __all__ = [
     "apply_equipment_proposal", "propose_equipment_placement", "set_user_equipment_placement",
     "CircuitDesignRules", "design_proposed_circuits",
     "propose_architectural_electrical_design",
+    "RouteOverlap", "find_overlapping_route_runs",
 ]

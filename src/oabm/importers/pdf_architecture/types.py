@@ -45,12 +45,24 @@ class PdfLineObservation:
     dashed: bool = False
     filled: bool = False
     source_layers: tuple[str, ...] = ()
+    # Observed stroke style, both None when the source carries none. They are
+    # observation-level groundwork only: no importer decision reads them yet.
+    line_width_pt: float | None = None
+    stroke_gray: float | None = None
 
     def __post_init__(self) -> None:
         _point2(self.start_pt, "start_pt")
         _point2(self.end_pt, "end_pt")
         if self.start_pt == self.end_pt:
             raise ValueError("PDF line endpoints must differ")
+        if self.line_width_pt is not None and (
+            not math.isfinite(self.line_width_pt) or self.line_width_pt < 0
+        ):
+            raise ValueError("line_width_pt must be >= 0 when supplied")
+        if self.stroke_gray is not None and (
+            not math.isfinite(self.stroke_gray) or not 0 <= self.stroke_gray <= 1
+        ):
+            raise ValueError("stroke_gray must be between 0 and 1 when supplied")
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from oabm.exports import to_glb
-from oabm.exports.gltf import to_glb as to_glb_impl
+from oabm.exports.gltf import _plan_is_convex, _prism_vertices, to_glb as to_glb_impl
 from oabm.model import (
     BuildingModel,
     Ceiling,
@@ -26,6 +26,7 @@ from oabm.model import (
     Provenance,
     Route,
     Slab,
+    Space,
     Vector3,
     Wall,
 )
@@ -1734,4 +1735,197 @@ def test_glazed_export_is_deterministic(tmp_path: Path) -> None:
     second = tmp_path / "second.glb"
     to_glb(model, first, **options)
     to_glb(model, second, **options)
+    assert first.read_bytes() == second.read_bytes()
+
+
+# --- Non-convex cap triangulation (issue #186) -------------------------------
+
+_L_PLATE = [(0.0, 0.0), (4.0, 0.0), (4.0, 2.0), (2.0, 2.0), (2.0, 4.0), (0.0, 4.0)]
+_U_PLATE = [
+    (0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (3.0, 4.0),
+    (3.0, 1.0), (1.0, 1.0), (1.0, 4.0), (0.0, 4.0),
+]
+_BOW_TIE = [(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)]
+
+
+def _plate_polygon(coordinates: list[tuple[float, float]]) -> Polygon3D:
+    return Polygon3D(points=tuple(Point3(x=x, y=y, z=0.0) for x, y in coordinates))
+
+
+def _plate_model(
+    *,
+    slab: Polygon3D | None = None,
+    space: Polygon3D | None = None,
+) -> BuildingModel:
+    level = Level(id="level:plates", elevation_m=0.0, height_m=3.0)
+    slabs = ()
+    if slab is not None:
+        slabs = (
+            Slab(
+                id="slab:plates",
+                level_id="level:plates",
+                footprint=slab,
+                thickness_m=0.2,
+            ),
+        )
+    spaces = ()
+    if space is not None:
+        spaces = (Space(id="space:plates", level_id="level:plates", footprint=space),)
+    return BuildingModel(
+        model_id="model:glb-plates-synth",
+        levels=(level,),
+        slabs=slabs,
+        spaces=spaces,
+    )
+
+
+def _model_positions(parsed: dict, node_index: int) -> list[tuple[float, float, float]]:
+    # Buffer triples are glTF +Y-up [x, z, -y]; back to canonical (x, y, z).
+    return [
+        (x, -z, y)
+        for x, y, z in _node_positions(parsed, node_index)
+    ]
+
+
+def _cap_triangles(
+    points: list[tuple[float, float, float]],
+    z: float,
+) -> list[list[tuple[float, float, float]]]:
+    triangles = [points[index:index + 3] for index in range(0, len(points), 3)]
+    return [
+        triangle for triangle in triangles
+        if all(abs(point[2] - z) <= 1e-9 for point in triangle)
+    ]
+
+
+def _shoelace_area(coordinates: list[tuple[float, float]]) -> float:
+    wrapped = (*coordinates, coordinates[0])
+    return abs(math.fsum(
+        a[0] * b[1] - b[0] * a[1]
+        for a, b in zip(wrapped, wrapped[1:])
+    )) / 2.0
+
+
+def _point_in_polygon(x: float, y: float, coordinates: list[tuple[float, float]]) -> bool:
+    inside = False
+    j = len(coordinates) - 1
+    for i in range(len(coordinates)):
+        xi, yi = coordinates[i]
+        xj, yj = coordinates[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _triangle_area_z(
+    triangle: list[tuple[float, float, float]],
+) -> tuple[float, float]:
+    (ax, ay, _), (bx, by, _), (cx, cy, _) = triangle
+    area_z = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    return abs(area_z) / 2.0, area_z
+
+
+def test_convex_footprint_keeps_the_exact_fan_vertices() -> None:
+    # Main's fan layout, constructed here independently: the convex path must
+    # keep emitting exactly this vertex sequence, byte for byte.
+    coordinates = [
+        (0.0, 0.0), (4.0, 0.0), (5.0, 2.0), (4.0, 4.0), (0.0, 4.0), (-1.0, 2.0),
+    ]
+    plan = [(x, y) for x, y in coordinates]
+    bottom = [(x, y, 0.2) for x, y in plan]
+    top = [(x, y, 0.4) for x, y in plan]
+    expected: list[tuple[float, float, float]] = []
+    for index in range(1, len(plan) - 1):
+        expected += [bottom[0], bottom[index + 1], bottom[index]]
+        expected += [top[0], top[index], top[index + 1]]
+    for index in range(len(plan)):
+        nxt = (index + 1) % len(plan)
+        expected += [bottom[index], bottom[nxt], top[nxt]]
+        expected += [bottom[index], top[nxt], top[index]]
+
+    vertices, triangulation = _prism_vertices(
+        _plate_polygon(coordinates).points, 0.2, 0.4,
+    )
+    assert _plan_is_convex(plan)
+    assert triangulation == "fan"
+    assert vertices == expected
+
+
+def test_existing_garage_plate_footprints_are_all_convex() -> None:
+    model = _golden_garage()
+    for entity in (*model.slabs, *model.spaces):
+        plan = [(point.x, point.y) for point in entity.footprint.points]
+        assert _plan_is_convex(plan), entity.id
+
+
+def test_l_shaped_footprint_ear_clips_its_caps(tmp_path: Path) -> None:
+    to_glb(_plate_model(space=_plate_polygon(_L_PLATE)), tmp_path / "l.glb")
+    parsed = _parse_glb(tmp_path / "l.glb")
+    positions = _model_positions(parsed, _by_name(parsed)["space:plates"])
+    z_low, z_high = min(p[2] for p in positions), max(p[2] for p in positions)
+    assert z_low < z_high
+
+    for z in (z_low, z_high):
+        caps = _cap_triangles(positions, z)
+        assert len(caps) == 4  # n - 2 ears for the 6-vertex L
+        area = math.fsum(_triangle_area_z(cap)[0] for cap in caps)
+        assert area == pytest.approx(_shoelace_area(_L_PLATE), abs=1e-9)
+        for cap in caps:
+            cx = math.fsum(point[0] for point in cap) / 3.0
+            cy = math.fsum(point[1] for point in cap) / 3.0
+            assert _point_in_polygon(cx, cy, _L_PLATE), (cap, cx, cy)
+
+
+def test_u_shaped_footprint_ear_clips_its_caps(tmp_path: Path) -> None:
+    to_glb(_plate_model(slab=_plate_polygon(_U_PLATE)), tmp_path / "u.glb")
+    parsed = _parse_glb(tmp_path / "u.glb")
+    positions = _model_positions(parsed, _by_name(parsed)["slab:plates"])
+    z_low, z_high = min(p[2] for p in positions), max(p[2] for p in positions)
+
+    for z in (z_low, z_high):
+        caps = _cap_triangles(positions, z)
+        assert len(caps) == 6  # n - 2 ears for the 8-vertex U
+        area = math.fsum(_triangle_area_z(cap)[0] for cap in caps)
+        assert area == pytest.approx(_shoelace_area(_U_PLATE), abs=1e-9)
+        for cap in caps:
+            cx = math.fsum(point[0] for point in cap) / 3.0
+            cy = math.fsum(point[1] for point in cap) / 3.0
+            assert _point_in_polygon(cx, cy, _U_PLATE), (cap, cx, cy)
+
+
+def test_cw_footprint_caps_match_ccw_orientation(tmp_path: Path) -> None:
+    for coordinates in (_L_PLATE, list(reversed(_L_PLATE))):
+        to_glb(_plate_model(space=_plate_polygon(coordinates)), tmp_path / "cw-ccw.glb")
+        parsed = _parse_glb(tmp_path / "cw-ccw.glb")
+        positions = _model_positions(parsed, _by_name(parsed)["space:plates"])
+        z_low, z_high = min(p[2] for p in positions), max(p[2] for p in positions)
+        for z, expected_sign in ((z_low, -1.0), (z_high, 1.0)):
+            caps = _cap_triangles(positions, z)
+            assert len(caps) == 4
+            for cap in caps:
+                assert math.copysign(1.0, _triangle_area_z(cap)[1]) == expected_sign
+
+
+def test_bow_tie_footprint_falls_back_to_the_fan_with_a_flag(tmp_path: Path) -> None:
+    to_glb(
+        _plate_model(slab=_plate_polygon(_BOW_TIE), space=_plate_polygon(_BOW_TIE)),
+        tmp_path / "bow.glb",
+    )
+    parsed = _parse_glb(tmp_path / "bow.glb")
+    by_name = _by_name(parsed)
+    # A 4-vertex fan: 2 cap triangles per cap plus 4 wall quads.
+    assert len(_node_positions(parsed, by_name["slab:plates"])) == 36
+    assert len(_node_positions(parsed, by_name["space:plates"])) == 36
+    for name in ("slab:plates", "space:plates"):
+        node = parsed["gltf"]["nodes"][by_name[name]]
+        assert node["extras"]["triangulation"] == "fan-fallback"
+
+
+def test_nonconvex_plate_export_is_deterministic(tmp_path: Path) -> None:
+    model = _plate_model(slab=_plate_polygon(_U_PLATE), space=_plate_polygon(_L_PLATE))
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first)
+    to_glb(model, second)
     assert first.read_bytes() == second.read_bytes()

@@ -43,6 +43,23 @@ keeps its `extras["conductors"]` list.
 The `to_glb` summary dict reports the drawn wire count as
 `conductor_wires`.
 
+## Cap triangulation
+
+Slab and space floor-plate prisms cap their top and bottom from the
+footprint polygon:
+
+- A **convex** footprint keeps the vertex-0 fan exactly, so existing exports
+  stay byte-identical.
+- A **non-convex simple** footprint (an L-shaped room, a notched suite) is
+  triangulated with deterministic ear clipping: the winding is normalised,
+  consecutive duplicate and collinear vertices are dropped first, and ears
+  are scanned from the lowest remaining index. The caps keep the fan's
+  winding convention (bottom faces down, top faces up); side walls are
+  unchanged.
+- A **degenerate or self-intersecting** footprint falls back to the fan, and
+  its node discloses that as `extras["triangulation"] = "fan-fallback"`.
+  The export never raises on a bad footprint.
+
 ## Display options
 
 Every display option is a keyword-only `to_glb` parameter that defaults off,

@@ -239,7 +239,10 @@ def test_five_page_set_selects_device_sheets_with_reasons(tmp_path: Path) -> Non
     assert select_device_pages(document).to_dict() == selection.to_dict()
 
 
-def _document_with_pages(*pages: dict) -> PdfElectricalDocument:
+def _document_with_pages(
+    *pages: dict,
+    page_size: tuple[float, float] = (612.0, 792.0),
+) -> PdfElectricalDocument:
     texts: list[PdfTextObservation] = []
     symbols: list[PdfSymbolObservation] = []
     for page_index, page in enumerate(pages, start=1):
@@ -274,8 +277,8 @@ def _document_with_pages(*pages: dict) -> PdfElectricalDocument:
         page_provenance={
             page_index: {
                 "page_rotation": 0,
-                "displayed_page_width_pt": 612.0,
-                "displayed_page_height_pt": 792.0,
+                "displayed_page_width_pt": page_size[0],
+                "displayed_page_height_pt": page_size[1],
                 "coordinate_space": "displayed",
             }
             for page_index in range(1, len(pages) + 1)
@@ -650,3 +653,169 @@ def test_cross_page_legend_devices_are_counted_on_their_own_page() -> None:
     assert _isolated_counts(document) == [0, 0, 0]
     assert counts == [0, 6, 6]
     assert sum(counts) == len(full.electrical_devices)
+
+
+# --- Sheet ids embedded in longer hyphenated tokens (PR #182 review) ---
+
+
+def test_panel_circuit_callouts_do_not_outvote_the_title_block_sheet_id() -> None:
+    # `P-1-12` is a panel/circuit callout, not plumbing sheet `P-1`. Before
+    # the fix a trailing `\b` let the following hyphen end the match, so two
+    # callouts outvoted the single title-block `E-201` and the electrical
+    # sheet was excluded as a plumbing sheet.
+    document = _document_with_pages(
+        {
+            "texts": (
+                ("callout1", "PANEL P-1-12", 100.0, 600.0),
+                ("callout2", "FED FROM P-1-12", 100.0, 560.0),
+                ("title", "E-201", 1200.0, 20.0),
+            ),
+            "symbols": (("R1", "DUPLEX RECEPTACLE OUTLET", 300.0, 300.0),),
+        },
+        page_size=(1224.0, 792.0),
+    )
+
+    assert sheet_identity(document, 1) == ("E-201", "electrical")
+    (choice,) = select_device_pages(document).pages
+    assert (choice.sheet_id, choice.discipline) == ("E-201", "electrical")
+    assert choice.device_count == 1
+    assert choice.included is True
+    assert choice.reason == "electrical_with_devices"
+
+
+def test_many_letter_led_tags_do_not_outvote_the_sheet_id() -> None:
+    document = _document_with_pages(
+        {
+            "texts": (
+                *(
+                    (f"tag{index}", "LF-1", 100.0 + 40.0 * index, 400.0)
+                    for index in range(5)
+                ),
+                ("title", "E-201", 560.0, 40.0),
+            ),
+        },
+    )
+
+    assert sheet_identity(document, 1) == ("E-201", "electrical")
+
+
+def test_hyphenated_callouts_alone_yield_no_sheet_id_candidate() -> None:
+    for text in (
+        "P-1-12",
+        "PANEL P-1-12",
+        "HP-E-3",
+        "E-201-4",
+        "E-2.1.3",
+        "E-12345",
+        "LF-1",
+    ):
+        document = _document_with_pages({"texts": (("only", text, 72.0, 700.0),)})
+        assert sheet_identity(document, 1) == (None, "unknown"), text
+
+
+def test_standalone_sheet_ids_are_still_recognised() -> None:
+    cases = {
+        "E-2.1": ("E-2.1", "electrical"),
+        "ELEC-1": ("ELEC-1", "electrical"),
+        "EL-3": ("EL-3", "electrical"),
+        "SEE E-201.": ("E-201", "electrical"),
+        "(FP-2)": ("FP-2", "fire_protection"),
+        "SHEET M-101, NOTE 3": ("M-101", "mechanical"),
+    }
+    for text, expected in cases.items():
+        document = _document_with_pages({"texts": (("only", text, 72.0, 700.0),)})
+        assert sheet_identity(document, 1) == expected, text
+
+
+def _write_rotated_title_block_page(path: Path) -> None:
+    """One /Rotate 90 page, displayed 792 x 612 (landscape).
+
+    The raw MediaBox is 612 x 792 (portrait). A displayed point (x, y) is
+    stored at raw (612 - y, x). ELECTRICAL sits in the displayed bottom
+    title-block band (raw right edge); MECHANICAL repeats ten times along the
+    raw bottom edge, which displays as the left edge, outside the band.
+    """
+
+    raw_width, raw_height = 612.0, 792.0
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=raw_width, height=raw_height)
+    page[NameObject("/Rotate")] = NumberObject(90)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): writer._add_object(font)}
+            )
+        }
+    )
+
+    def raw(x: float, y: float) -> tuple[float, float]:
+        return raw_width - y, x
+
+    lines = [_text_line(*raw(300.0, 30.0), "ELECTRICAL")]
+    for index in range(10):
+        lines.append(_text_line(*raw(30.0, 120.0 + 40.0 * index), "MECHANICAL"))
+    stream = DecodedStreamObject()
+    stream.set_data(b"".join(lines))
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def test_rotated_page_title_block_band_uses_displayed_edges(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "rotated-title-block.pdf"
+    _write_rotated_title_block_page(pdf_path)
+    document = extract_pdf(pdf_path, source_id="synthetic:rotated-title-block")
+
+    provenance = document.page_provenance[1]
+    assert provenance["page_rotation"] == 90
+    assert (
+        provenance["displayed_page_width_pt"],
+        provenance["displayed_page_height_pt"],
+    ) == (792.0, 612.0)
+    # The raw bottom edge holds MECHANICAL ten times; in displayed space it is
+    # the left edge, outside the title-block band. The displayed bottom band
+    # holds ELECTRICAL once.
+    assert sheet_identity(document, 1) == (None, "electrical")
+
+
+# --- Stop words in the tag-like recall disclosure (PR #182 review) ---
+
+
+def test_short_english_words_are_not_tag_like() -> None:
+    for word in (
+        "AND", "THE", "ALL", "FOR", "OF", "SEE", "NOT", "TO", "AT", "IN",
+        "ON", "BY", "OR", "NO", "AS", "IS", "BE", "IF", "UP", "SET", "PER",
+        "VIA", "TYP", "EQ", "and", "The",
+    ):
+        assert not _looks_tag_like(word), word
+    # Real short codes still count.
+    for code in ("a", "WP", "GFI", "$3", "D1"):
+        assert _looks_tag_like(code), code
+
+
+def test_notes_only_sheet_emitted_word_by_word_has_low_symbol_like_count() -> None:
+    note = (
+        "SEE NOTE 3. ALL WORK TO BE DONE PER THE PLANS AND AS SET BY OTHERS "
+        "IF NOT NOTED ON OR IN THE FIELD. VERIFY UP TO EQ SPACING, TYP. "
+        "NO WORK IS FOR OF AT VIA"
+    )
+    words = tuple(
+        (f"w{index}", word, 72.0 + 30.0 * (index % 15), 700.0 - 14.0 * (index // 15))
+        for index, word in enumerate(note.split())
+    )
+    document = _document_with_pages(
+        {"texts": (*words, ("title", "E-002", 560.0, 40.0))},
+    )
+
+    (choice,) = select_device_pages(document).pages
+
+    assert (choice.sheet_id, choice.discipline) == ("E-002", "electrical")
+    assert choice.symbol_like_count == 0
+    assert choice.reason == "electrical_no_recognized_devices"

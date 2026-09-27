@@ -61,8 +61,17 @@ _SHEET_PREFIX_DISCIPLINES: Mapping[str, str] = {
 # (`E 110`) forms are deliberately not sheet ids: unseparated letter+digit
 # tokens are dominated by grid bubbles and device tags (`A1`, `P1`), so
 # accepting them would misread ordinary plan annotation as sheet numbers.
+#
+# The id must stand alone as a token. It may not be preceded by a word
+# character or hyphen (`LF-1` and `HP-E-3` hold no sheet id), and it may not
+# be followed by a word character, a hyphen, or `.digit`. A plain trailing
+# `\b` is not enough: a following hyphen satisfies it, so a panel/circuit
+# callout such as `P-1-12` would yield the truncated id `P-1`, and two such
+# callouts would outvote the single title-block sheet number. Sentence
+# punctuation after the id (`SEE E-201.`) is still accepted.
 _SHEET_ID_RE = re.compile(
-    r"\b(?P<prefix>ELEC|EL|E|FP|FA|ID|M|P|A|S|C)-(?P<number>\d{1,4}(?:\.\d{1,3})?)\b",
+    r"(?<![-\w])(?P<prefix>ELEC|EL|E|FP|FA|ID|M|P|A|S|C)"
+    r"-(?P<number>\d{1,4}(?:\.\d{1,3})?)(?![-\w]|\.\d)",
     re.IGNORECASE,
 )
 
@@ -96,6 +105,18 @@ _TAG_LIKE_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 _TAG_LIKE_TEXT_MAX_CHARS = 10
+# Common short English words and drafting abbreviations that fit the
+# one-to-three character code shape but are never device tags. Extractors
+# that emit general notes word by word would otherwise inflate
+# `symbol_like_count` on notes-only sheets. Compared case-insensitively.
+# `A` is deliberately absent: a lone `a` is a common switch-leg symbol code.
+_TAG_LIKE_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "AND", "THE", "ALL", "FOR", "OF", "SEE", "NOT", "TO", "AT", "IN",
+        "ON", "BY", "OR", "NO", "AS", "IS", "BE", "IF", "UP", "SET", "PER",
+        "VIA", "TYP", "EQ",
+    }
+)
 
 ELECTRICAL_WITH_DEVICES = "electrical_with_devices"
 ELECTRICAL_NO_RECOGNIZED_DEVICES = "electrical_no_recognized_devices"
@@ -226,6 +247,8 @@ def _looks_tag_like(text: str) -> bool:
     if not token or len(token) > _TAG_LIKE_TEXT_MAX_CHARS:
         return False
     if _SHEET_ID_RE.fullmatch(token):
+        return False
+    if token.upper() in _TAG_LIKE_STOP_WORDS:
         return False
     return _TAG_LIKE_TEXT_RE.fullmatch(token) is not None
 

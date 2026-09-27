@@ -394,15 +394,19 @@ def _build_document(
             "construction": wall_token,
         })
     for entity in model.slabs:
+        extras = _extras(entity, "slab", entity.level_id)
+        vertices, triangulation = _prism_vertices(
+            entity.footprint.points,
+            min(point.z for point in entity.footprint.points),
+            min(point.z for point in entity.footprint.points) + entity.thickness_m,
+        )
+        if triangulation == "fan-fallback":
+            extras["triangulation"] = triangulation
         add({
             "name": entity.id,
-            "vertices": _prism_vertices(
-                entity.footprint.points,
-                min(point.z for point in entity.footprint.points),
-                min(point.z for point in entity.footprint.points) + entity.thickness_m,
-            ),
+            "vertices": vertices,
             "material_key": ("slab", _is_derived(entity.provenance, entity.attributes)),
-            "extras": _extras(entity, "slab", entity.level_id),
+            "extras": extras,
         })
     for entity in model.spaces:
         base = max(
@@ -410,15 +414,19 @@ def _build_document(
             default=0.0,
         )
         base = max(base, slab_top.get(entity.level_id, base))
+        extras = _extras(entity, "space", entity.level_id)
+        vertices, triangulation = _prism_vertices(
+            entity.footprint.points,
+            base,
+            base + _SPACE_PLATE_THICKNESS_M,
+        )
+        if triangulation == "fan-fallback":
+            extras["triangulation"] = triangulation
         add({
             "name": entity.id,
-            "vertices": _prism_vertices(
-                entity.footprint.points,
-                base,
-                base + _SPACE_PLATE_THICKNESS_M,
-            ),
+            "vertices": vertices,
             "material_key": ("space", _is_derived(entity.provenance, entity.attributes)),
-            "extras": _extras(entity, "space", entity.level_id),
+            "extras": extras,
         })
     for entity in (*model.electrical_devices, *model.electrical_equipment):
         device_type = getattr(entity, "device_type", None) or getattr(
@@ -1253,25 +1261,168 @@ def _oriented_box_vertices(
     ]
 
 
+#: Plan tolerance for footprint winding tests: square metres when it weighs a
+#: turn, metres when it weighs a duplicate vertex. Far below any drawing
+#: intent, far above float noise at building scale.
+_PLAN_EPSILON = 1e-9
+
+
+def _plan_cross(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+) -> float:
+    """Twice the signed area of plan triangle ``a``-``b``-``c`` (CCW: > 0)."""
+
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _plan_is_convex(plan: list[tuple[float, float]]) -> bool:
+    """True when every turn has the same sign, collinear vertices ignored."""
+
+    sign = 0
+    for index in range(len(plan)):
+        turn = _plan_cross(plan[index - 1], plan[index], plan[(index + 1) % len(plan)])
+        if abs(turn) <= _PLAN_EPSILON:
+            continue
+        turn_sign = 1 if turn > 0.0 else -1
+        if sign == 0:
+            sign = turn_sign
+        elif sign != turn_sign:
+            return False
+    return sign != 0
+
+
+def _plan_is_ear(
+    plan: list[tuple[float, float]],
+    ring: list[int],
+    position: int,
+) -> bool:
+    """True when ``ring[position]`` is an ear tip of the CCW ring."""
+
+    previous = plan[ring[position - 1]]
+    current = plan[ring[position]]
+    following = plan[ring[(position + 1) % len(ring)]]
+    if _plan_cross(previous, current, following) <= _PLAN_EPSILON:
+        return False  # reflex corner, or collinear float noise
+    corner = (ring[position - 1], ring[position], ring[(position + 1) % len(ring)])
+    for index in ring:
+        if index in corner:
+            continue
+        point = plan[index]
+        if (
+            _plan_cross(previous, current, point) >= -_PLAN_EPSILON
+            and _plan_cross(current, following, point) >= -_PLAN_EPSILON
+            and _plan_cross(following, previous, point) >= -_PLAN_EPSILON
+        ):
+            return False
+    return True
+
+
+def _plan_ear_triangles(
+    plan: list[tuple[float, float]],
+) -> list[tuple[int, int, int]] | None:
+    """Deterministic ear-clip triangulation of a plan ring, or None.
+
+    Returns index triangles in CCW order, or None when the footprint is
+    degenerate or self-intersecting so badly that no ear can be clipped; the
+    caller then falls back to the fan instead of raising.
+    """
+
+    # Drop consecutive duplicate and collinear vertices until stable, so
+    # every candidate ear corner is a well-defined turn.
+    ring: list[int] = list(range(len(plan)))
+    while True:
+        if len(ring) < 3:
+            return None
+        kept: list[int] = []
+        changed = False
+        for position in range(len(ring)):
+            index = ring[position]
+            previous = plan[ring[position - 1]]
+            current = plan[index]
+            following = plan[ring[(position + 1) % len(ring)]]
+            duplicate = (
+                abs(current[0] - previous[0]) <= _PLAN_EPSILON
+                and abs(current[1] - previous[1]) <= _PLAN_EPSILON
+            )
+            if duplicate or abs(_plan_cross(previous, current, following)) <= _PLAN_EPSILON:
+                changed = True
+                continue
+            kept.append(index)
+        if not changed:
+            break
+        ring = kept
+    area = math.fsum(
+        plan[ring[position]][0] * plan[ring[(position + 1) % len(ring)]][1]
+        - plan[ring[(position + 1) % len(ring)]][0] * plan[ring[position]][1]
+        for position in range(len(ring))
+    )
+    if abs(area) <= 2.0 * _PLAN_EPSILON:
+        return None
+    if area < 0.0:
+        ring.reverse()
+    triangles: list[tuple[int, int, int]] = []
+    while len(ring) > 3:
+        # Lowest remaining index first, so the clip order is deterministic.
+        start = ring.index(min(ring))
+        clipped = False
+        for step in range(len(ring)):
+            position = (start + step) % len(ring)
+            if _plan_is_ear(plan, ring, position):
+                triangles.append((
+                    ring[position - 1],
+                    ring[position],
+                    ring[(position + 1) % len(ring)],
+                ))
+                del ring[position]
+                clipped = True
+                break
+        if not clipped:
+            return None
+    triangles.append((ring[0], ring[1], ring[2]))
+    return triangles
+
+
 def _prism_vertices(
     points: tuple[Point3, ...],
     z_bottom: float,
     z_top: float,
-) -> list[tuple[float, float, float]]:
-    """Fan-triangulated prism over a plan footprint (convex footprints)."""
+) -> tuple[list[tuple[float, float, float]], str]:
+    """Prism over a plan footprint; returns ``(vertices, triangulation)``.
+
+    Convex footprints keep the vertex-0 fan exactly, so existing exports stay
+    byte-identical. Non-convex simple footprints get deterministic ear
+    clipping with the fan's cap winding (bottom faces down, top faces up);
+    degenerate or self-intersecting footprints fall back to the fan and
+    report ``"fan-fallback"`` so the node can disclose it in ``extras``.
+    """
 
     plan = [(point.x, point.y) for point in points]
     bottom = [(x, y, z_bottom) for x, y in plan]
     top = [(x, y, z_top) for x, y in plan]
+    triangles: list[tuple[int, int, int]]
+    if _plan_is_convex(plan):
+        triangulation = "fan"
+        triangles = [(0, index, index + 1) for index in range(1, len(plan) - 1)]
+    else:
+        ears = _plan_ear_triangles(plan)
+        if ears is None:
+            triangulation = "fan-fallback"
+            triangles = [(0, index, index + 1) for index in range(1, len(plan) - 1)]
+        else:
+            triangulation = "ear-clip"
+            triangles = ears
     vertices: list[tuple[float, float, float]] = []
-    for index in range(1, len(plan) - 1):
-        vertices += [bottom[0], bottom[index + 1], bottom[index]]
-        vertices += [top[0], top[index], top[index + 1]]
+    for first, second, third in triangles:
+        # Same convention as ever: bottom faces down, top faces up.
+        vertices += [bottom[first], bottom[third], bottom[second]]
+        vertices += [top[first], top[second], top[third]]
     for index in range(len(plan)):
         nxt = (index + 1) % len(plan)
         vertices += [bottom[index], bottom[nxt], top[nxt]]
         vertices += [bottom[index], top[nxt], top[index]]
-    return vertices
+    return vertices, triangulation
 
 
 def _local_box_vertices(

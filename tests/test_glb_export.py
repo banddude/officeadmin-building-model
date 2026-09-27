@@ -1454,3 +1454,284 @@ def test_group_nodes_are_sorted_by_name_after_all_roots(tmp_path: Path) -> None:
     root = gltf["scenes"][0]["nodes"]
     names = [gltf["nodes"][index]["name"] for index in root]
     assert names[-2:] == ["group:ALPHA", "group:ZULU"]
+
+
+# --- Wall construction tokens: a glazed wall draws as shared translucent
+# --- glass, every other token only adds extras, and no token anywhere adds
+# --- nothing at all.
+
+
+def _construction_model(**tokens: str | None) -> BuildingModel:
+    """A synthetic 4 m x 3 m room: one straight wall per plan side.
+
+    Keyword arguments name the side whose wall carries a canonical
+    construction token (``south``, ``east``, ``north``, ``west``); unnamed
+    sides stay token-less.
+    """
+
+    level = Level(id="level:glazing", elevation_m=0.0, height_m=2.7)
+    sides = (
+        ("south", (0.0, 0.0), (4.0, 0.0)),
+        ("east", (4.0, 0.0), (4.0, 3.0)),
+        ("north", (4.0, 3.0), (0.0, 3.0)),
+        ("west", (0.0, 3.0), (0.0, 0.0)),
+    )
+    walls = tuple(
+        Wall(
+            id=f"wall:c-{side}",
+            level_id=level.id,
+            centerline=Polyline3D(points=(
+                Point3(x=x0, y=y0, z=0.0),
+                Point3(x=x1, y=y1, z=0.0),
+            )),
+            thickness_m=0.15,
+            height_m=2.7,
+            construction=tokens.get(side),
+        )
+        for side, (x0, y0), (x1, y1) in sides
+    )
+    return BuildingModel(
+        model_id="model:glb-construction-synth",
+        levels=(level,),
+        walls=walls,
+    )
+
+
+def test_model_without_construction_tokens_stays_plain_bytes(tmp_path: Path) -> None:
+    """No token, no change: the golden garage carries no tokens, so its
+    export gains no glass material and no construction extra anywhere, and
+    two exports still match each other byte for byte (the existing
+    default-path tests pin the same bytes main writes)."""
+
+    model = _golden_garage()
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first)
+    to_glb(model, second)
+    assert first.read_bytes() == second.read_bytes()
+    parsed = _parse_glb(first)
+    assert all(
+        material["name"] != "wall-glazed" for material in parsed["gltf"]["materials"]
+    )
+    for node in parsed["gltf"]["nodes"]:
+        assert "construction" not in node.get("extras", {})
+    for mesh in parsed["gltf"]["meshes"]:
+        assert "extras" not in mesh
+
+
+def test_glazed_walls_share_one_exact_glass_material(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", north="glazed")
+    to_glb(model, tmp_path / "glazed.glb")
+    parsed = _parse_glb(tmp_path / "glazed.glb")
+    gltf = parsed["gltf"]
+
+    glass = [
+        material for material in gltf["materials"] if material["name"] == "wall-glazed"
+    ]
+    # Exactly one shared glass material with the factors the issue fixes.
+    assert len(glass) == 1
+    assert glass[0] == {
+        "name": "wall-glazed",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [0.70, 0.82, 0.88, 0.35],
+            "metallicFactor": 0.0,
+            "roughnessFactor": 0.05,
+        },
+        "alphaMode": "BLEND",
+        "doubleSided": True,
+    }
+    glass_index = gltf["materials"].index(glass[0])
+    key = "construction"
+    for side in ("south", "north"):
+        node = gltf["nodes"][_by_name(parsed)[f"wall:c-{side}"]]
+        assert node["extras"][key] == "glazed"
+        mesh = gltf["meshes"][node["mesh"]]
+        assert mesh["extras"] == {key: "glazed"}
+        assert mesh["primitives"][0]["material"] == glass_index
+
+
+def test_other_tokens_keep_the_standard_wall_material(tmp_path: Path) -> None:
+    model = _construction_model(south="framed", east="masonry", north="concrete")
+    to_glb(model, tmp_path / "walls.glb")
+    parsed = _parse_glb(tmp_path / "walls.glb")
+    gltf = parsed["gltf"]
+
+    wall_materials = [
+        material for material in gltf["materials"] if material["name"] == "wall"
+    ]
+    # One shared standard wall material — never a duplicate per token or wall.
+    assert len(wall_materials) == 1
+    assert "alphaMode" not in wall_materials[0]
+    wall_index = gltf["materials"].index(wall_materials[0])
+    key = "construction"
+    for side, token in (("south", "framed"), ("east", "masonry"), ("north", "concrete")):
+        node = gltf["nodes"][_by_name(parsed)[f"wall:c-{side}"]]
+        mesh = gltf["meshes"][node["mesh"]]
+        primitive = mesh["primitives"][0]
+        assert node["extras"][key] == token
+        assert mesh["extras"] == {key: token}
+        assert primitive["material"] == wall_index
+    # A wall stating no token gains nothing extra anywhere.
+    plain_node = gltf["nodes"][_by_name(parsed)["wall:c-west"]]
+    assert "construction" not in plain_node["extras"]
+    plain_mesh = gltf["meshes"][plain_node["mesh"]]
+    assert "extras" not in plain_mesh
+    assert plain_mesh["primitives"][0]["material"] == wall_index
+
+
+def test_dimmed_glazed_wall_takes_the_lower_alpha(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", north="glazed")
+    options = _default_options() | {
+        "dimmed_ids": ("wall:c-south",),
+        "dimmed_alpha": 0.25,
+    }
+    summary = to_glb(model, tmp_path / "dim.glb", **options)
+    parsed = _parse_glb(tmp_path / "dim.glb")
+
+    dimmed = _node_material(parsed, "wall:c-south")
+    assert dimmed["name"] == "wall-glazed-dimmed"
+    assert dimmed["alphaMode"] == "BLEND"
+    assert dimmed["pbrMetallicRoughness"] == {
+        "baseColorFactor": pytest.approx([0.70, 0.82, 0.88, 0.25]),
+        "metallicFactor": 0.0,
+        "roughnessFactor": 0.05,
+    }
+    node = parsed["gltf"]["nodes"][_by_name(parsed)["wall:c-south"]]
+    assert node["extras"]["display"] == "dimmed (caller-supplied)"
+    assert node["extras"]["construction"] == "glazed"
+    assert summary["dimmed"] == 1
+
+    # The undimmed glazed wall keeps the plain glass material.
+    kept = _node_material(parsed, "wall:c-north")
+    assert kept["name"] == "wall-glazed"
+    assert kept["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.35)
+
+
+def test_dimmed_glazed_wall_never_gets_more_opaque_than_glass(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed")
+    options = _default_options() | {
+        "dimmed_ids": ("wall:c-south",),
+        "dimmed_alpha": 0.8,
+    }
+    to_glb(model, tmp_path / "dim.glb", **options)
+    parsed = _parse_glb(tmp_path / "dim.glb")
+
+    material = _node_material(parsed, "wall:c-south")
+    assert material["name"] == "wall-glazed-dimmed"
+    # 0.35 wins over the higher dimmed alpha, and the colour stays glass.
+    assert material["pbrMetallicRoughness"]["baseColorFactor"] == pytest.approx(
+        [0.70, 0.82, 0.88, 0.35]
+    )
+
+
+def test_dimmed_ids_still_ignore_walls_without_the_glazed_token(
+    tmp_path: Path,
+) -> None:
+    model = _construction_model(south="framed")
+    options = _default_options() | {"dimmed_ids": ("wall:c-south", "wall:c-east")}
+    summary = to_glb(model, tmp_path / "dim.glb", **options)
+    parsed = _parse_glb(tmp_path / "dim.glb")
+
+    material = _node_material(parsed, "wall:c-south")
+    assert material["name"] == "wall"
+    assert "alphaMode" not in material
+    node = parsed["gltf"]["nodes"][_by_name(parsed)["wall:c-south"]]
+    assert "display" not in node["extras"]
+    assert node["extras"]["construction"] == "framed"
+    assert summary["dimmed"] == 0
+
+
+def test_derived_glazed_wall_shares_the_one_glass_material(tmp_path: Path) -> None:
+    """One shared material for all glazed walls, provenance included: a
+    derived glazed wall keeps the glass look at the fixed alpha and discloses
+    its derivation in extras instead."""
+
+    model = _construction_model(south="glazed", north="glazed")
+    derived = replace(
+        model,
+        walls=tuple(
+            replace(
+                wall,
+                provenance=(Provenance(
+                    source_kind="synthetic",
+                    source_id="fixture:glazed-wall",
+                    method="test rule",
+                    confidence=0.6,
+                    derivation="inferred",
+                ),),
+            )
+            if wall.id == "wall:c-north"
+            else wall
+            for wall in model.walls
+        ),
+    )
+    to_glb(derived, tmp_path / "derived.glb")
+    parsed = _parse_glb(tmp_path / "derived.glb")
+    gltf = parsed["gltf"]
+
+    assert [
+        material["name"] for material in gltf["materials"] if "glazed" in material["name"]
+    ] == ["wall-glazed"]
+    node = gltf["nodes"][_by_name(parsed)["wall:c-north"]]
+    assert node["extras"]["derivation"] == "inferred"
+    assert node["extras"]["construction"] == "glazed"
+    material = gltf["materials"][
+        gltf["meshes"][node["mesh"]]["primitives"][0]["material"]
+    ]
+    assert material["name"] == "wall-glazed"
+    assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.35)
+
+
+def test_glazed_wall_in_a_group_is_still_reparented(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", east="framed")
+    summary = to_glb(
+        model,
+        tmp_path / "grouped.glb",
+        groups={"STOREFRONT": ("wall:c-south",)},
+    )
+    parsed = _parse_glb(tmp_path / "grouped.glb")
+    gltf = parsed["gltf"]
+
+    group_node = gltf["nodes"][_by_name(parsed)["group:STOREFRONT"]]
+    children = [gltf["nodes"][index]["name"] for index in group_node["children"]]
+    assert children == ["wall:c-south"]
+    assert group_node["extras"]["members"] == 1
+    assert summary["groups"] == {"STOREFRONT": 1}
+    # The reparented glazed wall keeps its glass material and extras token.
+    south = gltf["nodes"][group_node["children"][0]]
+    assert south["extras"]["construction"] == "glazed"
+    material = gltf["materials"][
+        gltf["meshes"][south["mesh"]]["primitives"][0]["material"]
+    ]
+    assert material["name"] == "wall-glazed"
+
+
+def test_glazed_export_json_and_bin_chunks_stay_consistent(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", east="masonry", north="concrete")
+    to_glb(model, tmp_path / "glazed.glb")
+    parsed = _parse_glb(tmp_path / "glazed.glb")
+    gltf = parsed["gltf"]
+    # _parse_glb already asserted the GLB header and chunk boundaries; here
+    # the JSON-side buffer description must match the BIN chunk it points at.
+    assert gltf["buffers"][0]["byteLength"] == len(parsed["bin"])
+    for view in gltf["bufferViews"]:
+        assert view["buffer"] == 0
+        assert view["byteOffset"] % 4 == 0
+        assert view["byteOffset"] + view["byteLength"] <= len(parsed["bin"])
+    for mesh in gltf["meshes"]:
+        for primitive in mesh["primitives"]:
+            accessor = gltf["accessors"][primitive["attributes"]["POSITION"]]
+            assert accessor["count"] >= 3
+            assert accessor["bufferView"] < len(gltf["bufferViews"])
+    for node in gltf["nodes"]:
+        assert "mesh" in node
+
+
+def test_glazed_export_is_deterministic(tmp_path: Path) -> None:
+    model = _construction_model(south="glazed", east="framed", north="glazed")
+    options = _default_options() | {"dimmed_ids": ("wall:c-north",)}
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first, **options)
+    to_glb(model, second, **options)
+    assert first.read_bytes() == second.read_bytes()

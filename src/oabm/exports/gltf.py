@@ -45,6 +45,7 @@ from oabm.model import (
     Space,
     Wall,
 )
+from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 
 _GLB_MAGIC = 0x46546C67  # "glTF"
 _GLB_VERSION = 2
@@ -91,6 +92,17 @@ _COLOURS = {
     "wire-unknown": (0.50, 0.35, 0.70),
 }
 _TRANSLUCENT_ALPHA = 0.35
+
+#: Light blue-grey glass for walls whose canonical ``construction`` token reads
+#: ``glazed``. Display material only: the canonical token keeps travelling in
+#: ``extras``, and nothing here flows back into the model (issue #163).
+_GLASS_COLOUR = (0.70, 0.82, 0.88)
+_GLASS_ALPHA = 0.35
+_GLASS_ROUGHNESS = 0.05
+
+#: Name of the one shared glass material every glazed wall uses, and the
+#: material key the export sorts it by.
+_GLAZED_MATERIAL = "wall-glazed"
 
 #: Light neutral grey for the opt-in reference planes. Display colour only;
 #: each plane's translucency is a caller parameter (floor and ceiling alphas),
@@ -213,6 +225,11 @@ def to_glb(
     The export is a deterministic derived view: walls, slabs, space floor
     plates, devices, electrical equipment and conduit routes become meshes;
     canonical identity and provenance travel in node names and ``extras``.
+    A wall's canonical ``construction`` token also travels as
+    ``extras["construction"]`` on its node and mesh; a ``glazed`` wall draws
+    with the one shared translucent ``wall-glazed`` glass material, and a
+    glazed wall the caller dims takes the dimmed alpha only when it is lower
+    than the glass alpha.
 
     The keyword-only options are display-only rendering parameters, each
     defaulting off:
@@ -344,16 +361,37 @@ def _build_document(
     def add(entry: dict[str, Any]) -> None:
         entries.append(entry)
 
+    dimmed_count = 0
+    emphasized_count = 0
     for entity in model.walls:
         height_m, height_source = _wall_height(entity, level_heights)
         extras = _extras(entity, "wall", entity.level_id)
         extras["height_source"] = height_source
         _add_name(extras, entity)
+        # The canonical wall token rides in extras on node and mesh; a
+        # tokenless wall gains nothing at all, so its bytes stay main's.
+        wall_token = entity.construction
+        if wall_token is not None:
+            extras["construction"] = wall_token
+        if wall_token == WALL_CONSTRUCTION_GLAZED:
+            if entity.id in options.dimmed_ids:
+                # The one wall kind the caller's dimming reaches, and the only
+                # thing it changes is the alpha, and only when lower — glass
+                # is never dimmed into grey or into something more opaque
+                # than plain glass (issue #163).
+                dimmed_count += 1
+                extras["display"] = _DIMMED_DISPLAY
+                material_key: tuple[Any, ...] = ("dimmed", _GLAZED_MATERIAL)
+            else:
+                material_key = (_GLAZED_MATERIAL,)
+        else:
+            material_key = ("wall", _is_derived(entity.provenance, entity.attributes))
         add({
             "name": entity.id,
             "vertices": _wall_vertices(entity, height_m),
-            "material_key": ("wall", _is_derived(entity.provenance, entity.attributes)),
+            "material_key": material_key,
             "extras": extras,
+            "construction": wall_token,
         })
     for entity in model.slabs:
         add({
@@ -382,8 +420,6 @@ def _build_document(
             "material_key": ("space", _is_derived(entity.provenance, entity.attributes)),
             "extras": _extras(entity, "space", entity.level_id),
         })
-    dimmed_count = 0
-    emphasized_count = 0
     for entity in (*model.electrical_devices, *model.electrical_equipment):
         device_type = getattr(entity, "device_type", None) or getattr(
             entity, "equipment_type", ""
@@ -475,13 +511,18 @@ def _build_document(
             "max": maximum,
         })
         mesh_index = len(meshes)
-        meshes.append({
+        mesh: dict[str, Any] = {
             "primitives": [{
                 "attributes": {"POSITION": len(accessors) - 1},
                 "material": material_index[entry["material_key"]],
                 "mode": 4,
             }],
-        })
+        }
+        if entry.get("construction") is not None:
+            # A tokened wall's mesh carries the token too, so both the object
+            # and its data disclose it among Blender's custom properties.
+            mesh["extras"] = {"construction": entry["construction"]}
+        meshes.append(mesh)
         node: dict[str, Any] = {
             "name": entry["name"],
             "mesh": mesh_index,
@@ -633,15 +674,45 @@ def _material(material_class: str, derived: bool) -> dict[str, Any]:
     return material
 
 
+def _glass_material(alpha: float, name: str = _GLAZED_MATERIAL) -> dict[str, Any]:
+    """The shared translucent glass material for glazed walls.
+
+    One deterministic material for every glazed wall, whatever its provenance:
+    a light blue-grey base colour, alpha 0.35 with ``alphaMode: "BLEND"`` so
+    the wall reads as glass, ``doubleSided`` so it reads from both sides, and
+    a non-metallic near-mirror finish (roughness 0.05).
+    """
+
+    return {
+        "name": name,
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [*_GLASS_COLOUR, alpha],
+            "metallicFactor": 0.0,
+            "roughnessFactor": _GLASS_ROUGHNESS,
+        },
+        "alphaMode": "BLEND",
+        "doubleSided": True,
+    }
+
+
 def _material_for_key(key: tuple[Any, ...], options: _DisplayOptions) -> dict[str, Any]:
-    """Material for a sorted material key: plain, dimmed, emphasized or reference."""
+    """Material for a sorted material key: plain, glazed, dimmed, emphasized or reference."""
 
     if key[0] == "dimmed":
+        if key[1] == _GLAZED_MATERIAL:
+            # A dimmed glazed wall stays glass: the caller's dimmed alpha
+            # applies only when it is lower than the glass alpha, so dimming
+            # can never present glazing more opaque than plain glass.
+            return _glass_material(
+                min(_GLASS_ALPHA, options.dimmed_alpha), f"{_GLAZED_MATERIAL}-dimmed"
+            )
         return _dimmed_material(key[1], options)
     if key[0] == "emphasized":
         return _emphasized_material(key[1])
     if key[0] == "reference":
         return _reference_material(key[1], options)
+    if key[0] == _GLAZED_MATERIAL:
+        return _glass_material(_GLASS_ALPHA)
     return _material(key[0], key[1])
 
 

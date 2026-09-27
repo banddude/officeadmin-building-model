@@ -2318,16 +2318,10 @@ def _scope_status_attributes(
 # detection shown with the mechanical work is the classic example. Reading
 # such an item off that sheet is legitimate only when the electrical legend
 # itself claims the type; a symbol printed on a foreign sheet is not scope on
-# its own. The printed sheet number names the owning trade: a standalone text
-# token shaped like a sheet id (`E-1`, `M4`, `P2.1`) is the sheet id, and the
-# E prefix marks the electrical discipline.
-_PRINTED_SHEET_ID_RE = re.compile(
-    r"[A-Z]{1,3}(?:-\d{1,4}|\d{1,3}(?:\.\d{1,3})?)",
-    re.IGNORECASE,
-)
-# Public alias of the electrical-discipline sheet-id shape used by legend
-# parsing; a page whose printed sheet id fullmatches it is an E sheet.
-ELECTRICAL_SHEET_ID_RE = _LEGEND_SHEET_ID_RE
+# its own. Which trade owns a page is decided by the electrical lane's one
+# shared sheet-identity function, sheet_selection.sheet_identity (printed
+# discipline-prefixed sheet number, frequency vote, title-block tie-break);
+# this module keeps no second sheet-id definition.
 # A row counts as electrical scope even on a foreign sheet when its own text
 # names the electrical side as responsible. The documented phrase list:
 #   WIRED BY E (also with E.C. or EC after it)
@@ -2379,35 +2373,39 @@ class ElectricalScopeTypes:
     cross_discipline: frozenset[str]
 
 
-def _printed_sheet_id_observations(
+def _page_sheet_identities(
     document: PdfElectricalDocument,
-) -> dict[int, PdfTextObservation]:
-    """Per page: the text observation chosen as that page's printed sheet id.
+) -> dict[int, tuple[str | None, str]]:
+    """Per page (1-based, in page order): ``(sheet_id, discipline)``.
 
-    A printed sheet id is a standalone text token shaped like ``E-1``,
-    ``M4``, or ``P2.1``. Ties keep the smallest element id so the choice is
-    deterministic regardless of extraction order.
+    Delegates to the lane's shared
+    :func:`oabm.importers.pdf_electrical.sheet_selection.sheet_identity`.
+    ``sheet_selection`` imports this module at load time, so the import is
+    deferred to call time to keep the module graph acyclic at import.
     """
 
-    chosen: dict[int, PdfTextObservation] = {}
-    for observation in document.texts:
-        text = observation.text.strip()
-        if not text or _PRINTED_SHEET_ID_RE.fullmatch(text) is None:
-            continue
-        current = chosen.get(observation.page)
-        if current is None or observation.element_id < current.element_id:
-            chosen[observation.page] = observation
-    return chosen
+    from oabm.importers.pdf_electrical.sheet_selection import sheet_identity
+
+    return {
+        page: sheet_identity(document, page)
+        for page in range(1, document.page_count + 1)
+    }
 
 
 def printed_sheet_ids(document: PdfElectricalDocument) -> dict[int, str]:
-    """Map every page with a printed sheet-id token to that printed id."""
+    """Map every page that prints a sheet id to that id, in page order.
+
+    The id is the one the shared sheet-identity function chose
+    (:func:`oabm.importers.pdf_electrical.sheet_selection.sheet_identity`);
+    pages without a printed sheet id are omitted.
+    """
 
     return {
-        page: observation.text.strip()
-        for page, observation in sorted(
-            _printed_sheet_id_observations(document).items()
-        )
+        page: sheet_id
+        for page, (sheet_id, _discipline) in _page_sheet_identities(
+            document
+        ).items()
+        if sheet_id is not None
     }
 
 
@@ -2428,10 +2426,11 @@ def _row_claims_electrical_responsibility(text: str) -> bool:
 def electrical_scope_types(
     document: PdfElectricalDocument,
 ) -> ElectricalScopeTypes:
-    """Canonical types the electrical legend defines, per its own E sheets.
+    """Canonical types the electrical legend defines, per its electrical sheets.
 
-    A page whose printed sheet id matches the E-prefix discipline
-    (:data:`ELECTRICAL_SHEET_ID_RE`) is an electrical sheet. Every text row on
+    A page is an electrical sheet when the shared sheet-identity function
+    (:func:`oabm.importers.pdf_electrical.sheet_selection.sheet_identity`)
+    gives it the ``electrical`` discipline. Every text row on
     such a page is classified with the default symbol rules -- the same
     classification legend rows go through -- and its canonical type counts as
     ``defined`` when the classification is unambiguous. A defined type also
@@ -2443,8 +2442,10 @@ def electrical_scope_types(
 
     electrical_pages = {
         page
-        for page, observation in _printed_sheet_id_observations(document).items()
-        if ELECTRICAL_SHEET_ID_RE.fullmatch(observation.text.strip()) is not None
+        for page, (_sheet_id, discipline) in _page_sheet_identities(
+            document
+        ).items()
+        if discipline == "electrical"
     }
     defined: set[str] = set()
     cross: set[str] = set()
@@ -10181,18 +10182,14 @@ class ElectricalPdfImporter:
         # type evidence is legend-scoped rather than read off this sheet.
         filters = _normalize_page_type_filters(page_type_filters, document.page_count)
         if filters:
-            sheet_id_observations = _printed_sheet_id_observations(document)
+            sheet_identities = _page_sheet_identities(document)
             for key in sorted(candidates):
                 candidate = candidates[key]
                 allowed = filters.get(candidate.page)
                 if allowed is None:
                     continue
-                sheet_observation = sheet_id_observations.get(candidate.page)
-                label = (
-                    sheet_observation.text.strip()
-                    if sheet_observation is not None
-                    else str(candidate.page)
-                )
+                printed_id, _discipline = sheet_identities[candidate.page]
+                label = printed_id if printed_id is not None else str(candidate.page)
                 if candidate.canonical_type not in allowed:
                     del candidates[key]
                     unresolved_observations.append(
@@ -10228,11 +10225,7 @@ class ElectricalPdfImporter:
                 candidate.provenance.append(
                     _provenance(
                         document,
-                        element_id=(
-                            sheet_observation.element_id
-                            if sheet_observation is not None
-                            else f"p{candidate.page}:page-type-filter"
-                        ),
+                        element_id=f"p{candidate.page}:page-type-filter",
                         page=candidate.page,
                         method="cross-discipline-page-filter",
                         confidence=capped,
@@ -12255,7 +12248,6 @@ __all__ = [
     "CROSS_DISCIPLINE_DEFAULT_TYPES",
     "CROSS_DISCIPLINE_MAX_CONFIDENCE",
     "DEFAULT_SYMBOL_RULES",
-    "ELECTRICAL_SHEET_ID_RE",
     "POINT_TO_M",
     "DrawingRegionTransform",
     "ElectricalPdfError",

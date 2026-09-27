@@ -406,3 +406,193 @@ def test_document_with_no_e_sheets_still_reports_the_default_set(
     assert scope.defined == frozenset()
     assert scope.cross_discipline == CROSS_DISCIPLINE_DEFAULT_TYPES
     assert printed_sheet_ids(document) == {}
+
+
+# --- Shared sheet identity (#183 review) ------------------------------------
+#
+# Sheet ids and disciplines come from the lane's single shared function,
+# sheet_selection.sheet_identity. The pages below are built so the removed
+# second definition (any 1-3 letter + number token, smallest element id wins,
+# E-prefix fullmatch against `E-n` / `En.n` only) picks the wrong token:
+# fixture tags and project numbers carry smaller element ids than the
+# title-block sheet number, and `E-2.1` did not match its electrical shape.
+
+_PAGE_PROVENANCE = {
+    "page_rotation": 0,
+    "displayed_page_width_pt": 612.0,
+    "displayed_page_height_pt": 792.0,
+    "coordinate_space": "displayed",
+}
+# Synthetic project-number shapes, printed in every title block.
+_PROJECT_NUMBER_TOKENS = ("PRJ-2317", "JN204")
+
+
+def _text(page: int, index: int, text: str, x: float, y: float):
+    from oabm.importers.pdf_electrical.importer import PdfTextObservation
+
+    return PdfTextObservation(
+        element_id=f"p{page}:text:{index:04d}",
+        page=page,
+        text=text,
+        x_pt=x,
+        y_pt=y,
+        font_size_pt=8.0,
+    )
+
+
+def _annotation(page: int, index: int, subject: str, x: float, y: float):
+    from oabm.importers.pdf_electrical.importer import PdfSymbolObservation
+
+    return PdfSymbolObservation(
+        element_id=f"p{page}:annotation:{index:04d}",
+        page=page,
+        name=subject,
+        x_pt=x,
+        y_pt=y,
+        source_kind="annotation:square",
+        metadata={
+            "subject": subject,
+            "native_id": f"SYN-{page}-{index}",
+            "rect_pt": [x - 12.0, y - 12.0, x + 12.0, y + 12.0],
+        },
+    )
+
+
+def _fixture_tag_texts(page: int, first_index: int, count: int) -> list:
+    """``count`` lighting fixture tags (`LF-1` ...) spread over the plan."""
+
+    return [
+        _text(
+            page,
+            first_index + offset,
+            f"LF-{offset % 6 + 1}",
+            60.0 + 12.0 * (offset % 30),
+            300.0 + 20.0 * (offset // 30),
+        )
+        for offset in range(count)
+    ]
+
+
+def _title_block(page: int, first_index: int, sheet_id: str | None) -> list:
+    """Project numbers (twice each) and the sheet number, bottom right."""
+
+    texts = []
+    index = first_index
+    for token in _PROJECT_NUMBER_TOKENS:
+        for y in (70.0, 30.0):
+            texts.append(_text(page, index, token, 470.0, y))
+            index += 1
+    if sheet_id is not None:
+        texts.append(_text(page, index, sheet_id, 560.0, 36.0))
+    return texts
+
+
+def _fixture_tag_set() -> PdfElectricalDocument:
+    """Page 1: E-2.1 legend. Page 2: M-4 plan. Page 3: no sheet number.
+
+    Every page prints 32 fixture tags and two project numbers (each twice)
+    before its sheet number, so each wrong token outnumbers and precedes the
+    single title-block sheet number.
+    """
+
+    texts: list = []
+    texts += _fixture_tag_texts(1, 1, 32)
+    texts += [
+        _text(1, 40, "POWER SYMBOL LEGEND", 60.0, 690.0),
+        _text(1, 41, "DUCT SMOKE DETECTOR, WIRED BY E", 60.0, 660.0),
+        _text(1, 42, "DUPLEX RECEPTACLE", 60.0, 630.0),
+    ]
+    texts += _title_block(1, 50, "E-2.1")
+    texts += _fixture_tag_texts(2, 1, 32)
+    texts += _title_block(2, 50, "M-4")
+    texts += _fixture_tag_texts(3, 1, 32)
+    texts += _title_block(3, 50, None)
+    symbols = (
+        _annotation(2, 1, "DSD", 112.0, 712.0),
+        _annotation(2, 2, "REC", 232.0, 712.0),
+    )
+    return PdfElectricalDocument(
+        source_id="synthetic:xdisc-shared-identity",
+        page_count=3,
+        texts=tuple(texts),
+        symbols=symbols,
+        page_provenance={page: dict(_PAGE_PROVENANCE) for page in (1, 2, 3)},
+    )
+
+
+def test_title_block_e_2_1_beats_thirty_fixture_tags_and_reads_the_legend() -> None:
+    from oabm.importers.pdf_electrical.sheet_selection import sheet_identity
+
+    document = _fixture_tag_set()
+    assert sheet_identity(document, 1) == ("E-2.1", "electrical")
+    scope = electrical_scope_types(document)
+    # The E-2.1 sheet is electrical, so its legend rows are read.
+    assert scope.defined == frozenset({"duct_smoke_detector", "receptacle_duplex"})
+    assert scope.cross_discipline == frozenset({"duct_smoke_detector"})
+
+
+@pytest.mark.parametrize("sheet_id", ["E-2.1", "E-201", "E-1", "EL-3", "ELEC-2.10"])
+def test_electrical_sheet_numbers_are_recognised_as_electrical(sheet_id: str) -> None:
+    document = PdfElectricalDocument(
+        source_id="synthetic:xdisc-e-shapes",
+        page_count=1,
+        texts=(
+            _text(1, 1, "DUPLEX RECEPTACLE", 60.0, 630.0),
+            _text(1, 2, sheet_id, 560.0, 36.0),
+        ),
+        page_provenance={1: dict(_PAGE_PROVENANCE)},
+    )
+    assert printed_sheet_ids(document) == {1: sheet_id}
+    assert electrical_scope_types(document).defined == frozenset(
+        {"receptacle_duplex"}
+    )
+
+
+def test_non_electrical_sheet_rows_are_not_electrical_scope() -> None:
+    document = PdfElectricalDocument(
+        source_id="synthetic:xdisc-m-sheet",
+        page_count=1,
+        texts=(
+            _text(1, 1, "DUPLEX RECEPTACLE", 60.0, 630.0),
+            _text(1, 2, "M-2.1", 560.0, 36.0),
+        ),
+        page_provenance={1: dict(_PAGE_PROVENANCE)},
+    )
+    assert electrical_scope_types(document).defined == frozenset()
+
+
+def test_project_number_on_every_page_never_becomes_the_sheet_id() -> None:
+    from oabm.importers.pdf_electrical.sheet_selection import sheet_identity
+
+    document = _fixture_tag_set()
+    ids = printed_sheet_ids(document)
+    # Page 3 prints only project numbers and fixture tags: no sheet id.
+    assert ids == {1: "E-2.1", 2: "M-4"}
+    for token in _PROJECT_NUMBER_TOKENS:
+        assert token not in ids.values()
+    assert not any(value.startswith("LF") for value in ids.values())
+    # printed_sheet_ids is a view of the shared function, not a second rule.
+    for page in range(1, document.page_count + 1):
+        sheet_id, _discipline = sheet_identity(document, page)
+        assert ids.get(page) == sheet_id
+    assert sheet_identity(document, 3) == (None, "unknown")
+
+
+def test_filter_label_is_the_shared_sheet_id_not_a_fixture_tag() -> None:
+    document = _fixture_tag_set()
+    scope = electrical_scope_types(document)
+    model = ElectricalPdfImporter().import_document(
+        document,
+        page_type_filters={2: scope.cross_discipline, 3: scope.cross_discipline},
+    )
+    rows = _device_rows(model)
+    assert [row["device_type"] for row in rows] == ["duct_smoke_detector"]
+    assert rows[0]["attributes"]["cross_discipline_sheet"] == "M-4"
+    assert rows[0]["confidence"] == CROSS_DISCIPLINE_MAX_CONFIDENCE
+    excluded = [
+        row
+        for row in model.attributes["pdf_electrical"]["unresolved_observations"]
+        if row.get("kind") == "page_type_filter"
+    ]
+    assert [row["cross_discipline_sheet"] for row in excluded] == ["M-4"]
+    assert excluded[0]["recognized_classification"]["canonical_type"] == "receptacle"

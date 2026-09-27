@@ -507,3 +507,47 @@ unknown or non-unique codes remain unresolved with the source code recorded.
 Long legend descriptions remain semantic labels in full, so an explanatory
 trailing sentence does not prevent a leading tele/data J-box phrase from
 classifying as `junction_box_data`.
+
+## Device-sheet selection
+
+`oabm.importers.pdf_electrical.sheet_selection.select_device_pages(document,
+*, importer=None)` answers one question for public callers (#180): which
+sheets of a set carry electrical devices? Per page, in page order, it returns
+a frozen `SheetChoice` (`page`, `sheet_id`, `discipline`, `device_count`,
+`included`, `reason`) wrapped in a `DeviceSheetSelection` whose `to_dict()`
+is deterministic.
+
+`device_count` is the number of canonical devices the importer produces for
+that page alone: the document is restricted to the page (every other page's
+observations removed, page numbering and provenance unchanged) and imported
+with the default importer, or with the caller-supplied `importer`. Callers
+with project-specific `SymbolRule` sets or instance hints therefore get
+counts that match what their own import would produce.
+
+The discipline comes from the printed sheet-number prefix. A printed sheet id
+is a discipline prefix, a hyphen, and the sheet number (`E-110`, `FP-2`);
+unseparated (`E110`) and space-separated (`E 110`) forms are deliberately not
+sheet ids, because unseparated letter+digit tokens are dominated by grid
+bubbles and device tags. The prefixes are `E`/`EL`/`ELEC` → `electrical`,
+`M` → `mechanical`, `P` → `plumbing`, `FP`/`FA` → `fire_protection`,
+`A`/`ID` → `architectural`, `S` → `structural`, `C` → `civil`, matched
+case-insensitively with the longest prefix first. When a page prints no
+sheet number, title-block discipline words decide (`ELECTRIC`/`ELECTRICAL`,
+`MECHANICAL`/`HVAC`, `PLUMBING`, `FIRE PROTECTION`/`FIRE ALARM`,
+`ARCHITECTURAL`, `STRUCTURAL`, `CIVIL`); with neither signal the discipline
+is `unknown` and the sheet id is `None`.
+
+One sheet number usually prints more than once (title block, border
+callouts), so the page's sheet id is the most frequent candidate. Ties are
+broken by the candidate occurrence closest to the displayed bottom-right
+title-block corner (using the extracted displayed page size, falling back to
+the page's text extent when provenance is absent), then lexicographically,
+so the choice is always deterministic.
+
+Selection rules, in precedence order: an electrical sheet with at least one
+device is included (`electrical_with_devices`); an electrical sheet with no
+devices is excluded (`electrical_no_devices`); an unknown-discipline page
+with devices is excluded as `unknown_discipline_with_devices` so it is
+surfaced rather than silently used; any other discipline is excluded as
+`<discipline>_sheet`. The module reads only extracted observations and never
+changes importer behaviour; default import output stays byte-identical.

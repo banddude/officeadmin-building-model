@@ -4,6 +4,7 @@ import hashlib
 import math
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
+from collections.abc import Mapping
 from typing import Iterable, Protocol
 
 from oabm.model import (
@@ -180,6 +181,76 @@ def default_label_provider(entity: Entity, view_type: str) -> str | None:
     if isinstance(entity, Space):
         return entity.id
     return None
+
+
+# Short plan abbreviations for device and equipment types.  Unknown types
+# fall back to the first 8 characters of the type, uppercased.
+_COMPACT_DEVICE_ABBREVIATIONS = {
+    "receptacle_duplex": "DUP",
+    "receptacle_quad": "QUAD",
+    "data_outlet": "DATA",
+    "luminaire": "LT",
+    "exit_sign": "EXIT",
+    "junction_box_power": "JB",
+    "floor_box": "FB",
+    "switch": "S",
+    "smoke_detector": "SD",
+    "duct_smoke_detector": "DSD",
+    "panelboard": "PNL",
+}
+
+_COMPACT_TAG_MAX_CHARS = 8
+_COMPACT_FALLBACK_CHARS = 8
+
+
+def _compact_tag(entity: Entity) -> str | None:
+    """The entity's short tag: top-level ``tag`` first, then the electrical one."""
+
+    attributes = entity.attributes
+    if not isinstance(attributes, Mapping):
+        return None
+    for source in (attributes, attributes.get("pdf_electrical")):
+        if not isinstance(source, Mapping):
+            continue
+        candidate = source.get("tag")
+        if isinstance(candidate, str) and 0 < len(candidate) <= _COMPACT_TAG_MAX_CHARS:
+            return candidate
+    return None
+
+
+def compact_label_provider(entity: Entity, view_type: str) -> str | None:
+    """Opt-in plan labels: a tag or short type code instead of long names.
+
+    A device or equipment with a short tag labels with the tag (keys, in
+    order: ``attributes["tag"]``, then ``attributes["pdf_electrical"]["tag"]``;
+    a tag is at most 8 characters).  Without one, the type abbreviates
+    through :data:`_COMPACT_DEVICE_ABBREVIATIONS` (``receptacle_duplex`` to
+    ``DUP``, ``luminaire`` to ``LT``, ...), and an unknown type falls back
+    to its first 8 characters, uppercased.  Spaces keep the default label
+    and walls never get one, so long wall names cannot clutter the plan.
+    Every other entity follows :func:`default_label_provider`.
+
+    Pass it explicitly - the default provider is unchanged::
+
+        generate_drawing_set(model, plans=..., label_provider=compact_label_provider)
+    """
+
+    if isinstance(entity, Wall):
+        return None
+    if isinstance(entity, (ElectricalDevice, ElectricalEquipment)):
+        tag = _compact_tag(entity)
+        if tag is not None:
+            return tag
+        type_value = (
+            entity.equipment_type
+            if isinstance(entity, ElectricalEquipment)
+            else entity.device_type
+        )
+        abbreviation = _COMPACT_DEVICE_ABBREVIATIONS.get(type_value)
+        if abbreviation is not None:
+            return abbreviation
+        return type_value[:_COMPACT_FALLBACK_CHARS].upper()
+    return default_label_provider(entity, view_type)
 
 
 def generate_drawing_set(

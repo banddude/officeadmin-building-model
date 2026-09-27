@@ -7,8 +7,9 @@ from .common import (
     UnsupportedSchemaVersion, Vector3, is_observed, provenance_applies_to, stable_id,
 )
 from .entities import (
-    Ceiling, Circuit, Conductor, ElectricalDevice, ElectricalEquipment, Level,
-    Obstacle, Opening, Port, Route, RouteConstraint, RouteFitting, Slab, Space, Wall,
+    WALL_CONSTRUCTION_TOKENS, Ceiling, Circuit, Conductor, ElectricalDevice,
+    ElectricalEquipment, Level, Obstacle, Opening, Port, Route, RouteConstraint,
+    RouteFitting, Slab, Space, Wall,
 )
 from .model import BuildingModel, validate_model
 

@@ -33,18 +33,43 @@ class Space(Entity):
             _positive(self.height_m, f"{self.id}.height_m")
 
 
+#: How a wall is built. Several workstreams need the same fact -- routing
+#: cannot host a device on or drop into glazing, IFC and GLB present glazed
+#: walls differently -- so the token is canonical rather than an ``attributes``
+#: key. Finer subtypes such as storefront versus interior glass partition stay
+#: in ``attributes``.
+WALL_CONSTRUCTION_FRAMED = "framed"
+WALL_CONSTRUCTION_MASONRY = "masonry"
+WALL_CONSTRUCTION_CONCRETE = "concrete"
+WALL_CONSTRUCTION_GLAZED = "glazed"
+WALL_CONSTRUCTION_TOKENS: frozenset[str] = frozenset(
+    {
+        WALL_CONSTRUCTION_FRAMED,
+        WALL_CONSTRUCTION_MASONRY,
+        WALL_CONSTRUCTION_CONCRETE,
+        WALL_CONSTRUCTION_GLAZED,
+    }
+)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Wall(Entity):
     level_id: str
     centerline: Polyline3D
     thickness_m: float
     height_m: float
+    construction: str | None = None
 
     def __post_init__(self) -> None:
         super(Wall, self).__post_init__()
         _validate_id(self.level_id, f"{self.id}.level_id")
         _positive(self.thickness_m, f"{self.id}.thickness_m")
         _positive(self.height_m, f"{self.id}.height_m")
+        if self.construction is not None and self.construction not in WALL_CONSTRUCTION_TOKENS:
+            raise ContractError(
+                f"{self.id}.construction must be one of "
+                f"{sorted(WALL_CONSTRUCTION_TOKENS)!r} or None, got {self.construction!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

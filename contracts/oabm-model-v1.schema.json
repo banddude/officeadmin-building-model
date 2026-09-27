@@ -1249,6 +1249,16 @@
           "minimum": 0,
           "type": "number"
         },
+        "construction": {
+          "description": "How the wall is built: framed, masonry, concrete, or glazed. Omitted/null means unknown.",
+          "enum": [
+            "framed",
+            "masonry",
+            "concrete",
+            "glazed",
+            null
+          ]
+        },
         "height_m": {
           "exclusiveMinimum": 0,
           "type": "number"

@@ -41,12 +41,27 @@ The v1 building layer includes:
 
 - `Level`: elevation and optional story height
 - `Space`: level-hosted polygon footprint and optional height/usage
-- `Wall`: 3D centerline, thickness, height, and level
+- `Wall`: 3D centerline, thickness, height, level, and optional `construction` token
 - `Slab`: 3D polygon footprint, thickness, and level
 - `Ceiling`: 3D polygon footprint, optional thickness, and level
 - `Opening`: host reference, type, oriented pose, and size
 
 Geometry coordinates are authoritative. Level references provide semantic organization and hosting; they do not replace explicit 3D coordinates.
+
+### Wall construction
+
+`Wall.construction` is an optional closed-vocabulary token describing how the wall is built:
+
+- `framed`: stud or partition framing
+- `masonry`: CMU or brick
+- `concrete`: cast or tilt-up
+- `glazed`: glass partition, storefront, or curtain wall
+
+The token is validated when a `Wall` is constructed and when a document is loaded; any other value is a `ContractError`. `None`/absent means unknown, which is the behaviour of every wall recorded before this field existed. Serialization omits the field when unknown, following the `Provenance.derivation` precedent, so all documents that predate it serialize byte-identically and `schema_version` stays `1.0.0`.
+
+The token is canonical rather than an `attributes` key because several workstreams need the same fact: routing cannot host a device on or drop into a glazed wall, IFC materializes glazing with a glass material, and GLB/drawings render it translucent or as glazing in plan. Per the `attributes` rule below, a fact multiple workstreams need semantically belongs in the contract. Finer subtypes such as storefront versus interior glass partition remain source-specific detail and stay in `attributes`.
+
+A `construction` value derived from a drawing style carries provenance and confidence like any other claim. When the token is assumed rather than observed, its provenance record is scoped with `scope_paths=("construction",)`.
 
 ## Electrical entities and ports
 

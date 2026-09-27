@@ -956,3 +956,130 @@ def test_non_importer_errors_are_not_swallowed() -> None:
 
     with pytest.raises(RuntimeError):
         select_device_pages(_same_panel_on_two_sheets(), importer=_BrokenImporter())
+
+
+# --- #219: title block first, separators, callout boundaries -----------------
+
+
+def _identity_document(*texts: tuple[str, float, float, float]) -> PdfElectricalDocument:
+    """One 612 x 792 page whose texts are `(text, x_pt, y_pt, font_size_pt)`."""
+
+    observations = tuple(
+        PdfTextObservation(
+            element_id=f"p1:text:{index}",
+            page=1,
+            text=text,
+            x_pt=x_pt,
+            y_pt=y_pt,
+            font_size_pt=size,
+        )
+        for index, (text, x_pt, y_pt, size) in enumerate(texts)
+    )
+    return PdfElectricalDocument(
+        source_id="synthetic:sheet-identity-219",
+        page_count=1,
+        texts=observations,
+        page_provenance={
+            1: {
+                "page_rotation": 0,
+                "displayed_page_width_pt": 612.0,
+                "displayed_page_height_pt": 792.0,
+                "coordinate_space": "displayed",
+            }
+        },
+    )
+
+
+def test_large_sheet_number_beats_repeated_small_references() -> None:
+    # The sheet's own number printed large once in the sheet-number cell; a
+    # neighbouring sheet's number printed small three times along the same
+    # border. Frequency must not outvote the large one.
+    document = _identity_document(
+        ("E-2.1", 560.0, 40.0, 20.0),
+        ("SEE E-3.1", 560.0, 700.0, 10.0),
+        ("SEE E-3.1", 560.0, 600.0, 10.0),
+        ("SEE E-3.1", 560.0, 500.0, 10.0),
+    )
+
+    assert sheet_identity(document, 1) == ("E-2.1", "electrical")
+
+
+def test_small_repeated_number_wins_when_no_candidate_is_clearly_largest() -> None:
+    # A 1.2x height advantage is under the clear-winner ratio, so the choice
+    # falls back to frequency: three small references outvote one medium one.
+    document = _identity_document(
+        ("E-2.1", 560.0, 40.0, 12.0),
+        ("SEE E-3.1", 560.0, 700.0, 10.0),
+        ("SEE E-3.1", 560.0, 600.0, 10.0),
+        ("SEE E-3.1", 560.0, 500.0, 10.0),
+    )
+
+    assert sheet_identity(document, 1) == ("E-3.1", "electrical")
+
+
+def test_height_preference_counts_only_the_title_block_band() -> None:
+    # A large drawing-area note is not the sheet-number cell: the small
+    # candidate inside the band is, and frequency decides between equals
+    # inside the band.
+    document = _identity_document(
+        ("SEE E-3.1", 560.0, 40.0, 10.0),
+        ("SEE E-3.1", 560.0, 700.0, 10.0),
+        ("SEE E-3.1", 560.0, 600.0, 10.0),
+        ("E-2.1", 200.0, 400.0, 24.0),
+    )
+
+    assert sheet_identity(document, 1) == ("E-3.1", "electrical")
+
+
+def test_dotted_numbers_recognised_without_hyphen_separators() -> None:
+    for text in ("E2.1", "E 2.1", "E–2.1", "E—2.1"):
+        document = _identity_document((text, 560.0, 40.0, 10.0))
+        assert sheet_identity(document, 1) == ("E-2.1", "electrical"), text
+
+
+def test_undotted_tokens_still_need_a_hyphen_separator() -> None:
+    # The dot is what keeps unseparated and space-separated tokens apart from
+    # grid bubbles and device tags, so bare `E110` and `E 1` stay non-ids.
+    for text in ("E110", "E 1", "A1", "P1"):
+        document = _identity_document((text, 560.0, 40.0, 10.0))
+        assert sheet_identity(document, 1) == (None, "unknown"), text
+
+
+def test_comma_and_slash_callouts_are_not_sheet_ids() -> None:
+    for text in ("A-1,3", "P-1/12", "SEE A-1,3", "DETAIL 3/A-1", "E-2,1"):
+        document = _identity_document((text, 560.0, 40.0, 10.0))
+        assert sheet_identity(document, 1) == (None, "unknown"), text
+
+
+def test_sentence_comma_after_the_id_still_reads() -> None:
+    document = _identity_document(("SHEET E-2.1, NOTE 3", 560.0, 40.0, 10.0))
+
+    assert sheet_identity(document, 1) == ("E-2.1", "electrical")
+
+
+def test_non_standard_prefix_stays_unknown_unless_a_band_word_decides() -> None:
+    document = _identity_document(("PP-1.0", 560.0, 40.0, 10.0))
+    assert sheet_identity(document, 1) == (None, "unknown")
+
+    with_word = _identity_document(
+        ("PP-1.0", 560.0, 40.0, 10.0),
+        ("ELECTRICAL", 560.0, 30.0, 10.0),
+    )
+    assert sheet_identity(with_word, 1) == (None, "electrical")
+
+
+def test_dotted_sheet_id_is_not_a_device_tag() -> None:
+    assert _looks_tag_like("E2.1") is False
+    assert _looks_tag_like("E-2.1") is False
+    assert _looks_tag_like("LF-1") is True
+
+
+def test_sheet_identity_choice_is_deterministic() -> None:
+    document = _identity_document(
+        ("E-2.1", 560.0, 40.0, 20.0),
+        ("SEE E-3.1", 560.0, 700.0, 10.0),
+        ("SEE E-3.1", 560.0, 600.0, 10.0),
+        ("SEE E-3.1", 560.0, 500.0, 10.0),
+    )
+
+    assert sheet_identity(document, 1) == sheet_identity(document, 1)

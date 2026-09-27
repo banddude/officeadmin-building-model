@@ -82,8 +82,9 @@ custom properties.
 
 `dimmed_ids` lists canonical device, equipment or route ids to draw in a grey
 translucent style; `dimmed_color` (default grey) and `dimmed_alpha` (default
-0.3) shape that style. The caller decides which ids to dim and why; the
-exporter attaches no meaning to the choice and only draws the style.
+0.3) shape that style. Glazed walls are the one wall kind it reaches, and for
+them only the alpha applies (below). The caller decides which ids to dim and
+why; the exporter attaches no meaning to the choice and only draws the style.
 Dimmed entities get a `"<class>-dimmed"` BLEND material and
 `extras["display"] = "dimmed (caller-supplied)"`; the dimmed style also wins
 over the low-voltage colour below. Ids that match nothing are ignored, and
@@ -128,6 +129,29 @@ extension with `"visible": false`, which hides the node and its whole
 subtree in supporting viewers (Blender, three.js). The extension is listed
 in `extensionsUsed` and never in `extensionsRequired`, so a viewer without
 it still loads the file and simply shows the group — one click to hide.
+
+### Wall construction token
+
+A wall's canonical `construction` token (`framed`, `masonry`, `concrete`,
+`glazed`) travels as `extras["construction"]` on both the wall's node and its
+mesh, so it shows among Blender's custom properties either way. Walls without
+a token gain nothing: with no tokens anywhere the export is byte-identical to
+the plain one.
+
+Glazed walls draw with one shared deterministic glass material, `wall-glazed`:
+a light blue-grey base colour, alpha 0.35 with `alphaMode: "BLEND"`,
+`doubleSided: true`, metallic 0 and roughness 0.05, so the glazing reads as
+glass from both sides. Every glazed wall shares the one material regardless
+of provenance — a derived glazed wall stays exactly as translucent as other
+generated geometry and discloses its derivation in `extras["derivation"]`.
+Walls with any other token keep the standard wall material and only gain the
+extras token.
+
+A glazed wall the caller dims keeps its glass look: the effective alpha is
+`min(0.35, dimmed_alpha)`, so dimming can only make the glass more
+translucent, never more opaque or grey, and the material is named
+`wall-glazed-dimmed`. The wall counts in the `dimmed` summary like every
+other dimmed entity. Walls without the glazed token are not dimmable.
 
 ### Low-voltage device colour
 

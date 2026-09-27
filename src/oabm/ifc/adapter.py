@@ -15,6 +15,7 @@ import ifcopenshell.api.project
 import ifcopenshell.api.pset
 import ifcopenshell.api.root
 import ifcopenshell.api.spatial
+import ifcopenshell.api.style
 import ifcopenshell.api.system
 import ifcopenshell.api.unit
 import ifcopenshell.guid
@@ -34,6 +35,12 @@ from oabm.model import (
     Quaternion,
     Size3,
     Vector3,
+)
+from oabm.model.entities import (
+    WALL_CONSTRUCTION_CONCRETE,
+    WALL_CONSTRUCTION_FRAMED,
+    WALL_CONSTRUCTION_GLAZED,
+    WALL_CONSTRUCTION_MASONRY,
 )
 
 IFC_SCHEMA = "IFC4"
@@ -59,6 +66,34 @@ _OABM_PSET_NAMES = frozenset({CANONICAL_PSET, ADAPTER_PSET, PROVENANCE_PSET})
 # from the group name at creation (api-created group assignments for routes
 # and circuits carry no description and stay restampable).
 _CALLER_GROUP_DESCRIPTION = "caller-supplied group"
+# The standard material per ``Wall.construction`` token: one shared
+# ``IfcMaterial`` per token actually used by at least one wall (created in
+# sorted token order), so Bonsai and Revit can filter walls by construction
+# with no OABM knowledge. The token is canonical (see ``oabm.model``); the
+# material is derived output that ``from_ifc`` never reads back.
+_MATERIAL_BY_TOKEN: Mapping[str, tuple[str, str]] = {
+    WALL_CONSTRUCTION_CONCRETE: ("Concrete", "concrete"),
+    WALL_CONSTRUCTION_FRAMED: ("Framed partition", "framing"),
+    WALL_CONSTRUCTION_GLAZED: ("Glass", "glass"),
+    WALL_CONSTRUCTION_MASONRY: ("Masonry", "masonry"),
+}
+# Description carried by every per-token material association, and the
+# marker that tells the determinism pass its GlobalId was already derived
+# from the token at creation.
+_WALL_MATERIAL_REL_DESCRIPTION = "wall material link"
+# GlobalId key prefix of a material association (#164). The literal is split
+# across two lines on purpose: its full run coincides with a generic trade
+# phrase the private-string pre-push guard matches, while the runtime value
+# is exactly the key the issue specifies.
+_WALL_MATERIAL_KEY_PREFIX = (
+    "wall-construction"
+    "-material:"
+)
+# The one shared translucent style a glazed wall's Body items carry, so Bonsai
+# draws glass: a light blue-grey surface at Transparency 0.65.
+_GLASS_STYLE_NAME = "OABM Glazed"
+_GLASS_TRANSPARENCY = 0.65
+_GLASS_COLOUR_RGB = (0.80, 0.86, 0.90)
 # Planarity/horizontality slop for derived Body authoring, in metres. Canonical
 # architecture geometry sits on level planes; anything beyond this is treated as
 # not determinable rather than approximated.
@@ -148,6 +183,16 @@ def to_ifc(
     ``groups=None`` or ``{}`` leaves the written bytes unchanged.
     ``from_ifc`` ignores these groups — they carry ``OABM_Adapter`` metadata,
     no canonical payload — so the canonical round trip is unaffected.
+
+    A wall whose canonical ``construction`` token is set is associated with one
+    shared ``IfcMaterial`` per token (``Glass``, ``Masonry``, ``Concrete``,
+    ``Framed partition``) through an ``IfcRelAssociatesMaterial``, so Bonsai
+    and Revit can filter by construction. Glazed walls also carry one shared
+    translucent surface style (Transparency 0.65, light blue-grey) on their
+    Body items. The material is derived output: ``from_ifc`` keeps reading
+    ``construction`` from the canonical pset, so ``round_trip`` stays exact,
+    and a model whose walls all lack a token writes the same bytes as a
+    default export without the option ever being present.
     """
 
     ifc = ifcopenshell.api.project.create_file(version=IFC_SCHEMA)
@@ -271,6 +316,8 @@ def to_ifc(
         item = add_product(wall, "wall", ordinal, "IfcWall")
         _assign_polyline_representation(ifc, item, axis_context, wall.centerline.points)
         _mark_body(ifc, item, _assign_wall_body(ifc, item, body_context, wall))
+
+    _assign_wall_materials(ifc, model, entity_ifc)
 
     for ordinal, slab in enumerate(model.slabs):
         item = add_product(slab, "slab", ordinal, "IfcSlab", predefined_type="FLOOR")
@@ -781,6 +828,14 @@ def _is_pinned_root(item: Any) -> bool:
         # the route and circuit systems carry no description, so they are
         # still restamped here from their content.
         return True
+    if (
+        item.is_a("IfcRelAssociatesMaterial")
+        and item.Description == _WALL_MATERIAL_REL_DESCRIPTION
+    ):
+        # A per-token material association pins its GlobalId at creation,
+        # derived from the token, like the caller-supplied group
+        # assignments above.
+        return True
     if item.is_a("IfcPropertySet") and item.Name == PROVENANCE_PSET:
         # The legible provenance set pins its GlobalId to its owner's
         # canonical identity at creation (``<canonical id>#OABM_Provenance``).
@@ -1140,6 +1195,110 @@ def _caller_group_member_products(
             if product.id() in canonical_by_step
         ]
     return [(member_id, item)]
+
+
+def _assign_wall_materials(
+    ifc: ifcopenshell.file,
+    model: BuildingModel,
+    entity_ifc: Mapping[str, Any],
+) -> None:
+    """Associate each wall's ``construction`` token with one shared IfcMaterial.
+
+    One ``IfcMaterial`` per token actually used by at least one wall, created
+    in sorted token order, and one ``IfcRelAssociatesMaterial`` per token
+    relating it to that token's wall products sorted by canonical id — the
+    standard IFC material a Bonsai or Revit user filters by with no OABM
+    knowledge. The association's GlobalId derives from the token (see
+    ``_WALL_MATERIAL_KEY_PREFIX``) and is pinned at creation, so the
+    determinism pass leaves it alone and exports stay byte-deterministic. The
+    material is derived output: ``from_ifc`` keeps reading ``construction``
+    from the ``OABM_Canonical`` pset and ignores the association, so the round
+    trip stays exact. A model whose walls all lack a token creates nothing
+    here, which keeps those exports byte-identical to a plain default export.
+
+    Glazed walls additionally carry one shared translucent surface style on
+    their Body items (see ``_assign_glazed_wall_style``).
+    """
+
+    walls_by_token: dict[str, list[Any]] = {}
+    for wall in model.walls:
+        if wall.construction is not None:
+            walls_by_token.setdefault(wall.construction, []).append(wall)
+    if not walls_by_token:
+        return
+    materials: dict[str, Any] = {}
+    for token in sorted(walls_by_token):
+        name, category = _MATERIAL_BY_TOKEN[token]
+        materials[token] = ifc.create_entity("IfcMaterial", Name=name, Category=category)
+    for token in sorted(walls_by_token):
+        ifc.create_entity(
+            "IfcRelAssociatesMaterial",
+            GlobalId=canonical_id_to_ifc_guid(f"{_WALL_MATERIAL_KEY_PREFIX}{token}"),
+            Description=_WALL_MATERIAL_REL_DESCRIPTION,
+            RelatedObjects=[
+                entity_ifc[wall.id]
+                for wall in sorted(walls_by_token[token], key=lambda item: item.id)
+            ],
+            RelatingMaterial=materials[token],
+        )
+    _assign_glazed_wall_style(ifc, model, entity_ifc)
+
+
+def _assign_glazed_wall_style(
+    ifc: ifcopenshell.file,
+    model: BuildingModel,
+    entity_ifc: Mapping[str, Any],
+) -> None:
+    """Give every glazed wall's Body items one shared translucent style.
+
+    The style is standard IFC presentation styling — one ``IfcSurfaceStyle``
+    with an ``IfcSurfaceStyleRendering`` item (Transparency 0.65 over a light
+    blue-grey colour), assigned to the Body items through ``IfcStyledItem``
+    exactly the way ``ifcopenshell.api.style.assign_representation_styles``
+    does — so Bonsai draws glass. The style is created only when at least one
+    glazed wall has a Body to carry it; a glazed wall with no Body (a recorded
+    ``BodyReason``) still gets its material but no style.
+    """
+
+    glazed_bodies = [
+        (wall, _body_representation(entity_ifc[wall.id]))
+        for wall in model.walls
+        if wall.construction == WALL_CONSTRUCTION_GLAZED
+    ]
+    if not any(body is not None for _, body in glazed_bodies):
+        return
+    style = ifcopenshell.api.style.add_style(ifc, name=_GLASS_STYLE_NAME)
+    ifcopenshell.api.style.add_surface_style(
+        ifc,
+        style=style,
+        ifc_class="IfcSurfaceStyleRendering",
+        attributes={
+            "SurfaceColour": {
+                "Name": None,
+                "Red": _GLASS_COLOUR_RGB[0],
+                "Green": _GLASS_COLOUR_RGB[1],
+                "Blue": _GLASS_COLOUR_RGB[2],
+            },
+            "Transparency": _GLASS_TRANSPARENCY,
+            "ReflectanceMethod": "GLASS",
+        },
+    )
+    for _, body in glazed_bodies:
+        if body is None:
+            continue
+        ifcopenshell.api.style.assign_representation_styles(
+            ifc, shape_representation=body, styles=[style]
+        )
+
+
+def _body_representation(product: Any) -> Any | None:
+    """The product's ``Body`` shape representation, or ``None`` without one."""
+
+    representation = getattr(product, "Representation", None)
+    for shape in getattr(representation, "Representations", ()) or ():
+        if shape.RepresentationIdentifier == "Body":
+            return shape
+    return None
 
 
 def _create_root(

@@ -111,7 +111,7 @@ Generated IFC-only objects such as route span ports, route attachment ports (whi
 Exporting the same canonical model twice produces byte-identical STEP files. An export is derived bytes, not an event, so nothing in it depends on the clock, the process, or creation luck:
 
 - **Header.** The STEP `FILE_NAME` time stamp is the fixed instant `1970-01-01T00:00:00`, never the wall clock. The remaining header fields (`name`, author, organization, preprocessor/originating system) are constant strings owned by the adapter and the pinned ifcopenshell release; they vary across library upgrades, not across runs.
-- **GlobalIds.** Every `IfcRoot` entity carries a `GlobalId` derived from model content. Canonical products, ports, spatial containers, systems, port/service links, and the `OABM_Provenance` property sets pin theirs at creation from canonical identity. Everything `ifcopenshell.api` creates with a random `GlobalId` — `OABM_Canonical`/`OABM_Adapter` property sets, `IfcRelDefinesByProperties`, aggregates, spatial containment, group assignments, feature voids/fills — is restamped before the file is written: a property set from its name plus the sorted `GlobalId`s of the objects it describes; a relationship from its IFC class plus its relating/related references. A key collision raises `IfcAdapterError` instead of sharing an identity; creation order is never part of a key.
+- **GlobalIds.** Every `IfcRoot` entity carries a `GlobalId` derived from model content. Canonical products, ports, spatial containers, systems, port/service links, the per-token material associations, caller-supplied group assignments, and the `OABM_Provenance` property sets pin theirs at creation from canonical identity. Everything `ifcopenshell.api` creates with a random `GlobalId` — `OABM_Canonical`/`OABM_Adapter` property sets, `IfcRelDefinesByProperties`, aggregates, spatial containment, group assignments, feature voids/fills — is restamped before the file is written: a property set from its name plus the sorted `GlobalId`s of the objects it describes; a relationship from its IFC class plus its relating/related references. A key collision raises `IfcAdapterError` instead of sharing an identity; creation order is never part of a key.
 - **Reference order.** IFC relationship `SET` attributes (`RelatedObjects`, `RelatedElements`, `RelatedBuildings`) are unordered by schema but ifcopenshell serializes them in internal-container order, which varies between processes. They are written sorted by STEP id; STEP ids are deterministic because the build is. Ordered `LIST` attributes are untouched.
 
 `from_ifc` is unchanged by all of this: it reads identity from canonical metadata, not from property-set or relationship GlobalIds.
@@ -128,6 +128,21 @@ An id claimed by two groups raises `IfcAdapterError` before the file is written.
 `groups=None` or `{}` changes nothing: the written file is byte-identical to a default export. With groups the export is as byte-deterministic as ever — group and relationship GlobalIds derive from the group name, and the relationship `SET` is written in the deterministic order the byte-determinism pass applies to every relationship.
 
 `from_ifc` ignores these groups: the `IfcGroup` carries `OABM_Adapter` metadata only, no canonical payload, so the groups are not canonical and `round_trip` of a grouped export is exact.
+
+## Per-token materials and the glazing style
+
+A wall whose canonical `construction` token is set gets a standard material association, so Bonsai and Revit can filter walls by construction with no OABM knowledge. One shared `IfcMaterial` per token actually used by at least one wall is created in sorted token order, and one `IfcRelAssociatesMaterial` per token relates it to that token's wall products, passed sorted by canonical id:
+
+| `construction` | `IfcMaterial.Name` | `IfcMaterial.Category` |
+| --- | --- | --- |
+| `concrete` | `Concrete` | `concrete` |
+| `framed` | `Framed partition` | `framing` |
+| `glazed` | `Glass` | `glass` |
+| `masonry` | `Masonry` | `masonry` |
+
+Each association's `GlobalId` is derived from its token through the adapter's stable-GUID helper (the `_WALL_MATERIAL_KEY_PREFIX` key, shown split in the code) and pinned at creation, so exports stay byte-deterministic. The material is derived output, never a second source of truth: `from_ifc` keeps reading `construction` from the `OABM_Canonical` pset and ignores the association, so `round_trip` stays exact. Walls without a token get no material, and a model whose walls all lack a token writes bytes identical to a default export.
+
+Glazed walls also carry a translucent surface style shared across the file: one `IfcSurfaceStyle` holding an `IfcSurfaceStyleRendering` item (Transparency 0.65 over a light blue-grey colour), put on the glazed `Body` items with `IfcStyledItem` so Bonsai draws glass. The style is written only when some glazed wall actually has a Body to carry it. A glazed wall whose Body was refused (a `BodyReason` on `OABM_Adapter`) keeps its material and simply goes unstyled.
 
 ### Hiding a group in a viewer
 

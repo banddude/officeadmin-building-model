@@ -7,6 +7,7 @@ source observations.  Semantic interpretation remains in ``importer.py``.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from pathlib import Path
 from statistics import median
@@ -267,7 +268,9 @@ def _rect_edge_segments(
 
     The segment family stays ``rect`` so diagnostics can tell rectangle-derived
     wall evidence apart from drawn lines, and the layer rides along in
-    ``source_layers`` so wall-layer provenance is preserved.
+    ``source_layers`` so wall-layer provenance is preserved. A segment takes
+    its rectangle's stroke style when the rect observation carries one; rect
+    observations carry none yet, so the style stays unknown.
     """
 
     segments: list[PdfLineObservation] = []
@@ -286,6 +289,8 @@ def _rect_edge_segments(
                     primitive_family="rect",
                     filled=rect.filled,
                     source_layers=(rect.source_layer,) if rect.source_layer else (),
+                    line_width_pt=getattr(rect, "line_width_pt", None),
+                    stroke_gray=getattr(rect, "stroke_gray", None),
                 )
             )
     return tuple(sorted(segments, key=lambda item: (item.start_pt, item.end_pt)))
@@ -311,8 +316,78 @@ def _dash_present(value: object) -> bool:
     return bool(value)
 
 
+# Perceived luminance weights for a DeviceRGB stroking colour.
+_RGB_LUMINANCE = (0.299, 0.587, 0.114)
+
+
+def _stroke_gray(value: object) -> float | None:
+    """Luminance 0 (black) to 1 (white) of a PDF stroking colour.
+
+    DeviceGray is taken directly, DeviceRGB mixes 0.299/0.587/0.114, and
+    DeviceCMYK converts to RGB first (the PDF spec's 1-C etc. with K).
+    Pattern colours and anything unparseable stay unknown. Out-of-range
+    components are clipped, as the PDF spec requires of consumers. Rounded
+    to 4 decimals.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, list, tuple)):
+        return None
+    components = (
+        (float(value),) if isinstance(value, (int, float)) else tuple(float(item) for item in value)
+    )
+    if not components or any(not math.isfinite(item) for item in components):
+        return None
+    if len(components) == 1:
+        gray = components[0]
+    elif len(components) == 3:
+        gray = sum(weight * item for weight, item in zip(_RGB_LUMINANCE, components))
+    elif len(components) == 4:
+        c, m, y, k = components
+        rgb = ((1.0 - c) * (1.0 - k), (1.0 - m) * (1.0 - k), (1.0 - y) * (1.0 - k))
+        gray = sum(weight * item for weight, item in zip(_RGB_LUMINANCE, rgb))
+    else:
+        return None
+    return round(min(1.0, max(0.0, gray)), 4)
+
+
+def _line_width_pt(value: object) -> float | None:
+    """Displayed stroke width in points, rounded to 4 decimals.
+
+    pdfplumber (0.11.x) reports ``linewidth`` with the page CTM already
+    applied (a ``1 w`` line under a ``2 0 0 2`` scale reports 2.0), so the
+    displayed width is recorded as reported and is not rescaled again.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    width = float(value)
+    if not math.isfinite(width) or width < 0:
+        return None
+    return round(width, 4)
+
+
+def _merge_stroke(
+    kept: tuple[float | None, float | None],
+    new: tuple[float | None, float | None],
+) -> tuple[float | None, float | None]:
+    """Fold duplicate geometry styles: keep the MAX width and the MIN gray.
+
+    ``None`` (style unknown) never overrides a value seen for the same
+    geometry.
+    """
+
+    kept_width, kept_gray = kept
+    new_width, new_gray = new
+    widths = [item for item in (kept_width, new_width) if item is not None]
+    grays = [item for item in (kept_gray, new_gray) if item is not None]
+    return (max(widths) if widths else None, min(grays) if grays else None)
+
+
 def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple[PdfLineObservation, ...]:
-    evidence: dict[tuple[float, float, float, float], tuple[dict[str, object], set[str]]] = {}
+    evidence: dict[
+        tuple[float, float, float, float],
+        tuple[dict[str, object], set[str], float | None, float | None],
+    ] = {}
     for obj in lines:
         a = (round(float(obj["x0"]), 4), round(float(obj["y0"]), 4))
         b = (round(float(obj["x1"]), 4), round(float(obj["y1"]), 4))
@@ -321,13 +396,16 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
         start, end = sorted((a, b))
         signature_tuple = (start[0], start[1], end[0], end[1])
         layer = obj.get("_oabm_source_layer")
+        stroke = (_line_width_pt(obj.get("linewidth")), _stroke_gray(obj.get("stroking_color")))
         if signature_tuple in evidence:
+            kept_obj, source_layers, kept_stroke = evidence[signature_tuple]
             if isinstance(layer, str) and layer:
-                evidence[signature_tuple][1].add(layer)
+                source_layers.add(layer)
+            evidence[signature_tuple] = (kept_obj, source_layers, _merge_stroke(kept_stroke, stroke))
             continue
-        evidence[signature_tuple] = (obj, {layer} if isinstance(layer, str) and layer else set())
+        evidence[signature_tuple] = (obj, {layer} if isinstance(layer, str) and layer else set(), stroke)
     result: list[PdfLineObservation] = []
-    for signature_tuple, (obj, source_layers) in evidence.items():
+    for signature_tuple, (obj, source_layers, (line_width_pt, stroke_gray)) in evidence.items():
         start = (signature_tuple[0], signature_tuple[1])
         end = (signature_tuple[2], signature_tuple[3])
         signature = "|".join(f"{value:.4f}" for value in signature_tuple)
@@ -342,6 +420,8 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
                 dashed=bool(obj.get("_oabm_dashed", False)),
                 filled=bool(obj.get("_oabm_filled", False)),
                 source_layers=tuple(sorted(source_layers)),
+                line_width_pt=line_width_pt,
+                stroke_gray=stroke_gray,
             )
         )
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
@@ -402,6 +482,10 @@ def _curve_polyline_segments(
                 "_oabm_dashed": dashed,
                 "_oabm_filled": filled,
                 "_oabm_source_layer": curve.get("_oabm_source_layer"),
+                # Stroke style rides along so _unique_lines merges curve
+                # segments exactly like drawn lines.
+                "linewidth": curve.get("linewidth"),
+                "stroking_color": curve.get("stroking_color"),
             }
             if isinstance(curve.get("mcid"), int):
                 segment["mcid"] = curve["mcid"]

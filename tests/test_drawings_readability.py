@@ -21,7 +21,10 @@ from oabm.drawings import (
     generate_elevation,
     generate_plan,
     generate_section,
+    paper_text_height_m,
+    view_to_svg,
 )
+from oabm.drawings.generator import _LABEL_TEXT_HEIGHT_PAPER_M
 from oabm.model import BuildingModel, ElectricalDevice, Level, Opening, Point3, Polyline3D, Pose, Size3, Vector3, Wall
 
 WALL_LENGTH = 3.188208
@@ -241,3 +244,35 @@ def test_generation_is_deterministic_under_both_options() -> None:
         ).to_json()
 
     assert run() == run()
+
+
+def test_svg_without_text_height_matches_the_default_byte_for_byte() -> None:
+    view = generate_plan(_model(), _plan_spec())
+    default = view_to_svg(view)
+    assert default == view_to_svg(view, text_height_m=None)
+    assert "font-size" not in default
+
+
+def test_svg_text_height_sizes_every_label_and_dimension_text() -> None:
+    view = generate_plan(_model(), _plan_spec())
+    svg = view_to_svg(view, pixels_per_model_unit=40, text_height_m=0.125)
+    texts = [line.strip() for line in svg.splitlines() if line.strip().startswith("<text")]
+    assert texts
+    assert all('font-size="5"' in text for text in texts)
+    assert svg.count("font-size") == len(texts)
+    assert svg == view_to_svg(view, pixels_per_model_unit=40, text_height_m=0.125)
+    paired = view_to_svg(view, pixels_per_model_unit=40, text_height_m=paper_text_height_m(_plan_spec().scale))
+    assert paired == svg
+
+
+def test_paper_text_height_m_matches_the_label_overlap_estimate() -> None:
+    assert paper_text_height_m(50) == 0.125
+    assert paper_text_height_m(50) == _LABEL_TEXT_HEIGHT_PAPER_M * 50
+    assert paper_text_height_m(40, paper_height_m=0.005) == 0.2
+
+
+@pytest.mark.parametrize("height", [0, 0.0, -0.125])
+def test_svg_rejects_non_positive_text_height(height) -> None:
+    view = generate_plan(_model(), _plan_spec())
+    with pytest.raises(ValueError):
+        view_to_svg(view, text_height_m=height)

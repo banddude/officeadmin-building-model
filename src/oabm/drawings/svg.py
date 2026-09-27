@@ -3,15 +3,31 @@ from __future__ import annotations
 import html
 from collections import defaultdict
 
+from .generator import _LABEL_TEXT_HEIGHT_PAPER_M
 from .model import DrawingDimension, DrawingPrimitive, DrawingView, Point2
 
 
-def view_to_svg(view: DrawingView, *, pixels_per_model_unit: float = 100.0) -> str:
+def view_to_svg(
+    view: DrawingView,
+    *,
+    pixels_per_model_unit: float = 100.0,
+    text_height_m: float | None = None,
+) -> str:
     """Serialize a view to deterministic SVG for inspection/export.
 
     SVG carries canonical source IDs in ``data-source-ids``; it is a presentation
     artifact and is intentionally not parseable back into the canonical model.
+
+    ``text_height_m`` is the annotated text height in model units, typically
+    ``paper_text_height_m(view scale)`` so rendered labels match the
+    label-overlap estimate. It sizes every label and dimension ``<text>`` via
+    ``font-size`` in pixels (``text_height_m * pixels_per_model_unit``); the
+    default ``None`` writes no ``font-size`` and keeps the output byte-identical
+    to the previous serializer.
     """
+    if text_height_m is not None and text_height_m <= 0:
+        raise ValueError("text_height_m must be > 0 when provided")
+    font_size = None if text_height_m is None else _fmt(text_height_m * pixels_per_model_unit)
     width = view.bounds.width * pixels_per_model_unit
     height = view.bounds.height * pixels_per_model_unit
     layers: dict[str, list[DrawingPrimitive]] = defaultdict(list)
@@ -26,18 +42,31 @@ def view_to_svg(view: DrawingView, *, pixels_per_model_unit: float = 100.0) -> s
     for layer in sorted(layers):
         lines.append(f'  <g id="{html.escape(layer)}">')
         for primitive in sorted(layers[layer], key=lambda item: item.id):
-            lines.append("    " + _primitive_svg(primitive, view, pixels_per_model_unit))
+            lines.append("    " + _primitive_svg(primitive, view, pixels_per_model_unit, font_size))
         lines.append("  </g>")
     if view.dimensions:
         lines.append('  <g id="dimensions">')
         for dimension in sorted(view.dimensions, key=lambda item: item.id):
-            lines.extend("    " + item for item in _dimension_svg(dimension, view, pixels_per_model_unit))
+            lines.extend("    " + item for item in _dimension_svg(dimension, view, pixels_per_model_unit, font_size))
         lines.append("  </g>")
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
 
 
-def _primitive_svg(primitive: DrawingPrimitive, view: DrawingView, ppu: float) -> str:
+def paper_text_height_m(scale: float, paper_height_m: float = _LABEL_TEXT_HEIGHT_PAPER_M) -> float:
+    """Annotated text height in model units at view scale ``1:scale``.
+
+    The default paper height is the same 2.5 mm annotated text height the
+    label-overlap estimate uses (``generator._LABEL_TEXT_HEIGHT_PAPER_M``),
+    imported rather than restated so the two cannot drift. Pair it with
+    ``view_to_svg`` to make rendered text match that estimate::
+
+        view_to_svg(view, pixels_per_model_unit=ppu, text_height_m=paper_text_height_m(spec.scale))
+    """
+    return paper_height_m * scale
+
+
+def _primitive_svg(primitive: DrawingPrimitive, view: DrawingView, ppu: float, font_size: str | None) -> str:
     attrs = _attrs(primitive)
     if primitive.kind in {"line", "polyline", "polygon"}:
         points = " ".join(_svg_point(point, view, ppu) for point in primitive.points)
@@ -47,14 +76,15 @@ def _primitive_svg(primitive: DrawingPrimitive, view: DrawingView, ppu: float) -
     anchor = _svg_point(primitive.points[0], view, ppu)
     x, y = anchor.split(",")
     if primitive.kind == "text":
-        return f'<text id="{primitive.id}" x="{x}" y="{y}" {attrs}>{html.escape(primitive.text or "")}</text>'
+        size = "" if font_size is None else f'font-size="{font_size}" '
+        return f'<text id="{primitive.id}" x="{x}" y="{y}" {size}{attrs}>{html.escape(primitive.text or "")}</text>'
     if primitive.kind == "symbol":
         token = html.escape(primitive.symbol or "")
         return f'<g id="{primitive.id}" transform="translate({x} {y})" data-symbol="{token}" {attrs}><circle r="4" fill="none" stroke="currentColor"/><path d="M-4 0H4M0-4V4" stroke="currentColor"/></g>'
     raise ValueError(f"unsupported primitive kind {primitive.kind!r}")
 
 
-def _dimension_svg(dimension: DrawingDimension, view: DrawingView, ppu: float) -> list[str]:
+def _dimension_svg(dimension: DrawingDimension, view: DrawingView, ppu: float, font_size: str | None) -> list[str]:
     a = _offset_point(dimension.start, dimension.end, dimension.offset_m)
     b = _offset_point(dimension.end, dimension.start, -dimension.offset_m)
     ax, ay = _svg_point(a, view, ppu).split(",")
@@ -62,9 +92,10 @@ def _dimension_svg(dimension: DrawingDimension, view: DrawingView, ppu: float) -
     mx = (float(ax) + float(bx)) / 2.0
     my = (float(ay) + float(by)) / 2.0
     source_ids = html.escape(" ".join(dimension.source_ids))
+    size = "" if font_size is None else f'font-size="{font_size}" '
     return [
         f'<line id="{dimension.id}" x1="{ax}" y1="{ay}" x2="{bx}" y2="{by}" stroke="currentColor" data-source-ids="{source_ids}"/>',
-        f'<text x="{_fmt(mx)}" y="{_fmt(my)}" text-anchor="middle" data-dimension-id="{dimension.id}">{html.escape(dimension.text)}</text>',
+        f'<text x="{_fmt(mx)}" y="{_fmt(my)}" text-anchor="middle" {size}data-dimension-id="{dimension.id}">{html.escape(dimension.text)}</text>',
     ]
 
 

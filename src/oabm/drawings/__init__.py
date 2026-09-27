@@ -32,7 +32,7 @@ from .model import (
     SourceReference,
 )
 from .projection import ProjectionFrame, clip_polygon, clip_polyline, clip_segment, frame_from_view_direction
-from .svg import view_to_svg
+from .svg import paper_text_height_m, view_to_svg
 
 __all__ = [
     "OUTPUT_VERSION",
@@ -67,5 +67,6 @@ __all__ = [
     "generate_plan",
     "generate_schedules",
     "generate_section",
+    "paper_text_height_m",
     "view_to_svg",
 ]

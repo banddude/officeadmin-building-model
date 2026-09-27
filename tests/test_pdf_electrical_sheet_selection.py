@@ -426,10 +426,10 @@ def test_notes_naming_another_trade_do_not_decide_the_discipline() -> None:
         (f"note{index}", text, 72.0, 700.0 - 20.0 * index)
         for index, text in enumerate(
             (
-                "COORDINATE ALL MECHANICAL EQUIPMENT LOCATIONS.",
-                "SEE MECHANICAL DRAWINGS FOR UNIT SIZES.",
-                "MECHANICAL CONTRACTOR TO PROVIDE DISCONNECTS.",
-                "VERIFY MECHANICAL LOADS BEFORE ROUGH-IN.",
+                "MECHANICAL PLACEHOLDER NOTE ALPHA",
+                "MECHANICAL PLACEHOLDER NOTE BRAVO",
+                "MECHANICAL PLACEHOLDER NOTE CHARLIE",
+                "MECHANICAL PLACEHOLDER NOTE DELTA",
             )
         )
     )

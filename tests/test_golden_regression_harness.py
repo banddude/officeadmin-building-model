@@ -35,6 +35,7 @@ EXPECTED_VALID_CASES = {
     "impossible-route",
     "two-level-building",
     "synthetic-garage",
+    "commercial-ti-alternates",
 }
 
 

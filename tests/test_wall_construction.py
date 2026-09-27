@@ -111,9 +111,9 @@ def test_every_checked_in_model_document_serializes_byte_identically() -> None:
     checked = 0
     for fixture in model_fixtures:
         model = BuildingModel.from_json(fixture.read_text(encoding="utf-8"))
-        # No checked-in document sets the field, so no serialization may grow
-        # a "construction" key, and the canonical bytes match the digests
-        # recorded before the field existed.
+        # No checked-in contract document sets the field, so no serialization
+        # may grow a "construction" key, and the canonical bytes match the
+        # digests recorded before the field existed.
         assert "construction" not in canonical_json(model)
         assert canonical_digest(model) == MODEL_FIXTURE_DIGESTS[fixture.name]
         assert BuildingModel.from_dict(model.to_dict()).to_dict() == model.to_dict()
@@ -121,7 +121,18 @@ def test_every_checked_in_model_document_serializes_byte_identically() -> None:
     for case in valid_golden:
         model = load_golden_model(case)
         assert canonical_digest(model) == case.sha256
-        assert "construction" not in canonical_json(model)
+        # Golden fixtures may state tokens (the commercial TI does); the
+        # contract rule under test stays: an unknown token serializes nothing,
+        # a stated one round trips verbatim.
+        for encoded_wall in json.loads(canonical_json(model))["walls"]:
+            if encoded_wall.get("construction") is None:
+                assert "construction" not in encoded_wall
+            else:
+                assert encoded_wall["construction"] == next(
+                    wall.construction
+                    for wall in model.walls
+                    if wall.id == encoded_wall["id"]
+                )
         checked += 1
     assert checked == len(model_fixtures) + len(valid_golden) > 0
 

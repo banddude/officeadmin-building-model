@@ -210,6 +210,54 @@
       "valid": true
     },
     {
+      "expectations": {
+        "entity_counts": {
+          "circuits": 3,
+          "conductors": 9,
+          "electrical_devices": 10,
+          "electrical_equipment": 1,
+          "levels": 1,
+          "ports": 18,
+          "route_fittings": 10,
+          "routes": 8,
+          "spaces": 3,
+          "walls": 8
+        },
+        "level_elevations_m": [
+          0.0
+        ],
+        "model_id": "model:golden-commercial-ti-alternates",
+        "required_ids": [
+          "space:ti-open",
+          "wall:ti-south",
+          "wall:ti-conf-glass",
+          "wall:ti-lobby",
+          "equip:ti-panel",
+          "device:ti-rec-a1",
+          "device:ti-rec-a2",
+          "device:ti-lum-a1",
+          "route:ti-r8",
+          "circuit:ti-alt-1",
+          "conductor:ti-c3-l1"
+        ],
+        "route_expected": true,
+        "route_ids": [
+          "route:ti-r1",
+          "route:ti-r2",
+          "route:ti-r3",
+          "route:ti-r4",
+          "route:ti-r5",
+          "route:ti-r6",
+          "route:ti-r7",
+          "route:ti-r8"
+        ]
+      },
+      "file": "commercial-ti-alternates.json",
+      "name": "commercial-ti-alternates",
+      "sha256": "13f22db76dd05071ddbd0d1a63a8a7a75bef446023153634b2ffeffe0ffcd492",
+      "valid": true
+    },
+    {
       "error_contains": "references missing id",
       "file": "invalid/missing-reference.json",
       "name": "invalid-missing-reference",

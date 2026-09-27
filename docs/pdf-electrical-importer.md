@@ -702,3 +702,78 @@ is excluded as `unknown_discipline_with_devices` so it is surfaced rather than
 silently used; any other discipline is excluded as `<discipline>_sheet`. The
 module reads only extracted observations and the importer's output and never
 changes importer behaviour; default import output stays byte-identical.
+
+### Cross-discipline sheets and page type filters
+
+An item the electrical side owns is sometimes printed only within another
+trade's package; duct-mounted smoke detection shown with the mechanical work
+is the standard example. It may be counted from that sheet only when the
+electrical legend claims the type. A symbol on a foreign sheet alone is never
+scope.
+
+Duct smoke detectors have their own canonical type `duct_smoke_detector`
+(aliases `DSD`, `DUCT DETECTOR`, and `DUCT SMOKE DETECTOR`). The rule sits
+before the generic smoke rules, so a duct detector is never typed as a
+`smoke_alarm` or `smoke_co_alarm`.
+
+The printed sheet number carries the discipline, and the lane has exactly one
+definition of it: `sheet_selection.sheet_identity(document, page)` (see
+Device-sheet selection above). A page is an electrical sheet when
+`sheet_identity(document, page)[1] == "electrical"`: an `E-`, `EL-` or
+`ELEC-` sheet number such as `E-1` or `E-2.1`, or, when no sheet number is
+printed, an electrical discipline word inside the title-block band. Fixture,
+panel and keynote tags (`LF-1`, `HP-E-3`) and project numbers never qualify.
+`printed_sheet_ids(document)` is a thin wrapper that maps each page with a
+printed sheet id to the id `sheet_identity` chose.
+
+`electrical_scope_types(document)` reads the electrical legend's scope from
+those electrical sheets. Every text row on an electrical sheet is classified
+with the default symbol rules used for legend rows. An unambiguous row adds
+its canonical type to `defined`. A defined type also joins
+`cross_discipline` when the row's own text names the electrical side as
+responsible. The documented phrase list:
+
+- `WIRED BY E` (also with `E.C.` or `EC` after it)
+- `BY ELECTRICAL`
+- `BY E.C.` / `BY EC` (a bare `BY E` matches too)
+- the contractor-name phrase, matched as `ELECTRICAL\s+CONTRACTOR`
+- `FURNISHED BY M`, `MECH`, or `MECHANICAL`, paired with
+  `INSTALLED BY E`; the furnished half alone never claims electrical scope
+
+`cross_discipline` also always includes `CROSS_DISCIPLINE_DEFAULT_TYPES`,
+which starts as `{"duct_smoke_detector"}`. A row that ties between two types
+defines neither. The function returns an `ElectricalScopeTypes(defined,
+cross_discipline)` pair and never changes import output by itself.
+
+`ElectricalPdfImporter.import_document(..., page_type_filters=...)` is the
+opt-in consumer. The mapping keys are 1-based page indices and the values are
+sets of canonical types. On a listed page, only entities whose canonical type
+is in that page's set are imported; each kept entity gains
+`attributes.pdf_electrical.cross_discipline_sheet` (the sheet id
+`sheet_identity` chose for the page, or the page number when none is printed), its confidence is capped at
+`CROSS_DISCIPLINE_MAX_CONFIDENCE` (0.6), and it gains one `inferred`
+provenance record (`cross-discipline-page-filter`, source element
+`p<page>:page-type-filter`, because the sheet id is a page-level vote rather
+than one text element) recording the filter. An
+entity dropped by the filter is retained as explicit evidence under
+`unresolved_observations` with status `excluded_by_page_type_filter`, so a
+filtered sheet never silently loses recognized devices. Unlisted pages behave
+exactly as before, and `None` or `{}` produces byte-identical output.
+
+Composition is a caller-side step; there is no automatic wiring. Identify the
+non-electrical pages with `sheet_identity`, read the electrical legend's
+claim with `electrical_scope_types`, and pass the cross-discipline types for
+each page of another known discipline (pages of `unknown` discipline are left
+unfiltered):
+
+```python
+scope = electrical_scope_types(document)
+filters = {
+    page: scope.cross_discipline
+    for page in range(1, document.page_count + 1)
+    if sheet_identity(document, page)[1] not in {"electrical", "unknown"}
+}
+model = ElectricalPdfImporter().import_document(
+    document, page_type_filters=filters
+)
+```

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from oabm.model import (
     BuildingModel,
@@ -67,23 +67,32 @@ class QuantityItem:
     provenance: tuple[Provenance, ...]
     confidence: float
     assembly_key: str | None = None
+    #: Caller-supplied bid group this line belongs to (for example
+    #: ``"ALTERNATES"``); ``None`` is the ungrouped base.  Set only when the
+    #: caller supplied ``groups`` to :func:`extract_quantities`.
+    group: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         design_status, geometry_status, placement_status = _provenance_statuses(self.provenance)
-        return {
+        item: dict[str, object] = {
             "category": self.category,
             "item_type": self.item_type,
             "quantity": self.quantity,
             "unit": self.unit,
             "variant": {key: value for key, value in self.variant},
             "source_entity_ids": list(self.source_entity_ids),
-            "provenance": [asdict(item) for item in self.provenance],
+            "provenance": [asdict(entry) for entry in self.provenance],
             "design_status": design_status,
             "geometry_status": geometry_status,
             "placement_status": placement_status,
             "confidence": self.confidence,
             "assembly_key": self.assembly_key,
         }
+        # Emitted only for grouped lines, so the default output stays
+        # byte-identical to the plain takeoff.
+        if self.group is not None:
+            item["group"] = self.group
+        return item
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,15 +102,30 @@ class TakeoffReport:
     warnings: tuple[QuantityWarning, ...] = ()
     length_unit: str = LENGTH_UNIT
     count_unit: str = COUNT_UNIT
+    #: Sorted ``(name, matched_entity_count, item_line_count)`` triples, one
+    #: per caller-supplied group; ``None`` when no groups were supplied.
+    group_summary: tuple[tuple[str, int, int], ...] | None = None
+    #: Distinct group ids that matched no quantity-bearing entity.  Always 0
+    #: when no groups were supplied.
+    unmatched_group_ids: int = 0
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        report: dict[str, object] = {
             "model_id": self.model_id,
             "length_unit": self.length_unit,
             "count_unit": self.count_unit,
             "items": [item.to_dict() for item in self.items],
             "warnings": [warning.to_dict() for warning in self.warnings],
         }
+        # Emitted only when groups were supplied, so the default output stays
+        # byte-identical to the plain takeoff.
+        if self.group_summary is not None:
+            report["groups"] = {
+                name: {"entities": entity_count, "items": item_count}
+                for name, entity_count, item_count in self.group_summary
+            }
+            report["unmatched_group_ids"] = self.unmatched_group_ids
+        return report
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=True, allow_nan=False)
@@ -118,12 +142,14 @@ class _Contribution:
     provenance: tuple[Provenance, ...]
     confidence: float
     assembly_key: str | None
+    group: str | None
 
 
 def extract_quantities(
     model: BuildingModel,
     *,
     assembly_resolver: AssemblyResolver | None = None,
+    groups: Mapping[str, Iterable[str]] | None = None,
 ) -> TakeoffReport:
     """Derive deterministic install quantities from canonical semantic objects.
 
@@ -135,6 +161,22 @@ def extract_quantities(
     An optional ``assembly_resolver`` may map a derived category + canonical
     entity to a downstream assembly key without storing estimating semantics in
     the canonical model.
+
+    An optional ``groups`` mapping splits the takeoff lines by caller-supplied
+    bid groups (for example ``{"ALTERNATES": [...]}``): group name to the
+    canonical entity ids in it — devices, equipment, routes, route fittings,
+    conductors.  The caller decides membership; quantities never merge a group
+    into the base bid.  Devices, equipment and routes belong to the group that
+    names them.  A route fitting belongs to the group that names it, otherwise
+    to its route's group.  A conductor contribution over one route belongs to
+    the group that names the conductor, otherwise to that route's group, so a
+    conductor over routes in different groups is split per route contribution.
+    Anything unlisted stays in the ungrouped base (``group=None``), and group
+    is part of the aggregation key, so the same item type in the base and in a
+    group yields separate lines — base lines first, then groups sorted by
+    name.  An id may belong to at most one group (``ValueError`` otherwise);
+    ids that match nothing are ignored and counted in the report.  Without
+    ``groups`` the report is byte-identical to the plain takeoff.
     """
 
     if not isinstance(model, BuildingModel):
@@ -144,6 +186,18 @@ def extract_quantities(
     # when callers construct or deserialize models outside this workstream.
     validate_model(model)
     _validate_no_duplicate_references(model)
+
+    group_owner, supplied_group_names = _group_ownership(groups)
+    groupable_ids = {
+        *(route.id for route in model.routes),
+        *(fitting.id for fitting in model.route_fittings),
+        *(conductor.id for conductor in model.conductors),
+        *(device.id for device in model.electrical_devices),
+        *(equipment.id for equipment in model.electrical_equipment),
+    }
+    unmatched_group_ids = sum(
+        1 for member_id in group_owner if member_id not in groupable_ids
+    )
 
     route_by_id = {route.id: route for route in model.routes}
     contributions: list[_Contribution] = []
@@ -159,10 +213,16 @@ def extract_quantities(
                 variant=(("nominal_diameter_m", route.nominal_diameter_m),),
                 entities=(route,),
                 assembly_resolver=assembly_resolver,
+                group=group_owner.get(route.id),
             )
         )
 
     for fitting in sorted(model.route_fittings, key=lambda item: item.id):
+        # A fitting inherits its route's group unless the caller named the
+        # fitting itself; ``route_id`` is reference-checked above.
+        fitting_group = group_owner.get(fitting.id)
+        if fitting_group is None:
+            fitting_group = group_owner.get(fitting.route_id)
         contributions.append(
             _contribution(
                 category="fitting",
@@ -175,6 +235,7 @@ def extract_quantities(
                 ),
                 entities=(fitting,),
                 assembly_resolver=assembly_resolver,
+                group=fitting_group,
             )
         )
 
@@ -190,8 +251,14 @@ def extract_quantities(
                 )
             )
             continue
+        conductor_group = group_owner.get(conductor.id)
         for route_id in conductor.route_ids:
             route = route_by_id[route_id]
+            group = (
+                conductor_group
+                if conductor_group is not None
+                else group_owner.get(route_id)
+            )
             contributions.append(
                 _contribution(
                     category="conductor_length",
@@ -206,19 +273,90 @@ def extract_quantities(
                     entities=(conductor, route),
                     assembly_resolver=assembly_resolver,
                     assembly_entity=conductor,
+                    group=group,
                 )
             )
 
     for device in sorted(model.electrical_devices, key=lambda item: item.id):
-        contributions.append(_countable_entity_contribution("device", device, assembly_resolver))
+        contributions.append(
+            _countable_entity_contribution(
+                "device", device, assembly_resolver, group_owner.get(device.id)
+            )
+        )
 
     for equipment in sorted(model.electrical_equipment, key=lambda item: item.id):
-        contributions.append(_countable_entity_contribution("equipment", equipment, assembly_resolver))
+        contributions.append(
+            _countable_entity_contribution(
+                "equipment", equipment, assembly_resolver, group_owner.get(equipment.id)
+            )
+        )
 
+    items = _aggregate(contributions)
+    group_summary = _group_summary(
+        supplied_group_names, group_owner, groupable_ids, items
+    )
     return TakeoffReport(
         model_id=model.model_id,
-        items=_aggregate(contributions),
+        items=items,
         warnings=tuple(sorted(warnings, key=lambda item: (item.code, item.source_entity_ids))),
+        group_summary=group_summary,
+        unmatched_group_ids=unmatched_group_ids,
+    )
+
+
+def _group_ownership(
+    groups: Mapping[str, Iterable[str]] | None,
+) -> tuple[dict[str, str], tuple[str, ...]]:
+    """Normalize caller-supplied groups into ``{entity id: group name}``.
+
+    Returns the ownership map and the sorted group names.  The caller decides
+    membership; an id claimed by two groups is refused, and repeated ids
+    within one group collapse.
+    """
+
+    if not groups:
+        return {}, ()
+    names: list[str] = []
+    for name in groups:
+        if not isinstance(name, str) or not name:
+            raise ValueError("group names must be non-empty strings")
+        names.append(name)
+    sorted_names = tuple(sorted(names))
+    owner_of: dict[str, str] = {}
+    for name in sorted_names:
+        for member_id in sorted(frozenset(groups[name])):
+            previous = owner_of.get(member_id)
+            if previous is not None:
+                raise ValueError(
+                    f"canonical id {member_id!r} belongs to both group "
+                    f"{previous!r} and group {name!r}; an id may belong to "
+                    "at most one group"
+                )
+            owner_of[member_id] = name
+    return owner_of, sorted_names
+
+
+def _group_summary(
+    supplied_group_names: tuple[str, ...],
+    group_owner: Mapping[str, str],
+    groupable_ids: frozenset[str] | set[str],
+    items: tuple[QuantityItem, ...],
+) -> tuple[tuple[str, int, int], ...] | None:
+    """Per-group ``(name, matched entities, item lines)``, or ``None``."""
+
+    if not supplied_group_names:
+        return None
+    entity_counts: dict[str, int] = {}
+    for member_id, name in group_owner.items():
+        if member_id in groupable_ids:
+            entity_counts[name] = entity_counts.get(name, 0) + 1
+    item_counts: dict[str, int] = {}
+    for item in items:
+        if item.group is not None:
+            item_counts[item.group] = item_counts.get(item.group, 0) + 1
+    return tuple(
+        (name, entity_counts.get(name, 0), item_counts.get(name, 0))
+        for name in supplied_group_names
     )
 
 
@@ -226,6 +364,7 @@ def _countable_entity_contribution(
     category: str,
     entity: ElectricalDevice | ElectricalEquipment,
     assembly_resolver: AssemblyResolver | None,
+    group: str | None,
 ) -> _Contribution:
     item_type = entity.device_type if isinstance(entity, ElectricalDevice) else entity.equipment_type
     size = entity.size
@@ -243,6 +382,7 @@ def _countable_entity_contribution(
         ),
         entities=(entity,),
         assembly_resolver=assembly_resolver,
+        group=group,
     )
 
 
@@ -256,6 +396,7 @@ def _contribution(
     entities: tuple[Entity, ...],
     assembly_resolver: AssemblyResolver | None,
     assembly_entity: Entity | None = None,
+    group: str | None = None,
 ) -> _Contribution:
     if not math.isfinite(quantity) or quantity < 0:
         raise QuantityError(f"non-finite or negative quantity for {category}:{item_type}")
@@ -274,11 +415,15 @@ def _contribution(
         provenance=provenance,
         confidence=min(entity.confidence for entity in entities),
         assembly_key=assembly_key,
+        group=group,
     )
 
 
 def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ...]:
-    grouped: dict[tuple[str, str, str, str, str | None, str, str | None, str | None], list[_Contribution]] = {}
+    grouped: dict[
+        tuple[str | None, str, str, str, str, str | None, str, str | None, str | None],
+        list[_Contribution],
+    ] = {}
     for contribution in contributions:
         variant_key = json.dumps(
             {key: value for key, value in contribution.variant},
@@ -286,7 +431,10 @@ def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ..
             separators=(",", ":"),
             allow_nan=False,
         )
+        # Group leads the key: the same item type in the base and in a
+        # caller-supplied group must stay two separate lines.
         key = (
+            contribution.group,
             contribution.category,
             contribution.item_type,
             contribution.unit,
@@ -296,22 +444,29 @@ def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ..
         )
         grouped.setdefault(key, []).append(contribution)
 
+    def _line_order(key: tuple[str | None, ...]) -> tuple[tuple[int, str], tuple[str, ...]]:
+        # Base lines first, then groups sorted by name, each in the existing
+        # key order.
+        head = (1, key[0]) if key[0] is not None else (0, "")
+        return head, tuple("" if part is None else str(part) for part in key[1:])
+
     items: list[QuantityItem] = []
-    for key in sorted(grouped, key=lambda item: tuple("" if part is None else str(part) for part in item)):
+    for key in sorted(grouped, key=_line_order):
         parts = sorted(grouped[key], key=lambda item: item.source_entity_ids)
         source_entity_ids = tuple(sorted({source_id for part in parts for source_id in part.source_entity_ids}))
         provenance = _merge_provenance(*(part.provenance for part in parts))
         items.append(
             QuantityItem(
-                category=key[0],
-                item_type=key[1],
-                unit=key[2],
+                category=key[1],
+                item_type=key[2],
+                unit=key[3],
                 variant=parts[0].variant,
-                assembly_key=key[4],
+                assembly_key=key[5],
                 quantity=math.fsum(part.quantity for part in parts),
                 source_entity_ids=source_entity_ids,
                 provenance=provenance,
                 confidence=min(part.confidence for part in parts),
+                group=key[0],
             )
         )
     return tuple(items)

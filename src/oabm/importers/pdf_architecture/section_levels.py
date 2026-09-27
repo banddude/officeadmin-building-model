@@ -7,6 +7,18 @@ lines a slab thickness apart.  The upper line of a band is the finished floor
 (walking surface); the lower line is the ceiling/soffit below the slab, so
 floor-to-floor spacing is ceiling height plus slab thickness.
 
+Feed :func:`find_section_level_lines` a ``region_pt`` that crops ONE section
+drawing, not a whole sheet: the default minimum line length is 35% of the
+region width, so a whole sheet or a full-width strip usually finds no
+band-length horizontals and fails closed to no bands with a warning.
+
+Ambiguity is preserved rather than silently resolved.  Pairing stays
+deterministic bottom-up, but a run of three or more strong lines each within
+``max_slab_gap_pt`` of the next (for example a slab line, a finish-floor
+line, and a roof or parapet line) is reported as one ``ambiguous_band``
+warning per run, and every strong line that ends up in no band is reported
+as ``unpaired_strong_line``.
+
 The companion :func:`level_elevations_from_bands` turns bands into finished
 floor elevations in metres relative to a datum floor, optionally validated
 against dimensioned ceiling heights: the lower line of each band must sit one
@@ -158,10 +170,17 @@ def find_section_level_lines(
     """Find floor/ceiling bands in one building-section region.
 
     The default ``min_length_pt`` is :data:`DEFAULT_MIN_LENGTH_FRACTION` of
-    the region width.  Horizontal candidate segments are clustered by y
-    within ``cluster_tol_pt``, clusters are weighted by total length, and
-    strong clusters at most ``max_slab_gap_pt`` apart are paired into bands.
-    Never raises on data: unusable regions yield empty results with warnings.
+    the region width; pass ``region_pt`` a crop of one section drawing,
+    because a whole sheet or a full-width strip usually returns no bands.
+    Horizontal candidate segments are clustered by y within
+    ``cluster_tol_pt``, clusters are weighted by total length, and strong
+    clusters at most ``max_slab_gap_pt`` apart are paired into bands.
+    Ambiguity is preserved: a run of three or more strong clusters each
+    within ``max_slab_gap_pt`` of the next keeps the deterministic pairing
+    but adds one ``ambiguous_band`` warning per run, and every strong
+    cluster that ends up in no band adds an ``unpaired_strong_line``
+    warning.  Never raises on data: unusable regions yield empty results
+    with warnings.
     """
 
     warnings: list[str] = []
@@ -208,6 +227,7 @@ def find_section_level_lines(
     ]
 
     bands: list[tuple[float, float, float]] = []
+    band_pairs: list[tuple[int, int]] = []
     position = 0
     while position < len(strong_indexes):
         following = position + 1
@@ -219,9 +239,51 @@ def find_section_level_lines(
                     clusters[strong_indexes[position]][0],
                     clusters[strong_indexes[position]][1] + clusters[strong_indexes[following]][1],
                 ))
+                band_pairs.append((strong_indexes[position], strong_indexes[following]))
                 position += 2
                 continue
         position += 1
+
+    # Preserve explicit ambiguity instead of inventing certainty.  A run of
+    # three or more consecutive strong clusters, each within max_slab_gap_pt
+    # of the next (for example a slab line, a finish-floor line, and a roof
+    # or parapet line), keeps today's deterministic pairing but is reported;
+    # so is every strong cluster the greedy pairing leaves out of any band.
+    runs: list[list[int]] = []
+    run: list[int] = []
+    for index in strong_indexes:
+        if run and 0 < clusters[index][0] - clusters[run[-1]][0] <= max_slab_gap_pt:
+            run.append(index)
+            continue
+        if len(run) >= 3:
+            runs.append(run)
+        run = [index]
+    if len(run) >= 3:
+        runs.append(run)
+
+    for run in runs:
+        ys = [clusters[index][0] for index in run]
+        members = set(run)
+        pairs_text = ", ".join(
+            f"({clusters[upper][0]:.1f}, {clusters[lower][0]:.1f})"
+            for lower, upper in band_pairs
+            if lower in members and upper in members
+        )
+        widest = max(next_y - y for y, next_y in zip(ys, ys[1:]))
+        warnings.append(
+            f"ambiguous_band: strong lines at y={[round(y, 1) for y in ys]} pt "
+            f"within {widest:.1f} pt; paired {pairs_text}"
+        )
+
+    banded = {index for pair in band_pairs for index in pair}
+    for index in strong_indexes:
+        if index in banded:
+            continue
+        y, total = clusters[index]
+        warnings.append(
+            f"unpaired_strong_line: strong line at y={round(y, 1)} pt "
+            f"with total length {round(total, 1)} pt is in no band"
+        )
 
     if len(bands) < 2:
         warnings.append(
@@ -229,6 +291,7 @@ def find_section_level_lines(
             f"{len(bands)} band(s) detected from {len(clusters)} cluster(s); "
             "at least two are needed to evidence level elevations"
         )
+    warnings.sort()
     return SectionLevels(
         bands=tuple(bands),
         lines=tuple(item[2] for item in candidates),

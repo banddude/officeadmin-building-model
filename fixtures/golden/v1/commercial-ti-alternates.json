@@ -1,0 +1,2782 @@
+{
+  "attributes": {},
+  "ceilings": [],
+  "circuits": [
+    {
+      "attributes": {},
+      "circuit_number": "1",
+      "confidence": 1.0,
+      "id": "circuit:ti-base-1",
+      "load_port_ids": [
+        "port:ti-rec-1-in",
+        "port:ti-rec-2-in",
+        "port:ti-lum-1-in"
+      ],
+      "load_va": 1800.0,
+      "name": null,
+      "phase": "1ph",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [
+        "route:ti-r1",
+        "route:ti-r2",
+        "route:ti-r3"
+      ],
+      "source_port_id": "port:ti-panel-p1",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "2",
+      "confidence": 1.0,
+      "id": "circuit:ti-base-2",
+      "load_port_ids": [
+        "port:ti-rec-3-in",
+        "port:ti-rec-4-in",
+        "port:ti-lum-2-in",
+        "port:ti-lum-3-in"
+      ],
+      "load_va": 2400.0,
+      "name": null,
+      "phase": "1ph",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [
+        "route:ti-r4",
+        "route:ti-r5",
+        "route:ti-r6",
+        "route:ti-r7"
+      ],
+      "source_port_id": "port:ti-panel-p3",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "circuit_number": "A1",
+      "confidence": 1.0,
+      "id": "circuit:ti-alt-1",
+      "load_port_ids": [
+        "port:ti-rec-a1-in",
+        "port:ti-rec-a2-in",
+        "port:ti-lum-a1-in"
+      ],
+      "load_va": 1200.0,
+      "name": null,
+      "phase": "1ph",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [
+        "route:ti-r8"
+      ],
+      "source_port_id": "port:ti-panel-p8",
+      "voltage_v": 120.0
+    }
+  ],
+  "conductors": [
+    {
+      "attributes": {},
+      "circuit_id": "circuit:ti-base-1",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c1-l1",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "line",
+      "route_ids": [
+        "route:ti-r1",
+        "route:ti-r2",
+        "route:ti-r3"
+      ],
+      "size": "#12 AWG"
+    },
+    {
+      "attributes": {},
+      "circuit_id": "circuit:ti-base-1",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c1-l2",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "line",
+      "route_ids": [
+        "route:ti-r1",
+        "route:ti-r2",
+        "route:ti-r3"
+      ],
+      "size": "#12 AWG"
+    },
+    {
+      "attributes": {},
+      "circuit_id": "circuit:ti-base-1",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c1-egc",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "equipment-ground",
+      "route_ids": [
+        "route:ti-r1",
+        "route:ti-r2",
+        "route:ti-r3"
+      ],
+      "size": "#10 AWG"
+    },
+    {
+      "attributes": {},
+      "circuit_id": "circuit:ti-base-2",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c2-l1",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "line",
+      "route_ids": [
+        "route:ti-r4",
+        "route:ti-r5",
+        "route:ti-r6",
+        "route:ti-r7"
+      ],
+      "size": "#12 AWG"
+    },
+    {
+      "attributes": {},
+      "circuit_id": "circuit:ti-base-2",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c2-l2",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "line",
+      "route_ids": [
+        "route:ti-r4",
+        "route:ti-r5",
+        "route:ti-r6",
+        "route:ti-r7"
+      ],
+      "size": "#12 AWG"
+    },
+    {
+      "attributes": {},
+      "circuit_id": "circuit:ti-base-2",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c2-egc",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "equipment-ground",
+      "route_ids": [
+        "route:ti-r4",
+        "route:ti-r5",
+        "route:ti-r6",
+        "route:ti-r7"
+      ],
+      "size": "#10 AWG"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "circuit_id": "circuit:ti-alt-1",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c3-l1",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "line",
+      "route_ids": [
+        "route:ti-r8"
+      ],
+      "size": "#12 AWG"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "circuit_id": "circuit:ti-alt-1",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c3-n",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "neutral",
+      "route_ids": [
+        "route:ti-r8"
+      ],
+      "size": "#12 AWG"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "circuit_id": "circuit:ti-alt-1",
+      "confidence": 1.0,
+      "count": 1,
+      "id": "conductor:ti-c3-egc",
+      "insulation": "THHN/THWN-2",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "equipment-ground",
+      "route_ids": [
+        "route:ti-r8"
+      ],
+      "size": "#10 AWG"
+    }
+  ],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "receptacle",
+      "host_id": null,
+      "id": "device:ti-rec-1",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 6.5,
+          "y": 0.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.08,
+        "y": 0.1,
+        "z": 0.12
+      },
+      "space_id": "space:ti-open",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "receptacle",
+      "host_id": null,
+      "id": "device:ti-rec-2",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 5.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.08,
+        "y": 0.1,
+        "z": 0.12
+      },
+      "space_id": "space:ti-conference",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "receptacle",
+      "host_id": null,
+      "id": "device:ti-rec-3",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 10.5,
+          "y": 6.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.08,
+        "y": 0.1,
+        "z": 0.12
+      },
+      "space_id": "space:ti-open",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "receptacle",
+      "host_id": null,
+      "id": "device:ti-rec-4",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.08,
+        "y": 0.1,
+        "z": 0.12
+      },
+      "space_id": "space:ti-lobby",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "luminaire",
+      "host_id": null,
+      "id": "device:ti-lum-1",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 7.0,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.35,
+        "y": 0.11,
+        "z": 0.08
+      },
+      "space_id": "space:ti-conference",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "luminaire",
+      "host_id": null,
+      "id": "device:ti-lum-2",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 6.5,
+          "y": 4.0,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.35,
+        "y": 0.11,
+        "z": 0.08
+      },
+      "space_id": "space:ti-open",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "luminaire",
+      "host_id": null,
+      "id": "device:ti-lum-3",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 4.0,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.35,
+        "y": 0.11,
+        "z": 0.08
+      },
+      "space_id": "space:ti-open",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "device_type": "receptacle",
+      "host_id": null,
+      "id": "device:ti-rec-a1",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 7.5,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.08,
+        "y": 0.1,
+        "z": 0.12
+      },
+      "space_id": "space:ti-open",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "device_type": "receptacle",
+      "host_id": null,
+      "id": "device:ti-rec-a2",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.08,
+        "y": 0.1,
+        "z": 0.12
+      },
+      "space_id": "space:ti-open",
+      "system": "120V-1ph"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "device_type": "luminaire",
+      "host_id": null,
+      "id": "device:ti-lum-a1",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 2.5,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 120.0,
+      "size": {
+        "x": 0.35,
+        "y": 0.11,
+        "z": 0.08
+      },
+      "space_id": "space:ti-open",
+      "system": "120V-1ph"
+    }
+  ],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "equip:ti-panel",
+      "level_id": "level:ti-ground",
+      "name": "TI panel",
+      "pose": {
+        "position": {
+          "x": 4.45,
+          "y": 2.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 208.0,
+      "size": {
+        "x": 0.4,
+        "y": 0.15,
+        "z": 0.8
+      },
+      "space_id": "space:ti-open",
+      "system": "120/208V-1ph"
+    }
+  ],
+  "levels": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "elevation_m": 0.0,
+      "height_m": 3.0,
+      "id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ]
+    }
+  ],
+  "model_id": "model:golden-commercial-ti-alternates",
+  "name": "Golden commercial TI alternates",
+  "obstacles": [],
+  "openings": [],
+  "ports": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-rec-1-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p1",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 0.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-rec-2-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p2",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-rec-3-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p3",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 1.4,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-rec-4-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p4",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 1.8,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-lum-1-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p5",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 2.2,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-lum-2-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p6",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 2.6,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-lum-3-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p7",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 3.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-rec-a1-in"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-panel-p8",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:ti-panel",
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 3.4,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p1"
+      ],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-rec-1-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-rec-1",
+      "pose": {
+        "position": {
+          "x": 6.5,
+          "y": 0.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p2"
+      ],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-rec-2-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-rec-2",
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 5.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p3"
+      ],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-rec-3-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-rec-3",
+      "pose": {
+        "position": {
+          "x": 10.5,
+          "y": 6.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p4"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-rec-4-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-rec-4",
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p5"
+      ],
+      "direction": {
+        "x": 0,
+        "y": 0,
+        "z": -1
+      },
+      "domain": "power",
+      "id": "port:ti-lum-1-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-lum-1",
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 7.0,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p6"
+      ],
+      "direction": {
+        "x": 0,
+        "y": 0,
+        "z": -1
+      },
+      "domain": "power",
+      "id": "port:ti-lum-2-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-lum-2",
+      "pose": {
+        "position": {
+          "x": 6.5,
+          "y": 4.0,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p7"
+      ],
+      "direction": {
+        "x": 0,
+        "y": 0,
+        "z": -1
+      },
+      "domain": "power",
+      "id": "port:ti-lum-3-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-lum-3",
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 4.0,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "connected_port_ids": [
+        "port:ti-panel-p8"
+      ],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-rec-a1-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-rec-a1",
+      "pose": {
+        "position": {
+          "x": 7.5,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:ti-rec-a2-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-rec-a2",
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 0,
+        "y": 0,
+        "z": -1
+      },
+      "domain": "power",
+      "id": "port:ti-lum-a1-in",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:ti-lum-a1",
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 2.5,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    }
+  ],
+  "provenance": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "method": "hand-authored golden fixture",
+      "page": null,
+      "source_element_id": null,
+      "source_id": "fixture:golden-commercial-ti-alternates-v1",
+      "source_kind": "synthetic"
+    }
+  ],
+  "route_constraints": [],
+  "route_fittings": [
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r2-bend",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 1.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r2"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r3-bend-1",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 2.2,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r3"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r3-bend-2",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 7.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r3"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r4-bend",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 4.6,
+          "y": 6.5,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r4"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r5-bend",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 2.0,
+          "y": 1.8,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r5"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r6-bend-1",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 6.5,
+          "y": 2.6,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r6"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r6-bend-2",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 6.5,
+          "y": 4.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r6"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r7-bend-1",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 3.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r7"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r7-bend-2",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 11.0,
+          "y": 4.0,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r7"
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "confidence": 1.0,
+      "fitting_type": "elbow-90",
+      "id": "fitting:ti-r8-bend",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "pose": {
+        "position": {
+          "x": 7.5,
+          "y": 3.4,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_id": "route:ti-r8"
+    }
+  ],
+  "routes": [
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 0.5,
+            "z": 1.5
+          },
+          {
+            "x": 6.5,
+            "y": 0.5,
+            "z": 1.5
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-rec-1-in",
+      "fitting_ids": [],
+      "id": "route:ti-r1",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p1"
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 1.0,
+            "z": 1.5
+          },
+          {
+            "x": 2.0,
+            "y": 1.0,
+            "z": 1.5
+          },
+          {
+            "x": 2.0,
+            "y": 5.5,
+            "z": 1.5
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-rec-2-in",
+      "fitting_ids": [
+        "fitting:ti-r2-bend"
+      ],
+      "id": "route:ti-r2",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p2"
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 2.2,
+            "z": 1.5
+          },
+          {
+            "x": 2.0,
+            "y": 2.2,
+            "z": 1.5
+          },
+          {
+            "x": 2.0,
+            "y": 7.0,
+            "z": 1.5
+          },
+          {
+            "x": 2.0,
+            "y": 7.0,
+            "z": 2.7
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-lum-1-in",
+      "fitting_ids": [
+        "fitting:ti-r3-bend-1",
+        "fitting:ti-r3-bend-2"
+      ],
+      "id": "route:ti-r3",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p5"
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 1.4,
+            "z": 1.5
+          },
+          {
+            "x": 4.6,
+            "y": 6.5,
+            "z": 1.5
+          },
+          {
+            "x": 10.5,
+            "y": 6.5,
+            "z": 1.5
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-rec-3-in",
+      "fitting_ids": [
+        "fitting:ti-r4-bend"
+      ],
+      "id": "route:ti-r4",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p3"
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 1.8,
+            "z": 1.5
+          },
+          {
+            "x": 2.0,
+            "y": 1.8,
+            "z": 1.5
+          },
+          {
+            "x": 2.0,
+            "y": 1.0,
+            "z": 1.5
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-rec-4-in",
+      "fitting_ids": [
+        "fitting:ti-r5-bend"
+      ],
+      "id": "route:ti-r5",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p4"
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 2.6,
+            "z": 1.5
+          },
+          {
+            "x": 6.5,
+            "y": 2.6,
+            "z": 1.5
+          },
+          {
+            "x": 6.5,
+            "y": 4.0,
+            "z": 1.5
+          },
+          {
+            "x": 6.5,
+            "y": 4.0,
+            "z": 2.7
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-lum-2-in",
+      "fitting_ids": [
+        "fitting:ti-r6-bend-1",
+        "fitting:ti-r6-bend-2"
+      ],
+      "id": "route:ti-r6",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p6"
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 3.0,
+            "z": 1.5
+          },
+          {
+            "x": 11.0,
+            "y": 3.0,
+            "z": 1.5
+          },
+          {
+            "x": 11.0,
+            "y": 4.0,
+            "z": 1.5
+          },
+          {
+            "x": 11.0,
+            "y": 4.0,
+            "z": 2.7
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-lum-3-in",
+      "fitting_ids": [
+        "fitting:ti-r7-bend-1",
+        "fitting:ti-r7-bend-2"
+      ],
+      "id": "route:ti-r7",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p7"
+    },
+    {
+      "attributes": {
+        "alternate": true,
+        "design_status": "proposed"
+      },
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4.6,
+            "y": 3.4,
+            "z": 1.5
+          },
+          {
+            "x": 7.5,
+            "y": 3.4,
+            "z": 1.5
+          },
+          {
+            "x": 7.5,
+            "y": 1.0,
+            "z": 1.5
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:ti-rec-a1-in",
+      "fitting_ids": [
+        "fitting:ti-r8-bend"
+      ],
+      "id": "route:ti-r8",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "port:ti-panel-p8"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "slabs": [],
+  "spaces": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 3.0,
+      "id": "space:ti-lobby",
+      "level_id": "level:ti-ground",
+      "name": "Storefront lobby",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "usage": null
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 3,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 8,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 8,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 3.0,
+      "id": "space:ti-conference",
+      "level_id": "level:ti-ground",
+      "name": "Conference",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "usage": null
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 4,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 12,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 12,
+            "y": 8,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 8,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 3.0,
+      "id": "space:ti-open",
+      "level_id": "level:ti-ground",
+      "name": "Open office",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "usage": null
+    }
+  ],
+  "walls": [
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0.0
+          },
+          {
+            "x": 12,
+            "y": 0,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "construction": "glazed",
+      "height_m": 3.0,
+      "id": "wall:ti-south",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 12,
+            "y": 0,
+            "z": 0.0
+          },
+          {
+            "x": 12,
+            "y": 8,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 3.0,
+      "id": "wall:ti-east",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 12,
+            "y": 8,
+            "z": 0.0
+          },
+          {
+            "x": 0,
+            "y": 8,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 3.0,
+      "id": "wall:ti-north",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 8,
+            "z": 0.0
+          },
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 3.0,
+      "id": "wall:ti-west",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4,
+            "y": 0,
+            "z": 0.0
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "construction": "framed",
+      "height_m": 3.0,
+      "id": "wall:ti-lobby",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0.0
+          },
+          {
+            "x": 4,
+            "y": 8,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "construction": "glazed",
+      "height_m": 3.0,
+      "id": "wall:ti-conf-glass",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 3,
+            "z": 0.0
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 3.0,
+      "id": "wall:ti-conf-south",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 8,
+            "y": 4,
+            "z": 0.0
+          },
+          {
+            "x": 12,
+            "y": 4,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 3.0,
+      "id": "wall:ti-divider",
+      "level_id": "level:ti-ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored golden fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:golden-commercial-ti-alternates-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.15
+    }
+  ]
+}

@@ -219,8 +219,8 @@ def test_glazed_body_carries_the_shared_translucent_style() -> None:
 
 
 def test_glazed_wall_without_body_gets_material_but_no_style() -> None:
-    # A vertical centerline gets no Body: the wall keeps its material
-    # association, but there is no Body surface left to style.
+    # This centerline is vertical, so the wall gets no Body: nothing to
+    # style, but the material association still applies.
     ifc = to_ifc(
         _model(
             _wall(

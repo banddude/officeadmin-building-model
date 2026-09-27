@@ -58,11 +58,12 @@ def _box(x, y, z, sx, sy, sz):
 
 
 def _wall(wall_id, construction, x0, y0, x1, y1):
+    axis = (Point3(x=x0, y=y0, z=0), Point3(x=x1, y=y1, z=0))
     return Wall(
         id=wall_id,
         level_id="level:one",
         construction=construction,
-        centerline=Polyline3D(points=(Point3(x=x0, y=y0, z=0), Point3(x=x1, y=y1, z=0))),
+        centerline=Polyline3D(points=axis),
         thickness_m=0.1,
         height_m=3.0,
     )

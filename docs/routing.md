@@ -57,6 +57,19 @@ Callers own the hint list. Pass only earlier runs on the same routing plane, cli
 
 `extract_quantities` emits one `overlapping_route_runs` warning per affected route type, naming the member routes, the total shared length, and the actual overlap: per-route lengths count the runs' `double_counted_length_m` more conduit than the shared runs occupy. Quantities themselves are unchanged, so reports without overlaps are byte-identical. Consolidating shared runs into trunk routes is #196's separate, opt-in post-process; this helper only tells consumers the overlap is there.
 
+## Consolidating bundled routes (opt-in)
+
+`consolidate_bundled_routes(model, *, tolerance_m=0.01) -> ConsolidationResult(model, report)` rewrites bundled per-circuit routes into the raceways a physical installation would use: one trunk `Route` per maximal stretch where a constant set of same-type routes shares a line, plus branch `Route` records for each member's unshared ends. It is a deterministic post-process on the canonical model; nothing calls it by default and a model with no overlapping runs is returned as the same object.
+
+- **Membership first.** Each shared run is swept between member-coverage boundaries; stretches where the member set changes become separate trunks, and a stretch only one participant covers stays with that route as branch geometry. That is what keeps every conductor's length reproducible: a route that joins mid-corridor is re-pointed to only the trunks it actually rides.
+- **Exact lengths.** Every cut point is an existing centerline coordinate, so a split route's pieces sum back to its original length, and a conductor re-pointed across its route's pieces in centerline order keeps its old length exactly. Total route length drops by exactly the detector's `double_counted_length_m`.
+- **Ports.** Route ends must sit on ports. Ends that already coincide with an existing port reuse it; other trunk junctions get one inferred port per distinct position, owned by the nearest electrical device or equipment owner (a canonical port must be exportable on a distribution element). A model with no such owner fails closed.
+- **Trunk size.** A trunk's `nominal_diameter_m` is the largest member's. Fill-based trade-size upsizing is out of scope; each trunk records `attributes.consolidation = {member_route_ids, member_count}` so a later fill check can upsize it.
+- **Fittings.** Turn fittings at cut vertices give way to one `tee` per trunk endpoint where a branch or a continuing trunk touches it; a trunk that simply terminates gets none. Elbows strictly inside a branch survive re-parented with their original ids.
+- **Identity and provenance.** Trunk, branch, tee, and junction-port ids are `stable_id` derivations from the sorted member route ids (or the source route and piece ordinal) plus span endpoints rounded to 1e-6. New entities carry `derivation="inferred"` provenance with `method="route-consolidation"`.
+- **Report.** `report` counts routes before and after (plus trunks, branches, fittings, and added ports) and carries `shared_length_m` and `double_counted_length_m`, which reconcile the before/after totals.
+- **Default untouched.** Router output and quantities are byte-identical when the function is not called.
+
 ## Bend limits and fitting decisions
 
 `RoutingOptions` controls bend penalty, maximum bend count, port-stub length, clearances, search margin, soft preferences, and the glazed-wall penalty (default 4.0, must be positive). These are algorithm controls, not a replacement for canonical model fields.

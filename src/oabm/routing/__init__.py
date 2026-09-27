@@ -12,6 +12,9 @@ from .design import (
     propose_architectural_electrical_design,
 )
 from .overlap import RouteOverlap, find_overlapping_route_runs
+from .consolidate import (
+    ConsolidationReport, ConsolidationResult, consolidate_bundled_routes,
+)
 
 __all__ = [
     "BundleHints", "NoRouteError", "RoutingError", "RoutingOptions", "route_between_ports",
@@ -20,4 +23,5 @@ __all__ = [
     "CircuitDesignRules", "design_proposed_circuits",
     "propose_architectural_electrical_design",
     "RouteOverlap", "find_overlapping_route_runs",
+    "ConsolidationReport", "ConsolidationResult", "consolidate_bundled_routes",
 ]

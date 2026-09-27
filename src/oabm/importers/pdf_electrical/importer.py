@@ -444,6 +444,16 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         "speaker",
         0.95,
     ),
+    # Duct smoke detectors are mechanical-duct devices that electrical legends
+    # frequently claim ("FURNISHED BY M, WIRED BY E"). They are listed before
+    # the generic smoke rows so a duct detector is never typed as a room smoke
+    # alarm; cross-discipline reading is gated by electrical_scope_types.
+    SymbolRule(
+        r"\bDUCT\s+(?:SMOKE\s+)?DETECTOR\b|\bDSD\b",
+        "device",
+        "duct_smoke_detector",
+        0.95,
+    ),
     SymbolRule(
         r"\bSMOKE\s*/\s*(?:CARBON\s+)?MONOXIDE\b",
         "device",
@@ -506,6 +516,9 @@ class _EntityCandidate:
     shape_recognition: dict[str, Any] | None = None
     annotation_recognition: dict[str, Any] | None = None
     lighting_recognition: dict[str, Any] | None = None
+    # Set only when the caller's page_type_filters kept this candidate from a
+    # non-electrical sheet; records the printed sheet id (or page number).
+    cross_discipline_sheet: str | None = None
 
     def merge_source(
         self,
@@ -2299,6 +2312,197 @@ def _scope_status_attributes(
         "scope_legend_text": sorted({text for _, _, text in entries})[0],
         "scope_legend_source_element_ids": legend_ids,
     }
+
+# Cross-discipline scope (#181): a wiring item the electrical side owns is
+# sometimes printed only within another trade's package -- duct-mounted smoke
+# detection shown with the mechanical work is the classic example. Reading
+# such an item off that sheet is legitimate only when the electrical legend
+# itself claims the type; a symbol printed on a foreign sheet is not scope on
+# its own. The printed sheet number names the owning trade: a standalone text
+# token shaped like a sheet id (`E-1`, `M4`, `P2.1`) is the sheet id, and the
+# E prefix marks the electrical discipline.
+_PRINTED_SHEET_ID_RE = re.compile(
+    r"[A-Z]{1,3}(?:-\d{1,4}|\d{1,3}(?:\.\d{1,3})?)",
+    re.IGNORECASE,
+)
+# Public alias of the electrical-discipline sheet-id shape used by legend
+# parsing; a page whose printed sheet id fullmatches it is an E sheet.
+ELECTRICAL_SHEET_ID_RE = _LEGEND_SHEET_ID_RE
+# A row counts as electrical scope even on a foreign sheet when its own text
+# names the electrical side as responsible. The documented phrase list:
+#   WIRED BY E (also with E.C. or EC after it)
+#   BY ELECTRICAL
+#   BY E.C. / BY EC (a bare BY E matches too)
+#   the contractor name, matched as ELECTRICAL\s+CONTRACTOR
+#   FURNISHED BY M, MECH or MECHANICAL, paired with INSTALLED BY E;
+#     the furnished half alone never claims electrical scope
+_CROSS_DISCIPLINE_RESPONSIBILITY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bWIRED\s+BY\s+(?:THE\s+)?E\.?C?\.?\b", re.IGNORECASE),
+    re.compile(r"\bBY\s+E\.?C?\.?\b", re.IGNORECASE),
+    re.compile(r"\bBY\s+ELECTRICAL\b", re.IGNORECASE),
+    re.compile(r"\bELECTRICAL\s+CONTRACTOR\b", re.IGNORECASE),
+)
+_CROSS_DISCIPLINE_FURNISHED_BY_MECH_RE = re.compile(
+    r"\bFURNISHED\s+BY\s+(?:THE\s+)?M(?:ECH(?:ANICAL)?)?\.?\b",
+    re.IGNORECASE,
+)
+_CROSS_DISCIPLINE_INSTALLED_BY_ELECTRICAL_RE = re.compile(
+    r"\bINSTALLED\s+BY\s+(?:THE\s+)?E(?:\.?C?\.?|LECTRICAL)\b",
+    re.IGNORECASE,
+)
+# Types the electrical legend claims cross-discipline even without a printed
+# responsibility phrase. Starts with duct smoke detectors and grows only by
+# explicit, documented change.
+CROSS_DISCIPLINE_DEFAULT_TYPES: frozenset[str] = frozenset(
+    {"duct_smoke_detector"}
+)
+# A device kept from a non-electrical sheet was not located by electrical
+# recognition on an electrical sheet; its type evidence is legend-scoped, so
+# its confidence never exceeds this cap.
+CROSS_DISCIPLINE_MAX_CONFIDENCE = 0.6
+# Same default ambiguity margin as ElectricalPdfImporter: a legend row that
+# ties between two types defines neither.
+_ELECTRICAL_SCOPE_AMBIGUITY_MARGIN = 0.08
+
+
+@dataclass(frozen=True, slots=True)
+class ElectricalScopeTypes:
+    """Electrical legend scope read from a document's E-discipline sheets.
+
+    ``defined`` lists every canonical type an E-sheet legend row classifies
+    as. ``cross_discipline`` is the subset the electrical legend explicitly
+    claims from other disciplines (rows carrying a responsibility phrase),
+    unioned with ``CROSS_DISCIPLINE_DEFAULT_TYPES``.
+    """
+
+    defined: frozenset[str]
+    cross_discipline: frozenset[str]
+
+
+def _printed_sheet_id_observations(
+    document: PdfElectricalDocument,
+) -> dict[int, PdfTextObservation]:
+    """Per page: the text observation chosen as that page's printed sheet id.
+
+    A printed sheet id is a standalone text token shaped like ``E-1``,
+    ``M4``, or ``P2.1``. Ties keep the smallest element id so the choice is
+    deterministic regardless of extraction order.
+    """
+
+    chosen: dict[int, PdfTextObservation] = {}
+    for observation in document.texts:
+        text = observation.text.strip()
+        if not text or _PRINTED_SHEET_ID_RE.fullmatch(text) is None:
+            continue
+        current = chosen.get(observation.page)
+        if current is None or observation.element_id < current.element_id:
+            chosen[observation.page] = observation
+    return chosen
+
+
+def printed_sheet_ids(document: PdfElectricalDocument) -> dict[int, str]:
+    """Map every page with a printed sheet-id token to that printed id."""
+
+    return {
+        page: observation.text.strip()
+        for page, observation in sorted(
+            _printed_sheet_id_observations(document).items()
+        )
+    }
+
+
+def _row_claims_electrical_responsibility(text: str) -> bool:
+    """Whether one legend row's text puts its device in electrical scope."""
+
+    if any(
+        pattern.search(text)
+        for pattern in _CROSS_DISCIPLINE_RESPONSIBILITY_PATTERNS
+    ):
+        return True
+    return bool(
+        _CROSS_DISCIPLINE_FURNISHED_BY_MECH_RE.search(text)
+        and _CROSS_DISCIPLINE_INSTALLED_BY_ELECTRICAL_RE.search(text)
+    )
+
+
+def electrical_scope_types(
+    document: PdfElectricalDocument,
+) -> ElectricalScopeTypes:
+    """Canonical types the electrical legend defines, per its own E sheets.
+
+    A page whose printed sheet id matches the E-prefix discipline
+    (:data:`ELECTRICAL_SHEET_ID_RE`) is an electrical sheet. Every text row on
+    such a page is classified with the default symbol rules -- the same
+    classification legend rows go through -- and its canonical type counts as
+    ``defined`` when the classification is unambiguous. A defined type also
+    counts as ``cross_discipline`` when the row carries a responsibility
+    phrase (see ``_CROSS_DISCIPLINE_RESPONSIBILITY_PATTERNS``); the
+    documented ``CROSS_DISCIPLINE_DEFAULT_TYPES`` are always included. This
+    helper only reads scope; nothing here changes import output by itself.
+    """
+
+    electrical_pages = {
+        page
+        for page, observation in _printed_sheet_id_observations(document).items()
+        if ELECTRICAL_SHEET_ID_RE.fullmatch(observation.text.strip()) is not None
+    }
+    defined: set[str] = set()
+    cross: set[str] = set()
+    for observation in document.texts:
+        if observation.page not in electrical_pages:
+            continue
+        text = " ".join(observation.text.split())
+        if not text:
+            continue
+        classification, _ranked = _classify_semantic_text(
+            text,
+            DEFAULT_SYMBOL_RULES,
+            ambiguity_margin=_ELECTRICAL_SCOPE_AMBIGUITY_MARGIN,
+        )
+        if classification is None:
+            continue
+        _kind, canonical_type, _confidence = classification
+        defined.add(canonical_type)
+        if _row_claims_electrical_responsibility(text):
+            cross.add(canonical_type)
+    return ElectricalScopeTypes(
+        defined=frozenset(defined),
+        cross_discipline=frozenset(cross) | CROSS_DISCIPLINE_DEFAULT_TYPES,
+    )
+
+
+def _normalize_page_type_filters(
+    page_type_filters: Mapping[int, frozenset[str]] | None,
+    page_count: int,
+) -> dict[int, frozenset[str]]:
+    """Validate caller page filters; empty means no page is filtered."""
+
+    if page_type_filters is None:
+        return {}
+    filters: dict[int, frozenset[str]] = {}
+    for page, allowed in page_type_filters.items():
+        if (
+            isinstance(page, bool)
+            or not isinstance(page, int)
+            or not 1 <= page <= page_count
+        ):
+            raise ElectricalPdfError(
+                f"page_type_filters references page {page!r}, but page_count "
+                f"is {page_count}"
+            )
+        if isinstance(allowed, (str, bytes)) or not isinstance(allowed, Iterable):
+            raise ElectricalPdfError(
+                f"page_type_filters for page {page} must be a collection of "
+                "canonical type strings"
+            )
+        filter_set = frozenset(allowed)
+        if not all(isinstance(item, str) and item.strip() for item in filter_set):
+            raise ElectricalPdfError(
+                f"page_type_filters for page {page} must contain only "
+                "non-empty canonical type strings"
+            )
+        filters[page] = filter_set
+    return filters
 
 # Lighting is intentionally a separate recognition path from power-device
 # legends. A fixture's readable type tag is the semantic evidence; geometry
@@ -9198,6 +9402,7 @@ class ElectricalPdfImporter:
         document: PdfElectricalDocument,
         *,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
+        page_type_filters: Mapping[int, frozenset[str]] | None = None,
     ) -> BuildingModel:
         transforms, region_transforms, has_explicit_registration = _resolve_page_transforms(
             document,
@@ -9969,6 +10174,81 @@ class ElectricalPdfImporter:
                     )
                     attached_note_ids.add(observation.element_id)
 
+        # Cross-discipline pages (#181): on a caller-filtered page, keep only
+        # the types the electrical legend put in scope. Dropped candidates are
+        # recorded as exclusion evidence; kept ones carry the printed sheet
+        # id, a confidence cap, and an inferred provenance note, because their
+        # type evidence is legend-scoped rather than read off this sheet.
+        filters = _normalize_page_type_filters(page_type_filters, document.page_count)
+        if filters:
+            sheet_id_observations = _printed_sheet_id_observations(document)
+            for key in sorted(candidates):
+                candidate = candidates[key]
+                allowed = filters.get(candidate.page)
+                if allowed is None:
+                    continue
+                sheet_observation = sheet_id_observations.get(candidate.page)
+                label = (
+                    sheet_observation.text.strip()
+                    if sheet_observation is not None
+                    else str(candidate.page)
+                )
+                if candidate.canonical_type not in allowed:
+                    del candidates[key]
+                    unresolved_observations.append(
+                        {
+                            "kind": "page_type_filter",
+                            "page": candidate.page,
+                            "source_element_id": (
+                                min(candidate.source_element_ids)
+                                if candidate.source_element_ids
+                                else f"p{candidate.page}:page-type-filter"
+                            ),
+                            "position_pt": {
+                                "x": candidate.x_pt,
+                                "y": candidate.y_pt,
+                            },
+                            "recognized_classification": {
+                                "entity_kind": candidate.entity_kind,
+                                "canonical_type": candidate.canonical_type,
+                            },
+                            "page_type_filters": sorted(allowed),
+                            "cross_discipline_sheet": label,
+                            "status": "excluded_by_page_type_filter",
+                            "reason": (
+                                "recognized type is outside the caller-supplied "
+                                "page_type_filters set for this page"
+                            ),
+                        }
+                    )
+                    continue
+                capped = min(candidate.confidence, CROSS_DISCIPLINE_MAX_CONFIDENCE)
+                candidate.confidence = capped
+                candidate.cross_discipline_sheet = label
+                candidate.provenance.append(
+                    _provenance(
+                        document,
+                        element_id=(
+                            sheet_observation.element_id
+                            if sheet_observation is not None
+                            else f"p{candidate.page}:page-type-filter"
+                        ),
+                        page=candidate.page,
+                        method="cross-discipline-page-filter",
+                        confidence=capped,
+                        derivation=DERIVATION_INFERRED,
+                        attributes={
+                            "cross_discipline_sheet": label,
+                            "page_type_filters": sorted(allowed),
+                            "note": (
+                                "kept by the caller-supplied page_type_filters on a "
+                                "non-electrical sheet; the type scope comes from the "
+                                "electrical legend, not from this sheet"
+                            ),
+                        },
+                    )
+                )
+
         equipment: list[ElectricalEquipment] = []
         devices: list[ElectricalDevice] = []
         entity_by_page_tag: dict[tuple[int, str], ElectricalEquipment | ElectricalDevice] = {}
@@ -10060,6 +10340,10 @@ class ElectricalPdfImporter:
                 lane_attributes["tag"] = candidate.tag
             if candidate.symbol_names:
                 lane_attributes["symbol_names"] = sorted(set(candidate.symbol_names))
+            if candidate.cross_discipline_sheet is not None:
+                lane_attributes["cross_discipline_sheet"] = (
+                    candidate.cross_discipline_sheet
+                )
             if candidate.shape_recognition is not None:
                 lane_attributes["shape_recognition"] = dict(candidate.shape_recognition)
                 if candidate.shape_recognition.get("tags"):
@@ -11968,19 +12252,25 @@ def import_document(
 
 
 __all__ = [
+    "CROSS_DISCIPLINE_DEFAULT_TYPES",
+    "CROSS_DISCIPLINE_MAX_CONFIDENCE",
     "DEFAULT_SYMBOL_RULES",
+    "ELECTRICAL_SHEET_ID_RE",
     "POINT_TO_M",
     "DrawingRegionTransform",
     "ElectricalPdfError",
     "ElectricalPdfImporter",
     "ElectricalInstanceHint",
+    "ElectricalScopeTypes",
     "PdfElectricalDocument",
     "PdfPageTransform",
     "PdfSymbolObservation",
     "PdfTextObservation",
     "PdfVectorPathObservation",
     "SymbolRule",
+    "electrical_scope_types",
     "extract_pdf",
     "import_document",
     "import_pdf",
+    "printed_sheet_ids",
 ]

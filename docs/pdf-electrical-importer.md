@@ -702,3 +702,78 @@ is excluded as `unknown_discipline_with_devices` so it is surfaced rather than
 silently used; any other discipline is excluded as `<discipline>_sheet`. The
 module reads only extracted observations and the importer's output and never
 changes importer behaviour; default import output stays byte-identical.
+
+### Cross-discipline sheets and page type filters
+
+An item the electrical side owns is sometimes printed only within another
+trade's package; duct-mounted smoke detection shown with the mechanical work
+is the standard example. It may be counted from that sheet only when the
+electrical legend claims the type. A symbol on a foreign sheet alone is never
+scope.
+
+Duct smoke detectors have their own canonical type `duct_smoke_detector`
+(aliases `DSD`, `DUCT DETECTOR`, and `DUCT SMOKE DETECTOR`). The rule sits
+before the generic smoke rules, so a duct detector is never typed as a
+`smoke_alarm` or `smoke_co_alarm`.
+
+The printed sheet number carries the discipline. `printed_sheet_ids(document)`
+maps each page to its printed sheet id: a standalone text token shaped like
+`E-1`, `M4`, or `P2.1` (ties keep the smallest source element id). A page
+whose printed id matches `ELECTRICAL_SHEET_ID_RE` — the E prefix — is an
+electrical-discipline sheet.
+
+`electrical_scope_types(document)` reads the electrical legend's scope from
+those E sheets. Every text row on an E sheet is classified with the default
+symbol rules, the same classification legend rows go through; an unambiguous
+row adds its canonical type to `defined`. A defined type also joins
+`cross_discipline` when the row's own text names the electrical side as
+responsible. The documented phrase list:
+
+- `WIRED BY E` (also with `E.C.` or `EC` after it)
+- `BY ELECTRICAL`
+- `BY E.C.` / `BY EC` (a bare `BY E` matches too)
+- the contractor-name phrase, matched as `ELECTRICAL\s+CONTRACTOR`
+- `FURNISHED BY M`, `MECH`, or `MECHANICAL`, paired with
+  `INSTALLED BY E`; the furnished half alone never claims electrical scope
+
+`cross_discipline` also always includes `CROSS_DISCIPLINE_DEFAULT_TYPES`,
+which starts as `{"duct_smoke_detector"}`. A row that ties between two types
+defines neither. The function returns an `ElectricalScopeTypes(defined,
+cross_discipline)` pair and never changes import output by itself.
+
+`ElectricalPdfImporter.import_document(..., page_type_filters=...)` is the
+opt-in consumer. The mapping keys are 1-based page indices and the values are
+sets of canonical types. On a listed page, only entities whose canonical type
+is in that page's set are imported; each kept entity gains
+`attributes.pdf_electrical.cross_discipline_sheet` (the page's printed sheet
+id, or the page number when none is printed), its confidence is capped at
+`CROSS_DISCIPLINE_MAX_CONFIDENCE` (0.6), and it gains one `inferred`
+provenance record (`cross-discipline-page-filter`) recording the filter. An
+entity dropped by the filter is retained as explicit evidence under
+`unresolved_observations` with status `excluded_by_page_type_filter`, so a
+filtered sheet never silently loses recognized devices. Unlisted pages behave
+exactly as before, and `None` or `{}` produces byte-identical output.
+
+Composition is a caller-side step; there is no automatic wiring. Identify the
+non-electrical pages with `printed_sheet_ids`, read the electrical legend's
+claim with `electrical_scope_types`, and pass the cross-discipline types for
+each non-electrical page:
+
+```python
+scope = electrical_scope_types(document)
+sheets = printed_sheet_ids(document)
+electrical = {
+    page
+    for page, sheet_id in sheets.items()
+    if ELECTRICAL_SHEET_ID_RE.fullmatch(sheet_id)
+}
+filters = {
+    page: scope.cross_discipline
+    for page in sheets
+    if page not in electrical
+}
+model = ElectricalPdfImporter().import_document(
+    document, page_type_filters=filters
+)
+```
+

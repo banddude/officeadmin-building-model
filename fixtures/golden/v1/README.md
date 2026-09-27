@@ -13,6 +13,7 @@ Positive cases:
 - `two-level-building.json` — explicit stories/elevations and a cross-level route.
 - `synthetic-garage.json` — the public-safe canonical fixture later convergence lanes can consume for Gate B.
 - `commercial-ti-alternates.json` — synthetic commercial TI: base scope plus a caller-declared ALTERNATES bid group and glazed/framed wall tokens, for cross-exporter agreement tests.
+- `nonconvex-rooms.json` — one level with an L-shaped room (6 vertices), a U-shaped room (8 vertices), and a rectangular control room, for GLB floor-plate triangulation and plan projection tests over non-convex footprints.
 
 `invalid/` contains intentionally broken documents for strict boundary tests. They must never be treated as model examples or importer output.
 

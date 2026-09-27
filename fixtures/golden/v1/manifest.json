@@ -258,6 +258,32 @@
       "valid": true
     },
     {
+      "expectations": {
+        "entity_counts": {
+          "levels": 1,
+          "spaces": 3,
+          "walls": 18
+        },
+        "level_elevations_m": [
+          0.0
+        ],
+        "model_id": "model:golden-nonconvex-rooms",
+        "required_ids": [
+          "space:ncx-l",
+          "space:ncx-u",
+          "space:ncx-rect",
+          "wall:ncx-l-e0",
+          "wall:ncx-u-e0",
+          "wall:ncx-rect-e0"
+        ],
+        "route_expected": false
+      },
+      "file": "nonconvex-rooms.json",
+      "name": "nonconvex-rooms",
+      "sha256": "84b8de5bb19bf52d491709fea569294feba06697e79a7780c1b446f8e91059e8",
+      "valid": true
+    },
+    {
       "error_contains": "references missing id",
       "file": "invalid/missing-reference.json",
       "name": "invalid-missing-reference",

@@ -2,9 +2,11 @@
 
 ``dimension_decimals`` rescales only dimension display text (``value_m`` stays
 full precision) and ``label_overlap="skip"`` drops text labels whose estimated
-box hits an already kept label's box in sorted source-id order. Both are
-keyword-only, default off, and leave default output byte-identical. Symbols,
-dimensions, and geometry are never dropped. All content is synthetic.
+box hits an already kept label's box in sorted source-id order.
+``"skip_with_dimensions"`` also treats each dimension's text box as an already
+kept obstacle. Both are keyword-only, default off, and leave default output
+byte-identical. Symbols, dimensions, and geometry are never dropped. All
+content is synthetic.
 """
 
 from __future__ import annotations
@@ -276,3 +278,74 @@ def test_svg_rejects_non_positive_text_height(height) -> None:
     view = generate_plan(_model(), _plan_spec())
     with pytest.raises(ValueError):
         view_to_svg(view, text_height_m=height)
+
+
+def _dimension_probe_model() -> BuildingModel:
+    """The shared model plus a label that overlaps the wall dimension's text box.
+
+    The wall dimension text renders centred on the offset midpoint (about
+    x 1.594, y 0.2) with an estimated 8-char box, so the probe label box
+    (x 1.6..1.975, y 0.125..0.25 at scale 1:50) intersects it strictly, while
+    the existing device labels stay clear of every dimension.
+    """
+    model = _model()
+    probe = ElectricalDevice(
+        id="device:probe",
+        name="Probe",
+        device_type="receptacle",
+        pose=Pose(position=Point3(x=1.6, y=0.25, z=1.2)),
+        level_id="level:ground",
+    )
+    return BuildingModel(
+        model_id=model.model_id,
+        name=model.name,
+        levels=model.levels,
+        walls=model.walls,
+        openings=model.openings,
+        electrical_devices=(*model.electrical_devices, probe),
+    )
+
+
+def test_label_overlap_skip_with_dimensions_treats_dimension_text_as_obstacle() -> None:
+    model = _dimension_probe_model()
+    skip = generate_plan(model, _plan_spec(), label_overlap="skip")
+    both = generate_plan(model, _plan_spec(), label_overlap="skip_with_dimensions")
+    skip_labels = {p.source_ids[0] for p in skip.primitives if p.layer == "annotations:labels"}
+    both_labels = {p.source_ids[0] for p in both.primitives if p.layer == "annotations:labels"}
+    assert "device:probe" in skip_labels
+    assert "device:probe" not in both_labels
+    assert both.dimensions == skip.dimensions
+    assert {p.id for p in skip.primitives if p.kind != "text"} == {p.id for p in both.primitives if p.kind != "text"}
+
+
+def test_label_overlap_skip_with_dimensions_keeps_clear_labels_and_counts_exactly() -> None:
+    model = _dimension_probe_model()
+    view = generate_plan(model, _plan_spec(), label_overlap="skip_with_dimensions")
+    labels = sorted(p.source_ids[0] for p in view.primitives if p.layer == "annotations:labels")
+    assert labels == ["device:aaa", "device:ccc"]
+    assert ("skipped_labels", "2") in view.metadata
+    assert ("skipped_labels_by_dimension", "1") in view.metadata
+
+
+def test_label_overlap_skip_with_dimensions_matches_skip_without_dimensions() -> None:
+    spec = SectionSpec(
+        id="section:a",
+        origin=Point3(x=0, y=0, z=0),
+        direction=Vector3(x=0, y=1, z=0),
+        bounds=Bounds2(min_x=-4.0, min_y=-1.0, max_x=4.0, max_y=3.0),
+    )
+    skip = generate_section(_model(), spec, label_overlap="skip")
+    both = generate_section(_model(), spec, label_overlap="skip_with_dimensions")
+    assert [p.id for p in both.primitives] == [p.id for p in skip.primitives]
+    assert both.metadata == skip.metadata + (("skipped_labels_by_dimension", "0"),)
+
+
+def test_generation_with_dimensions_as_obstacles_is_deterministic() -> None:
+    def run():
+        return generate_drawing_set(
+            _dimension_probe_model(),
+            plans=(_plan_spec(),),
+            label_overlap="skip_with_dimensions",
+        ).to_json()
+
+    assert run() == run()

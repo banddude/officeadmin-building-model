@@ -272,7 +272,11 @@ def generate_plan(
     ``label_overlap``: ``"keep"`` (default) places every label; ``"skip"`` drops
     text labels whose estimated box intersects an already kept label's box, in
     sorted source-id order, and reports the count as a ``skipped_labels`` view
-    metadata entry. Symbols, dimensions, and geometry are never dropped.
+    metadata entry. ``"skip_with_dimensions"`` also counts each dimension's text
+    box as an already kept obstacle before labels are placed (dimensions are
+    never dropped) and adds ``skipped_labels_by_dimension`` with the count of
+    labels skipped for that reason. Symbols, dimensions, and geometry are never
+    dropped.
     """
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
@@ -309,15 +313,20 @@ def generate_plan(
             dimensions.extend(_wall_dimensions(entity, frame, bounds, decimals=decimals))
 
     skipped_labels = 0
-    if overlap == "skip":
-        primitives, skipped_labels = _drop_overlapping_labels(primitives, spec.scale)
+    skipped_by_dimension = 0
+    if overlap != "keep":
+        primitives, skipped_labels, skipped_by_dimension = _drop_overlapping_labels(
+            primitives, spec.scale, dimensions, with_dimensions=overlap == "skip_with_dimensions"
+        )
     metadata = (
         ("level_id", level.id),
         ("cut_elevation_m", _fmt_number(cut_z)),
         ("source_frame_id", model.coordinate_system.frame_id),
     )
-    if overlap == "skip":
+    if overlap != "keep":
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
+    if overlap == "skip_with_dimensions":
+        metadata = metadata + (("skipped_labels_by_dimension", str(skipped_by_dimension)),)
 
     return DrawingView(
         id=spec.id,
@@ -365,14 +374,19 @@ def generate_elevation(
         if spec.visibility.dimensions and isinstance(entity, Opening):
             dimensions.extend(_opening_dimensions(entity, frame, bounds, decimals=decimals))
     skipped_labels = 0
-    if overlap == "skip":
-        primitives, skipped_labels = _drop_overlapping_labels(primitives, spec.scale)
+    skipped_by_dimension = 0
+    if overlap != "keep":
+        primitives, skipped_labels, skipped_by_dimension = _drop_overlapping_labels(
+            primitives, spec.scale, dimensions, with_dimensions=overlap == "skip_with_dimensions"
+        )
     metadata = (
         ("view_direction", f"{_fmt_number(spec.direction.x)},{_fmt_number(spec.direction.y)},{_fmt_number(spec.direction.z)}"),
         ("source_frame_id", model.coordinate_system.frame_id),
     )
-    if overlap == "skip":
+    if overlap != "keep":
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
+    if overlap == "skip_with_dimensions":
+        metadata = metadata + (("skipped_labels_by_dimension", str(skipped_by_dimension)),)
     return DrawingView(
         id=spec.id,
         view_type="elevation",
@@ -420,15 +434,21 @@ def generate_section(
             )
         )
     skipped_labels = 0
-    if overlap == "skip":
-        primitives, skipped_labels = _drop_overlapping_labels(primitives, spec.scale)
+    skipped_by_dimension = 0
+    if overlap != "keep":
+        # Sections carry no dimension builders, so the mode degrades to "skip".
+        primitives, skipped_labels, skipped_by_dimension = _drop_overlapping_labels(
+            primitives, spec.scale, (), with_dimensions=overlap == "skip_with_dimensions"
+        )
     metadata = (
         ("section_depth_m", _fmt_number(spec.depth_m)),
         ("back_depth_m", _fmt_number(spec.back_depth_m)),
         ("source_frame_id", model.coordinate_system.frame_id),
     )
-    if overlap == "skip":
+    if overlap != "keep":
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
+    if overlap == "skip_with_dimensions":
+        metadata = metadata + (("skipped_labels_by_dimension", str(skipped_by_dimension)),)
     return DrawingView(
         id=spec.id,
         view_type="section",
@@ -1077,29 +1097,72 @@ def _boxes_intersect(a: tuple[float, float, float, float], b: tuple[float, float
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
-def _drop_overlapping_labels(primitives: list[DrawingPrimitive], scale: float) -> tuple[list[DrawingPrimitive], int]:
-    """Drop text labels whose estimated box hits an already kept label's box.
+def _offset_point(a: Point2, b: Point2, amount: float) -> Point2:
+    """``a`` offset by ``amount`` perpendicular to ``a->b`` (left normal)."""
+    dx = b.x - a.x
+    dy = b.y - a.y
+    length = (dx * dx + dy * dy) ** 0.5
+    if length == 0:
+        return a
+    return Point2(x=a.x - dy / length * amount, y=a.y + dx / length * amount)
+
+
+def _dimension_text_box(dimension: DrawingDimension, scale: float) -> tuple[float, float, float, float]:
+    """Estimated dimension text box in model units as ``(min_x, min_y, max_x, max_y)``.
+
+    Mirrors the SVG renderer: dimension text is drawn at the midpoint of the
+    offset dimension line with ``text-anchor="middle"``, so unlike
+    :func:`_label_box` the box is centred on that anchor. It uses the same
+    constants and size as a label box, ``len(text) * char_w`` wide by one
+    ``char_h`` tall.
+    """
+    a = _offset_point(dimension.start, dimension.end, dimension.offset_m)
+    b = _offset_point(dimension.end, dimension.start, -dimension.offset_m)
+    center_x = (a.x + b.x) / 2
+    center_y = (a.y + b.y) / 2
+    char_h = _LABEL_TEXT_HEIGHT_PAPER_M * scale
+    width = max(len(dimension.text), 1) * (char_h * _LABEL_CHAR_WIDTH_RATIO)
+    return (center_x - width / 2, center_y - char_h / 2, center_x + width / 2, center_y + char_h / 2)
+
+
+def _drop_overlapping_labels(
+    primitives: list[DrawingPrimitive],
+    scale: float,
+    dimensions: Iterable[DrawingDimension] = (),
+    *,
+    with_dimensions: bool = False,
+) -> tuple[list[DrawingPrimitive], int, int]:
+    """Drop text labels whose estimated box hits an already kept obstacle's box.
 
     Labels are evaluated in sorted source-id order, so the surviving label for a
     cluster is always the one with the lowest source id. Only
     ``annotations:labels`` text primitives are candidates; symbols, dimensions,
-    and geometry are never dropped. Returns the filtered list and the skipped
-    count for the view's ``skipped_labels`` metadata entry.
+    and geometry are never dropped. With ``with_dimensions`` each dimension's
+    text box (see :func:`_dimension_text_box`) counts as an already kept
+    obstacle before labels are placed; the dimensions themselves are never
+    dropped. Returns the filtered list, the skipped count for the view's
+    ``skipped_labels`` metadata entry, and how many of those were skipped by a
+    dimension box for the ``skipped_labels_by_dimension`` entry.
     """
     labels = [item for item in primitives if item.kind == "text" and item.layer == "annotations:labels"]
     if not labels:
-        return primitives, 0
+        return primitives, 0, 0
+    dimension_boxes = [_dimension_text_box(item, scale) for item in dimensions] if with_dimensions else []
     kept_boxes: list[tuple[float, float, float, float]] = []
     dropped_ids: set[str] = set()
+    by_dimension = 0
     for primitive in sorted(labels, key=lambda item: (item.source_ids, item.id)):
         box = _label_box(primitive.points[0], primitive.text or "", scale)
-        if any(_boxes_intersect(box, kept) for kept in kept_boxes):
+        hits_dimension = any(_boxes_intersect(box, dimension_box) for dimension_box in dimension_boxes)
+        if hits_dimension or any(_boxes_intersect(box, kept) for kept in kept_boxes):
             dropped_ids.add(primitive.id)
+            if hits_dimension:
+                by_dimension += 1
             continue
         kept_boxes.append(box)
     if not dropped_ids:
-        return primitives, 0
-    return [item for item in primitives if item.id not in dropped_ids], len(dropped_ids)
+        return primitives, 0, 0
+    return [item for item in primitives if item.id not in dropped_ids], len(dropped_ids), by_dimension
 
 
 def _convex_hull(points: tuple[Point2, ...]) -> tuple[Point2, ...]:
@@ -1211,8 +1274,8 @@ def _validated_dimension_decimals(dimension_decimals: int | None) -> int | None:
 
 
 def _validated_label_overlap(label_overlap: str) -> str:
-    if label_overlap not in {"keep", "skip"}:
-        raise ValueError('label_overlap must be "keep" or "skip"')
+    if label_overlap not in {"keep", "skip", "skip_with_dimensions"}:
+        raise ValueError('label_overlap must be "keep", "skip" or "skip_with_dimensions"')
     return label_overlap
 
 

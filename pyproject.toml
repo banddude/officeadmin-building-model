@@ -22,11 +22,15 @@ tables = ["camelot-py>=2,<3"]
 # Heavier layout-model backend, never installed by CI; its tests skip
 # cleanly when docling is absent.
 docling = ["docling>=2,<3"]
-# Point-set sheet registration (CPD initial fit). The RANSAC stage is a
-# small numpy implementation with a fixed per-call seed; OpenCV's
+# Point-set sheet registration (CPD initial fit) and mask-based phase-
+# correlation registration. The RANSAC stage is a small numpy
+# implementation with a fixed per-call seed; OpenCV's
 # estimateAffinePartial2D draws from process-global RNG state and cannot
-# honor the byte-identical determinism contract, so it is not needed here.
-registration = ["pycpd>=2,<3"]
+# honor the byte-identical determinism contract, so it is not used. The
+# deterministic phaseCorrelate path covers the pure-translation mask case.
+# CI already pulls opencv-python-headless transitively via camelot-py, so
+# listing it explicitly adds no new install there.
+registration = ["pycpd>=2,<3", "opencv-python-headless>=4,<6"]
 dev = [
   "pytest>=8,<10",
   "pytest-xdist>=3,<4",

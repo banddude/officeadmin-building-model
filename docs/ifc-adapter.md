@@ -116,6 +116,23 @@ Exporting the same canonical model twice produces byte-identical STEP files. An 
 
 `from_ifc` is unchanged by all of this: it reads identity from canonical metadata, not from property-set or relationship GlobalIds.
 
+## Caller-supplied groups
+
+`to_ifc(..., groups={"ALTERNATES": [...]})` writes caller-supplied groups as standard IFC groups — the IFC counterpart of the GLB exporter's `groups` option, so a Bonsai or Revit user can select, isolate or hide an alternate scope in one click. The exporter never decides what belongs together: it only writes the grouping the caller names. The option maps group name to canonical entity ids, and each group (created sorted by name) becomes:
+
+- one `IfcGroup` with `Name=<name>`, `Description="caller-supplied group"` and a deterministic `GlobalId` from `canonical_id_to_ifc_guid("group:" + name)`;
+- one `IfcRelAssignsToGroup` (deterministic `GlobalId` from `canonical_id_to_ifc_guid("group-rel:" + name)`) whose `RelatedObjects` are the members' IFC products, passed sorted by canonical id. A route member contributes its segment and fitting products — exactly what its `IfcDistributionSystem` already groups — a conductor contributes its own product, and any other id contributes its own product. The group is a selection set over existing products, never new geometry.
+
+An id claimed by two groups raises `IfcAdapterError` before the file is written. Ids that match nothing are ignored; a group whose ids all match nothing still gets its bare `IfcGroup` (so the name is not silently dropped) but no assignment, whose `RelatedObjects` the schema bounds at one or more.
+
+`groups=None` or `{}` changes nothing: the written file is byte-identical to a default export. With groups the export is as byte-deterministic as ever — group and relationship GlobalIds derive from the group name, and the relationship `SET` is written in the deterministic order the byte-determinism pass applies to every relationship.
+
+`from_ifc` ignores these groups: the `IfcGroup` carries `OABM_Adapter` metadata only, no canonical payload, so the groups are not canonical and `round_trip` of a grouped export is exact.
+
+### Hiding a group in a viewer
+
+Group visibility is a viewer action. IFC has no "hidden by default" flag, and this adapter does not invent one. In Bonsai: open the outliner, select the group (for example `ALTERNATES`) — which selects all of its members — and press `H` (Hide Selected) to hide the whole scope; `Alt+H` brings everything back. The same select-then-hide works in any IFC viewer that shows groups.
+
 ## Provenance in IFC
 
 Every exported product that comes from a canonical entity — architecture elements, electrical distribution elements, ports, and the `IfcDistributionSystem`/`IfcDistributionCircuit` of routes and circuits, plus the `IfcProject` model header — also carries a plain custom property set named `OABM_Provenance`. It is an ordinary `IfcPropertySet` of single-value properties, so any IFC viewer (Bonsai, Revit, Navisworks) shows it with no OABM knowledge: a consumer can tell a measured wall from one whose thickness this tool chose without implementing OABM's private format.

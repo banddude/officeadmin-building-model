@@ -193,6 +193,7 @@ def generate_drawing_set(
     label_provider: LabelProvider = default_label_provider,
     dimension_decimals: int | None = None,
     label_overlap: str = "keep",
+    dimension_overlap: str = "keep",
 ) -> DrawingSet:
     """Generate immutable drawing output from canonical model semantics.
 
@@ -200,11 +201,13 @@ def generate_drawing_set(
     primitive and schedule row points back to canonical IDs, making the drawing a
     deterministic projection rather than an alternate source of truth.
 
-    ``dimension_decimals`` and ``label_overlap`` are opt-in presentation options
-    shared by every generated view; see :func:`generate_plan`.
+    ``dimension_decimals``, ``label_overlap``, and ``dimension_overlap`` are
+    opt-in presentation options shared by every generated view; see
+    :func:`generate_plan`.
     """
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
+    dimension_mode = _validated_dimension_overlap(dimension_overlap)
     views: list[DrawingView] = []
     for spec in sorted(tuple(plans), key=lambda item: item.id):
         views.append(
@@ -215,6 +218,7 @@ def generate_drawing_set(
                 label_provider=label_provider,
                 dimension_decimals=decimals,
                 label_overlap=overlap,
+                dimension_overlap=dimension_mode,
             )
         )
     for spec in sorted(tuple(elevations), key=lambda item: item.id):
@@ -226,6 +230,7 @@ def generate_drawing_set(
                 label_provider=label_provider,
                 dimension_decimals=decimals,
                 label_overlap=overlap,
+                dimension_overlap=dimension_mode,
             )
         )
     for spec in sorted(tuple(sections), key=lambda item: item.id):
@@ -237,6 +242,7 @@ def generate_drawing_set(
                 label_provider=label_provider,
                 dimension_decimals=decimals,
                 label_overlap=overlap,
+                dimension_overlap=dimension_mode,
             )
         )
 
@@ -261,6 +267,7 @@ def generate_plan(
     label_provider: LabelProvider = default_label_provider,
     dimension_decimals: int | None = None,
     label_overlap: str = "keep",
+    dimension_overlap: str = "keep",
 ) -> DrawingView:
     """Generate one plan view.
 
@@ -272,14 +279,23 @@ def generate_plan(
     ``label_overlap``: ``"keep"`` (default) places every label; ``"skip"`` drops
     text labels whose estimated box intersects an already kept label's box, in
     sorted source-id order, and reports the count as a ``skipped_labels`` view
-    metadata entry. ``"skip_with_dimensions"`` also counts each dimension's text
-    box as an already kept obstacle before labels are placed (dimensions are
-    never dropped) and adds ``skipped_labels_by_dimension`` with the count of
-    labels skipped for that reason. Symbols, dimensions, and geometry are never
-    dropped.
+    metadata entry. ``"skip_with_dimensions"`` also counts each surviving
+    dimension's text box as an already kept obstacle before labels are placed
+    (dimensions are never dropped by the label pass) and adds
+    ``skipped_labels_by_dimension`` with the count of labels skipped for that
+    reason. Symbols, dimensions, and geometry are never dropped.
+
+    ``dimension_overlap``: ``"keep"`` (default) places every dimension;
+    ``"skip_shorter"`` places dimensions in ``value_m`` descending order (ties
+    by id) and drops any whose estimated text box intersects an already kept
+    dimension's text box, reporting the dropped count as a
+    ``skipped_dimensions`` view metadata entry. Dimension text is evaluated
+    before labels, so ``"skip_with_dimensions"`` only sees the dimensions that
+    survived this pass.
     """
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
+    dimension_mode = _validated_dimension_overlap(dimension_overlap)
     level = _level(model, spec.level_id)
     cut_z = level.elevation_m + spec.cut_height_m
     min_z = level.elevation_m - spec.view_depth_below_m
@@ -314,6 +330,9 @@ def generate_plan(
 
     skipped_labels = 0
     skipped_by_dimension = 0
+    skipped_dimensions = 0
+    if dimension_mode != "keep":
+        dimensions, skipped_dimensions = _drop_overlapping_dimensions(dimensions, spec.scale)
     if overlap != "keep":
         primitives, skipped_labels, skipped_by_dimension = _drop_overlapping_labels(
             primitives, spec.scale, dimensions, with_dimensions=overlap == "skip_with_dimensions"
@@ -327,6 +346,8 @@ def generate_plan(
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
     if overlap == "skip_with_dimensions":
         metadata = metadata + (("skipped_labels_by_dimension", str(skipped_by_dimension)),)
+    if dimension_mode != "keep":
+        metadata = metadata + (("skipped_dimensions", str(skipped_dimensions)),)
 
     return DrawingView(
         id=spec.id,
@@ -348,10 +369,12 @@ def generate_elevation(
     label_provider: LabelProvider = default_label_provider,
     dimension_decimals: int | None = None,
     label_overlap: str = "keep",
+    dimension_overlap: str = "keep",
 ) -> DrawingView:
     """Generate one elevation view; see :func:`generate_plan` for the options."""
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
+    dimension_mode = _validated_dimension_overlap(dimension_overlap)
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
     entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, spec.near_m, spec.far_m))
@@ -375,6 +398,9 @@ def generate_elevation(
             dimensions.extend(_opening_dimensions(entity, frame, bounds, decimals=decimals))
     skipped_labels = 0
     skipped_by_dimension = 0
+    skipped_dimensions = 0
+    if dimension_mode != "keep":
+        dimensions, skipped_dimensions = _drop_overlapping_dimensions(dimensions, spec.scale)
     if overlap != "keep":
         primitives, skipped_labels, skipped_by_dimension = _drop_overlapping_labels(
             primitives, spec.scale, dimensions, with_dimensions=overlap == "skip_with_dimensions"
@@ -387,6 +413,8 @@ def generate_elevation(
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
     if overlap == "skip_with_dimensions":
         metadata = metadata + (("skipped_labels_by_dimension", str(skipped_by_dimension)),)
+    if dimension_mode != "keep":
+        metadata = metadata + (("skipped_dimensions", str(skipped_dimensions)),)
     return DrawingView(
         id=spec.id,
         view_type="elevation",
@@ -407,14 +435,17 @@ def generate_section(
     label_provider: LabelProvider = default_label_provider,
     dimension_decimals: int | None = None,
     label_overlap: str = "keep",
+    dimension_overlap: str = "keep",
 ) -> DrawingView:
     """Generate one section view; see :func:`generate_plan` for the options.
 
-    Sections carry no dimension builders, so ``dimension_decimals`` is validated
-    for interface parity but does not change section output.
+    Sections carry no dimension builders, so ``dimension_decimals`` and
+    ``dimension_overlap`` are validated for interface parity but do not change
+    section output.
     """
     overlap = _validated_label_overlap(label_overlap)
     _validated_dimension_decimals(dimension_decimals)
+    _validated_dimension_overlap(dimension_overlap)
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
     entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, -spec.back_depth_m, spec.depth_m))
@@ -1165,6 +1196,34 @@ def _drop_overlapping_labels(
     return [item for item in primitives if item.id not in dropped_ids], len(dropped_ids), by_dimension
 
 
+def _drop_overlapping_dimensions(
+    dimensions: list[DrawingDimension],
+    scale: float,
+) -> tuple[list[DrawingDimension], int]:
+    """Drop dimensions whose estimated text box hits an already kept one.
+
+    Dimensions are placed in ``value_m`` descending order, ties by id, so the
+    longer measurement wins a collision and the tie winner is deterministic
+    (this is the same box estimate :func:`_dimension_text_box` uses for the
+    label pass). Returns the surviving dimensions and the dropped count for
+    the view's ``skipped_dimensions`` metadata entry. Callers re-sort the
+    survivors for the view, so the placement order stays internal.
+    """
+    if len(dimensions) < 2:
+        return dimensions, 0
+    kept: list[DrawingDimension] = []
+    kept_boxes: list[tuple[float, float, float, float]] = []
+    dropped = 0
+    for dimension in sorted(dimensions, key=lambda item: (-item.value_m, item.id)):
+        box = _dimension_text_box(dimension, scale)
+        if any(_boxes_intersect(box, kept_box) for kept_box in kept_boxes):
+            dropped += 1
+            continue
+        kept.append(dimension)
+        kept_boxes.append(box)
+    return kept, dropped
+
+
 def _convex_hull(points: tuple[Point2, ...]) -> tuple[Point2, ...]:
     unique = sorted(set(points))
     if len(unique) <= 2:
@@ -1277,6 +1336,12 @@ def _validated_label_overlap(label_overlap: str) -> str:
     if label_overlap not in {"keep", "skip", "skip_with_dimensions"}:
         raise ValueError('label_overlap must be "keep", "skip" or "skip_with_dimensions"')
     return label_overlap
+
+
+def _validated_dimension_overlap(dimension_overlap: str) -> str:
+    if dimension_overlap not in {"keep", "skip_shorter"}:
+        raise ValueError('dimension_overlap must be "keep" or "skip_shorter"')
+    return dimension_overlap
 
 
 def _format_dimension_text(value: float, decimals: int | None) -> str:

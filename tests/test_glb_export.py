@@ -2120,3 +2120,122 @@ def test_nonconvex_plate_export_is_deterministic(tmp_path: Path) -> None:
     to_glb(model, first)
     to_glb(model, second)
     assert first.read_bytes() == second.read_bytes()
+
+
+# --- Keyhole (self-touching) cap triangulation (issue #192) -------------------
+
+# An 8x8 square whose slot channel is cut all the way to the centre (4, 4):
+# the slot walls converge there and meet at one shared seam vertex, which the
+# ring therefore visits twice, once per lobe. The strict point-in-triangle
+# test used to block every ear, so the whole plate fell back to the fan.
+_KEYHOLE_PLATE = [
+    (4.0, 4.0), (3.0, 8.0), (0.0, 8.0), (0.0, 0.0), (3.0, 0.0),
+    (4.0, 4.0), (5.0, 0.0), (8.0, 0.0), (8.0, 8.0), (5.0, 8.0),
+]
+
+# A square whose V notch pinches to a tip vertex that lies exactly on the
+# bottom edge instead of repeating it: the seam is a vertex touching an edge.
+_NOTCH_TIP_ON_EDGE_PLATE = [
+    (0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (4.0, 6.0), (3.0, 0.0), (2.0, 6.0), (0.0, 6.0),
+]
+
+# A 10x10 square wrapping a 4x4 hole (a column or core), joined to the outer
+# boundary by a zero-width bridge seam at y = 5: the ring walks in along the
+# bridge, around the hole clockwise, and back out, so it visits (10, 5) and
+# (7, 5) twice. A seam split isolates the hole as a sub-ring wound against
+# the parent; filling it used to cover the hole and inflate the caps to 116
+# instead of the true 84.
+_KEYHOLE_WITH_HOLE_PLATE = [
+    (0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (7.0, 5.0), (7.0, 3.0),
+    (3.0, 3.0), (3.0, 7.0), (7.0, 7.0), (7.0, 5.0), (10.0, 5.0),
+    (10.0, 10.0), (0.0, 10.0),
+]
+
+# Same bridge-around-a-hole walk with different numbers and an asymmetric
+# bridge meeting: a 12x10 square wrapping a 5x6 hole entered off centre.
+_KEYHOLE_WITH_HOLE_OFF_CENTRE_PLATE = [
+    (0.0, 0.0), (12.0, 0.0), (12.0, 4.0), (9.0, 4.0), (9.0, 2.0),
+    (4.0, 2.0), (4.0, 8.0), (9.0, 8.0), (9.0, 4.0), (12.0, 4.0),
+    (12.0, 10.0), (0.0, 10.0),
+]
+
+
+def _assert_ear_clipped_caps(
+    tmp_path: Path,
+    coordinates: list[tuple[float, float]],
+    expected_cap_triangles: int,
+) -> None:
+    to_glb(_plate_model(space=_plate_polygon(coordinates)), tmp_path / "keyhole.glb")
+    parsed = _parse_glb(tmp_path / "keyhole.glb")
+    by_name = _by_name(parsed)
+    node = parsed["gltf"]["nodes"][by_name["space:plates"]]
+    assert "triangulation" not in node["extras"]  # no fan fallback
+    positions = _model_positions(parsed, by_name["space:plates"])
+    z_low, z_high = min(p[2] for p in positions), max(p[2] for p in positions)
+
+    for z in (z_low, z_high):
+        caps = _cap_triangles(positions, z)
+        assert len(caps) == expected_cap_triangles
+        area = math.fsum(_triangle_area_z(cap)[0] for cap in caps)
+        assert area == pytest.approx(_shoelace_area(coordinates), abs=1e-9)
+        for cap in caps:
+            cx = math.fsum(point[0] for point in cap) / 3.0
+            cy = math.fsum(point[1] for point in cap) / 3.0
+            assert _point_in_polygon(cx, cy, coordinates), (cap, cx, cy)
+
+
+def test_keyhole_footprint_ear_clips_without_fallback(tmp_path: Path) -> None:
+    _assert_ear_clipped_caps(tmp_path, _KEYHOLE_PLATE, expected_cap_triangles=6)
+    # 6 cap triangles per cap plus 10 wall quads: (6 + 10) * 6 vertices.
+    parsed = _parse_glb(tmp_path / "keyhole.glb")
+    assert len(_node_positions(parsed, _by_name(parsed)["space:plates"])) == 96
+
+
+def test_keyhole_footprint_export_is_deterministic(tmp_path: Path) -> None:
+    model = _plate_model(space=_plate_polygon(_KEYHOLE_PLATE))
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first)
+    to_glb(model, second)
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_seam_vertex_on_edge_footprint_ear_clips_without_fallback(tmp_path: Path) -> None:
+    _assert_ear_clipped_caps(
+        tmp_path, _NOTCH_TIP_ON_EDGE_PLATE, expected_cap_triangles=4,
+    )
+    # 4 cap triangles per cap plus 7 wall quads: (4 + 7) * 6 vertices.
+    parsed = _parse_glb(tmp_path / "keyhole.glb")
+    assert len(_node_positions(parsed, _by_name(parsed)["space:plates"])) == 66
+
+
+def _assert_keyhole_with_hole_falls_back(
+    tmp_path: Path,
+    coordinates: list[tuple[float, float]],
+    name: str,
+) -> None:
+    to_glb(_plate_model(space=_plate_polygon(coordinates)), tmp_path / name)
+    parsed = _parse_glb(tmp_path / name)
+    node = parsed["gltf"]["nodes"][_by_name(parsed)["space:plates"]]
+    # A seam split that isolates a sub-ring wound against its parent has
+    # found a hole behind the bridge seam. It must never be filled: the
+    # plate falls back to the disclosed fan instead of silently covering
+    # the hole and adding its area on top.
+    assert node["extras"]["triangulation"] == "fan-fallback"
+
+
+def test_keyhole_with_hole_footprint_falls_back_instead_of_filling(
+    tmp_path: Path,
+) -> None:
+    _assert_keyhole_with_hole_falls_back(
+        tmp_path, _KEYHOLE_WITH_HOLE_PLATE, "hole.glb",
+    )
+    _assert_keyhole_with_hole_falls_back(
+        tmp_path, _KEYHOLE_WITH_HOLE_OFF_CENTRE_PLATE, "hole-off-centre.glb",
+    )
+    model = _plate_model(space=_plate_polygon(_KEYHOLE_WITH_HOLE_PLATE))
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first)
+    to_glb(model, second)
+    assert first.read_bytes() == second.read_bytes()

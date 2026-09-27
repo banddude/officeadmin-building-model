@@ -305,6 +305,43 @@ or any other uninterpretable colour omits its metadata key instead of guessing.
 These keys are recognition input only: the provenance attribute mirrors of
 source metadata drop them, so imported model output stays byte-identical.
 
+### Scope of work from stroke gray
+
+Sets that publish no status legend often encode scope in the drafting colour
+itself: new work stroked in black, existing work in a set-specific gray. The
+read-only helper `scope_by_stroke` in
+`oabm.importers.pdf_electrical.scope_by_stroke` applies that rule as a
+parameterized, deterministic classification over an already-extracted
+document. It changes nothing in extraction or recognition; callers use it
+beside the legend-letter `scope_status` reading, not instead of it.
+
+`StrokeScopeRule(new_gray_max=0.1, existing_gray_min=0.2,
+existing_gray_max=0.5)` is a validated frozen dataclass: `new` covers
+`[0, new_gray_max]`, `existing` covers `[existing_gray_min,
+existing_gray_max]`, and the ranges must not overlap, so constructing a rule
+with overlapping or out-of-range bounds raises `ValueError`. Grays between or
+outside the ranges carry no scope.
+
+`scope_by_stroke(document, points_pt, rule, radius_pt=6.0)` takes one
+`(page, x, y)` query per symbol position and returns one verdict per query,
+in query order. A verdict weighs the stroke grays of the stroked vector paths
+on that page within the query radius — measured to the path segments, so a
+mid-stroke symbol still matches — by path length, with the closing segment of
+a closed path included:
+
+- `new` or `existing` when at least 80% of the weighed length falls in the
+  matching range;
+- `ambiguous` when neither range reaches 80%, including when nearby strokes
+  sit between the rule's ranges or carry no usable gray;
+- `unknown` when no nearby stroked path carries a usable `stroke_gray`,
+  including when there are no nearby stroked paths at all.
+
+Only strokes count: filling-only paths are not scope evidence. Every verdict
+reports both length fractions and the number of nearby stroked paths, so an
+ambiguous or unknown reading always shows the evidence it did (or did not)
+have. The function never raises on document data, and identical inputs give
+identical verdicts.
+
 ## API
 
 `extract_pdf(path)` produces deterministic source observations from text,

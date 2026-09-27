@@ -6,7 +6,7 @@ new, existing or to demolish, and the adapter writes the value as the
 standard ``Status`` property of each product's applicable common property
 set, so Bonsai and Revit can filter rework phase with no OABM knowledge.
 These tests pin the default-off byte guarantee, the exact expanded placement
-(outlet, light fixture, wall, and a route's segment products), the
+(outlet, light fixture, wall, and a route's segment and fitting products), the
 caller-error rule, strict EXPRESS validity, the untouched canonical round
 trip, byte determinism with pinned Status-set GlobalIds, and the
 skip/ignore rules for statusless classes and unmatched ids. All content is
@@ -195,3 +195,30 @@ def test_unmatched_ids_and_statusless_classes_are_skipped() -> None:
         if _status_properties(item)
     }
     assert carriers == {canonical_id_to_ifc_guid("device:ti-rec-1")}
+
+
+def test_route_status_reaches_the_fitting_products_too() -> None:
+    # route:ti-r3 turns two corners, so its expansion is three segment
+    # products and two fitting products; the route id must reach both
+    # classes, and nothing beyond them.
+    ifc = to_ifc(_ti_model(), element_status={"route:ti-r3": "NEW"})
+
+    expected = {
+        "route:ti-r3#segment:0": ("Pset_CableCarrierSegmentTypeCommon", "NEW"),
+        "route:ti-r3#segment:1": ("Pset_CableCarrierSegmentTypeCommon", "NEW"),
+        "route:ti-r3#segment:2": ("Pset_CableCarrierSegmentTypeCommon", "NEW"),
+        "fitting:ti-r3-bend-1": ("Pset_CableCarrierFittingTypeCommon", "NEW"),
+        "fitting:ti-r3-bend-2": ("Pset_CableCarrierFittingTypeCommon", "NEW"),
+    }
+    for canonical_id, (pset_name, value) in expected.items():
+        product = _product(ifc, canonical_id)
+        assert _status_properties(product) == [(pset_name, value)], canonical_id
+
+    carriers = {
+        item.GlobalId
+        for item in ifc.by_type("IfcProduct")
+        if _status_properties(item)
+    }
+    assert carriers == {
+        canonical_id_to_ifc_guid(canonical_id) for canonical_id in expected
+    }

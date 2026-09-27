@@ -57,11 +57,11 @@ def _box(x, y, z, sx, sy, sz):
     return Box3D(pose=Pose(position=Point3(x=x, y=y, z=z)), size=Size3(x=sx, y=sy, z=sz))
 
 
-def _wall(wall_id, construction, x0, y0, x1, y1):
+def _wall(wall_id, build, x0, y0, x1, y1):
     axis = (Point3(x=x0, y=y0, z=0), Point3(x=x1, y=y1, z=0))
     return Wall(
         centerline=Polyline3D(points=axis),
-        construction=construction,
+        construction=build,
         height_m=3.0,
         id=wall_id,
         level_id="level:one",

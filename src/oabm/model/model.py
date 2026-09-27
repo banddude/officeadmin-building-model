@@ -223,6 +223,12 @@ def _encode(value: Any) -> Any:
         if isinstance(value, Provenance) and value.scope_paths is None:
             # Legacy records remain byte-identical; absence means entity-wide.
             encoded.pop("scope_paths", None)
+        if isinstance(value, Wall) and value.construction is None:
+            # An unknown construction states nothing, so omit it rather than
+            # writing an explicit null. Every wall recorded before the field
+            # existed serializes byte-identically, keeping the golden
+            # known-answer digests meaningful.
+            encoded.pop("construction", None)
         return encoded
     if isinstance(value, tuple):
         return [_encode(item) for item in value]

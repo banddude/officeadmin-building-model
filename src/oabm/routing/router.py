@@ -22,6 +22,7 @@ from oabm.model import (
     Vector3,
     stable_id,
 )
+from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 
 _EPS = 1e-9
 _ALGORITHM = "deterministic-rectilinear-v1"
@@ -51,6 +52,10 @@ class RoutingOptions:
     corridor_tolerance_m: float = 0.05
     preferred_corridor_discount: float = 0.20
     surface_path_discount: float = 0.05
+    # Cost multiplier for a segment whose midpoint lies inside a glazed wall's
+    # padded bounds. Conduit cannot be concealed in glazing, so glazing is a
+    # soft penalty, never a hard block; use Obstacle for true no-go regions.
+    glazed_wall_penalty: float = 4.0
     soft_obstacle_penalty_factor: float = 3.0
     vertical_cost_factor: float = 1.0
     coordinate_precision: int = 9
@@ -74,6 +79,8 @@ class RoutingOptions:
             value = getattr(self, name)
             if not math.isfinite(value) or not 0 <= value < 1:
                 raise RoutingError(f"{name} must be in [0, 1)")
+        if not math.isfinite(self.glazed_wall_penalty) or self.glazed_wall_penalty <= 0:
+            raise RoutingError("glazed_wall_penalty must be finite and > 0")
         if not math.isfinite(self.vertical_cost_factor) or self.vertical_cost_factor <= 0:
             raise RoutingError("vertical_cost_factor must be finite and > 0")
         if not 3 <= self.coordinate_precision <= 12:
@@ -141,6 +148,7 @@ class _RoutingGeometry:
     required: tuple[_Rule, ...]
     preferred: tuple[_Rule, ...]
     surfaces: tuple[_Rule, ...]
+    glazed: tuple[_Rule, ...] = ()
     bundle: _BundleIndex | None = None
 
 
@@ -358,6 +366,18 @@ def route_between_ports(
         p = options.coordinate_precision
         attributes["bundle_hint_discount"] = float(bundle_hints.discount)
         attributes["bundle_hint_shared_m"] = round(_bundle_shared_m(points, bundle, p), p)
+    if geometry.glazed:
+        # Diagnostic, not an error: the route is valid, but each segment whose
+        # midpoint remains inside a glazed wall's padded bounds is reported so
+        # a caller can review concealment in glazing.
+        glazed_hits = [
+            {"wall_id": rule.id, "segment_index": index}
+            for index, (a, b) in enumerate(zip(points, points[1:]))
+            for rule in geometry.glazed
+            if _segment_midpoint_in_bounds(a, b, rule.bounds)
+        ]
+        if glazed_hits:
+            attributes["route_in_glazed_wall"] = glazed_hits
     route = Route(
         id=route_id,
         route_type=route_type,
@@ -459,6 +479,7 @@ def _collect_routing_geometry(
             )
 
     surfaces: list[_Rule] = []
+    glazed: list[_Rule] = []
     level_by_id = {level.id: level for level in model.levels}
     surface_pad = options.corridor_tolerance_m + route_radius
     for wall in sorted(model.walls, key=lambda item: item.id):
@@ -475,7 +496,12 @@ def _collect_routing_geometry(
             base.max_y,
             base_z + wall.height_m,
         ).expanded(wall.thickness_m / 2 + surface_pad)
-        surfaces.append(_Rule(f"wall:{wall.id}", wall_bounds))
+        if wall.construction == WALL_CONSTRUCTION_GLAZED:
+            # Conduit cannot be concealed in glazing: a glazed wall gets no
+            # surface-pathway rule, only the soft glazed_wall_penalty.
+            glazed.append(_Rule(wall.id, wall_bounds))
+        else:
+            surfaces.append(_Rule(f"wall:{wall.id}", wall_bounds))
     for ceiling in sorted(model.ceilings, key=lambda item: item.id):
         bounds = _geometry_bounds(ceiling.footprint)
         z = sum(point.z for point in ceiling.footprint.points) / len(ceiling.footprint.points)
@@ -495,6 +521,7 @@ def _collect_routing_geometry(
         required=tuple(required),
         preferred=tuple(preferred),
         surfaces=tuple(surfaces),
+        glazed=tuple(glazed),
     )
 
 
@@ -559,6 +586,7 @@ def _candidate_coordinates(
         *geometry.required,
         *geometry.preferred,
         *geometry.surfaces,
+        *geometry.glazed,
     )
     for rule in all_rules:
         bounds = rule.bounds
@@ -791,6 +819,8 @@ def _edge_base_cost(
         cost *= 1.0 - options.preferred_corridor_discount
     if geometry.surfaces and any(_segment_midpoint_in_bounds(a, b, item.bounds) for item in geometry.surfaces):
         cost *= 1.0 - options.surface_path_discount
+    if geometry.glazed and any(_segment_midpoint_in_bounds(a, b, item.bounds) for item in geometry.glazed):
+        cost *= options.glazed_wall_penalty
     if geometry.bundle is not None and _along_bundle(a, b, geometry.bundle, options.coordinate_precision):
         cost *= geometry.bundle.factor
     return cost

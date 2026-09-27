@@ -24,6 +24,13 @@ Drawing output has its own presentation version (`1.0.0`). This is deliberately 
 
 `SymbolProvider` and `LabelProvider` are presentation hooks. They receive canonical entities and the view type and return display-only symbols or labels. Hooks cannot change canonical model objects.
 
+## Opt-in readability options
+
+`generate_drawing_set`, `generate_plan`, `generate_elevation`, and `generate_section` accept two keyword-only presentation options. Both default to off, and defaults leave output byte-identical to the previous generator.
+
+- `dimension_decimals` (`None`, or an integer `0`–`4`). `None` keeps the historic full-precision dimension text (`_fmt_number`). An integer formats each dimension's display text with exactly that many decimals, rounded once with `decimal` `ROUND_HALF_EVEN` applied to the value's shortest repr, so results are deterministic; `0` prints no decimal point (`3`, not `3.0`), and higher precisions keep trailing zeros (`3.10` at 2). `value_m` always keeps full precision — only `text` changes. Values outside `0`–`4` raise `ValueError`.
+- `label_overlap` (`"keep"` or `"skip"`). `"skip"` omits text-label primitives (`annotations:labels`) whose estimated box intersects an already kept label's box. Labels are evaluated in sorted source-id order, so a cluster keeps the label with the lowest source id. A label box is estimated at the view scale `1:s` as `len(text) × char_w` wide by `char_h` tall in model units, where `char_h = 0.0025 m × s` (the 2.5 mm annotated text height on paper) and `char_w = 0.6 × char_h`; the anchor is the SVG start anchor and baseline, so the box spans rightward from it and one `char_h` above it, and boxes that merely touch do not count as overlapping. Symbols, dimensions, and geometry are never dropped. The view's existing `metadata` channel gains a `skipped_labels` entry with the dropped count; no drawing-model field is added. Any other value raises `ValueError`.
+
 ## Schedules
 
 Schedules are stable-ID-sorted views of canonical semantics for rooms, openings, electrical equipment, electrical devices, and circuits. They intentionally do not calculate conduit, cable, or conductor quantities; that belongs to the quantities workstream.

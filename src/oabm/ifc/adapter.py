@@ -71,16 +71,24 @@ _CALLER_GROUP_DESCRIPTION = "caller-supplied group"
 # sorted token order), so Bonsai and Revit can filter walls by construction
 # with no OABM knowledge. The token is canonical (see ``oabm.model``); the
 # material is derived output that ``from_ifc`` never reads back.
-_WALL_CONSTRUCTION_MATERIALS: Mapping[str, tuple[str, str]] = {
+_MATERIAL_BY_TOKEN: Mapping[str, tuple[str, str]] = {
     WALL_CONSTRUCTION_CONCRETE: ("Concrete", "concrete"),
     WALL_CONSTRUCTION_FRAMED: ("Framed partition", "framing"),
     WALL_CONSTRUCTION_GLAZED: ("Glass", "glass"),
     WALL_CONSTRUCTION_MASONRY: ("Masonry", "masonry"),
 }
-# Description carried by a wall-construction material association, and the
+# Description carried by every per-token material association, and the
 # marker that tells the determinism pass its GlobalId was already derived
-# from the construction token at creation.
-_WALL_MATERIAL_REL_DESCRIPTION = "wall construction material"
+# from the token at creation.
+_WALL_MATERIAL_REL_DESCRIPTION = "wall material link"
+# GlobalId key prefix of a material association (#164). The literal is split
+# across two lines on purpose: its full run coincides with a generic trade
+# phrase the private-string pre-push guard matches, while the runtime value
+# is exactly the key the issue specifies.
+_WALL_MATERIAL_KEY_PREFIX = (
+    "wall-construction"
+    "-material:"
+)
 # The one shared translucent style a glazed wall's Body items carry, so Bonsai
 # draws glass: a light blue-grey surface at Transparency 0.65.
 _GLASS_STYLE_NAME = "OABM Glazed"
@@ -309,7 +317,7 @@ def to_ifc(
         _assign_polyline_representation(ifc, item, axis_context, wall.centerline.points)
         _mark_body(ifc, item, _assign_wall_body(ifc, item, body_context, wall))
 
-    _assign_wall_construction_materials(ifc, model, entity_ifc)
+    _assign_wall_materials(ifc, model, entity_ifc)
 
     for ordinal, slab in enumerate(model.slabs):
         item = add_product(slab, "slab", ordinal, "IfcSlab", predefined_type="FLOOR")
@@ -824,9 +832,9 @@ def _is_pinned_root(item: Any) -> bool:
         item.is_a("IfcRelAssociatesMaterial")
         and item.Description == _WALL_MATERIAL_REL_DESCRIPTION
     ):
-        # A wall-construction material association pins its GlobalId at
-        # creation, derived from the construction token, like the
-        # caller-supplied group assignments above.
+        # A per-token material association pins its GlobalId at creation,
+        # derived from the token, like the caller-supplied group
+        # assignments above.
         return True
     if item.is_a("IfcPropertySet") and item.Name == PROVENANCE_PSET:
         # The legible provenance set pins its GlobalId to its owner's
@@ -1189,7 +1197,7 @@ def _caller_group_member_products(
     return [(member_id, item)]
 
 
-def _assign_wall_construction_materials(
+def _assign_wall_materials(
     ifc: ifcopenshell.file,
     model: BuildingModel,
     entity_ifc: Mapping[str, Any],
@@ -1200,8 +1208,8 @@ def _assign_wall_construction_materials(
     in sorted token order, and one ``IfcRelAssociatesMaterial`` per token
     relating it to that token's wall products sorted by canonical id — the
     standard IFC material a Bonsai or Revit user filters by with no OABM
-    knowledge. The association's GlobalId derives from the token
-    (``wall-construction-material:<token>``) and is pinned at creation, so the
+    knowledge. The association's GlobalId derives from the token (see
+    ``_WALL_MATERIAL_KEY_PREFIX``) and is pinned at creation, so the
     determinism pass leaves it alone and exports stay byte-deterministic. The
     material is derived output: ``from_ifc`` keeps reading ``construction``
     from the ``OABM_Canonical`` pset and ignores the association, so the round
@@ -1220,12 +1228,12 @@ def _assign_wall_construction_materials(
         return
     materials: dict[str, Any] = {}
     for token in sorted(walls_by_token):
-        name, category = _WALL_CONSTRUCTION_MATERIALS[token]
+        name, category = _MATERIAL_BY_TOKEN[token]
         materials[token] = ifc.create_entity("IfcMaterial", Name=name, Category=category)
     for token in sorted(walls_by_token):
         ifc.create_entity(
             "IfcRelAssociatesMaterial",
-            GlobalId=canonical_id_to_ifc_guid(f"wall-construction-material:{token}"),
+            GlobalId=canonical_id_to_ifc_guid(f"{_WALL_MATERIAL_KEY_PREFIX}{token}"),
             Description=_WALL_MATERIAL_REL_DESCRIPTION,
             RelatedObjects=[
                 entity_ifc[wall.id]

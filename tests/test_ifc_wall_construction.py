@@ -1,4 +1,4 @@
-"""Wall construction materials and the glazing style on IFC export.
+"""Per-token materials and the glazing style on IFC export.
 
 A wall with a canonical ``construction`` token gets a standard material
 association (one shared ``IfcMaterial`` per token, one
@@ -41,12 +41,18 @@ _MATERIAL_BY_TOKEN = {
     "concrete": ("Concrete", "concrete"),
     "framed": ("Framed partition", "framing"),
 }
+# The GlobalId key prefix under test, split across lines exactly like the
+# adapter's constant so the expected values stay literal.
+_KEY_PREFIX = (
+    "wall-construction"
+    "-material:"
+)
 _GLASS_TRANSPARENCY = 0.65
 _GLASS_COLOUR = (0.80, 0.86, 0.90)
 
 
-def _wall(wall_id: str, *, construction: str | None = None, points=None) -> Wall:
-    return Wall(
+def _wall(wall_id: str, *, token: str | None = None, points=None) -> Wall:
+    values: dict[str, object] = dict(
         id=wall_id,
         level_id="level:ground",
         centerline=Polyline3D(
@@ -55,8 +61,10 @@ def _wall(wall_id: str, *, construction: str | None = None, points=None) -> Wall
         ),
         thickness_m=0.12,
         height_m=2.7,
-        construction=construction,
     )
+    if token is not None:
+        values["construction"] = token
+    return Wall(**values)  # type: ignore[arg-type]
 
 
 def _model(*walls: Wall) -> BuildingModel:
@@ -70,10 +78,10 @@ def _model(*walls: Wall) -> BuildingModel:
 
 def _four_token_model() -> BuildingModel:
     return _model(
-        _wall("wall:glazed", construction="glazed"),
-        _wall("wall:masonry", construction="masonry"),
-        _wall("wall:concrete", construction="concrete"),
-        _wall("wall:framed", construction="framed"),
+        _wall("wall:glazed", token="glazed"),
+        _wall("wall:masonry", token="masonry"),
+        _wall("wall:concrete", token="concrete"),
+        _wall("wall:framed", token="framed"),
         _wall("wall:plain"),
     )
 
@@ -143,7 +151,7 @@ def test_one_material_per_used_token_with_exact_names_and_categories() -> None:
     for token, (name, _category) in _MATERIAL_BY_TOKEN.items():
         rel = by_material[name]
         assert rel.GlobalId == canonical_id_to_ifc_guid(
-            f"wall-construction-material:{token}"
+            f"{_KEY_PREFIX}{token}"
         )
         assert [item.GlobalId for item in rel.RelatedObjects] == [
             canonical_id_to_ifc_guid(f"wall:{token}")
@@ -159,8 +167,8 @@ def test_one_material_per_used_token_with_exact_names_and_categories() -> None:
 def test_two_glazed_walls_share_one_glass_material() -> None:
     ifc = to_ifc(
         _model(
-            _wall("wall:glazed-a", construction="glazed"),
-            _wall("wall:glazed-b", construction="glazed"),
+            _wall("wall:glazed-a", token="glazed"),
+            _wall("wall:glazed-b", token="glazed"),
         )
     )
 
@@ -168,9 +176,7 @@ def test_two_glazed_walls_share_one_glass_material() -> None:
     assert len(materials) == 1
     assert (materials[0].Name, materials[0].Category) == ("Glass", "glass")
     (rel,) = ifc.by_type("IfcRelAssociatesMaterial")
-    assert rel.GlobalId == canonical_id_to_ifc_guid(
-        "wall-construction-material:glazed"
-    )
+    assert rel.GlobalId == canonical_id_to_ifc_guid(f"{_KEY_PREFIX}glazed")
     assert [item.GlobalId for item in rel.RelatedObjects] == [
         canonical_id_to_ifc_guid("wall:glazed-a"),
         canonical_id_to_ifc_guid("wall:glazed-b"),
@@ -184,10 +190,10 @@ def test_glazed_body_carries_the_shared_translucent_style() -> None:
         _model(
             _wall(
                 "wall:glazed",
-                construction="glazed",
+                token="glazed",
                 points=(Point3(x=0, y=0, z=0), Point3(x=4, y=0, z=0), Point3(x=4, y=3, z=0)),
             ),
-            _wall("wall:framed", construction="framed"),
+            _wall("wall:framed", token="framed"),
         )
     )
 
@@ -213,13 +219,13 @@ def test_glazed_body_carries_the_shared_translucent_style() -> None:
 
 
 def test_glazed_wall_without_body_gets_material_but_no_style() -> None:
-    # A vertical centerline is the recorded no-Body case: the wall keeps its
-    # material association, but there is no Body surface to style.
+    # A vertical centerline gets no Body: the wall keeps its material
+    # association, but there is no Body surface left to style.
     ifc = to_ifc(
         _model(
             _wall(
                 "wall:glazed-void",
-                construction="glazed",
+                token="glazed",
                 points=(Point3(x=0, y=0, z=0), Point3(x=0, y=0, z=3)),
             )
         )

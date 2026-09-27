@@ -11,7 +11,7 @@ import numpy as np
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, NamedTuple, Union
 
 from oabm.model import (
     DERIVATION_INFERRED,
@@ -35,6 +35,11 @@ from oabm.importers.pdf_display import (
     PdfPageDisplayTransform,
     page_display_transform,
 )
+
+# The shared colour-luminance rule from the architecture stroke-style work:
+# DeviceGray direct, DeviceRGB mixed 0.299/0.587/0.114, DeviceCMYK converted to
+# RGB first, patterns and anything unparseable unknown.
+from oabm.importers.pdf_architecture.extract import _stroke_gray
 
 POINT_TO_M = 0.0254 / 72.0
 
@@ -725,6 +730,103 @@ _STROKING_PAINT_OPERATORS = frozenset({b"S", b"s", b"B", b"B*", b"b", b"b*"})
 _FILLING_PAINT_OPERATORS = frozenset({b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*"})
 
 
+class _VectorPaintState(NamedTuple):
+    """Colour, alpha, and line-width graphics state of one content stream.
+
+    Saved by ``q`` and restored by ``Q`` and around form XObjects. A colour of
+    None is a pattern or otherwise uninterpretable colour; the corresponding
+    metadata key is omitted rather than guessed.
+    """
+
+    stroke_alpha: float
+    fill_alpha: float
+    stroke_color: tuple[float, ...] | None
+    fill_color: tuple[float, ...] | None
+    line_width: float | None
+
+
+# PDF default graphics state: DeviceGray black in both colour slots and a
+# 1 pt line width.
+_INITIAL_PAINT_STATE = _VectorPaintState(
+    stroke_alpha=1.0,
+    fill_alpha=1.0,
+    stroke_color=(0.0,),
+    fill_color=(0.0,),
+    line_width=1.0,
+)
+
+
+def _initial_color(space: str) -> tuple[float, ...] | None:
+    """The initial colour of a device colour space, None when unknowable."""
+
+    return {
+        "/DeviceGray": (0.0,),
+        "/DeviceRGB": (0.0, 0.0, 0.0),
+        "/DeviceCMYK": (0.0, 0.0, 0.0, 0.0),
+    }.get(space)
+
+
+def _color_components(operands: Sequence[Any]) -> tuple[float, ...] | None:
+    """Numeric colour components of sc/SC/scn/SCN, None for patterns.
+
+    A name or indirect operand paints a pattern, and a malformed component
+    count stays unknown; both omit the colour metadata instead of guessing.
+    """
+
+    values: list[float] = []
+    for operand in operands:
+        if isinstance(operand, bool) or not isinstance(operand, (int, float)):
+            return None
+        value = float(operand)
+        if not math.isfinite(value):
+            return None
+        values.append(value)
+    return tuple(values) if values else None
+
+
+def _displayed_line_width_pt(
+    width: float | None,
+    cm: Sequence[float],
+) -> float | None:
+    """Line width in displayed points: user-space width under the CTM.
+
+    The CTM scales a stroke by sqrt(|det|), the uniform-equivalent factor for
+    rotations and uniform scaling. Rounded to 4 decimals like the architecture
+    line widths.
+    """
+
+    if width is None:
+        return None
+    try:
+        determinant = float(cm[0]) * float(cm[3]) - float(cm[1]) * float(cm[2])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not math.isfinite(determinant):
+        return None
+    return round(width * math.sqrt(abs(determinant)), 4)
+
+
+# Style keys recorded on observations for the shape-class groundwork. They are
+# recognition input only: provenance mirrors of source metadata must not carry
+# them, so every model output stays byte-identical to before.
+_VECTOR_STYLE_METADATA_KEYS = frozenset({"stroke_gray", "fill_gray", "line_width_pt"})
+
+
+def _provenance_vector_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """The observation metadata mirrored into provenance attributes.
+
+    The stroke/fill gray and line width groundwork keys stay observation-only
+    and are dropped here.
+    """
+
+    filtered = {
+        key: value
+        for key, value in metadata.items()
+        if key not in _VECTOR_STYLE_METADATA_KEYS
+    }
+    return {"metadata": filtered} if filtered else {}
+
+
 def _resolved_pdf_object(value: Any) -> Any:
     try:
         return value.get_object()
@@ -806,13 +908,19 @@ def _make_page_visitors(
             tuple[dict[str, Any], ...],
         ]
     ] = []
-    # Constant stroke and fill alpha from ExtGState (/CA, /ca), saved by q/Q
-    # and around each form XObject, which paints with its own resources.
-    stroke_alpha = 1.0
-    fill_alpha = 1.0
-    alpha_stack: list[tuple[float, float]] = []
+    # Paint graphics state: ExtGState constant alpha (/CA, /ca), the stroking
+    # and non-stroking colour, and the line width in user-space points. Saved
+    # by q/Q and around each form XObject, which paints with its own resources.
+    #
+    # Colour operators handled: g/G (DeviceGray), rg/RG (DeviceRGB), k/K
+    # (DeviceCMYK), cs/CS (colour-space switch; the colour resets to that
+    # space's initial value), and sc/SC/scn/SCN (numeric components; a name or
+    # indirect operand is a pattern and stays unknown). w sets the line width.
+    # A gs is honoured for /CA and /ca only; its /LW line width is not tracked.
+    paint_state = _INITIAL_PAINT_STATE
+    state_stack: list[_VectorPaintState] = []
     resource_stack: list[Any] = [_resolved_pdf_object(resources)]
-    form_frames: list[tuple[bool, float, float, int]] = []
+    form_frames: list[tuple[bool, _VectorPaintState, int]] = []
 
     def displayed_graphics_point(
         cm: Sequence[float],
@@ -871,7 +979,12 @@ def _make_page_visitors(
         finish_current()
         pending_subpaths = []
 
-    def emit_paths(operator: bytes, *, close_subpaths: bool = False) -> None:
+    def emit_paths(
+        operator: bytes,
+        cm: Sequence[float],
+        *,
+        close_subpaths: bool = False,
+    ) -> None:
         nonlocal pending_subpaths, vector_counter
         finish_current()
         paint_operator = operator.decode("ascii", errors="replace")
@@ -894,12 +1007,26 @@ def _make_page_visitors(
                 continue
             vector_counter += 1
             metadata: dict[str, Any] = {"paint_operator": paint_operator}
+            # Colour and width are recorded at the paint operator from the
+            # current graphics state; a pattern or unknown colour omits the
+            # key instead of guessing.
+            if operator in _STROKING_PAINT_OPERATORS:
+                stroke_gray = _stroke_gray(paint_state.stroke_color)
+                if stroke_gray is not None:
+                    metadata["stroke_gray"] = stroke_gray
+                line_width_pt = _displayed_line_width_pt(paint_state.line_width, cm)
+                if line_width_pt is not None:
+                    metadata["line_width_pt"] = line_width_pt
+            if operator in _FILLING_PAINT_OPERATORS:
+                fill_gray = _stroke_gray(paint_state.fill_color)
+                if fill_gray is not None:
+                    metadata["fill_gray"] = fill_gray
             # Only a translucent paint is recorded; opaque paths keep their
             # metadata unchanged.
-            if operator in _STROKING_PAINT_OPERATORS and stroke_alpha < 1.0:
-                metadata["stroke_alpha"] = round(stroke_alpha, 6)
-            if operator in _FILLING_PAINT_OPERATORS and fill_alpha < 1.0:
-                metadata["fill_alpha"] = round(fill_alpha, 6)
+            if operator in _STROKING_PAINT_OPERATORS and paint_state.stroke_alpha < 1.0:
+                metadata["stroke_alpha"] = round(paint_state.stroke_alpha, 6)
+            if operator in _FILLING_PAINT_OPERATORS and paint_state.fill_alpha < 1.0:
+                metadata["fill_alpha"] = round(paint_state.fill_alpha, 6)
             if curve_commands:
                 metadata.update(
                     {
@@ -927,25 +1054,87 @@ def _make_page_visitors(
         tm: Sequence[float],
     ) -> None:
         nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
-        nonlocal stroke_alpha, fill_alpha
+        nonlocal paint_state
         operator_counter += 1
 
         if operator == b"q":
-            alpha_stack.append((stroke_alpha, fill_alpha))
+            state_stack.append(paint_state)
             return
         if operator == b"Q":
-            if alpha_stack:
-                stroke_alpha, fill_alpha = alpha_stack.pop()
+            if state_stack:
+                paint_state = state_stack.pop()
             return
         if operator == b"gs" and operands:
             new_stroke, new_fill = _ext_gstate_alpha(
                 resource_stack[-1], str(operands[0])
             )
-            if new_stroke is not None:
-                stroke_alpha = new_stroke
-            if new_fill is not None:
-                fill_alpha = new_fill
+            paint_state = paint_state._replace(
+                stroke_alpha=(
+                    paint_state.stroke_alpha if new_stroke is None else new_stroke
+                ),
+                fill_alpha=paint_state.fill_alpha if new_fill is None else new_fill,
+            )
             return
+
+        if operator == b"G" and operands:
+            paint_state = paint_state._replace(
+                stroke_color=_color_components(operands),
+            )
+            return
+        if operator == b"g" and operands:
+            paint_state = paint_state._replace(
+                fill_color=_color_components(operands),
+            )
+            return
+        if operator == b"RG" and operands:
+            paint_state = paint_state._replace(
+                stroke_color=_color_components(operands),
+            )
+            return
+        if operator == b"rg" and operands:
+            paint_state = paint_state._replace(
+                fill_color=_color_components(operands),
+            )
+            return
+        if operator == b"K" and operands:
+            paint_state = paint_state._replace(
+                stroke_color=_color_components(operands),
+            )
+            return
+        if operator == b"k" and operands:
+            paint_state = paint_state._replace(
+                fill_color=_color_components(operands),
+            )
+            return
+        if operator in {b"CS", b"cs"} and operands:
+            space = str(operands[0])
+            initial = _initial_color(space)
+            if operator == b"CS":
+                paint_state = paint_state._replace(
+                    stroke_color=initial,
+                )
+            else:
+                paint_state = paint_state._replace(
+                    fill_color=initial,
+                )
+            return
+        if operator in {b"SC", b"SCN"} and operands:
+            paint_state = paint_state._replace(stroke_color=_color_components(operands))
+            return
+        if operator in {b"sc", b"scn"} and operands:
+            paint_state = paint_state._replace(fill_color=_color_components(operands))
+            return
+        if operator == b"w" and operands:
+            raw_width = operands[0]
+            if isinstance(raw_width, bool) or not isinstance(raw_width, (int, float)):
+                paint_state = paint_state._replace(line_width=None)
+            else:
+                width = float(raw_width)
+                paint_state = paint_state._replace(
+                    line_width=width if math.isfinite(width) and width >= 0.0 else None
+                )
+            return
+
         if operator == b"Do":
             form_resources = (
                 _form_xobject_resources(resource_stack[-1], str(operands[0]))
@@ -953,7 +1142,7 @@ def _make_page_visitors(
                 else None
             )
             form_frames.append(
-                (form_resources is not None, stroke_alpha, fill_alpha, len(alpha_stack))
+                (form_resources is not None, paint_state, len(state_stack))
             )
             if form_resources is not None:
                 resource_stack.append(form_resources)
@@ -1081,15 +1270,15 @@ def _make_page_visitors(
 
         if operator in {b"s", b"b", b"b*"}:
             current_closed = True
-            emit_paths(operator)
+            emit_paths(operator, cm)
             return
 
         if operator in {b"S", b"B", b"B*"}:
-            emit_paths(operator)
+            emit_paths(operator, cm)
             return
 
         if operator in {b"f", b"F", b"f*"}:
-            emit_paths(operator, close_subpaths=True)
+            emit_paths(operator, cm, close_subpaths=True)
             return
 
         if operator == b"n":
@@ -1101,17 +1290,17 @@ def _make_page_visitors(
         cm: Sequence[float],
         tm: Sequence[float],
     ) -> None:
-        nonlocal stroke_alpha, fill_alpha
+        nonlocal paint_state
         if operator != b"Do" or not form_frames:
             return
-        is_form, saved_stroke, saved_fill, depth = form_frames.pop()
+        is_form, saved_state, depth = form_frames.pop()
         if not is_form:
             return
         # A form XObject paints inside an implicit q/Q with its own resources.
         if len(resource_stack) > 1:
             resource_stack.pop()
-        stroke_alpha, fill_alpha = saved_stroke, saved_fill
-        del alpha_stack[depth:]
+        paint_state = saved_state
+        del state_stack[depth:]
 
     return visitor_text, visitor_operand_before, visitor_operand_after
 
@@ -9723,11 +9912,7 @@ class ElectricalPdfImporter:
                 attributes={
                     "shape": "rectangle",
                     "points_pt": [list(point) for point in vector.points_pt],
-                    **(
-                        {"metadata": dict(vector.metadata)}
-                        if vector.metadata
-                        else {}
-                    ),
+                    **_provenance_vector_metadata(vector.metadata),
                 },
             )
             candidate.merge_source(
@@ -11291,11 +11476,7 @@ class ElectricalPdfImporter:
                     source_kind=vector.source_kind,
                     attributes={
                         "points_pt": [list(point) for point in vector.points_pt],
-                        **(
-                            {"metadata": dict(vector.metadata)}
-                            if vector.metadata
-                            else {}
-                        ),
+                        **_provenance_vector_metadata(vector.metadata),
                     },
                 )
                 for vector in component

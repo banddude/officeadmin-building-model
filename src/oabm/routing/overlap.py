@@ -151,8 +151,49 @@ def _union_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, 
     return merged
 
 
+def member_coverage_intervals(
+    route: Route,
+    *,
+    start: Point3,
+    end: Point3,
+    tolerance_m: float = _DEFAULT_TOLERANCE_M,
+) -> tuple[tuple[float, float], ...]:
+    """One route's own covered sub-intervals of the run from ``start`` to ``end``.
+
+    The run's line is read off the two span endpoints: the one axis whose
+    coordinates differ, and the other two coordinates. The route's own
+    axis-aligned spans on that line are clipped to the run and unioned, so a
+    route that rides the run in several pieces still yields one interval
+    list. This is the per-member half of :func:`find_overlapping_route_runs`'s
+    coverage math; route consolidation (#196) uses it to split each member
+    where its own coverage of a shared run starts and stops.
+    """
+
+    coords = (
+        (start.x, end.x),
+        (start.y, end.y),
+        (start.z, end.z),
+    )
+    moving = [
+        axis for axis in range(3)
+        if abs(coords[axis][1] - coords[axis][0]) > _SEGMENT_EPSILON
+    ]
+    if len(moving) != 1:
+        return ()  # a degenerate span carries no line to measure against
+    axis = moving[0]
+    fixed = tuple(coords[other][0] for other in range(3) if other != axis)
+    lo, hi = sorted((coords[axis][0], coords[axis][1]))
+    clipped = sorted(
+        (max(span.lo, lo), min(span.hi, hi))
+        for span in _axis_spans(route)
+        if span.axis == axis and _same_line(span.fixed, fixed, tolerance_m)
+        and min(span.hi, hi) - max(span.lo, lo) > 0.0
+    )
+    return tuple(_union_intervals(clipped))
+
+
 def _covered_length(
-    route_spans: list[_Span], axis: int, fixed: tuple[float, float],
+    route: Route, axis: int, fixed: tuple[float, float],
     lo: float, hi: float, tolerance_m: float,
 ) -> float:
     """How much of ``[lo, hi]`` the route itself covers on one line.
@@ -161,13 +202,15 @@ def _covered_length(
     run in several pieces counts its coverage once.
     """
 
-    clipped = sorted(
-        (max(span.lo, lo), min(span.hi, hi))
-        for span in route_spans
-        if span.axis == axis and _same_line(span.fixed, fixed, tolerance_m)
-        and min(span.hi, hi) - max(span.lo, lo) > 0.0
+    return math.fsum(
+        high - low
+        for low, high in member_coverage_intervals(
+            route,
+            start=_point(axis, fixed, lo),
+            end=_point(axis, fixed, hi),
+            tolerance_m=tolerance_m,
+        )
     )
-    return math.fsum(high - low for low, high in _union_intervals(clipped))
 
 
 def find_overlapping_route_runs(
@@ -192,6 +235,7 @@ def find_overlapping_route_runs(
     if tolerance_m < 0.0:
         raise ValueError("tolerance_m must be non-negative")
     spans_by_route = {route.id: _axis_spans(route) for route in model.routes}
+    routes_by_id = {route.id: route for route in model.routes}
     by_type: dict[str, list[Route]] = {}
     for route in sorted(model.routes, key=lambda item: item.id):
         by_type.setdefault(route.route_type, []).append(route)
@@ -230,12 +274,12 @@ def find_overlapping_route_runs(
             for lo, hi in _union_intervals(coverage):
                 members = [
                     route_id for route_id in participating
-                    if _covered_length(spans_by_route[route_id], group.axis, group.fixed, lo, hi, tolerance_m) > 0.0
+                    if _covered_length(routes_by_id[route_id], group.axis, group.fixed, lo, hi, tolerance_m) > 0.0
                 ]
                 if len(members) < 2:
                     continue  # a solo stretch of one participant is not a shared run
                 covered = math.fsum(
-                    _covered_length(spans_by_route[route_id], group.axis, group.fixed, lo, hi, tolerance_m)
+                    _covered_length(routes_by_id[route_id], group.axis, group.fixed, lo, hi, tolerance_m)
                     for route_id in members
                 )
                 union = hi - lo

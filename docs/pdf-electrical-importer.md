@@ -515,7 +515,8 @@ classifying as `junction_box_data`.
 sheets of a set carry electrical devices? Per page, in page order, it returns
 a frozen `SheetChoice` (`page`, `sheet_id`, `discipline`, `device_count`,
 `recognized_device_count`, `symbol_like_count`, `included`, `reason`) wrapped
-in a `DeviceSheetSelection` whose `to_dict()` is deterministic.
+in a `DeviceSheetSelection` (`pages`, `import_mode`,
+`import_fallback_reason`) whose `to_dict()` is deterministic.
 
 The document is imported **once**, with the default importer or the
 caller-supplied `importer`, and every canonical device is counted on the page
@@ -528,13 +529,38 @@ another sheet, this counts the devices that a page imported in isolation
 would miss; everywhere else the counts equal per-page isolation (the tests
 assert both).
 
+Selection never raises because the importer refuses the document. The
+whole-document import can legitimately raise `ElectricalPdfError`, most often
+because the same tagged equipment (for example one panel) is drawn on two
+sheets and the importer will not canonicalize one identity from two source
+locations. Selection then falls back to importing each page on its own (every
+other page's observations removed, page numbering and page provenance kept)
+and uses that import's device count. `import_mode` records which path ran:
+`"document"` for the single import, `"per_page_fallback"` otherwise.
+`import_fallback_reason` is `None` for `"document"`; for the fallback it is the
+error class and a fixed short summary, such as `"ElectricalPdfError: the same
+stable semantic identity was recognized at multiple source locations"`, and
+never the importer's message, which quotes source tags. Unrecognized refusals
+get the generic summary `the whole-document import refused the document`. If a
+page's own import also raises, its device count is 0 and an electrical or
+unknown-discipline page is excluded as `import_failed`; other disciplines keep
+`<discipline>_sheet`. Only `ElectricalPdfError` triggers the fallback; any
+other exception is a bug and propagates.
+
 `device_count` and `recognized_device_count` are the same number: devices the
 importer *recognized* on the page. The count is only as good as the importer's
 recall on the set, so `symbol_like_count` sits next to it: the page's symbol
 observations plus its tag-like text observations. A text is tag-like when it
 is a single token of at most ten characters that is either a one-to-three
 character code (`a`, `WP`, `GFI`, `$3`) or a letter-led tag with a digit
-(`RECEPT-1`, `D1`), and is not a printed sheet id. An electrical sheet with
+(`RECEPT-1`, `D1`), and is not a printed sheet id. Common short words and
+drafting abbreviations that fit the code shape are never tag-like, compared
+case-insensitively: `AND`, `THE`, `ALL`, `FOR`, `OF`, `SEE`, `NOT`, `TO`,
+`AT`, `IN`, `ON`, `BY`, `OR`, `NO`, `AS`, `IS`, `BE`, `IF`, `UP`, `SET`,
+`PER`, `VIA`, `TYP`, `EQ`. Without them, an extractor that emits general
+notes word by word would inflate the count on notes-only sheets. A lone `A` is
+deliberately not a stop word, because `a` is a common switch-leg code. An
+electrical sheet with
 zero recognized devices and zero symbol-like observations is empty; one with
 zero recognized devices and many symbol-like observations most likely uses
 symbols the importer does not recognize. `symbol_like_count` is a disclosure
@@ -544,7 +570,14 @@ The discipline comes from the printed sheet-number prefix. A printed sheet id
 is a discipline prefix, a hyphen, and the sheet number (`E-110`, `FP-2`,
 `E-2.1`); unseparated (`E110`) and space-separated (`E 110`) forms are
 deliberately not sheet ids, because unseparated letter+digit tokens are
-dominated by grid bubbles and device tags. The prefixes are `E`/`EL`/`ELEC` →
+dominated by grid bubbles and device tags. A sheet id must also stand alone
+as a token: it may not be preceded by a word character or a hyphen, and it
+may not be followed by a word character, a hyphen, or `.digit`. So a
+panel/circuit callout such as `P-1-12` holds no plumbing sheet `P-1`, and
+`HP-E-3`, `LF-1`, `E-201-4`, `E-2.1.3` and `E-12345` hold no sheet id either;
+two such callouts can never outvote a single title-block sheet number.
+Sentence punctuation after an id is accepted (`SEE E-201.`, `(FP-2)`,
+`SHEET M-101, NOTE 3`). The prefixes are `E`/`EL`/`ELEC` →
 `electrical`, `M` → `mechanical`, `P` → `plumbing`, `FP`/`FA` →
 `fire_protection`, `A`/`ID` → `architectural`, `S` → `structural`, `C` →
 `civil`, matched case-insensitively with the longest prefix first. When a

@@ -15,6 +15,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from oabm.importers.pdf_electrical.importer import (
+    ElectricalPdfError,
     ElectricalPdfImporter,
     PdfElectricalDocument,
     PdfTextObservation,
@@ -23,6 +24,7 @@ from oabm.importers.pdf_electrical.importer import (
 __all__ = [
     "DISCIPLINES",
     "DeviceSheetSelection",
+    "IMPORT_MODES",
     "SheetChoice",
     "TITLE_BLOCK_BAND_FRACTION",
     "select_device_pages",
@@ -121,6 +123,24 @@ _TAG_LIKE_STOP_WORDS: frozenset[str] = frozenset(
 ELECTRICAL_WITH_DEVICES = "electrical_with_devices"
 ELECTRICAL_NO_RECOGNIZED_DEVICES = "electrical_no_recognized_devices"
 UNKNOWN_DISCIPLINE_WITH_DEVICES = "unknown_discipline_with_devices"
+IMPORT_FAILED = "import_failed"
+
+# How device counts were obtained. `document`: one whole-document import.
+# `per_page_fallback`: the whole-document import raised ElectricalPdfError
+# (for example the same tagged panel drawn on two sheets, which the importer
+# correctly refuses to canonicalize), so each page was imported on its own.
+IMPORT_MODES: tuple[str, ...] = ("document", "per_page_fallback")
+
+# Fixed, source-free summaries of known importer refusals, keyed by the
+# importer's own message prefix. The fallback reason never echoes the error
+# message itself, because importer messages quote source tags and text.
+_KNOWN_IMPORT_REFUSALS: tuple[tuple[str, str], ...] = (
+    (
+        "the same stable semantic identity was recognized at multiple source locations",
+        "the same stable semantic identity was recognized at multiple source locations",
+    ),
+)
+_GENERIC_IMPORT_REFUSAL = "the whole-document import refused the document"
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,12 +180,24 @@ class SheetChoice:
 
 @dataclass(frozen=True, slots=True)
 class DeviceSheetSelection:
-    """One :class:`SheetChoice` per page of the source document, in page order."""
+    """One :class:`SheetChoice` per page of the source document, in page order.
+
+    ``import_mode`` is one of :data:`IMPORT_MODES`. ``import_fallback_reason``
+    is ``None`` for a whole-document import; for the per-page fallback it is
+    the error class and a fixed short summary (``"ElectricalPdfError: ..."``)
+    that never contains source text.
+    """
 
     pages: tuple[SheetChoice, ...]
+    import_mode: str = "document"
+    import_fallback_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"pages": [choice.to_dict() for choice in self.pages]}
+        return {
+            "import_mode": self.import_mode,
+            "import_fallback_reason": self.import_fallback_reason,
+            "pages": [choice.to_dict() for choice in self.pages],
+        }
 
 
 def select_device_pages(
@@ -178,8 +210,20 @@ def select_device_pages(
     The document is imported once, with the default importer unless an
     ``importer`` is supplied, and each canonical device is counted on the
     source page its recognition recorded (``pdf_electrical.source_page``,
-    else the page of its first provenance record). Selection rules, in
-    precedence order:
+    else the page of its first provenance record); ``import_mode`` is then
+    ``document``.
+
+    Selection never raises because the importer refuses the document. When
+    the whole-document import raises :class:`ElectricalPdfError` (typically
+    the same tagged equipment drawn on two sheets), each page is imported on
+    its own instead, with every other page's observations removed, and its
+    device count is that import's device count; ``import_mode`` is then
+    ``per_page_fallback`` and ``import_fallback_reason`` names the error
+    class with a fixed, source-free summary. If a single page's own import
+    also raises, that page's device count is 0 and an electrical or
+    unknown-discipline page is excluded as ``import_failed``.
+
+    Selection rules, in precedence order:
 
     - electrical discipline with at least one recognized device -> included,
       ``electrical_with_devices``;
@@ -191,15 +235,36 @@ def select_device_pages(
       ``unknown_discipline_with_devices``, so the sheet is surfaced rather
       than silently used;
     - any other discipline -> excluded, ``<discipline>_sheet``.
+
+    In the per-page fallback, a page whose own import raised is excluded as
+    ``import_failed`` when its discipline is electrical or unknown; any other
+    discipline keeps ``<discipline>_sheet``.
     """
 
     active_importer = importer if importer is not None else ElectricalPdfImporter()
-    model = active_importer.import_document(document)
+    import_mode = "document"
+    import_fallback_reason: str | None = None
+    failed_pages: set[int] = set()
     devices_per_page: dict[int, int] = {}
-    for device in model.electrical_devices:
-        page = _device_source_page(device)
-        if page is not None:
-            devices_per_page[page] = devices_per_page.get(page, 0) + 1
+    try:
+        model = active_importer.import_document(document)
+    except ElectricalPdfError as error:
+        import_mode = "per_page_fallback"
+        import_fallback_reason = _import_fallback_reason(error)
+        for page in range(1, document.page_count + 1):
+            try:
+                page_model = active_importer.import_document(
+                    _page_restriction(document, page)
+                )
+            except ElectricalPdfError:
+                failed_pages.add(page)
+                continue
+            devices_per_page[page] = len(page_model.electrical_devices)
+    else:
+        for device in model.electrical_devices:
+            page = _device_source_page(device)
+            if page is not None:
+                devices_per_page[page] = devices_per_page.get(page, 0) + 1
     texts_by_page: dict[int, list[PdfTextObservation]] = {}
     for text in document.texts:
         texts_by_page.setdefault(text.page, []).append(text)
@@ -221,9 +286,47 @@ def select_device_pages(
                 discipline=discipline,
                 device_count=devices_per_page.get(page, 0),
                 symbol_like_count=symbol_like_count,
+                import_failed=page in failed_pages,
             )
         )
-    return DeviceSheetSelection(pages=tuple(choices))
+    return DeviceSheetSelection(
+        pages=tuple(choices),
+        import_mode=import_mode,
+        import_fallback_reason=import_fallback_reason,
+    )
+
+
+def _import_fallback_reason(error: ElectricalPdfError) -> str:
+    """The error class and a fixed summary; never the message's source text."""
+
+    message = str(error)
+    summary = _GENERIC_IMPORT_REFUSAL
+    for prefix, known_summary in _KNOWN_IMPORT_REFUSALS:
+        if message.startswith(prefix):
+            summary = known_summary
+            break
+    return f"{type(error).__name__}: {summary}"
+
+
+def _page_restriction(
+    document: PdfElectricalDocument,
+    page: int,
+) -> PdfElectricalDocument:
+    """The document with every observation not on ``page`` removed.
+
+    Page numbering and page provenance are kept exactly as extracted, so a
+    restricted page is recognized under the same conditions as in the full
+    document.
+    """
+
+    return PdfElectricalDocument(
+        source_id=document.source_id,
+        page_count=document.page_count,
+        texts=tuple(item for item in document.texts if item.page == page),
+        symbols=tuple(item for item in document.symbols if item.page == page),
+        vectors=tuple(item for item in document.vectors if item.page == page),
+        page_provenance=dict(document.page_provenance),
+    )
 
 
 def _device_source_page(device: Any) -> int | None:
@@ -260,8 +363,12 @@ def _sheet_choice(
     discipline: str,
     device_count: int,
     symbol_like_count: int,
+    import_failed: bool = False,
 ) -> SheetChoice:
-    if discipline == "electrical":
+    if import_failed and discipline in {"electrical", "unknown"}:
+        included = False
+        reason = IMPORT_FAILED
+    elif discipline == "electrical":
         included = device_count >= 1
         reason = (
             ELECTRICAL_WITH_DEVICES if included else ELECTRICAL_NO_RECOGNIZED_DEVICES

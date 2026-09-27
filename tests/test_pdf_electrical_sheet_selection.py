@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from pypdf import PdfWriter
 from pypdf.generic import (
     ArrayObject,
@@ -15,6 +16,7 @@ from pypdf.generic import (
 )
 
 from oabm.importers.pdf_electrical import (
+    ElectricalPdfError,
     ElectricalPdfImporter,
     PdfElectricalDocument,
     PdfSymbolObservation,
@@ -182,6 +184,8 @@ def test_five_page_set_selects_device_sheets_with_reasons(tmp_path: Path) -> Non
     selection = select_device_pages(document)
 
     assert selection.to_dict() == {
+        "import_mode": "document",
+        "import_fallback_reason": None,
         "pages": [
             {
                 "page": 1,
@@ -819,3 +823,136 @@ def test_notes_only_sheet_emitted_word_by_word_has_low_symbol_like_count() -> No
     assert (choice.sheet_id, choice.discipline) == ("E-002", "electrical")
     assert choice.symbol_like_count == 0
     assert choice.reason == "electrical_no_recognized_devices"
+
+
+# --- Whole-document import refusal falls back to per-page imports (PR #182) ---
+
+
+def _same_panel_on_two_sheets() -> PdfElectricalDocument:
+    # One invented panel tag drawn on two electrical sheets, as a panel often
+    # is on several plans. The importer correctly refuses to canonicalize one
+    # identity recognized at two source locations.
+    return _document_with_pages(
+        {
+            "texts": (
+                ("title", "E-101", 560.0, 40.0),
+                ("panel", "PANEL LP", 100.0, 500.0),
+            ),
+            "symbols": (("R1", "DUPLEX RECEPTACLE OUTLET", 300.0, 300.0),),
+        },
+        {
+            "texts": (
+                ("title", "E-102", 560.0, 40.0),
+                ("panel", "PANEL LP", 100.0, 500.0),
+            ),
+            "symbols": (
+                ("R2", "DUPLEX RECEPTACLE OUTLET", 300.0, 300.0),
+                ("R3", "DUPLEX RECEPTACLE OUTLET", 400.0, 300.0),
+            ),
+        },
+        {"texts": (("title", "M-101", 560.0, 40.0),)},
+    )
+
+
+def test_same_tagged_equipment_on_two_pages_falls_back_to_per_page_imports() -> None:
+    document = _same_panel_on_two_sheets()
+    # The plain whole-document import raises; before the fix selection did too.
+    with pytest.raises(ElectricalPdfError, match="same stable semantic identity"):
+        ElectricalPdfImporter().import_document(document)
+
+    importer = _CountingImporter()
+    selection = select_device_pages(document, importer=importer)
+
+    assert importer.calls == 1 + document.page_count
+    assert selection.import_mode == "per_page_fallback"
+    assert selection.import_fallback_reason == (
+        "ElectricalPdfError: the same stable semantic identity was recognized "
+        "at multiple source locations"
+    )
+    counts = [choice.recognized_device_count for choice in selection.pages]
+    assert counts == _isolated_counts(document) == [1, 2, 0]
+    assert [
+        (choice.sheet_id, choice.included, choice.reason) for choice in selection.pages
+    ] == [
+        ("E-101", True, "electrical_with_devices"),
+        ("E-102", True, "electrical_with_devices"),
+        ("M-101", False, "mechanical_sheet"),
+    ]
+    payload = selection.to_dict()
+    assert payload["import_mode"] == "per_page_fallback"
+    assert payload["import_fallback_reason"] == selection.import_fallback_reason
+    # No source text leaks into the reason: not the tag, not the location keys.
+    assert "LP" not in selection.import_fallback_reason
+    assert "p1:" not in selection.import_fallback_reason
+    # Deterministic.
+    assert select_device_pages(document).to_dict() == payload
+
+
+def test_document_import_success_reports_document_mode() -> None:
+    document = _document_with_pages(
+        {
+            "texts": (
+                ("title", "E-101", 560.0, 40.0),
+                ("panel", "PANEL LP", 100.0, 500.0),
+            ),
+            "symbols": (("R1", "DUPLEX RECEPTACLE OUTLET", 300.0, 300.0),),
+        },
+    )
+    importer = _CountingImporter()
+    selection = select_device_pages(document, importer=importer)
+
+    assert importer.calls == 1
+    assert selection.import_mode == "document"
+    assert selection.import_fallback_reason is None
+
+
+class _RefusingImporter(ElectricalPdfImporter):
+    """Refuses the whole document, and also any single page listed in ``refuse_pages``."""
+
+    def __init__(self, refuse_pages: set[int]) -> None:
+        super().__init__()
+        self.refuse_pages = refuse_pages
+
+    def import_document(self, document, *args, **kwargs):  # type: ignore[override]
+        pages = {item.page for item in (*document.texts, *document.symbols)}
+        if len(pages) > 1 or pages & self.refuse_pages:
+            raise ElectricalPdfError("placeholder refusal quoting SOURCE-TAG-9")
+        return super().import_document(document, *args, **kwargs)
+
+
+def test_unknown_refusal_uses_a_generic_source_free_reason() -> None:
+    document = _same_panel_on_two_sheets()
+
+    selection = select_device_pages(document, importer=_RefusingImporter(set()))
+
+    assert selection.import_mode == "per_page_fallback"
+    assert selection.import_fallback_reason == (
+        "ElectricalPdfError: the whole-document import refused the document"
+    )
+    assert "SOURCE-TAG-9" not in str(selection.to_dict())
+    assert [choice.device_count for choice in selection.pages] == [1, 2, 0]
+
+
+def test_page_whose_own_import_raises_is_reported_not_raised() -> None:
+    document = _same_panel_on_two_sheets()
+
+    selection = select_device_pages(document, importer=_RefusingImporter({2, 3}))
+
+    assert selection.import_mode == "per_page_fallback"
+    assert [
+        (choice.device_count, choice.included, choice.reason)
+        for choice in selection.pages
+    ] == [
+        (1, True, "electrical_with_devices"),
+        (0, False, "import_failed"),
+        (0, False, "mechanical_sheet"),
+    ]
+
+
+def test_non_importer_errors_are_not_swallowed() -> None:
+    class _BrokenImporter(ElectricalPdfImporter):
+        def import_document(self, document, *args, **kwargs):  # type: ignore[override]
+            raise RuntimeError("bug")
+
+    with pytest.raises(RuntimeError):
+        select_device_pages(_same_panel_on_two_sheets(), importer=_BrokenImporter())

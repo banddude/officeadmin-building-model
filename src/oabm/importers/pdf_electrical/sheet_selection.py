@@ -24,7 +24,9 @@ __all__ = [
     "DISCIPLINES",
     "DeviceSheetSelection",
     "SheetChoice",
+    "TITLE_BLOCK_BAND_FRACTION",
     "select_device_pages",
+    "sheet_identity",
 ]
 
 # Canonical discipline values, in the order they are documented.
@@ -78,19 +80,47 @@ _DISCIPLINE_WORD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bCIVIL\b", re.IGNORECASE), "civil"),
 )
 
+# The title block is taken to be the band along the displayed right edge or
+# the displayed bottom edge of the sheet, each this fraction of the page's
+# width or height. Only text inside the band can decide the discipline-word
+# fallback, so general notes elsewhere on the sheet that mention another
+# trade do not decide the sheet's discipline.
+TITLE_BLOCK_BAND_FRACTION = 0.15
+
+# Text that looks like a device tag or symbol code: a single token of at most
+# ten characters that is either a one-to-three character code (`a`, `WP`,
+# `GFI`, `$3`) or a letter-led tag carrying a digit (`RECEPT-1`, `LTG-2`,
+# `D1`). Used only for the `symbol_like_count` recall disclosure.
+_TAG_LIKE_TEXT_RE = re.compile(
+    r"[A-Z$][A-Z0-9$]{0,2}|[A-Z$][A-Z0-9$]*[-.]?\d[A-Z0-9.-]*",
+    re.IGNORECASE,
+)
+_TAG_LIKE_TEXT_MAX_CHARS = 10
+
 ELECTRICAL_WITH_DEVICES = "electrical_with_devices"
-ELECTRICAL_NO_DEVICES = "electrical_no_devices"
+ELECTRICAL_NO_RECOGNIZED_DEVICES = "electrical_no_recognized_devices"
 UNKNOWN_DISCIPLINE_WITH_DEVICES = "unknown_discipline_with_devices"
 
 
 @dataclass(frozen=True, slots=True)
 class SheetChoice:
-    """The selection verdict for one page, in page order."""
+    """The selection verdict for one page, in page order.
+
+    ``device_count`` and ``recognized_device_count`` are the same number: the
+    canonical devices the importer recognized on this page. The second name
+    states the limit plainly, next to ``symbol_like_count`` (symbol
+    observations plus tag-like texts the extractor saw on the page), so a
+    caller can tell an empty sheet (both zero) from a sheet whose symbols
+    the importer does not recognize (no devices, many symbol-like
+    observations).
+    """
 
     page: int
     sheet_id: str | None
     discipline: str
     device_count: int
+    recognized_device_count: int
+    symbol_like_count: int
     included: bool
     reason: str
 
@@ -100,6 +130,8 @@ class SheetChoice:
             "sheet_id": self.sheet_id,
             "discipline": self.discipline,
             "device_count": self.device_count,
+            "recognized_device_count": self.recognized_device_count,
+            "symbol_like_count": self.symbol_like_count,
             "included": self.included,
             "reason": self.reason,
         }
@@ -122,16 +154,18 @@ def select_device_pages(
 ) -> DeviceSheetSelection:
     """Select the device-bearing electrical sheets of ``document``.
 
-    Per page, in page order, the device count is the number of canonical
-    devices the importer produces for that page alone: the document is
-    restricted to the page (other pages' observations removed) and imported
-    with the default importer unless an ``importer`` is supplied. Selection
-    rules, in precedence order:
+    The document is imported once, with the default importer unless an
+    ``importer`` is supplied, and each canonical device is counted on the
+    source page its recognition recorded (``pdf_electrical.source_page``,
+    else the page of its first provenance record). Selection rules, in
+    precedence order:
 
-    - electrical discipline with at least one device -> included,
+    - electrical discipline with at least one recognized device -> included,
       ``electrical_with_devices``;
-    - electrical discipline with no devices -> excluded,
-      ``electrical_no_devices``;
+    - electrical discipline with no recognized devices -> excluded,
+      ``electrical_no_recognized_devices`` (compare ``symbol_like_count`` to
+      tell an empty sheet from one whose symbols the importer does not
+      recognize);
     - unknown discipline with at least one device -> excluded,
       ``unknown_discipline_with_devices``, so the sheet is surfaced rather
       than silently used;
@@ -139,42 +173,61 @@ def select_device_pages(
     """
 
     active_importer = importer if importer is not None else ElectricalPdfImporter()
+    model = active_importer.import_document(document)
+    devices_per_page: dict[int, int] = {}
+    for device in model.electrical_devices:
+        page = _device_source_page(device)
+        if page is not None:
+            devices_per_page[page] = devices_per_page.get(page, 0) + 1
+    texts_by_page: dict[int, list[PdfTextObservation]] = {}
+    for text in document.texts:
+        texts_by_page.setdefault(text.page, []).append(text)
+    symbols_per_page: dict[int, int] = {}
+    for symbol in document.symbols:
+        symbols_per_page[symbol.page] = symbols_per_page.get(symbol.page, 0) + 1
+
     choices: list[SheetChoice] = []
     for page in range(1, document.page_count + 1):
-        restriction = _page_restriction(document, page)
-        model = active_importer.import_document(restriction)
-        device_count = len(model.electrical_devices)
-        sheet_id, discipline = _sheet_identity(document, page)
+        page_texts = texts_by_page.get(page, [])
+        sheet_id, discipline = _identity_from_texts(document, page, page_texts)
+        symbol_like_count = symbols_per_page.get(page, 0) + sum(
+            1 for text in page_texts if _looks_tag_like(text.text)
+        )
         choices.append(
             _sheet_choice(
                 page=page,
                 sheet_id=sheet_id,
                 discipline=discipline,
-                device_count=device_count,
+                device_count=devices_per_page.get(page, 0),
+                symbol_like_count=symbol_like_count,
             )
         )
     return DeviceSheetSelection(pages=tuple(choices))
 
 
-def _page_restriction(
-    document: PdfElectricalDocument,
-    page: int,
-) -> PdfElectricalDocument:
-    """The document with every observation not on ``page`` removed.
+def _device_source_page(device: Any) -> int | None:
+    """The source page one imported device was recognized on."""
 
-    Page numbering and page provenance are kept exactly as extracted, so a
-    restricted page is recognized under the same conditions as in the full
-    document.
-    """
+    lane = device.attributes.get("pdf_electrical")
+    if isinstance(lane, Mapping):
+        page = lane.get("source_page")
+        if isinstance(page, int) and not isinstance(page, bool):
+            return page
+    for record in device.provenance:
+        if record.page is not None:
+            return record.page
+    return None
 
-    return PdfElectricalDocument(
-        source_id=document.source_id,
-        page_count=document.page_count,
-        texts=tuple(item for item in document.texts if item.page == page),
-        symbols=tuple(item for item in document.symbols if item.page == page),
-        vectors=tuple(item for item in document.vectors if item.page == page),
-        page_provenance=dict(document.page_provenance),
-    )
+
+def _looks_tag_like(text: str) -> bool:
+    """Whether one text observation looks like a device tag or symbol code."""
+
+    token = text.strip()
+    if not token or len(token) > _TAG_LIKE_TEXT_MAX_CHARS:
+        return False
+    if _SHEET_ID_RE.fullmatch(token):
+        return False
+    return _TAG_LIKE_TEXT_RE.fullmatch(token) is not None
 
 
 def _sheet_choice(
@@ -183,10 +236,13 @@ def _sheet_choice(
     sheet_id: str | None,
     discipline: str,
     device_count: int,
+    symbol_like_count: int,
 ) -> SheetChoice:
     if discipline == "electrical":
         included = device_count >= 1
-        reason = ELECTRICAL_WITH_DEVICES if included else ELECTRICAL_NO_DEVICES
+        reason = (
+            ELECTRICAL_WITH_DEVICES if included else ELECTRICAL_NO_RECOGNIZED_DEVICES
+        )
     elif discipline == "unknown" and device_count >= 1:
         included = False
         reason = UNKNOWN_DISCIPLINE_WITH_DEVICES
@@ -198,21 +254,26 @@ def _sheet_choice(
         sheet_id=sheet_id,
         discipline=discipline,
         device_count=device_count,
+        recognized_device_count=device_count,
+        symbol_like_count=symbol_like_count,
         included=included,
         reason=reason,
     )
 
 
-def _sheet_identity(
+def sheet_identity(
     document: PdfElectricalDocument,
     page: int,
 ) -> tuple[str | None, str]:
     """The printed sheet id and discipline of one page.
 
+    This is the electrical lane's shared sheet-identity function.
+
     Discipline precedence: the prefix of the printed sheet number wins. When
-    a page prints no sheet number, title-block discipline words decide. When
-    neither is present the discipline is ``unknown`` and the sheet id is
-    ``None``.
+    a page prints no sheet number, discipline words inside the title-block
+    band decide (see :data:`TITLE_BLOCK_BAND_FRACTION`); words elsewhere on
+    the sheet are ignored. When neither is present the discipline is
+    ``unknown`` and the sheet id is ``None``.
 
     One printed sheet number usually repeats (title block, border callouts),
     so the page's sheet id is the most frequent candidate. Ties are broken by
@@ -224,6 +285,14 @@ def _sheet_identity(
     """
 
     texts = [item for item in document.texts if item.page == page]
+    return _identity_from_texts(document, page, texts)
+
+
+def _identity_from_texts(
+    document: PdfElectricalDocument,
+    page: int,
+    texts: Sequence[PdfTextObservation],
+) -> tuple[str | None, str]:
     if not texts:
         return None, "unknown"
     candidates = _sheet_id_candidates(texts)
@@ -234,7 +303,13 @@ def _sheet_identity(
         )
         prefix = sheet_id.split("-", 1)[0]
         return sheet_id, _SHEET_PREFIX_DISCIPLINES[prefix]
-    return None, _discipline_word_fallback(texts)
+    return None, _discipline_word_fallback(
+        _title_block_texts(document, page, texts)
+    )
+
+
+# Kept for callers that used the private name before it became public.
+_sheet_identity = sheet_identity
 
 
 def _sheet_id_candidates(
@@ -260,16 +335,54 @@ def _title_block_corner(
 ) -> tuple[float, float]:
     """The displayed bottom-right corner of the page, in page points."""
 
+    _, min_y, max_x, _ = _page_extent(document, page, texts)
+    return max_x, min_y
+
+
+def _page_extent(
+    document: PdfElectricalDocument,
+    page: int,
+    texts: Sequence[PdfTextObservation],
+) -> tuple[float, float, float, float]:
+    """`(min_x, min_y, max_x, max_y)` of the displayed page, in page points.
+
+    Uses the displayed page size from extraction provenance when available,
+    otherwise the extent of the page's own text positions.
+    """
+
     provenance = document.page_provenance.get(page)
     width = provenance.get("displayed_page_width_pt") if provenance else None
     height = provenance.get("displayed_page_height_pt") if provenance else None
     if isinstance(width, (int, float)) and isinstance(height, (int, float)):
-        return float(width), 0.0
-    # Without extraction provenance, fall back to the extent of the page's
-    # own text positions.
-    max_x = max(item.x_pt for item in texts)
-    min_y = min(item.y_pt for item in texts)
-    return max_x, min_y
+        return 0.0, 0.0, float(width), float(height)
+    return (
+        min(item.x_pt for item in texts),
+        min(item.y_pt for item in texts),
+        max(item.x_pt for item in texts),
+        max(item.y_pt for item in texts),
+    )
+
+
+def _title_block_texts(
+    document: PdfElectricalDocument,
+    page: int,
+    texts: Sequence[PdfTextObservation],
+) -> list[PdfTextObservation]:
+    """The texts inside the title-block band of one page.
+
+    The band is the strip along the displayed right edge, plus the strip
+    along the displayed bottom edge, each :data:`TITLE_BLOCK_BAND_FRACTION`
+    of the page's width or height.
+    """
+
+    min_x, min_y, max_x, max_y = _page_extent(document, page, texts)
+    right_band_start = max_x - TITLE_BLOCK_BAND_FRACTION * (max_x - min_x)
+    bottom_band_end = min_y + TITLE_BLOCK_BAND_FRACTION * (max_y - min_y)
+    return [
+        item
+        for item in texts
+        if item.x_pt >= right_band_start or item.y_pt <= bottom_band_end
+    ]
 
 
 def _tally_candidates(
@@ -305,7 +418,10 @@ def _distance_to_corner(
 
 
 def _discipline_word_fallback(texts: Sequence[PdfTextObservation]) -> str:
-    """The most frequent title-block discipline word, ties lexicographic."""
+    """The most frequent discipline word in ``texts``, ties lexicographic.
+
+    Callers pass only the page's title-block texts.
+    """
 
     tally: dict[str, int] = {}
     for observation in texts:

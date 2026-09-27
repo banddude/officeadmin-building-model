@@ -514,40 +514,65 @@ classifying as `junction_box_data`.
 *, importer=None)` answers one question for public callers (#180): which
 sheets of a set carry electrical devices? Per page, in page order, it returns
 a frozen `SheetChoice` (`page`, `sheet_id`, `discipline`, `device_count`,
-`included`, `reason`) wrapped in a `DeviceSheetSelection` whose `to_dict()`
-is deterministic.
+`recognized_device_count`, `symbol_like_count`, `included`, `reason`) wrapped
+in a `DeviceSheetSelection` whose `to_dict()` is deterministic.
 
-`device_count` is the number of canonical devices the importer produces for
-that page alone: the document is restricted to the page (every other page's
-observations removed, page numbering and provenance unchanged) and imported
-with the default importer, or with the caller-supplied `importer`. Callers
-with project-specific `SymbolRule` sets or instance hints therefore get
-counts that match what their own import would produce.
+The document is imported **once**, with the default importer or the
+caller-supplied `importer`, and every canonical device is counted on the page
+its recognition recorded (`attributes.pdf_electrical.source_page`, else the
+page of its first provenance record). The per-page counts therefore add up to
+exactly the devices the caller's own whole-document import produces, and
+callers with project-specific `SymbolRule` sets or instance hints get
+matching counts. On pages whose symbols are resolved only through a legend on
+another sheet, this counts the devices that a page imported in isolation
+would miss; everywhere else the counts equal per-page isolation (the tests
+assert both).
+
+`device_count` and `recognized_device_count` are the same number: devices the
+importer *recognized* on the page. The count is only as good as the importer's
+recall on the set, so `symbol_like_count` sits next to it: the page's symbol
+observations plus its tag-like text observations. A text is tag-like when it
+is a single token of at most ten characters that is either a one-to-three
+character code (`a`, `WP`, `GFI`, `$3`) or a letter-led tag with a digit
+(`RECEPT-1`, `D1`), and is not a printed sheet id. An electrical sheet with
+zero recognized devices and zero symbol-like observations is empty; one with
+zero recognized devices and many symbol-like observations most likely uses
+symbols the importer does not recognize. `symbol_like_count` is a disclosure
+only and never changes a verdict.
 
 The discipline comes from the printed sheet-number prefix. A printed sheet id
-is a discipline prefix, a hyphen, and the sheet number (`E-110`, `FP-2`);
-unseparated (`E110`) and space-separated (`E 110`) forms are deliberately not
-sheet ids, because unseparated letter+digit tokens are dominated by grid
-bubbles and device tags. The prefixes are `E`/`EL`/`ELEC` → `electrical`,
-`M` → `mechanical`, `P` → `plumbing`, `FP`/`FA` → `fire_protection`,
-`A`/`ID` → `architectural`, `S` → `structural`, `C` → `civil`, matched
-case-insensitively with the longest prefix first. When a page prints no
-sheet number, title-block discipline words decide (`ELECTRIC`/`ELECTRICAL`,
-`MECHANICAL`/`HVAC`, `PLUMBING`, `FIRE PROTECTION`/`FIRE ALARM`,
-`ARCHITECTURAL`, `STRUCTURAL`, `CIVIL`); with neither signal the discipline
-is `unknown` and the sheet id is `None`.
+is a discipline prefix, a hyphen, and the sheet number (`E-110`, `FP-2`,
+`E-2.1`); unseparated (`E110`) and space-separated (`E 110`) forms are
+deliberately not sheet ids, because unseparated letter+digit tokens are
+dominated by grid bubbles and device tags. The prefixes are `E`/`EL`/`ELEC` →
+`electrical`, `M` → `mechanical`, `P` → `plumbing`, `FP`/`FA` →
+`fire_protection`, `A`/`ID` → `architectural`, `S` → `structural`, `C` →
+`civil`, matched case-insensitively with the longest prefix first. When a
+page prints no sheet number, discipline words **inside the title-block band**
+decide (`ELECTRIC`/`ELECTRICAL`, `MECHANICAL`/`HVAC`, `PLUMBING`,
+`FIRE PROTECTION`/`FIRE ALARM`, `ARCHITECTURAL`, `STRUCTURAL`, `CIVIL`; most
+frequent wins, ties lexicographic). The band is the strip along the displayed
+right edge plus the strip along the displayed bottom edge, each
+`TITLE_BLOCK_BAND_FRACTION` = 0.15 of the displayed page width or height (the
+page's text extent when extraction provenance has no displayed page size).
+General notes elsewhere on the sheet that name another trade never decide the
+discipline. With neither signal the discipline is `unknown` and the sheet id
+is `None`.
 
 One sheet number usually prints more than once (title block, border
 callouts), so the page's sheet id is the most frequent candidate. Ties are
 broken by the candidate occurrence closest to the displayed bottom-right
 title-block corner (using the extracted displayed page size, falling back to
 the page's text extent when provenance is absent), then lexicographically,
-so the choice is always deterministic.
+so the choice is always deterministic. This rule is exposed as
+`sheet_identity(document, page) -> (sheet_id, discipline)`, the electrical
+lane's shared sheet-identity function.
 
 Selection rules, in precedence order: an electrical sheet with at least one
-device is included (`electrical_with_devices`); an electrical sheet with no
-devices is excluded (`electrical_no_devices`); an unknown-discipline page
-with devices is excluded as `unknown_discipline_with_devices` so it is
-surfaced rather than silently used; any other discipline is excluded as
-`<discipline>_sheet`. The module reads only extracted observations and never
+recognized device is included (`electrical_with_devices`); an electrical
+sheet with no recognized devices is excluded
+(`electrical_no_recognized_devices`); an unknown-discipline page with devices
+is excluded as `unknown_discipline_with_devices` so it is surfaced rather than
+silently used; any other discipline is excluded as `<discipline>_sheet`. The
+module reads only extracted observations and the importer's output and never
 changes importer behaviour; default import output stays byte-identical.

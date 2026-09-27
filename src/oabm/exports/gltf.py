@@ -1293,6 +1293,33 @@ def _plan_is_convex(plan: list[tuple[float, float]]) -> bool:
     return sign != 0
 
 
+def _plan_same_point(
+    a: tuple[float, float],
+    b: tuple[float, float],
+) -> bool:
+    """True when two plan points coincide within ``_PLAN_EPSILON``."""
+
+    return (
+        abs(a[0] - b[0]) <= _PLAN_EPSILON and abs(a[1] - b[1]) <= _PLAN_EPSILON
+    )
+
+
+def _plan_point_on_segment(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    point: tuple[float, float],
+) -> bool:
+    """True when ``point`` touches segment ``a``-``b`` within ``_PLAN_EPSILON``."""
+
+    length = math.hypot(b[0] - a[0], b[1] - a[1])
+    if length <= _PLAN_EPSILON:
+        return False
+    if abs(_plan_cross(a, b, point)) / length > _PLAN_EPSILON:
+        return False
+    along = (point[0] - a[0]) * (b[0] - a[0]) + (point[1] - a[1]) * (b[1] - a[1])
+    return -_PLAN_EPSILON * length <= along <= length * length + _PLAN_EPSILON * length
+
+
 def _plan_is_ear(
     plan: list[tuple[float, float]],
     ring: list[int],
@@ -1310,6 +1337,10 @@ def _plan_is_ear(
         if index in corner:
             continue
         point = plan[index]
+        if any(_plan_same_point(point, other) for other in (previous, current, following)):
+            # A seam can put a second ring entry on the very spot of an ear
+            # corner; it is the same point of the polygon, so it never blocks.
+            continue
         if (
             _plan_cross(previous, current, point) >= -_PLAN_EPSILON
             and _plan_cross(current, following, point) >= -_PLAN_EPSILON
@@ -1319,19 +1350,13 @@ def _plan_is_ear(
     return True
 
 
-def _plan_ear_triangles(
+def _plan_clean_ring(
     plan: list[tuple[float, float]],
-) -> list[tuple[int, int, int]] | None:
-    """Deterministic ear-clip triangulation of a plan ring, or None.
+    ring: list[int],
+) -> list[int] | None:
+    """Drop consecutive duplicate and collinear vertices until stable, so
+    every candidate ear corner is a well-defined turn."""
 
-    Returns index triangles in CCW order, or None when the footprint is
-    degenerate or self-intersecting so badly that no ear can be clipped; the
-    caller then falls back to the fan instead of raising.
-    """
-
-    # Drop consecutive duplicate and collinear vertices until stable, so
-    # every candidate ear corner is a well-defined turn.
-    ring: list[int] = list(range(len(plan)))
     while True:
         if len(ring) < 3:
             return None
@@ -1351,17 +1376,54 @@ def _plan_ear_triangles(
                 continue
             kept.append(index)
         if not changed:
-            break
+            return kept
         ring = kept
-    area = math.fsum(
-        plan[ring[position]][0] * plan[ring[(position + 1) % len(ring)]][1]
-        - plan[ring[(position + 1) % len(ring)]][0] * plan[ring[position]][1]
-        for position in range(len(ring))
-    )
-    if abs(area) <= 2.0 * _PLAN_EPSILON:
-        return None
-    if area < 0.0:
-        ring.reverse()
+
+
+def _plan_seam_subrings(
+    plan: list[tuple[float, float]],
+    ring: list[int],
+) -> list[list[int]] | None:
+    """Split a self-touching ring at its first seam, or None when it is simple.
+
+    A seam is a vertex that touches another vertex of the same ring, or lies
+    on another edge of the same ring, within ``_PLAN_EPSILON``; adjacent
+    positions never count because the cleanup already removed those. Both
+    sub-rings still index ``plan``, and their caps together cover exactly the
+    footprint: an edge touch is split by re-using the touching vertex's own
+    index, so no new coordinate is ever invented.
+    """
+
+    count = len(ring)
+    for first in range(count):
+        for second in range(first + 1, count):
+            if second - first == 1 or (first == 0 and second == count - 1):
+                continue  # adjacent positions share an edge, not a seam
+            if _plan_same_point(plan[ring[first]], plan[ring[second]]):
+                return [ring[first:second], ring[second:] + ring[:first]]
+    for position in range(count):
+        point = plan[ring[position]]
+        for start in range(count):
+            end = (start + 1) % count
+            if position in (start, end):
+                continue  # an edge never seams with its own endpoints
+            if not _plan_point_on_segment(plan[ring[start]], plan[ring[end]], point):
+                continue
+            split = ring[:end] + [ring[position]] + ring[end:]
+            if position < end:
+                first, second = position, end
+            else:
+                first, second = end, position + 1
+            return [split[first:second], split[second:] + split[:first]]
+    return None
+
+
+def _plan_clip_ring(
+    plan: list[tuple[float, float]],
+    ring: list[int],
+) -> list[tuple[int, int, int]] | None:
+    """Deterministic ear clipping of an already cleaned CCW ring."""
+
     triangles: list[tuple[int, int, int]] = []
     while len(ring) > 3:
         # Lowest remaining index first, so the clip order is deterministic.
@@ -1384,6 +1446,57 @@ def _plan_ear_triangles(
     return triangles
 
 
+def _plan_ring_triangles(
+    plan: list[tuple[float, float]],
+    ring: list[int],
+) -> list[tuple[int, int, int]] | None:
+    """Ear-clip one plan ring, splitting it at self-touching seams first.
+
+    Each seam split shrinks the rings, so the recursion is bounded; if any
+    sub-ring still cannot be clipped the whole ring reports failure and the
+    caller falls back to the fan.
+    """
+
+    ring = _plan_clean_ring(plan, ring)
+    if ring is None:
+        return None
+    area = math.fsum(
+        plan[ring[position]][0] * plan[ring[(position + 1) % len(ring)]][1]
+        - plan[ring[(position + 1) % len(ring)]][0] * plan[ring[position]][1]
+        for position in range(len(ring))
+    )
+    if abs(area) <= 2.0 * _PLAN_EPSILON:
+        return None
+    if area < 0.0:
+        ring.reverse()
+    subrings = _plan_seam_subrings(plan, ring)
+    if subrings is not None:
+        triangles: list[tuple[int, int, int]] = []
+        for subring in subrings:
+            sub_triangles = _plan_ring_triangles(plan, subring)
+            if sub_triangles is None:
+                return None
+            triangles.extend(sub_triangles)
+        return triangles
+    return _plan_clip_ring(plan, ring)
+
+
+def _plan_ear_triangles(
+    plan: list[tuple[float, float]],
+) -> list[tuple[int, int, int]] | None:
+    """Deterministic ear-clip triangulation of a plan ring, or None.
+
+    Returns index triangles in CCW order. A keyhole ring — one that touches
+    itself at a seam, through a repeated vertex or a vertex lying on another
+    edge — is split at the seam into simple sub-rings that are ear-clipped
+    independently. Returns None when the footprint is degenerate or
+    self-intersecting so badly that no ear can be clipped; the caller then
+    falls back to the fan instead of raising.
+    """
+
+    return _plan_ring_triangles(plan, list(range(len(plan))))
+
+
 def _prism_vertices(
     points: tuple[Point3, ...],
     z_bottom: float,
@@ -1392,10 +1505,12 @@ def _prism_vertices(
     """Prism over a plan footprint; returns ``(vertices, triangulation)``.
 
     Convex footprints keep the vertex-0 fan exactly, so existing exports stay
-    byte-identical. Non-convex simple footprints get deterministic ear
-    clipping with the fan's cap winding (bottom faces down, top faces up);
-    degenerate or self-intersecting footprints fall back to the fan and
-    report ``"fan-fallback"`` so the node can disclose it in ``extras``.
+    byte-identical. Non-convex footprints get deterministic ear clipping with
+    the fan's cap winding (bottom faces down, top faces up); a keyhole ring
+    that touches itself at a seam is split into simple sub-rings first and
+    each sub-ring is ear-clipped. Degenerate or still-unclippable footprints
+    fall back to the fan and report ``"fan-fallback"`` so the node can
+    disclose it in ``extras``.
     """
 
     plan = [(point.x, point.y) for point in points]

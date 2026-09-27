@@ -1929,3 +1929,70 @@ def test_nonconvex_plate_export_is_deterministic(tmp_path: Path) -> None:
     to_glb(model, first)
     to_glb(model, second)
     assert first.read_bytes() == second.read_bytes()
+
+
+# --- Keyhole (self-touching) cap triangulation (issue #192) -------------------
+
+# An 8x8 square whose slot channel is cut all the way to the centre (4, 4):
+# the slot walls converge there and meet at one shared seam vertex, which the
+# ring therefore visits twice, once per lobe. The strict point-in-triangle
+# test used to block every ear, so the whole plate fell back to the fan.
+_KEYHOLE_PLATE = [
+    (4.0, 4.0), (3.0, 8.0), (0.0, 8.0), (0.0, 0.0), (3.0, 0.0),
+    (4.0, 4.0), (5.0, 0.0), (8.0, 0.0), (8.0, 8.0), (5.0, 8.0),
+]
+
+# A square whose V notch pinches to a tip vertex that lies exactly on the
+# bottom edge instead of repeating it: the seam is a vertex touching an edge.
+_NOTCH_TIP_ON_EDGE_PLATE = [
+    (0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (4.0, 6.0), (3.0, 0.0), (2.0, 6.0), (0.0, 6.0),
+]
+
+
+def _assert_ear_clipped_caps(
+    tmp_path: Path,
+    coordinates: list[tuple[float, float]],
+    expected_cap_triangles: int,
+) -> None:
+    to_glb(_plate_model(space=_plate_polygon(coordinates)), tmp_path / "keyhole.glb")
+    parsed = _parse_glb(tmp_path / "keyhole.glb")
+    by_name = _by_name(parsed)
+    node = parsed["gltf"]["nodes"][by_name["space:plates"]]
+    assert "triangulation" not in node["extras"]  # no fan fallback
+    positions = _model_positions(parsed, by_name["space:plates"])
+    z_low, z_high = min(p[2] for p in positions), max(p[2] for p in positions)
+
+    for z in (z_low, z_high):
+        caps = _cap_triangles(positions, z)
+        assert len(caps) == expected_cap_triangles
+        area = math.fsum(_triangle_area_z(cap)[0] for cap in caps)
+        assert area == pytest.approx(_shoelace_area(coordinates), abs=1e-9)
+        for cap in caps:
+            cx = math.fsum(point[0] for point in cap) / 3.0
+            cy = math.fsum(point[1] for point in cap) / 3.0
+            assert _point_in_polygon(cx, cy, coordinates), (cap, cx, cy)
+
+
+def test_keyhole_footprint_ear_clips_without_fallback(tmp_path: Path) -> None:
+    _assert_ear_clipped_caps(tmp_path, _KEYHOLE_PLATE, expected_cap_triangles=6)
+    # 6 cap triangles per cap plus 10 wall quads: (6 + 10) * 6 vertices.
+    parsed = _parse_glb(tmp_path / "keyhole.glb")
+    assert len(_node_positions(parsed, _by_name(parsed)["space:plates"])) == 96
+
+
+def test_keyhole_footprint_export_is_deterministic(tmp_path: Path) -> None:
+    model = _plate_model(space=_plate_polygon(_KEYHOLE_PLATE))
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first)
+    to_glb(model, second)
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_seam_vertex_on_edge_footprint_ear_clips_without_fallback(tmp_path: Path) -> None:
+    _assert_ear_clipped_caps(
+        tmp_path, _NOTCH_TIP_ON_EDGE_PLATE, expected_cap_triangles=4,
+    )
+    # 4 cap triangles per cap plus 7 wall quads: (4 + 7) * 6 vertices.
+    parsed = _parse_glb(tmp_path / "keyhole.glb")
+    assert len(_node_positions(parsed, _by_name(parsed)["space:plates"])) == 66

@@ -67,8 +67,9 @@ and with all options at their defaults the output is byte-identical to the
 plain export. Display choices are labeled rendering parameters, never silent
 constants, and none of them flow back into the canonical model, IFC or
 quantities (the #88 ruling). The summary dict reports `reference_planes`,
-`dimmed` and `emphasized` counts, and — when grouping is requested — the
-`groups` member counts and `unmatched_group_ids`.
+`dimmed` and `emphasized` counts, `glazed_outlines` while the glazed outline
+option is on, and — when grouping is requested — the `groups` member counts
+and `unmatched_group_ids`.
 
 ### Reference planes
 
@@ -169,6 +170,28 @@ A glazed wall the caller dims keeps its glass look: the effective alpha is
 translucent, never more opaque or grey, and the material is named
 `wall-glazed-dimmed`. The wall counts in the `dimmed` summary like every
 other dimmed entity. Walls without the glazed token are not dimmable.
+
+### Glazed wall outline
+
+`glazed_outline=True` draws one extra node per glazed wall, named
+`outline:<wall id>`: a line list (primitive `mode: 1`) tracing the wall
+prism's 12 edges — 4 along the bottom ring, 4 along the top, 4 verticals, 24
+line vertices with no indices. The line endpoints are the same prism corners
+the wall mesh is built from, so the outline always sits exactly on the
+glass, and the wall mesh itself is unchanged.
+
+Every outline shares one opaque material, `wall-glazed-outline`: a darker
+blue (0.15, 0.40, 0.70) than the glass, alpha 1 with `alphaMode: "OPAQUE"`,
+unlit only when the file already uses `KHR_materials_unlit`, otherwise plain
+PBR. The outline node discloses itself in `extras`: `display` =
+`"glazed outline"` and `source` (the wall's canonical id). A caller group
+that reparents a glazed wall takes the wall's outline node with it, so
+hiding the group hides wall and outline together. Framed, masonry, concrete
+and token-less walls get no outline.
+
+The summary reports the outline count as `glazed_outlines` while the option
+is on; with the option off the export is byte-identical to the plain one and
+the key is absent.
 
 ### Low-voltage device colour
 

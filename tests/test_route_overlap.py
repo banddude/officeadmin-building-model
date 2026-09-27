@@ -112,6 +112,44 @@ def test_quantities_warn_once_per_type_with_the_double_counted_length() -> None:
     assert sum(route_items.values()) == pytest.approx(69.0)
 
 
+# One route rides the whole 0-20 m line; a second joins it for the 5-10 m
+# stretch and a third rejoins for the 15-20 m stretch. The pairwise overlaps
+# are disjoint, but the full-line route's coverage bridges them into one
+# maximal run, and the double count is the exact coverage surplus (30 m of
+# member coverage on a 20 m union), not members-minus-one times length (40 m).
+PARTIAL_COVER_TRUNK = (
+    ((0.0, 0.0, 3.0), (20.0, 0.0, 3.0)),
+    ((5.0, 0.0, 3.0), (10.0, 0.0, 3.0)),
+    ((15.0, 0.0, 3.0), (20.0, 0.0, 3.0)),
+)
+
+
+def test_double_count_is_the_exact_coverage_not_members_times_length() -> None:
+    model = _model_with_routes(*PARTIAL_COVER_TRUNK)
+    runs = find_overlapping_route_runs(model)
+
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.route_ids == ("route:overlap-0", "route:overlap-1", "route:overlap-2")
+    assert run.shared_length_m == pytest.approx(20.0)
+    assert (run.start.x, run.start.y, run.start.z) == pytest.approx((0.0, 0.0, 3.0))
+    assert (run.end.x, run.end.y, run.end.z) == pytest.approx((20.0, 0.0, 3.0))
+    # Covered inside the run: 20 + 5 + 5 = 30 m against the 20 m union.
+    assert run.double_counted_length_m == pytest.approx(10.0)
+
+
+def test_warning_reports_the_actual_overlap_length() -> None:
+    model = _model_with_routes(*PARTIAL_COVER_TRUNK)
+    report = extract_quantities(model)
+
+    overlap_warnings = [w for w in report.warnings if w.code == "overlapping_route_runs"]
+    assert len(overlap_warnings) == 1
+    message = overlap_warnings[0].message
+    assert "20.00 m" in message
+    assert "10.00 m" in message
+    assert "more conduit than the shared runs occupy" in message
+
+
 def test_routes_touching_only_at_an_endpoint_do_not_overlap() -> None:
     model = _model_with_routes(
         ((0.0, 0.0, 3.0), (10.0, 0.0, 3.0)),

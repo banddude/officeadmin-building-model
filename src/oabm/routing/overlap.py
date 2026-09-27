@@ -9,6 +9,7 @@ never mutates the model, never invents routes, and never decides a fix.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from oabm.model import BuildingModel, Point3, Route
@@ -28,13 +29,18 @@ class RouteOverlap:
     """One maximal shared run between two or more same-type routes.
 
     ``start`` and ``end`` are the run's span endpoints (the varying axis
-    moves between them); ``shared_length_m`` is their distance. ``route_ids``
-    is sorted.
+    moves between them); ``shared_length_m`` is their distance, the run's
+    union length. ``route_ids`` is sorted. ``double_counted_length_m`` is
+    the exact coverage surplus: the sum over member routes of each route's
+    covered length inside the run (its own spans unioned, so a route riding
+    the run in several pieces counts once) minus the run's union length --
+    the conduit a per-route takeoff counts more than once.
     """
 
     route_ids: tuple[str, ...]
     route_type: str
     shared_length_m: float
+    double_counted_length_m: float
     start: Point3
     end: Point3
 
@@ -87,56 +93,81 @@ def _point(axis: int, fixed: tuple[float, float], at: float) -> Point3:
 
 
 @dataclass(frozen=True, slots=True)
-class _Cluster:
-    """A growing maximal run: one reference line plus one merged extent."""
+class _LineGroup:
+    """Pairwise spans that sit on one reference line (within tolerance)."""
 
     axis: int
-    fixed: tuple[float, float]
-    lo: float
-    hi: float
+    fixed: tuple[float, float]  # the reference line, the first span's
     spans: tuple[_Span, ...]
 
 
-def _cluster_spans(spans: list[_Span], tolerance_m: float) -> list[_Cluster]:
-    """Merge spans into clusters of overlapping extents on one reference line.
+def _line_groups(pairwise: list[_Span], tolerance_m: float) -> list[_LineGroup]:
+    """Group pairwise spans onto their lines.
 
-    Spans merge when they are collinear within ``tolerance_m`` of the
-    cluster's reference line and their extents genuinely overlap (more than
-    the tolerance, so two runs that merely touch stay separate). The
-    reference line is the first span's, in deterministic input order; graded
-    extents union their member routes into one maximal run.
+    Spans join the group whose reference line (the first span's, in
+    deterministic input order) they sit on within ``tolerance_m``.
     """
 
-    clusters: list[_Cluster] = []
-    for span in sorted(spans, key=lambda item: (item.fixed, item.lo, item.hi, sorted(item.routes))):
-        target = None
-        for index, cluster in enumerate(clusters):
-            if cluster.axis != span.axis:
-                continue
-            if not _same_line(cluster.fixed, span.fixed, tolerance_m):
-                continue
-            if min(cluster.hi, span.hi) - max(cluster.lo, span.lo) <= tolerance_m:
-                continue
-            target = index
-            break
-        if target is None:
-            clusters.append(_Cluster(
-                axis=span.axis,
-                fixed=span.fixed,
-                lo=span.lo,
-                hi=span.hi,
-                spans=(span,),
-            ))
-            continue
-        merged = clusters[target]
-        clusters[target] = _Cluster(
-            axis=merged.axis,
-            fixed=merged.fixed,
-            lo=min(merged.lo, span.lo),
-            hi=max(merged.hi, span.hi),
-            spans=merged.spans + (span,),
+    groups: list[_LineGroup] = []
+    for span in sorted(pairwise, key=lambda item: (item.fixed, item.lo, item.hi, sorted(item.routes))):
+        target = next(
+            (index for index, group in enumerate(groups)
+             if group.axis == span.axis and _same_line(group.fixed, span.fixed, tolerance_m)),
+            None,
         )
-    return clusters
+        if target is None:
+            groups.append(_LineGroup(axis=span.axis, fixed=span.fixed, spans=(span,)))
+            continue
+        joined = groups[target]
+        groups[target] = _LineGroup(axis=joined.axis, fixed=joined.fixed, spans=joined.spans + (span,))
+    return groups
+
+
+def _coverage_intervals(
+    route_spans: list[_Span], axis: int, fixed: tuple[float, float], tolerance_m: float,
+) -> list[tuple[float, float]]:
+    """One route's own spans on one line, as sorted ``(lo, hi)`` intervals."""
+
+    return sorted(
+        (span.lo, span.hi)
+        for span in route_spans
+        if span.axis == axis and _same_line(span.fixed, fixed, tolerance_m)
+    )
+
+
+def _union_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Merge intervals where they overlap or touch.
+
+    A route's consecutive centerline segments share an endpoint, so its own
+    coverage is continuous across them; a touch merges, not splits.
+    """
+
+    merged: list[tuple[float, float]] = []
+    for lo, hi in intervals:
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def _covered_length(
+    route_spans: list[_Span], axis: int, fixed: tuple[float, float],
+    lo: float, hi: float, tolerance_m: float,
+) -> float:
+    """How much of ``[lo, hi]`` the route itself covers on one line.
+
+    Its own spans clipped to the run and unioned: a route that covers the
+    run in several pieces counts its coverage once.
+    """
+
+    clipped = sorted(
+        (max(span.lo, lo), min(span.hi, hi))
+        for span in route_spans
+        if span.axis == axis and _same_line(span.fixed, fixed, tolerance_m)
+        and min(span.hi, hi) - max(span.lo, lo) > 0.0
+    )
+    return math.fsum(high - low for low, high in _union_intervals(clipped))
 
 
 def find_overlapping_route_runs(
@@ -149,9 +180,13 @@ def find_overlapping_route_runs(
     Every pair of same-type routes is checked for axis-aligned centerline
     segments that are collinear within ``tolerance_m`` and genuinely overlap
     (an intersection no longer than ``tolerance_m`` is a touch, not a
-    share). Pairwise spans are then merged into maximal shared runs, each
-    listing the union of the routes that ride it. Deterministic ordering;
-    the model is never mutated.
+    share). The pairwise spans group onto their lines, and each maximal run
+    is a connected component of the union of the participating routes' own
+    coverage on its line: one route riding the whole corridor merges the
+    stretches it shares with different routes into a single run. Each run
+    lists its members, the union length, and the exact coverage surplus a
+    per-route takeoff double-counts. Deterministic ordering; the model is
+    never mutated.
     """
 
     if tolerance_m < 0.0:
@@ -184,17 +219,35 @@ def find_overlapping_route_runs(
                             hi=hi,
                             routes=span_first.routes | span_second.routes,
                         ))
-        for cluster in _cluster_spans(pairwise, tolerance_m):
-            members = sorted({route_id for span in cluster.spans for route_id in span.routes})
-            if len(members) < 2:
-                continue  # defensive: every pairwise span carries two routes
-            overlaps.append(RouteOverlap(
-                route_ids=tuple(members),
-                route_type=route_type,
-                shared_length_m=cluster.hi - cluster.lo,
-                start=_point(cluster.axis, cluster.fixed, cluster.lo),
-                end=_point(cluster.axis, cluster.fixed, cluster.hi),
-            ))
+
+        for group in _line_groups(pairwise, tolerance_m):
+            participating = sorted({route_id for span in group.spans for route_id in span.routes})
+            coverage = sorted(
+                interval
+                for route_id in participating
+                for interval in _coverage_intervals(spans_by_route[route_id], group.axis, group.fixed, tolerance_m)
+            )
+            for lo, hi in _union_intervals(coverage):
+                members = [
+                    route_id for route_id in participating
+                    if _covered_length(spans_by_route[route_id], group.axis, group.fixed, lo, hi, tolerance_m) > 0.0
+                ]
+                if len(members) < 2:
+                    continue  # a solo stretch of one participant is not a shared run
+                covered = math.fsum(
+                    _covered_length(spans_by_route[route_id], group.axis, group.fixed, lo, hi, tolerance_m)
+                    for route_id in members
+                )
+                union = hi - lo
+                overlaps.append(RouteOverlap(
+                    route_ids=tuple(members),
+                    route_type=route_type,
+                    shared_length_m=union,
+                    # covered >= union by construction; the floor only absorbs fsum noise
+                    double_counted_length_m=max(0.0, covered - union),
+                    start=_point(group.axis, group.fixed, lo),
+                    end=_point(group.axis, group.fixed, hi),
+                ))
     overlaps.sort(key=lambda item: (
         item.route_type,
         item.start.x, item.start.y, item.start.z,

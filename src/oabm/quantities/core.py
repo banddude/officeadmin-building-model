@@ -324,9 +324,7 @@ def _overlap_warnings(model: BuildingModel) -> list[QuantityWarning]:
     for route_type in sorted(by_type):
         type_runs = by_type[route_type]
         shared_total = math.fsum(run.shared_length_m for run in type_runs)
-        double_counted = math.fsum(
-            (len(run.route_ids) - 1) * run.shared_length_m for run in type_runs
-        )
+        double_counted = math.fsum(run.double_counted_length_m for run in type_runs)
         members = tuple(sorted({
             route_id for run in type_runs for route_id in run.route_ids
         }))
@@ -334,8 +332,8 @@ def _overlap_warnings(model: BuildingModel) -> list[QuantityWarning]:
             code="overlapping_route_runs",
             message=(
                 f"{len(type_runs)} overlapping {route_type} run(s) share "
-                f"{shared_total:.2f} m; per-route lengths may double-count up to "
-                f"{double_counted:.2f} m of conduit until the runs are consolidated"
+                f"{shared_total:.2f} m; per-route lengths count "
+                f"{double_counted:.2f} m more conduit than the shared runs occupy"
             ),
             source_entity_ids=members,
         ))

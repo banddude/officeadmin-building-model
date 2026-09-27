@@ -20,6 +20,7 @@ import ifcopenshell.api.system
 import ifcopenshell.api.unit
 import ifcopenshell.guid
 import ifcopenshell.util.placement
+import ifcopenshell.util.pset
 import numpy as np
 
 from oabm.model import (
@@ -83,6 +84,19 @@ _MATERIAL_BY_TOKEN: Mapping[str, tuple[str, str]] = {
 _WALL_MATERIAL_REL_DESCRIPTION = "wall material link"
 # GlobalId key prefix of a wall material association (#164).
 _WALL_MATERIAL_KEY_PREFIX = "wall-construction-material:"
+
+#: The IFC4 ``PEnum_ElementStatus`` values, the only legal values of the
+#: caller-supplied ``element_status`` option. Which id gets which status is
+#: the caller's decision; the exporter never derives one.
+_ELEMENT_STATUS_VALUES = frozenset({
+    "NEW",
+    "EXISTING",
+    "DEMOLISH",
+    "TEMPORARY",
+    "OTHER",
+    "NOTKNOWN",
+    "UNSET",
+})
 # The one shared translucent style a glazed wall's Body items carry, so Bonsai
 # draws glass: a light blue-grey surface at Transparency 0.65.
 _GLASS_STYLE_NAME = "OABM Glazed"
@@ -130,6 +144,7 @@ def to_ifc(
     destination: str | Path | None = None,
     *,
     groups: Mapping[str, Iterable[str]] | None = None,
+    element_status: Mapping[str, str] | None = None,
 ) -> ifcopenshell.file:
     """Materialize a canonical model as IFC4 suitable for Bonsai editing.
 
@@ -177,6 +192,23 @@ def to_ifc(
     ``groups=None`` or ``{}`` leaves the written bytes unchanged.
     ``from_ifc`` ignores these groups — they carry ``OABM_Adapter`` metadata,
     no canonical payload — so the canonical round trip is unaffected.
+
+    The keyword-only ``element_status`` option maps a canonical entity id to
+    one of the IFC4 ``PEnum_ElementStatus`` values (``NEW``, ``EXISTING``,
+    ``DEMOLISH``, ``TEMPORARY``, ``OTHER``, ``NOTKNOWN``, ``UNSET``), and the
+    value is written as the standard ``Status`` property of that product's
+    applicable common property set (for example ``Pset_OutletTypeCommon`` for
+    an outlet, ``Pset_WallCommon`` for a wall), so Bonsai and Revit can filter
+    rework phase with no OABM knowledge. Which id gets which status is the
+    caller's decision; an unknown value raises ``IfcAdapterError``. A route id
+    expands to its segment and fitting products, like ``groups``. A product
+    whose class has no ``Status``-bearing common set (a space, for example)
+    and an id that matches nothing are skipped and counted; ``to_ifc`` has no
+    summary channel, so those counts are only documented here. The set's
+    GlobalId is pinned from ``status-pset:`` plus the canonical id, and
+    ``element_status=None`` or ``{}`` leaves the written bytes unchanged.
+    ``from_ifc`` reads only ``OABM_Canonical`` and ignores ``Status``, so the
+    canonical round trip is unaffected.
 
     A wall whose canonical ``construction`` token is set is associated with one
     shared ``IfcMaterial`` per token (``Glass``, ``Masonry``, ``Concrete``,
@@ -706,6 +738,7 @@ def to_ifc(
             ifcopenshell.api.system.assign_system(ifc, products=[item], system=circuit)
 
     _assign_caller_groups(ifc, groups or {}, entity_ifc)
+    _assign_element_status(ifc, element_status, entity_ifc)
 
     # An IfcSystem is only reachable to a consumer once it is declared to serve
     # a spatial structure. Without IfcRelServicesBuildings a route or circuit is
@@ -833,6 +866,11 @@ def _is_pinned_root(item: Any) -> bool:
     if item.is_a("IfcPropertySet") and item.Name == PROVENANCE_PSET:
         # The legible provenance set pins its GlobalId to its owner's
         # canonical identity at creation (``<canonical id>#OABM_Provenance``).
+        return True
+    if item.is_a("IfcPropertySet") and _is_status_pset(item):
+        # A caller-supplied element Status set pins its GlobalId to its
+        # owner's canonical identity at creation
+        # (``status-pset:<canonical id>``).
         return True
     return _carries_oabm_pset(item)
 
@@ -1189,6 +1227,117 @@ def _caller_group_member_products(
             if product.id() in canonical_by_step
         ]
     return [(member_id, item)]
+
+
+def _is_status_pset(item: Any) -> bool:
+    """Whether ``item`` is one of the adapter's caller-supplied Status sets.
+
+    The adapter itself writes no other ``Pset_``-named property set (its own
+    sets are ``OABM_*``), so a ``Pset_``-named set carrying a ``Status``
+    property is one the ``element_status`` option created.
+    """
+
+    if not item.is_a("IfcPropertySet") or not (item.Name or "").startswith("Pset_"):
+        return False
+    return any(prop.Name == "Status" for prop in item.HasProperties)
+
+
+def _status_pset_name(
+    product: Any,
+    template: Any,
+    cache: dict[str, str | None],
+) -> str | None:
+    """The product class's ``Status``-bearing common set, or ``None``.
+
+    ifcopenshell's IFC4 pset templates decide applicability (an outlet maps
+    to ``Pset_OutletTypeCommon``, a wall to ``Pset_WallCommon``). When several
+    applicable sets carry ``Status``, the first by name wins, so the choice
+    is deterministic. Results are cached per IFC class.
+    """
+
+    ifc_class = product.is_a()
+    if ifc_class not in cache:
+        bearing: list[str] = []
+        try:
+            applicable = sorted(
+                template.get_applicable(ifc_class), key=lambda item: item.Name or ""
+            )
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+            applicable = []
+        for candidate in applicable:
+            try:
+                has_status = any(
+                    prop.Name == "Status" for prop in candidate.HasPropertyTemplates
+                )
+            except (AttributeError, KeyError, TypeError):
+                has_status = False
+            if has_status:
+                bearing.append(candidate.Name)
+        cache[ifc_class] = bearing[0] if bearing else None
+    return cache[ifc_class]
+
+
+def _pset_entity(product: Any, name: str) -> Any | None:
+    """The product's existing property set ``name``, or ``None``."""
+
+    for rel in getattr(product, "IsDefinedBy", ()) or ():
+        if not rel.is_a("IfcRelDefinesByProperties"):
+            continue
+        definition = rel.RelatingPropertyDefinition
+        if definition.is_a("IfcPropertySet") and definition.Name == name:
+            return definition
+    return None
+
+
+def _assign_element_status(
+    ifc: ifcopenshell.file,
+    element_status: Mapping[str, str] | None,
+    entity_ifc: Mapping[str, Any],
+) -> None:
+    """Write the caller-supplied element statuses as standard ``Status``.
+
+    The caller decides which element is new, existing or to demolish; the
+    exporter only writes it where IFC viewers look for it: the ``Status``
+    property of the product's applicable common property set (chosen by
+    ifcopenshell's IFC4 templates, first by name when several apply). A route
+    id expands to its segment and fitting products, exactly like
+    ``groups``. Ids that match nothing are ignored, and products whose class
+    has no ``Status``-bearing set are skipped; ``to_ifc`` has no summary
+    channel, so both behaviours are documented here instead of counted.
+    Members are applied sorted by canonical id and each set's GlobalId is
+    pinned from ``status-pset:`` plus its canonical id, so a status-carrying
+    export is as byte-deterministic as a plain one.
+    """
+
+    if not element_status:
+        return
+    unknown = sorted({str(value) for value in element_status.values()} - _ELEMENT_STATUS_VALUES)
+    if unknown:
+        raise IfcAdapterError(
+            f"element_status values must be one of "
+            f"{sorted(_ELEMENT_STATUS_VALUES)!r}, got {unknown!r}"
+        )
+
+    canonical_by_step = {
+        product.id(): canonical_id for canonical_id, product in entity_ifc.items()
+    }
+    template = ifcopenshell.util.pset.get_template("IFC4")
+    status_psets: dict[str, str | None] = {}
+    for member_id in sorted(element_status):
+        value = str(element_status[member_id])
+        if member_id not in entity_ifc:
+            continue
+        for canonical_id, product in _caller_group_member_products(
+            member_id, entity_ifc, canonical_by_step
+        ):
+            pset_name = _status_pset_name(product, template, status_psets)
+            if pset_name is None:
+                continue
+            pset = _pset_entity(product, pset_name)
+            if pset is None:
+                pset = ifcopenshell.api.pset.add_pset(ifc, product=product, name=pset_name)
+                pset.GlobalId = canonical_id_to_ifc_guid(f"status-pset:{canonical_id}")
+            ifcopenshell.api.pset.edit_pset(ifc, pset=pset, properties={"Status": value})
 
 
 def _assign_wall_materials(

@@ -17,6 +17,7 @@ from pathlib import Path
 import ifcopenshell.validate
 import pytest
 
+from oabm.drawings import PlanSpec, generate_drawing_set
 from oabm.exports import to_glb
 from oabm.ifc import canonical_id_to_ifc_guid, to_ifc
 from oabm.quantities import extract_quantities
@@ -32,6 +33,8 @@ GOLDEN_ROOT = ROOT / "fixtures" / "golden" / "v1"
 CASE_NAME = "commercial-ti-alternates"
 CANONICAL_PSET = "OABM_Canonical"
 ADAPTER_PSET = "OABM_Adapter"
+GLAZING_LAYER = "architecture:glazing"
+WALLS_LAYER = "architecture:walls"
 
 # Known answers (metres), straight from the fixture geometry.
 ALT_ROUTE_LENGTH_M = 5.3
@@ -422,3 +425,56 @@ def test_ifc_glass_materials_and_style_coexist_with_the_group(tmp_path: Path) ->
     logger = ifcopenshell.validate.json_logger()
     ifcopenshell.validate.validate(ifc, logger, express_rules=True)
     assert logger.statements == []
+
+
+def test_plan_drawing_splits_glazing_layer_and_carries_every_token() -> None:
+    """The #172 drawings lane over the same golden fixture: one plan of the
+    fixture's single level puts exactly the two glazed walls on the glazing
+    layer, each as its outline plus exactly one dashed centre line, the framed
+    and tokenless walls stay on the wall layer with their token (or none) in
+    the metadata, and two generations are identical."""
+
+    model = _model()
+    drawing_set = generate_drawing_set(
+        model,
+        plans=[PlanSpec(id="plan:ti-ground", level_id="level:ti-ground")],
+    )
+    assert [view.id for view in drawing_set.views] == ["plan:ti-ground"]
+    view = drawing_set.views[0]
+
+    # Glazing: exactly the two glazed walls reach the glazing layer. Each
+    # single-segment wall draws one outline plus exactly one dashed centre
+    # line, and every glazing primitive carries the glazed token.
+    glazing = [p for p in view.primitives if p.layer == GLAZING_LAYER]
+    assert {p.source_ids for p in glazing} == {
+        ("wall:ti-south",),
+        ("wall:ti-conf-glass",),
+    }
+    for wall_id in ("wall:ti-south", "wall:ti-conf-glass"):
+        wall_prims = [p for p in glazing if p.source_ids == (wall_id,)]
+        assert sorted(p.kind for p in wall_prims) == ["polygon", "polyline"]
+        centre = next(p for p in wall_prims if p.kind == "polyline")
+        assert centre.style.pattern == "dash"
+        assert all(p.metadata == (("construction", "glazed"),) for p in wall_prims)
+
+    # Framed: on the wall layer with its token in the metadata.
+    framed = [p for p in view.primitives if p.source_ids == ("wall:ti-lobby",)]
+    assert framed
+    assert {p.layer for p in framed} == {WALLS_LAYER}
+    assert all(p.metadata == (("construction", "framed"),) for p in framed)
+
+    # Tokenless: on the wall layer with empty metadata.
+    tokenless_ids = {wall.id for wall in model.walls if wall.construction is None}
+    assert len(tokenless_ids) == 5
+    for wall_id in tokenless_ids:
+        prims = [p for p in view.primitives if p.source_ids == (wall_id,)]
+        assert prims
+        assert {p.layer for p in prims} == {WALLS_LAYER}
+        assert all(p.metadata == () for p in prims)
+
+    # Determinism: two generations are identical.
+    again = generate_drawing_set(
+        model,
+        plans=[PlanSpec(id="plan:ti-ground", level_id="level:ti-ground")],
+    )
+    assert drawing_set.to_json() == again.to_json()

@@ -20,6 +20,7 @@ from oabm.model import (
     Vector3,
     stable_id,
 )
+from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 
 from .router import route_between_ports
 
@@ -104,7 +105,12 @@ def propose_equipment_placement(
     loads = tuple(devices[device_id].pose.position for device_id in sorted(served_device_ids))
     level = next(level for level in model.levels if level.id == level_id)
     spaces = tuple(sorted((space for space in model.spaces if space.level_id == level_id), key=lambda item: item.id))
-    walls = tuple(sorted((wall for wall in model.walls if wall.level_id == level_id), key=lambda item: item.id))
+    # Glazing cannot host equipment, so glazed walls are not host candidates;
+    # a glazed-only level therefore fails below with the same host-walls error.
+    walls = tuple(sorted((
+        wall for wall in model.walls
+        if wall.level_id == level_id and wall.construction != WALL_CONSTRUCTION_GLAZED
+    ), key=lambda item: item.id))
     if not spaces or not walls:
         raise PlacementError("a level needs registered space footprints and host walls")
 
@@ -228,6 +234,8 @@ def set_user_equipment_placement(
     wall = next((item for item in model.walls if item.id == wall_id), None)
     if wall is None or wall.level_id != equipment.level_id:
         raise PlacementError("wall_id must identify a canonical wall")
+    if wall.construction == WALL_CONSTRUCTION_GLAZED:
+        raise PlacementError(f"a glazed wall cannot host equipment: {wall_id}")
     space = next((item for item in model.spaces if item.id == space_id), None)
     if (space is None or space.level_id != equipment.level_id
             or not _inside_xy(position.x, position.y, space.footprint, tolerance=0.15)):

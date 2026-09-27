@@ -1997,6 +1997,20 @@ def _device_ifc_type(token: str) -> tuple[str, str | None]:
     # canonical type stays in ObjectType either way.
     if token == "occupancy_sensor":
         return "IfcSensor", "MOVEMENTSENSOR"
+    # Lighting-control devices share the occupancy sensor's nearest-member
+    # treatment: a vacancy sensor is a movement sensor, a daylight sensor is
+    # IFC4's LIGHTSENSOR. A wireless remote controls the load from the wall,
+    # so it is a KEYPAD switching device, and a line-voltage power pack is
+    # the CONTACTOR relay switching the lighting load. The canonical type
+    # stays in ObjectType either way.
+    if token == "vacancy_sensor":
+        return "IfcSensor", "MOVEMENTSENSOR"
+    if token == "daylight_sensor":
+        return "IfcSensor", "LIGHTSENSOR"
+    if token == "wireless_remote":
+        return "IfcSwitchingDevice", "KEYPAD"
+    if token == "lighting_power_pack":
+        return "IfcSwitchingDevice", "CONTACTOR"
     if token in {"smoke_alarm", "smoke_co_alarm"}:
         return "IfcSensor", "SMOKESENSOR"
     if token == "heat_detector":

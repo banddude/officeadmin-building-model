@@ -10,6 +10,7 @@ synthetic and generated in-code; nothing here is drawn from a real sheet.
 from pathlib import Path
 
 import ifcopenshell
+import ifcopenshell.validate
 
 from oabm.ifc import canonical_id_to_ifc_guid, from_ifc, to_ifc
 from oabm.model import BuildingModel
@@ -37,6 +38,10 @@ EXPECTED_MAPPINGS = [
     ("switch", "IfcSwitchingDevice", None),
     ("disconnect", "IfcSwitchingDevice", None),
     ("occupancy_sensor", "IfcSensor", "MOVEMENTSENSOR"),
+    ("vacancy_sensor", "IfcSensor", "MOVEMENTSENSOR"),
+    ("daylight_sensor", "IfcSensor", "LIGHTSENSOR"),
+    ("wireless_remote", "IfcSwitchingDevice", "KEYPAD"),
+    ("lighting_power_pack", "IfcSwitchingDevice", "CONTACTOR"),
     ("smoke_alarm", "IfcSensor", "SMOKESENSOR"),
     ("smoke_co_alarm", "IfcSensor", "SMOKESENSOR"),
     ("heat_detector", "IfcSensor", "HEATSENSOR"),
@@ -50,12 +55,27 @@ EXPECTED_MAPPINGS = [
 ]
 
 
-def _device_model() -> BuildingModel:
-    """The garage fixture reshaped into one device per canonical type."""
+# The five lighting-control tokens the #213 acceptance validates as one model.
+LIGHTING_CONTROL_TOKENS = (
+    "occupancy_sensor",
+    "vacancy_sensor",
+    "daylight_sensor",
+    "wireless_remote",
+    "lighting_power_pack",
+)
+
+
+def _device_model(tokens: tuple[str, ...] | None = None) -> BuildingModel:
+    """The garage fixture reshaped into one device per canonical type.
+
+    ``tokens`` trims the model to the named types alone; by default it holds
+    one device per mapped type.
+    """
 
     template = BuildingModel.load(MODEL_FIXTURE).to_dict()
+    rows = [row for row in EXPECTED_MAPPINGS if tokens is None or row[0] in tokens]
     devices = []
-    for index, (device_type, _ifc_class, _predefined) in enumerate(EXPECTED_MAPPINGS):
+    for index, (device_type, _ifc_class, _predefined) in enumerate(rows):
         devices.append(
             {
                 "id": f"device:map-{index:02d}",
@@ -158,3 +178,12 @@ def test_device_class_export_is_deterministic(tmp_path: Path) -> None:
 
     assert inventory(first_path) == inventory(second_path)
     assert from_ifc(first_path).to_dict() == from_ifc(second_path).to_dict()
+
+
+def test_lighting_control_model_passes_strict_validation(tmp_path: Path) -> None:
+    """A model with all five lighting-control tokens validates clean."""
+
+    ifc = to_ifc(_device_model(LIGHTING_CONTROL_TOKENS), tmp_path / "lighting.ifc")
+    logger = ifcopenshell.validate.json_logger()
+    ifcopenshell.validate.validate(ifc, logger, express_rules=True)
+    assert logger.statements == []

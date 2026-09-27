@@ -3,10 +3,11 @@
 Coordinate-space note (probed against camelot-py 2.0.0): for pages whose
 ``/Rotate`` entry is 0 or 180, camelot presents the rotated page, so its
 output coordinates already are displayed page points. For ``/Rotate`` 90 and
-270 camelot ignores the page rotation and reports raw user-space points.
-This adapter maps both cases into displayed, bottom-origin space with the
-shared :class:`PdfPageDisplayTransform`, and converts ``regions_pt`` boxes
-back the same way before calling camelot.
+270 camelot ignores the page rotation and reports page-relative, unrotated
+points (probed on synthetic offset-MediaBox pages: its output does not shift
+with the MediaBox origin). This adapter maps the rotated cases into
+displayed, bottom-origin space with :meth:`PdfPageDisplayTransform.apply_relative`,
+and converts ``regions_pt`` boxes back the same way before calling camelot.
 
 Lattice extraction runs camelot's ``vector`` engine, which reads ruled lines
 from the PDF layout instead of rasterizing the page: it is exact and fast on
@@ -67,7 +68,8 @@ def _to_displayed_bbox(
     x0, y0, x1, y1 = (float(v) for v in bbox)
     if _camelot_space_is_displayed(transform.page_rotation):
         return x0, y0, x1, y1
-    corners = [transform.apply(x, y) for x, y in ((x0, y0), (x1, y1))]
+    # camelot output is page-relative, so no MediaBox-origin term applies.
+    corners = [transform.apply_relative(x, y) for x, y in ((x0, y0), (x1, y1))]
     xs = [c[0] for c in corners]
     ys = [c[1] for c in corners]
     return min(xs), min(ys), max(xs), max(ys)
@@ -83,8 +85,10 @@ def _region_to_camelot_area(
     if _camelot_space_is_displayed(transform.page_rotation):
         corners = [(x0, y0), (x1, y1)]
     else:
-        # Inverse of the quarter-turn display transform; both corners then
-        # re-normalized because the turn swaps and flips the axes.
+        # Inverse of the quarter-turn display transform; camelot's space is
+        # page-relative, so there is no MediaBox-origin term to undo. Both
+        # corners are then re-normalized because the turn swaps and flips
+        # the axes.
         w, h = transform.source_width_pt, transform.source_height_pt
         if transform.page_rotation == 90:
             corners = [(w - y0, x0), (w - y1, x1)]

@@ -14,10 +14,11 @@ import json
 import struct
 from pathlib import Path
 
+import ifcopenshell.validate
 import pytest
 
 from oabm.exports import to_glb
-from oabm.ifc import to_ifc
+from oabm.ifc import canonical_id_to_ifc_guid, to_ifc
 from oabm.quantities import extract_quantities
 from oabm.qa import (
     canonical_digest,
@@ -341,3 +342,83 @@ def test_each_export_is_deterministic(tmp_path: Path) -> None:
     to_glb(model, glb_first, groups=group, hidden_groups=("ALTERNATES",))
     to_glb(model, glb_second, groups=group, hidden_groups=("ALTERNATES",))
     assert glb_first.read_bytes() == glb_second.read_bytes()
+
+
+def _product(ifc, canonical_id: str):
+    return ifc.by_guid(canonical_id_to_ifc_guid(canonical_id))
+
+
+def _body_items(product) -> tuple:
+    for shape in product.Representation.Representations:
+        if shape.RepresentationIdentifier == "Body":
+            return shape.Items
+    raise AssertionError(f"{product.is_a()} {product.GlobalId} has no Body representation")
+
+
+def test_ifc_glass_materials_and_style_coexist_with_the_group(tmp_path: Path) -> None:
+    """The #167 material and style, over the golden fixture, with the
+    caller group in the same file: the glazed walls relate the one Glass
+    material and carry the one shared translucent style, the framed wall
+    relates Framed partition and nothing else is styled."""
+
+    model = _model()
+    ifc = to_ifc(model, tmp_path / "ti.ifc", groups=_alt_group(model))
+
+    # Materials: exactly the tokens this fixture states.
+    materials = ifc.by_type("IfcMaterial")
+    assert [(material.Name, material.Category) for material in materials] == [
+        ("Framed partition", "framing"),
+        ("Glass", "glass"),
+    ]
+    rels = {
+        rel.RelatingMaterial.Name: rel for rel in ifc.by_type("IfcRelAssociatesMaterial")
+    }
+    assert set(rels) == {"Framed partition", "Glass"}
+    assert sorted(_canonical_key(item) for item in rels["Glass"].RelatedObjects) == [
+        "wall:ti-conf-glass",
+        "wall:ti-south",
+    ]
+    assert [_canonical_key(item) for item in rels["Framed partition"].RelatedObjects] == [
+        "wall:ti-lobby"
+    ]
+    # A tokenless wall carries no material association.
+    plain = _product(ifc, "wall:ti-east")
+    assert not any(
+        rel.is_a("IfcRelAssociatesMaterial") for rel in plain.HasAssociations
+    )
+
+    # The glass style: one shared surface style on exactly the two glazed
+    # bodies, and no other product styled anywhere in the file.
+    styles = ifc.by_type("IfcSurfaceStyle")
+    assert len(styles) == 1
+    assert styles[0].Name == "OABM Glazed"
+    (rendering,) = [
+        item for item in styles[0].Styles if item.is_a("IfcSurfaceStyleRendering")
+    ]
+    assert rendering.Transparency == pytest.approx(0.65)
+    (red, green, blue) = (
+        rendering.SurfaceColour.Red,
+        rendering.SurfaceColour.Green,
+        rendering.SurfaceColour.Blue,
+    )
+    assert (red, green, blue) == pytest.approx((0.80, 0.86, 0.90))
+
+    glazed_items = []
+    for wall_id in ("wall:ti-south", "wall:ti-conf-glass"):
+        items = _body_items(_product(ifc, wall_id))
+        assert len(items) == 1
+        glazed_items.append(items[0])
+        for item in items:
+            styled = item.StyledByItem
+            assert len(styled) == 1
+            assert list(styled[0].Styles) == [styles[0]]
+    # The framed wall and every other product go unstyled.
+    for styled_item in ifc.by_type("IfcStyledItem"):
+        assert styled_item.Item in glazed_items
+
+    # Group and material relationships coexist in this one file.
+    assert any(item.Name == "ALTERNATES" for item in ifc.by_type("IfcGroup"))
+
+    logger = ifcopenshell.validate.json_logger()
+    ifcopenshell.validate.validate(ifc, logger, express_rules=True)
+    assert logger.statements == []

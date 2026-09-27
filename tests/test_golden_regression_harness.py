@@ -36,6 +36,7 @@ EXPECTED_VALID_CASES = {
     "two-level-building",
     "synthetic-garage",
     "commercial-ti-alternates",
+    "nonconvex-rooms",
 }
 
 

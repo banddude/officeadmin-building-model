@@ -3,7 +3,7 @@ from __future__ import annotations
 import html
 from collections import defaultdict
 
-from .generator import _LABEL_TEXT_HEIGHT_PAPER_M
+from .generator import _LABEL_TEXT_HEIGHT_PAPER_M, _offset_point
 from .model import DrawingDimension, DrawingPrimitive, DrawingView, Point2
 
 
@@ -97,15 +97,6 @@ def _dimension_svg(dimension: DrawingDimension, view: DrawingView, ppu: float, f
         f'<line id="{dimension.id}" x1="{ax}" y1="{ay}" x2="{bx}" y2="{by}" stroke="currentColor" data-source-ids="{source_ids}"/>',
         f'<text x="{_fmt(mx)}" y="{_fmt(my)}" text-anchor="middle" {size}data-dimension-id="{dimension.id}">{html.escape(dimension.text)}</text>',
     ]
-
-
-def _offset_point(a: Point2, b: Point2, amount: float) -> Point2:
-    dx = b.x - a.x
-    dy = b.y - a.y
-    length = (dx * dx + dy * dy) ** 0.5
-    if length == 0:
-        return a
-    return Point2(x=a.x - dy / length * amount, y=a.y + dx / length * amount)
 
 
 def _attrs(primitive: DrawingPrimitive) -> str:

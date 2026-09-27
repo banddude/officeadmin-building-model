@@ -170,7 +170,10 @@ Otherwise the page stays `registration_pending` with a stable reason:
   later #98 vision task (nothing is inferred);
 - `insufficient_matched_evidence`, `evidence_clustered`, `excessive_residual`,
   `grid_labels_inconsistent`, `registration_methods_disagree`;
-- `competing_transforms`: repeated geometry inside one region;
+- `competing_transforms`: repeated geometry inside one region. With the
+  optional phase-correlation cross-check below, a near-tie the global mask
+  settles becomes an accepted tie-break instead, and a tie the global mask
+  cannot settle gains `phase_correlation_inconclusive`;
 - `ambiguous_orientation`: a mirrored or turned placement explains exactly as
   many wall segments and no grid labels settle it;
 - `level_name_mismatch`: the electrical drawing names a different level;
@@ -182,7 +185,55 @@ Otherwise the page stays `registration_pending` with a stable reason:
 - `scale_incompatible`: the walls match only at a scale other than the printed
   ratio. This is a diagnostic only, never applied;
 - `drawing_regions_overlap`: the extents of two drawings on one page overlap, so
-  a point cannot be assigned to one drawing.
+  a point cannot be assigned to one drawing;
+- `phase_correlation_disagrees`: the accepted placement survived every wall and
+  grid check, but the optional global mask places the page confidently
+  elsewhere. The evidence is unresolved, not wrong, so the page stays pending.
+
+### Optional phase-correlation cross-check
+
+`SheetRegistrationOptions(phase_correlation=True)` enables an independent,
+global translation estimate: the electrical drawing's wall segments, scaled by
+the same printed-scale ratio the candidates use, are registered onto the
+architecture region's wall segments by whole-mask phase correlation
+(`oabm.importers.pdf_convergence.mask_registration`, OpenCV's
+`phaseCorrelate` — the optional `registration` extra; enabling the option
+without it raises the extra's `ImportError`). Repetitive commercial plans
+often leave two wall translations nearly tied; the mask's correlation peak is
+evidence neither candidate has.
+
+For every registration decision — the page-level one and each per-drawing
+one — the option runs once against the would-be placement and records
+
+```
+phase_correlation: {dx_pt, dy_pt, peak, converged, agrees_with}
+```
+
+in the page or drawing record (`dx_pt`/`dy_pt` in architecture sheet points,
+`peak` the correlation response, `agrees_with` the candidates-list index of
+the candidate it agreed with or `null`). Then:
+
+- **One accepted candidate.** Converged (peak at or above
+  `phase_correlation_min_peak`, default 0.10) and the shift lands within
+  `phase_correlation_agree_tol_m` (default 0.10 m, compared in model metres
+  through the architecture scale) of the accepted translation: the
+  registration stands and the agreement is recorded. Converged and outside
+  the tolerance: the page is refused with `phase_correlation_disagrees` —
+  a wrong accept is worse than a pending page.
+- **A refusal of `competing_transforms` only** (the wall matcher's
+  `competing_ratio` near-tie), converged, with exactly one of the two
+  contested translations (the best wall match and its recorded runner-up)
+  inside the tolerance: that candidate is accepted as a tie-break, with
+  method `wall_vectors_phase_correlation_tiebreak` (confidence 0.75) and
+  `tie_break: true` in the registration record. Zero or several agreeing
+  contested translations keep the refusal and add
+  `phase_correlation_inconclusive`.
+- **Not converged**, and every other refusal: no change to the decision;
+  only the diagnostics are recorded.
+
+With the option off (the default) no correlation runs and every record is
+byte-identical to a run without it. The shift never proposes a placement of
+its own: it only confirms, breaks near-ties, or vetoes.
 
 **A page holding several drawings** (#72), for example two floor plans side by
 side, is split the way the architecture importer splits a sheet (#103). Each
@@ -215,7 +266,8 @@ record:
 - inlier count, coverage, span, and residual;
 - a sample of matched source element IDs;
 - confidence: the lower of the region's confidence and the method's (0.95 for
-  walls and grids together, 0.85 walls, 0.80 grids).
+  walls and grids together, 0.85 walls, 0.80 grids, 0.75 wall vectors with a
+  phase-correlation tie-break).
 
 The electrical importer records that registration as an `inferred` model
 provenance entry per page, while device source positions remain observed.

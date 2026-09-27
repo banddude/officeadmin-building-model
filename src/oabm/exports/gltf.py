@@ -33,7 +33,7 @@ import json
 import math
 import struct
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple
+from typing import Any, Iterable, Mapping, NamedTuple
 
 from oabm.model import (
     BuildingModel,
@@ -107,6 +107,17 @@ _DIMMED_DISPLAY = "dimmed (caller-supplied)"
 #: disclosed even though the drawing reads as full colour.
 _EMPHASIZED_DISPLAY = "emphasized (caller-supplied)"
 
+#: The ``extras["display"]`` value on a caller-supplied group parent node.
+#: The exporter never decides what is an alternate, a phase, or any other
+#: subset; it only draws the grouping the caller names, and says so here.
+_GROUP_DISPLAY = "caller-supplied group"
+
+#: glTF extension that marks a node (and its whole subtree) initially hidden.
+#: Ratified by Khronos; optional, so it is listed in ``extensionsUsed`` and
+#: never in ``extensionsRequired`` — a viewer without it still loads the file
+#: and just shows the group, which the ``hidden_by_default`` extra also flags.
+_NODE_VISIBILITY_EXTENSION = "KHR_node_visibility"
+
 # Device/equipment classification mirrors the canonical tokens understood by
 # the IFC adapter, so both derived views agree on what a type token means.
 _OUTLET_TYPES = frozenset({
@@ -177,6 +188,9 @@ class _DisplayOptions(NamedTuple):
     dimmed_alpha: float = 0.3
     dimmed_color: tuple[float, float, float] = (0.62, 0.62, 0.62)
     emphasized_ids: frozenset[str] = frozenset()
+    # (name, member ids) pairs sorted by name; empty means no grouping.
+    groups: tuple[tuple[str, frozenset[str]], ...] = ()
+    hidden_groups: frozenset[str] = frozenset()
 
 
 def to_glb(
@@ -191,6 +205,8 @@ def to_glb(
     dimmed_alpha: float = 0.3,
     dimmed_color: tuple[float, float, float] = (0.62, 0.62, 0.62),
     emphasized_ids: Iterable[str] = (),
+    groups: Mapping[str, Iterable[str]] | None = None,
+    hidden_groups: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
 
@@ -218,8 +234,46 @@ def to_glb(
       decision; an id in both sets is dimmed. The node still discloses its
       provenance: ``extras["derivation"]`` is unchanged and the emphasis
       itself travels in ``extras["display"]``.
+    - ``groups`` maps a caller-chosen group name (for example
+      ``"ALTERNATES"``) to the canonical entity ids that belong to it. Each
+      group becomes one parent node ``group:<name>`` at the scene root —
+      after every other root node, groups sorted by name — and the members'
+      nodes are reparented under it, including a route's drawn wire nodes, so
+      hiding the one group node hides the whole alternate scope in Blender.
+      The exporter never decides what belongs together: it only draws the
+      grouping the caller names. A canonical id may belong to at most one
+      group (``ValueError`` otherwise); ids that match nothing are ignored
+      and counted in the report. The group node discloses itself in
+      ``extras``: the group name, ``display`` = "caller-supplied group", and
+      the member count.
+    - ``hidden_groups`` names the groups that start hidden: the group node
+      gets ``extras["hidden_by_default"] = true`` and the ratified
+      ``KHR_node_visibility`` extension with ``"visible": false``, which
+      hides the node and its whole subtree in supporting viewers. The
+      extension is listed in ``extensionsUsed`` and never in
+      ``extensionsRequired``, so viewers without it still load the file.
     """
 
+    owner_of: dict[str, str] = {}
+    normalized_groups: list[tuple[str, frozenset[str]]] = []
+    if groups:
+        for name in groups:
+            if not isinstance(name, str) or not name:
+                raise ValueError("group names must be non-empty strings")
+            normalized_groups.append((name, frozenset(groups[name])))
+        normalized_groups.sort(key=lambda item: item[0])
+        for name, ids in normalized_groups:
+            for member_id in sorted(ids):
+                previous = owner_of.get(member_id)
+                if previous is not None:
+                    raise ValueError(
+                        f"canonical id {member_id!r} belongs to both group "
+                        f"{previous!r} and group {name!r}; an id may belong to "
+                        "at most one group"
+                    )
+                owner_of[member_id] = name
+
+    group_names = {name for name, _ in normalized_groups}
     options = _DisplayOptions(
         reference_planes=reference_planes,
         reference_floor_alpha=reference_floor_alpha,
@@ -229,6 +283,10 @@ def to_glb(
         dimmed_alpha=dimmed_alpha,
         dimmed_color=dimmed_color,
         emphasized_ids=frozenset(emphasized_ids),
+        groups=tuple(normalized_groups),
+        hidden_groups=frozenset(
+            name for name in hidden_groups if name in group_names
+        ),
     )
     document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
@@ -266,7 +324,7 @@ def to_glb(
 def _build_document(
     model: BuildingModel,
     options: _DisplayOptions,
-) -> tuple[dict[str, Any], bytes, dict[str, int]]:
+) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
     """Return (glTF JSON dict, BIN chunk bytes, per-kind summary counts)."""
 
     level_ids = {level.id for level in model.levels}
@@ -437,6 +495,49 @@ def _build_document(
                 node["rotation"] = rotation
         nodes.append(node)
 
+    # Caller-supplied groups: reparent member nodes under one group:<name>
+    # parent per group, placed at the scene root after every other root node,
+    # sorted by group name. Purely a scene-graph change — member nodes keep
+    # their order, geometry, materials and extras.
+    scene_root: list[int] = list(range(len(nodes)))
+    group_nodes: list[dict[str, Any]] = []
+    group_counts: dict[str, int] = {}
+    unmatched_group_ids = 0
+    if options.groups:
+        moved: set[int] = set()
+        for group_name, member_ids in options.groups:
+            indices: list[int] = []
+            for member_id in sorted(member_ids):
+                found = _group_member_indices(member_id, nodes)
+                if found:
+                    indices.extend(found)
+                else:
+                    unmatched_group_ids += 1
+            children = [index for index in sorted(set(indices)) if index not in moved]
+            moved.update(children)
+            group_extras: dict[str, Any] = {
+                "group": group_name,
+                "display": _GROUP_DISPLAY,
+                "members": len(children),
+            }
+            group_node: dict[str, Any] = {
+                "name": f"group:{group_name}",
+                "extras": group_extras,
+            }
+            if children:
+                group_node["children"] = children
+            if group_name in options.hidden_groups:
+                group_extras["hidden_by_default"] = True
+                group_node["extensions"] = {
+                    _NODE_VISIBILITY_EXTENSION: {"visible": False},
+                }
+            group_nodes.append(group_node)
+            group_counts[group_name] = len(children)
+        scene_root = [
+            index for index in scene_root if index not in moved
+        ] + list(range(len(nodes), len(nodes) + len(group_nodes)))
+        nodes.extend(group_nodes)
+
     document: dict[str, Any] = {
         "asset": {
             "version": "2.0",
@@ -448,13 +549,17 @@ def _build_document(
             },
         },
         "scene": 0,
-        "scenes": [{"nodes": list(range(len(nodes)))}],
+        "scenes": [{"nodes": scene_root}],
         "nodes": nodes,
         "meshes": meshes,
         "materials": [
             _material_for_key(key, options) for key in material_keys
         ],
     }
+    if any("extensions" in node for node in group_nodes):
+        # Optional extension: never in extensionsRequired, so a viewer
+        # without it still loads the file and simply shows the group.
+        document["extensionsUsed"] = [_NODE_VISIBILITY_EXTENSION]
     if buffer:
         document["bufferViews"] = buffer_views
         document["accessors"] = accessors
@@ -472,7 +577,43 @@ def _build_document(
         "dimmed": dimmed_count,
         "emphasized": emphasized_count,
     }
+    if options.groups:
+        counts["groups"] = group_counts
+        counts["unmatched_group_ids"] = unmatched_group_ids
     return document, bytes(buffer), counts
+
+
+def _group_member_indices(
+    member_id: str, nodes: list[dict[str, Any]]
+) -> list[int]:
+    """The node indices one group member id claims.
+
+    A canonical id names its own node; a route id additionally claims the
+    route's drawn wire nodes (``conductor:<id>#route:<route id>#<n>``), so
+    hiding the group hides the alternate devices *and their conduit with the
+    wires inside it*.
+    """
+
+    indices: list[int] = []
+    route_key = member_id.removeprefix("route:") if member_id.startswith("route:") else None
+    for index, node in enumerate(nodes):
+        if node["name"] == member_id:
+            indices.append(index)
+        elif route_key is not None and _wire_route_segment(node["name"]) == route_key:
+            indices.append(index)
+    return indices
+
+
+def _wire_route_segment(node_name: str) -> str | None:
+    """The route id inside a wire node name, or None for any other node."""
+
+    head, separator, rest = node_name.partition("#route:")
+    if not separator or not head.startswith("conductor:"):
+        return None
+    route_id, second, index = rest.partition("#")
+    if not second or not index.isdigit():
+        return None
+    return route_id
 
 
 def _material(material_class: str, derived: bool) -> dict[str, Any]:

@@ -21,6 +21,7 @@ import ifcopenshell.validate
 import pytest
 
 from oabm.ifc import canonical_id_to_ifc_guid, round_trip, to_ifc
+from oabm.ifc.adapter import _WALL_MATERIAL_KEY_PREFIX
 from oabm.model import (
     BuildingModel,
     Level,
@@ -266,6 +267,10 @@ def test_round_trip_preserves_tokens() -> None:
         "wall:framed": "framed",
         "wall:plain": None,
     }
+
+
+def test_wall_material_key_prefix_is_the_plain_literal() -> None:
+    assert _WALL_MATERIAL_KEY_PREFIX == "wall-construction-material:"
 
 
 def test_token_exports_are_byte_identical(tmp_path: Path) -> None:

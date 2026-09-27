@@ -93,6 +93,24 @@ identical table. The module is read-only observation evidence: the importer
 does not call it, imported models are unchanged, and a per-set parameter look
 can bind a class to a device meaning later.
 
+Two closure and exclusion rules keep the table usable on CAD exports:
+
+- **Endpoint closure.** CAD exports draw circles as open Bézier paths whose
+  end meets their start, with no closepaint operator. A path whose first and
+  last written points coincide within 0.3 pt therefore counts as closed
+  alongside the `closed` flag, and circles are classified from that. A
+  Bézier arc that ends a visible gap away stays open and is ignored.
+- **Tessellated-fill exclusion.** CAD solid fills are exported as triangle
+  meshes. A closed straight triangle that shares an edge with another closed
+  triangle on the page — both edge corners matching the other triangle's
+  corners within 0.05 pt — is a mesh cell, not a symbol, and is excluded
+  from the table; isolated symbol triangles share no edge and stay. The rule
+  is size-independent and only pairs triangles with triangles, so a triangle
+  touching a rectangle or a single-corner neighbour is untouched.
+  `triangle_mesh_diagnostic(document, page)` documents it per page with
+  `closed_triangles_on_page`, `mesh_triangles_excluded`, and
+  `symbol_triangles_on_page` counts.
+
 ## Ambiguity rules
 
 The importer does not create a circuit unless the same text evidence identifies

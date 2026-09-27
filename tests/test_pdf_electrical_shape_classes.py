@@ -22,6 +22,7 @@ from oabm.importers.pdf_electrical import (
 from oabm.importers.pdf_electrical.shape_classes import (
     ShapeClass,
     symbol_shape_classes,
+    triangle_mesh_diagnostic,
 )
 
 # Symbol positions and sizes for the acceptance page.
@@ -37,7 +38,7 @@ HEXAGON_CENTRE = (420.0, 380.0)
 HEXAGON_RADIUS_PT = 6.0
 
 
-def _bezier_circle(cx: float, cy: float, radius: float) -> str:
+def _bezier_circle(cx: float, cy: float, radius: float, paint: str = "s") -> str:
     k = 0.552284749831 * radius
     return "\n".join(
         [
@@ -46,7 +47,7 @@ def _bezier_circle(cx: float, cy: float, radius: float) -> str:
             f"{cx + k} {cy + radius} {cx + radius} {cy + k} {cx + radius} {cy} c",
             f"{cx + radius} {cy - k} {cx + k} {cy - radius} {cx} {cy - radius} c",
             f"{cx - k} {cy - radius} {cx - radius} {cy - k} {cx - radius} {cy} c",
-            "s",
+            paint,
         ]
     )
 
@@ -348,3 +349,116 @@ def test_fill_gray_buckets_without_dust() -> None:
     assert len(classes) == 1
     assert classes[0].fill_gray == 0.3
     assert classes[0].filled is True
+
+
+def test_open_bezier_circle_whose_end_meets_its_start_is_a_circle(tmp_path: Path) -> None:
+    # CAD exports draw circles as open Bézier paths whose end meets their
+    # start; no closepaint operator is written, so the extractor reports
+    # the path as open and the table must still see the circle.
+    pdf_path = tmp_path / "open-circle.pdf"
+    _write_pdf(pdf_path, [_bezier_circle(100.0, 600.0, 4.5, paint="S")])
+    document = extract_pdf(pdf_path, source_id="shape-classes-probe")
+    assert [vector.closed for vector in document.vectors] == [False]
+
+    classes = symbol_shape_classes(document, 1)
+    assert len(classes) == 1
+    assert classes[0].kind == "circle"
+    assert classes[0].size_pt == 9.0
+    assert classes[0].count == 1
+    assert classes[0].filled is False
+
+
+def test_open_bezier_arc_with_a_visible_gap_stays_ignored(tmp_path: Path) -> None:
+    # Three of the four circle arcs: the end lands a radius-width gap from
+    # the start, far beyond the endpoint-meet tolerance, so the path is
+    # still open and must not enter the table.
+    radius = 4.5
+    k = 0.552284749831 * radius
+    cx, cy = 100.0, 600.0
+    content = [
+        f"{cx - radius} {cy} m",
+        f"{cx - radius} {cy + k} {cx - k} {cy + radius} {cx} {cy + radius} c",
+        f"{cx + k} {cy + radius} {cx + radius} {cy + k} {cx + radius} {cy} c",
+        f"{cx + radius} {cy - k} {cx + k} {cy - radius} {cx} {cy - radius} c S",
+    ]
+    pdf_path = tmp_path / "open-arc-gap.pdf"
+    _write_pdf(pdf_path, content)
+    document = extract_pdf(pdf_path, source_id="shape-classes-probe")
+    assert symbol_shape_classes(document, 1) == ()
+
+
+def test_edge_sharing_mesh_triangles_are_excluded_and_isolated_symbol_kept(
+    tmp_path: Path,
+) -> None:
+    # CAD solid fills arrive as triangle meshes: a tessellated square is two
+    # filled triangles sharing the diagonal edge.  An isolated filled
+    # triangle of the same size is a symbol and stays in the table.
+    content = [
+        "200 100 m 208 100 l 200 108 l h b",
+        "208 108 m 200 108 l 208 100 l h b",
+        "400 300 m 408 300 l 400 308 l h b",
+    ]
+    pdf_path = tmp_path / "mesh-fill.pdf"
+    _write_pdf(pdf_path, content)
+    document = extract_pdf(pdf_path, source_id="shape-classes-probe")
+
+    classes = symbol_shape_classes(document, 1)
+    assert len(classes) == 1
+    assert classes[0].kind == "triangle"
+    assert classes[0].count == 1
+    assert classes[0].size_pt == 8.0
+    assert classes[0].filled is True
+
+    diagnostic = triangle_mesh_diagnostic(document, 1)
+    assert diagnostic.to_dict() == {
+        "closed_triangles_on_page": 3,
+        "mesh_triangles_excluded": 2,
+        "symbol_triangles_on_page": 1,
+    }
+    assert json.loads(json.dumps(diagnostic.to_dict())) == diagnostic.to_dict()
+
+
+def _tri(
+    element_id: str,
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    paint_operator: str = "b",
+) -> PdfVectorPathObservation:
+    return PdfVectorPathObservation(
+        element_id=element_id,
+        page=1,
+        points_pt=(a, b, c),
+        closed=True,
+        metadata={"paint_operator": paint_operator},
+    )
+
+
+def test_mesh_rule_needs_a_shared_edge_not_just_a_shared_corner() -> None:
+    document = PdfElectricalDocument(
+        source_id="shape-classes-probe",
+        page_count=1,
+        vectors=(
+            _tri("t1", (10.0, 10.0), (18.0, 10.0), (10.0, 18.0)),
+            # The same cell again, exported with about 0.01 pt corner
+            # jitter: the diagonal edge still matches within tolerance.
+            _tri("t2", (18.01, 10.0), (18.0, 18.01), (10.01, 18.0)),
+            # Two triangles that only touch at one corner: neither shares
+            # an edge, so both stay in the table.
+            _tri("t3", (30.0, 30.0), (38.0, 30.0), (30.0, 38.0)),
+            _tri("t4", (38.0, 30.0), (46.0, 30.0), (38.0, 38.0)),
+        ),
+    )
+
+    classes = symbol_shape_classes(document, 1)
+    assert len(classes) == 1
+    assert classes[0].kind == "triangle"
+    assert classes[0].count == 2
+    assert classes[0].size_pt == 8.0
+
+    diagnostic = triangle_mesh_diagnostic(document, 1)
+    assert diagnostic.to_dict() == {
+        "closed_triangles_on_page": 4,
+        "mesh_triangles_excluded": 2,
+        "symbol_triangles_on_page": 2,
+    }

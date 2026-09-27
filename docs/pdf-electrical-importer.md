@@ -285,6 +285,26 @@ may participate only as members of a small glyph cluster that uniquely matches a
 sheet-legend prototype. Otherwise they remain unresolved or unassociated drafting
 geometry rather than being guessed as electrical objects.
 
+### Drafting style on vector observations
+
+Each vector path also records the drafting style it was painted with, read from
+the content-stream graphics state at its paint operator: `stroke_gray` and
+`line_width_pt` on stroking operators, `fill_gray` on filling operators. Colour
+luminance uses the same rule as the architecture extractor's line styles:
+DeviceGray directly, DeviceRGB mixed 0.299/0.587/0.114, DeviceCMYK converted to
+RGB first, rounded to 4 decimals. The width is the user-space line width under
+the CTM at paint time.
+
+The tracked operators are `g`/`G`, `rg`/`RG`, and `k`/`K` (device colour), plus
+`cs`/`CS` colour-space switches (the colour resets to that space's initial
+value) and `sc`/`SC`/`scn`/`SCN` component sets; `w` sets the line width, and
+`q`/`Q` save and restore the whole style state around form XObjects, which
+paint with their own resources. A `gs` is honoured for its `/CA` and `/ca`
+constant alpha only; a pattern colour (a name or indirect `scn`/`SCN` operand)
+or any other uninterpretable colour omits its metadata key instead of guessing.
+These keys are recognition input only: the provenance attribute mirrors of
+source metadata drop them, so imported model output stays byte-identical.
+
 ## API
 
 `extract_pdf(path)` produces deterministic source observations from text,

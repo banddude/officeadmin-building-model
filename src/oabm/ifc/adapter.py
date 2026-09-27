@@ -54,6 +54,11 @@ _PINNED_RELATIONSHIP_CLASSES = frozenset(
     {"IfcRelConnectsPorts", "IfcRelServicesBuildings"}
 )
 _OABM_PSET_NAMES = frozenset({CANONICAL_PSET, ADAPTER_PSET, PROVENANCE_PSET})
+# Description carried by a caller-supplied group and its assignment, and the
+# marker that tells the determinism pass their GlobalIds were already derived
+# from the group name at creation (api-created group assignments for routes
+# and circuits carry no description and stay restampable).
+_CALLER_GROUP_DESCRIPTION = "caller-supplied group"
 # Planarity/horizontality slop for derived Body authoring, in metres. Canonical
 # architecture geometry sits on level planes; anything beyond this is treated as
 # not determinable rather than approximated.
@@ -91,7 +96,12 @@ def canonical_id_to_ifc_guid(canonical_id: str) -> str:
     return ifcopenshell.guid.compress(value.hex)
 
 
-def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcopenshell.file:
+def to_ifc(
+    model: BuildingModel,
+    destination: str | Path | None = None,
+    *,
+    groups: Mapping[str, Iterable[str]] | None = None,
+) -> ifcopenshell.file:
     """Materialize a canonical model as IFC4 suitable for Bonsai editing.
 
     Exporting one model twice yields byte-identical STEP files: the header
@@ -121,6 +131,23 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
     deliberately get no Body and record why. An entity missing a dimension its
     Body needs gets no Body and no invented default; the reason is recorded on
     its ``OABM_Adapter`` property set (``Body=no`` with ``BodyReason``).
+
+    The keyword-only ``groups`` option maps a caller-chosen group name (for
+    example ``"ALTERNATES"``) to the canonical entity ids that belong to it,
+    so an alternate scope is one selectable, hideable set in Bonsai or Revit.
+    Each group becomes one standard ``IfcGroup`` with ``Description``
+    ``caller-supplied group`` and one ``IfcRelAssignsToGroup`` whose
+    ``RelatedObjects`` are the members' IFC products, passed sorted by
+    canonical id; a route member contributes its segment and fitting products
+    (exactly what its ``IfcDistributionSystem`` already groups), a conductor
+    its own product, and ids that match nothing are ignored. The exporter
+    never decides what belongs together: it only writes the grouping the
+    caller names. An id may belong to at most one group
+    (``IfcAdapterError`` otherwise). Group and relationship GlobalIds derive
+    from the group name, so a grouped export stays byte-deterministic, and
+    ``groups=None`` or ``{}`` leaves the written bytes unchanged.
+    ``from_ifc`` ignores these groups — they carry ``OABM_Adapter`` metadata,
+    no canonical payload — so the canonical round trip is unaffected.
     """
 
     ifc = ifcopenshell.api.project.create_file(version=IFC_SCHEMA)
@@ -514,6 +541,10 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
             )
             segments.append(segment)
             segment_ports.append((p_start, p_end))
+            # Adapter-generated segments are reachable under their stable
+            # segment keys, like the canonical products; caller-supplied
+            # groups expand a route member through them.
+            entity_ifc[segment_key] = segment
 
         route_fittings = [
             next(f for f in model.route_fittings if f.id == fitting_id)
@@ -633,6 +664,8 @@ def to_ifc(model: BuildingModel, destination: str | Path | None = None) -> ifcop
         if circuit is not None:
             ifcopenshell.api.system.assign_system(ifc, products=[item], system=circuit)
 
+    _assign_caller_groups(ifc, groups or {}, entity_ifc)
+
     # An IfcSystem is only reachable to a consumer once it is declared to serve
     # a spatial structure. Without IfcRelServicesBuildings a route or circuit is
     # present in the file but belongs to no building, so viewers and MVD
@@ -738,6 +771,15 @@ def _is_pinned_root(item: Any) -> bool:
     """Whether ``item``'s GlobalId is already derived from model content."""
 
     if item.is_a("IfcPort") or item.is_a() in _PINNED_RELATIONSHIP_CLASSES:
+        return True
+    if (
+        item.is_a("IfcRelAssignsToGroup")
+        and item.Description == _CALLER_GROUP_DESCRIPTION
+    ):
+        # A caller-supplied group assignment pins its GlobalId at creation,
+        # derived from the group name. The api-created group assignments of
+        # the route and circuit systems carry no description, so they are
+        # still restamped here from their content.
         return True
     if item.is_a("IfcPropertySet") and item.Name == PROVENANCE_PSET:
         # The legible provenance set pins its GlobalId to its owner's
@@ -1004,6 +1046,100 @@ def round_trip(model: BuildingModel) -> BuildingModel:
     """Convenience in-memory canonical -> IFC -> canonical round trip."""
 
     return from_ifc(to_ifc(model))
+
+
+def _assign_caller_groups(
+    ifc: ifcopenshell.file,
+    groups: Mapping[str, Iterable[str]],
+    entity_ifc: Mapping[str, Any],
+) -> None:
+    """Write the caller-supplied groups as standard IfcGroups.
+
+    The caller decides membership (an alternate scope, a phase, anything);
+    the adapter only draws it, as one ``IfcGroup`` per name with one
+    ``IfcRelAssignsToGroup``, so a viewer user can select, isolate or hide
+    the whole scope in one click. Groups are created sorted by name and
+    members are passed sorted by canonical id, and every GlobalId is derived
+    from the group name, so a grouped export is as byte-deterministic as a
+    plain one. ``from_ifc`` never reads these groups — the ``IfcGroup``
+    carries only ``OABM_Adapter`` metadata — so the canonical round trip is
+    unchanged.
+
+    An id claimed by two groups is a caller error: it raises before the file
+    is written. Ids that match nothing are ignored. A group whose ids all
+    match nothing still gets its ``IfcGroup``, but no assignment, whose
+    ``RelatedObjects`` the schema bounds at one or more.
+    """
+
+    if not groups:
+        return
+    names = sorted(groups)
+    for name in names:
+        if not isinstance(name, str) or not name:
+            raise IfcAdapterError("group names must be non-empty strings")
+    owner_of: dict[str, str] = {}
+    members_of: dict[str, set[str]] = {}
+    for name in names:
+        for member_id in groups[name]:
+            previous = owner_of.get(member_id)
+            if previous is not None and previous != name:
+                raise IfcAdapterError(
+                    f"canonical id {member_id!r} belongs to both group "
+                    f"{previous!r} and group {name!r}; an id may belong to "
+                    "at most one group"
+                )
+            owner_of[member_id] = name
+            members_of.setdefault(name, set()).add(member_id)
+    canonical_by_step = {
+        product.id(): canonical_id for canonical_id, product in entity_ifc.items()
+    }
+    for name in names:
+        expanded: dict[str, Any] = {}
+        for member_id in sorted(members_of[name]):
+            for canonical_id, product in _caller_group_member_products(
+                member_id, entity_ifc, canonical_by_step
+            ):
+                expanded[canonical_id] = product
+        group = _create_root(ifc, "IfcGroup", f"group:{name}", name)
+        group.Description = _CALLER_GROUP_DESCRIPTION
+        _mark_adapter(ifc, group, Role="caller-group")
+        if expanded:
+            ifc.create_entity(
+                "IfcRelAssignsToGroup",
+                GlobalId=canonical_id_to_ifc_guid(f"group-rel:{name}"),
+                Name=name,
+                Description=_CALLER_GROUP_DESCRIPTION,
+                RelatingGroup=group,
+                RelatedObjects=[expanded[key] for key in sorted(expanded)],
+            )
+
+
+def _caller_group_member_products(
+    member_id: str,
+    entity_ifc: Mapping[str, Any],
+    canonical_by_step: Mapping[int, str],
+) -> list[tuple[str, Any]]:
+    """Expand one caller-supplied group member id into (canonical id, product).
+
+    A route's own products are the segments and fittings its
+    ``IfcDistributionSystem`` groups — the route system itself is a
+    container, not a selectable solid, and a group over the route should
+    highlight what the viewer draws. A circuit expands the same way. Any
+    other canonical id contributes its own product. Ids that match nothing
+    contribute nothing.
+    """
+
+    item = entity_ifc.get(member_id)
+    if item is None:
+        return []
+    if item.is_a("IfcSystem"):
+        return [
+            (canonical_by_step[product.id()], product)
+            for rel in getattr(item, "IsGroupedBy", ()) or ()
+            for product in rel.RelatedObjects
+            if product.id() in canonical_by_step
+        ]
+    return [(member_id, item)]
 
 
 def _create_root(

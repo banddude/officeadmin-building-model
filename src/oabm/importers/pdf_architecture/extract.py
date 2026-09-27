@@ -186,7 +186,9 @@ def _shx_annotation_texts(
         rect = annotation.get("/Rect")
         if rect is None or len(rect) < 4:
             continue
-        # /Rect corners may be reversed; normalize into displayed space.
+        # /Rect corners are absolute user-space dictionary values (raw pypdf,
+        # unrotated); apply() subtracts the MediaBox origin before rotating.
+        # Corners may be reversed; normalize into displayed space.
         corner_first = display_transform.apply(float(rect[0]), float(rect[1]))
         corner_second = display_transform.apply(float(rect[2]), float(rect[3]))
         bbox = (
@@ -599,7 +601,24 @@ class _LayerPage(Page):
         return self._layout
 
     def process_object(self, obj):  # type: ignore[override]
-        result = super().process_object(obj)
+        # pdfplumber re-adds the rotated MediaBox origin onto x0/x1, pts,
+        # path, top and bottom (its point2coord and the #1181 reversion), so
+        # on an offset-MediaBox page those keys land an absolute shifted
+        # float-step away from the zero-origin values, while y0/y1 stay
+        # page-relative (pdfminer already shifted them). Neutralizing the
+        # mediabox for the duration of the call sends offset pages through
+        # the exact float path a zero-origin page already takes - no
+        # arithmetic, no rounding dust. Zero-origin pages skip this
+        # entirely, keeping existing observations byte-identical.
+        mediabox = self.mediabox
+        if mediabox[0] != 0.0 or mediabox[1] != 0.0:
+            self.mediabox = (0.0, 0.0, mediabox[2], mediabox[3])
+            try:
+                result = super().process_object(obj)
+            finally:
+                self.mediabox = mediabox
+        else:
+            result = super().process_object(obj)
         layer = getattr(obj, "_oabm_source_layer", None)
         if isinstance(layer, str) and layer:
             result["_oabm_source_layer"] = layer

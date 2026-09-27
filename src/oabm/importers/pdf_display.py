@@ -1,10 +1,21 @@
 """Shared PDF page display-space coordinate normalization helpers.
 
-PDF coordinates are reported in raw user space, which ignores the page
-/Rotate entry; recognition in every lane assumes the orientation a viewer
-displays. Both the electrical and the architecture extractor map source
-positions through these helpers before creating observations, so both lanes
-agree on displayed, bottom-origin page space.
+PDF coordinates come in two frames. Raw user-space values are absolute and
+ignore both the MediaBox lower-left origin and the page /Rotate entry;
+"page-relative" values are already measured from the MediaBox lower-left
+corner with rotation applied. Recognition in every lane assumes the
+orientation a viewer displays, so both the electrical and the architecture
+extractor map source positions through these helpers before creating
+observations, and both lanes agree on displayed, bottom-origin page space.
+
+Which frame a producer reports is an empirical property of that producer.
+Probed on synthetic offset-MediaBox pages (MediaBox ``[-W/2 -H/2 W/2 H/2]``,
+content translated by ``(-W/2, -H/2)``): pdfminer already subtracts the
+MediaBox origin and applies /Rotate (page-relative); pdfplumber 0.11.10 adds
+the origin back onto ``x0``/``x1`` and offsets ``top``/``bottom``, so its
+objects are absolute in the rotated frame; camelot 2.0.0 reports
+page-relative, unrotated points; pypdf visitor callbacks report absolute,
+unrotated user space. Each call site documents the frame it feeds in.
 """
 
 from __future__ import annotations
@@ -23,16 +34,39 @@ _SUPPORTED_PAGE_ROTATIONS = frozenset({0, 90, 180, 270})
 
 @dataclass(frozen=True, slots=True)
 class PdfPageDisplayTransform:
-    """Map one PDF page from raw user space into displayed page space."""
+    """Map one PDF page from raw user space into displayed page space.
+
+    ``origin_x_pt``/``origin_y_pt`` carry the MediaBox lower-left corner
+    (default 0.0). Zero-origin pages keep the historical mapping unchanged.
+    """
 
     page_rotation: int
     source_width_pt: float
     source_height_pt: float
     displayed_width_pt: float
     displayed_height_pt: float
+    origin_x_pt: float = 0.0
+    origin_y_pt: float = 0.0
 
     def apply(self, x_pt: float, y_pt: float) -> tuple[float, float]:
-        """Return bottom-origin displayed coordinates for one raw PDF point."""
+        """Return bottom-origin displayed coordinates for one absolute point.
+
+        Use for raw user-space values as reported by pypdf visitor callbacks
+        and PDF dictionaries such as annotation /Rect. The MediaBox origin is
+        subtracted before rotating.
+        """
+
+        return self.apply_relative(
+            float(x_pt) - self.origin_x_pt, float(y_pt) - self.origin_y_pt
+        )
+
+    def apply_relative(self, x_pt: float, y_pt: float) -> tuple[float, float]:
+        """Return displayed coordinates for one page-relative point.
+
+        Use when the origin is already the MediaBox lower-left corner and
+        only the quarter-turn remains, e.g. camelot's unrotated page-relative
+        output. Identical to :meth:`apply` on zero-origin pages.
+        """
 
         x = float(x_pt)
         y = float(y_pt)
@@ -86,6 +120,8 @@ def page_display_transform(page: Any) -> PdfPageDisplayTransform:
     source_height = float(page.mediabox.height)
     if source_width <= 0.0 or source_height <= 0.0:
         raise ValueError("PDF page dimensions must be positive")
+    origin_x = float(page.mediabox.left)
+    origin_y = float(page.mediabox.bottom)
 
     if rotation in {90, 270}:
         displayed_width = source_height
@@ -100,4 +136,6 @@ def page_display_transform(page: Any) -> PdfPageDisplayTransform:
         source_height_pt=source_height,
         displayed_width_pt=displayed_width,
         displayed_height_pt=displayed_height,
+        origin_x_pt=origin_x,
+        origin_y_pt=origin_y,
     )

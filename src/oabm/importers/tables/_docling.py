@@ -8,6 +8,11 @@ non-empty fraction term only and a warning says so. Region boxes are
 applied as a bbox-intersection filter because Docling has no region
 parameter. Cell boxes use a cell's provenance box when present and fall
 back to the table box with a warning when it is not.
+
+Coordinate-space note: the shared page display transform is accepted but
+never applied here - Docling provenance boxes carry their own
+``coord_origin`` and are mapped straight to bottom-origin points using the
+document page size, so there is no MediaBox-origin-sensitive call site.
 """
 
 from __future__ import annotations

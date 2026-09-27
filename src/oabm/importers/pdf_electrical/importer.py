@@ -819,6 +819,8 @@ def _make_page_visitors(
         x: float,
         y: float,
     ) -> tuple[float, float]:
+        # pypdf visitor values are absolute user space; apply() subtracts the
+        # MediaBox origin before rotating.
         raw_x, raw_y = _transform_graphics_point(cm, x, y)
         return display_transform.apply(raw_x, raw_y)
 
@@ -834,6 +836,7 @@ def _make_page_visitors(
         if not cleaned:
             return
         text_counter += 1
+        # pypdf visitor values are absolute user space (see displayed_graphics_point).
         raw_x_pt, raw_y_pt = _transform_text_point(cm, tm)
         x_pt, y_pt = display_transform.apply(raw_x_pt, raw_y_pt)
         texts.append(
@@ -958,6 +961,7 @@ def _make_page_visitors(
         if operator == b"Do" and operands:
             name = str(operands[0])
             if not form_names or name in form_names:
+                # cm translation components are absolute user space.
                 symbols.append(
                     PdfSymbolObservation(
                         element_id=f"p{page_number}:xobject:{operator_counter:05d}",
@@ -1224,6 +1228,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             rect = annotation.get("/Rect")
             if not rect or len(rect) < 4:
                 continue
+            # /Rect is an absolute user-space dictionary value, unrotated.
             raw_x_pt = (float(rect[0]) + float(rect[2])) / 2.0
             raw_y_pt = (float(rect[1]) + float(rect[3])) / 2.0
             x_pt, y_pt = display_transform.apply(raw_x_pt, raw_y_pt)
@@ -9959,6 +9964,9 @@ class ElectricalPdfImporter:
             common = {
                 "id": entity_id,
                 "name": candidate.tag,
+                # Registration sees observation coordinates, which are already
+                # displayed page space: the MediaBox origin was normalized at
+                # extraction, so this is a pure pt-to-model map.
                 "pose": Pose(position=transform.apply(candidate.x_pt, candidate.y_pt)),
                 "level_id": None,
                 "space_id": None,

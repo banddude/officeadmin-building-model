@@ -29,6 +29,7 @@ from oabm.model import (
     Vector3,
     Wall,
 )
+from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 
 from .model import (
     Bounds2,
@@ -479,6 +480,15 @@ def _entity_primitives(
 ) -> list[DrawingPrimitive]:
     result: list[DrawingPrimitive] = []
     if isinstance(entity, Wall):
+        # Glazed walls read as glazing: their own layer, the lightest
+        # existing weight even where the wall is cut, and one centre line
+        # between the two faces in plan. Other constructions keep the wall
+        # layer; each tokened wall records its token in primitive metadata
+        # so renderers can restyle by construction. Tokenless walls remain
+        # byte-identical to earlier output.
+        glazed = entity.construction == WALL_CONSTRUCTION_GLAZED
+        layer = "architecture:glazing" if glazed else "architecture:walls"
+        construction = (("construction", entity.construction),) if entity.construction else ()
         for index, corners in enumerate(_wall_segment_corners(entity)):
             _, depths = project_points(frame, corners)
             plan_cut = cut_depth is not None and _depth_spans(depths, cut_depth)
@@ -488,11 +498,29 @@ def _entity_primitives(
                     corners,
                     frame,
                     bounds,
-                    layer="architecture:walls",
-                    style=LineStyle(stroke="cut" if plan_cut else "object", weight="heavy" if plan_cut else "normal"),
+                    layer=layer,
+                    style=LineStyle(
+                        stroke="cut" if plan_cut else "object",
+                        weight="normal" if glazed else "heavy" if plan_cut else "normal",
+                    ),
                     suffix=f"segment:{index}:projection",
+                    metadata=construction,
                 )
             )
+            if glazed and plan_cut:
+                segment_a, segment_b = entity.centerline.points[index], entity.centerline.points[index + 1]
+                centre, _ = project_points(frame, (segment_a, segment_b))
+                result.extend(
+                    _polyline_primitives(
+                        entity.id,
+                        centre,
+                        bounds,
+                        layer=layer,
+                        style=LineStyle(stroke="object", weight="normal", pattern="dash"),
+                        suffix_prefix=f"segment:{index}:centre",
+                        metadata=construction,
+                    )
+                )
             if view_type == "section" and _depth_spans(depths, 0.0):
                 result.extend(
                     _section_cut_profile(
@@ -501,8 +529,10 @@ def _entity_primitives(
                         _WALL_PRISM_EDGES,
                         frame,
                         bounds,
-                        layer="architecture:walls",
+                        layer=layer,
                         suffix=f"segment:{index}:cut",
+                        style=LineStyle(stroke="cut", weight="normal" if glazed else "heavy"),
+                        metadata=construction,
                     )
                 )
     elif isinstance(entity, Space):
@@ -609,29 +639,29 @@ _BOX_EDGES = (
     (2, 6), (3, 7), (4, 5), (4, 6), (5, 7), (6, 7),
 )
 
-def _section_cut_profile(source_id, points3, edges, frame, bounds, *, layer, suffix):
+def _section_cut_profile(source_id, points3, edges, frame, bounds, *, layer, suffix, style=None, metadata=()):
     hits = section_intersection_edges(tuple(points3), edges, frame)
     if len(hits) < 2:
         return []
     hull = _convex_hull(hits)
-    style = LineStyle(stroke="cut", weight="heavy")
+    style = style or LineStyle(stroke="cut", weight="heavy")
     if len(hull) >= 3 and abs(_polygon_area(hull)) > _EPS:
         clipped = clip_polygon(hull, bounds)
-        return [] if not clipped else [_primitive(source_id, "polygon", layer, clipped, closed=True, style=style, suffix=suffix)]
-    return _polyline_primitives(source_id, hull, bounds, layer=layer, style=style, suffix_prefix=suffix)
+        return [] if not clipped else [_primitive(source_id, "polygon", layer, clipped, closed=True, style=style, suffix=suffix, metadata=metadata)]
+    return _polyline_primitives(source_id, hull, bounds, layer=layer, style=style, suffix_prefix=suffix, metadata=metadata)
 
 def _box_section_cut(source_id, pose, size, frame, bounds, *, layer):
     corners = oriented_box_corners(pose, size.x, size.y, size.z)
     return _section_cut_profile(source_id, corners, _BOX_EDGES, frame, bounds, layer=layer, suffix="section-cut")
 
-def _project_solid(source_id, points3, frame, bounds, *, layer, style, suffix="solid"):
+def _project_solid(source_id, points3, frame, bounds, *, layer, style, suffix="solid", metadata=()):
     projected, _ = project_points(frame, points3)
     hull = _convex_hull(projected)
     if len(hull) >= 3 and abs(_polygon_area(hull)) > _EPS:
         clipped = clip_polygon(hull, bounds)
-        return [] if not clipped else [_primitive(source_id, "polygon", layer, clipped, closed=True, style=style, suffix=suffix)]
+        return [] if not clipped else [_primitive(source_id, "polygon", layer, clipped, closed=True, style=style, suffix=suffix, metadata=metadata)]
     if len(hull) == 2:
-        return _polyline_primitives(source_id, hull, bounds, layer=layer, style=style)
+        return _polyline_primitives(source_id, hull, bounds, layer=layer, style=style, metadata=metadata)
     return []
 
 
@@ -714,17 +744,18 @@ def _polyline_primitives(
     layer: str,
     style: LineStyle,
     suffix_prefix: str = "frag",
+    metadata: tuple[tuple[str, str], ...] = (),
 ) -> list[DrawingPrimitive]:
     if len(set(points)) < 2:
         return []
     fragments = clip_polyline(points, bounds)
     return [
-        _primitive(source_id, "polyline", layer, fragment, style=style, suffix=f"{suffix_prefix}:{index}")
+        _primitive(source_id, "polyline", layer, fragment, style=style, suffix=f"{suffix_prefix}:{index}", metadata=metadata)
         for index, fragment in enumerate(fragments)
     ]
 
 
-def _primitive(source_id, kind, layer, points, *, closed=False, style=LineStyle(), text=None, symbol=None, suffix="0"):
+def _primitive(source_id, kind, layer, points, *, closed=False, style=LineStyle(), text=None, symbol=None, suffix="0", metadata=()):
     return DrawingPrimitive(
         id=_derived_id("primitive", source_id, layer, suffix),
         kind=kind,
@@ -735,6 +766,7 @@ def _primitive(source_id, kind, layer, points, *, closed=False, style=LineStyle(
         style=style,
         text=text,
         symbol=symbol,
+        metadata=tuple(metadata),
     )
 
 

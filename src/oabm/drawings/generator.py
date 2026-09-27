@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
+from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Iterable, Protocol
 
 from oabm.model import (
@@ -60,6 +61,13 @@ from .projection import (
 )
 
 _EPS = 1e-9
+
+# Label-overlap estimation constants (documented in docs/drawings.md). Text labels
+# are assumed to render at 2.5 mm on paper with an average glyph width of 0.6
+# times the text height; at view scale 1:s that is a model-unit box of
+# len(text) * 0.0015 * s wide by 0.0025 * s tall.
+_LABEL_TEXT_HEIGHT_PAPER_M = 0.0025
+_LABEL_CHAR_WIDTH_RATIO = 0.6
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,20 +191,54 @@ def generate_drawing_set(
     include_schedules: bool = True,
     symbol_provider: SymbolProvider = default_symbol_provider,
     label_provider: LabelProvider = default_label_provider,
+    dimension_decimals: int | None = None,
+    label_overlap: str = "keep",
 ) -> DrawingSet:
     """Generate immutable drawing output from canonical model semantics.
 
     Nothing in the returned structure is accepted as model input. Every geometric
     primitive and schedule row points back to canonical IDs, making the drawing a
     deterministic projection rather than an alternate source of truth.
+
+    ``dimension_decimals`` and ``label_overlap`` are opt-in presentation options
+    shared by every generated view; see :func:`generate_plan`.
     """
+    decimals = _validated_dimension_decimals(dimension_decimals)
+    overlap = _validated_label_overlap(label_overlap)
     views: list[DrawingView] = []
     for spec in sorted(tuple(plans), key=lambda item: item.id):
-        views.append(generate_plan(model, spec, symbol_provider=symbol_provider, label_provider=label_provider))
+        views.append(
+            generate_plan(
+                model,
+                spec,
+                symbol_provider=symbol_provider,
+                label_provider=label_provider,
+                dimension_decimals=decimals,
+                label_overlap=overlap,
+            )
+        )
     for spec in sorted(tuple(elevations), key=lambda item: item.id):
-        views.append(generate_elevation(model, spec, symbol_provider=symbol_provider, label_provider=label_provider))
+        views.append(
+            generate_elevation(
+                model,
+                spec,
+                symbol_provider=symbol_provider,
+                label_provider=label_provider,
+                dimension_decimals=decimals,
+                label_overlap=overlap,
+            )
+        )
     for spec in sorted(tuple(sections), key=lambda item: item.id):
-        views.append(generate_section(model, spec, symbol_provider=symbol_provider, label_provider=label_provider))
+        views.append(
+            generate_section(
+                model,
+                spec,
+                symbol_provider=symbol_provider,
+                label_provider=label_provider,
+                dimension_decimals=decimals,
+                label_overlap=overlap,
+            )
+        )
 
     schedules = generate_schedules(model) if include_schedules else ()
     # Keep a deterministic identity/provenance index for the canonical model.
@@ -217,7 +259,23 @@ def generate_plan(
     *,
     symbol_provider: SymbolProvider = default_symbol_provider,
     label_provider: LabelProvider = default_label_provider,
+    dimension_decimals: int | None = None,
+    label_overlap: str = "keep",
 ) -> DrawingView:
+    """Generate one plan view.
+
+    ``dimension_decimals``: ``None`` keeps the historic full-precision dimension
+    text; an integer 0-4 formats dimension text with exactly that many decimals
+    (``ROUND_HALF_EVEN``; 0 prints no decimal point). ``value_m`` stays full
+    precision.
+
+    ``label_overlap``: ``"keep"`` (default) places every label; ``"skip"`` drops
+    text labels whose estimated box intersects an already kept label's box, in
+    sorted source-id order, and reports the count as a ``skipped_labels`` view
+    metadata entry. Symbols, dimensions, and geometry are never dropped.
+    """
+    decimals = _validated_dimension_decimals(dimension_decimals)
+    overlap = _validated_label_overlap(label_overlap)
     level = _level(model, spec.level_id)
     cut_z = level.elevation_m + spec.cut_height_m
     min_z = level.elevation_m - spec.view_depth_below_m
@@ -248,7 +306,18 @@ def generate_plan(
             )
         )
         if spec.visibility.dimensions and isinstance(entity, Wall):
-            dimensions.extend(_wall_dimensions(entity, frame, bounds))
+            dimensions.extend(_wall_dimensions(entity, frame, bounds, decimals=decimals))
+
+    skipped_labels = 0
+    if overlap == "skip":
+        primitives, skipped_labels = _drop_overlapping_labels(primitives, spec.scale)
+    metadata = (
+        ("level_id", level.id),
+        ("cut_elevation_m", _fmt_number(cut_z)),
+        ("source_frame_id", model.coordinate_system.frame_id),
+    )
+    if overlap == "skip":
+        metadata = metadata + (("skipped_labels", str(skipped_labels)),)
 
     return DrawingView(
         id=spec.id,
@@ -258,11 +327,7 @@ def generate_plan(
         scale=spec.scale,
         primitives=_sort_primitives(primitives),
         dimensions=tuple(sorted(dimensions, key=lambda item: item.id)),
-        metadata=(
-            ("level_id", level.id),
-            ("cut_elevation_m", _fmt_number(cut_z)),
-            ("source_frame_id", model.coordinate_system.frame_id),
-        ),
+        metadata=metadata,
     )
 
 
@@ -272,7 +337,12 @@ def generate_elevation(
     *,
     symbol_provider: SymbolProvider = default_symbol_provider,
     label_provider: LabelProvider = default_label_provider,
+    dimension_decimals: int | None = None,
+    label_overlap: str = "keep",
 ) -> DrawingView:
+    """Generate one elevation view; see :func:`generate_plan` for the options."""
+    decimals = _validated_dimension_decimals(dimension_decimals)
+    overlap = _validated_label_overlap(label_overlap)
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
     entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, spec.near_m, spec.far_m))
@@ -293,7 +363,16 @@ def generate_elevation(
             )
         )
         if spec.visibility.dimensions and isinstance(entity, Opening):
-            dimensions.extend(_opening_dimensions(entity, frame, bounds))
+            dimensions.extend(_opening_dimensions(entity, frame, bounds, decimals=decimals))
+    skipped_labels = 0
+    if overlap == "skip":
+        primitives, skipped_labels = _drop_overlapping_labels(primitives, spec.scale)
+    metadata = (
+        ("view_direction", f"{_fmt_number(spec.direction.x)},{_fmt_number(spec.direction.y)},{_fmt_number(spec.direction.z)}"),
+        ("source_frame_id", model.coordinate_system.frame_id),
+    )
+    if overlap == "skip":
+        metadata = metadata + (("skipped_labels", str(skipped_labels)),)
     return DrawingView(
         id=spec.id,
         view_type="elevation",
@@ -302,10 +381,7 @@ def generate_elevation(
         scale=spec.scale,
         primitives=_sort_primitives(primitives),
         dimensions=tuple(sorted(dimensions, key=lambda item: item.id)),
-        metadata=(
-            ("view_direction", f"{_fmt_number(spec.direction.x)},{_fmt_number(spec.direction.y)},{_fmt_number(spec.direction.z)}"),
-            ("source_frame_id", model.coordinate_system.frame_id),
-        ),
+        metadata=metadata,
     )
 
 
@@ -315,7 +391,16 @@ def generate_section(
     *,
     symbol_provider: SymbolProvider = default_symbol_provider,
     label_provider: LabelProvider = default_label_provider,
+    dimension_decimals: int | None = None,
+    label_overlap: str = "keep",
 ) -> DrawingView:
+    """Generate one section view; see :func:`generate_plan` for the options.
+
+    Sections carry no dimension builders, so ``dimension_decimals`` is validated
+    for interface parity but does not change section output.
+    """
+    overlap = _validated_label_overlap(label_overlap)
+    _validated_dimension_decimals(dimension_decimals)
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
     entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, -spec.back_depth_m, spec.depth_m))
@@ -334,6 +419,16 @@ def generate_section(
                 depth_interval=depth_interval,
             )
         )
+    skipped_labels = 0
+    if overlap == "skip":
+        primitives, skipped_labels = _drop_overlapping_labels(primitives, spec.scale)
+    metadata = (
+        ("section_depth_m", _fmt_number(spec.depth_m)),
+        ("back_depth_m", _fmt_number(spec.back_depth_m)),
+        ("source_frame_id", model.coordinate_system.frame_id),
+    )
+    if overlap == "skip":
+        metadata = metadata + (("skipped_labels", str(skipped_labels)),)
     return DrawingView(
         id=spec.id,
         view_type="section",
@@ -342,11 +437,7 @@ def generate_section(
         scale=spec.scale,
         primitives=_sort_primitives(primitives),
         dimensions=(),
-        metadata=(
-            ("section_depth_m", _fmt_number(spec.depth_m)),
-            ("back_depth_m", _fmt_number(spec.back_depth_m)),
-            ("source_frame_id", model.coordinate_system.frame_id),
-        ),
+        metadata=metadata,
     )
 
 
@@ -770,7 +861,7 @@ def _primitive(source_id, kind, layer, points, *, closed=False, style=LineStyle(
     )
 
 
-def _wall_dimensions(wall: Wall, frame: ProjectionFrame, bounds: Bounds2) -> list[DrawingDimension]:
+def _wall_dimensions(wall: Wall, frame: ProjectionFrame, bounds: Bounds2, *, decimals: int | None = None) -> list[DrawingDimension]:
     dimensions: list[DrawingDimension] = []
     for index, (a3, b3) in enumerate(zip(wall.centerline.points, wall.centerline.points[1:])):
         a, _ = frame.project(a3)
@@ -788,13 +879,13 @@ def _wall_dimensions(wall: Wall, frame: ProjectionFrame, bounds: Bounds2) -> lis
                 end=b,
                 offset_m=0.2,
                 value_m=value,
-                text=f"{_fmt_number(value)} m",
+                text=_format_dimension_text(value, decimals),
             )
         )
     return dimensions
 
 
-def _opening_dimensions(opening: Opening, frame: ProjectionFrame, bounds: Bounds2) -> list[DrawingDimension]:
+def _opening_dimensions(opening: Opening, frame: ProjectionFrame, bounds: Bounds2, *, decimals: int | None = None) -> list[DrawingDimension]:
     corners = oriented_box_corners(opening.pose, opening.size.x, opening.size.y, opening.size.z)
     projected, _ = project_points(frame, corners)
     if not projected:
@@ -806,10 +897,10 @@ def _opening_dimensions(opening: Opening, frame: ProjectionFrame, bounds: Bounds
     height_a, height_b = Point2(x=max_x, y=min_y), Point2(x=max_x, y=max_y)
     if width_a != width_b and (_inside(width_a, bounds) or _inside(width_b, bounds)):
         value = max_x - min_x
-        result.append(DrawingDimension(id=_derived_id("dimension", opening.id, "width"), source_ids=(opening.id,), start=width_a, end=width_b, offset_m=0.15, value_m=value, text=f"{_fmt_number(value)} m"))
+        result.append(DrawingDimension(id=_derived_id("dimension", opening.id, "width"), source_ids=(opening.id,), start=width_a, end=width_b, offset_m=0.15, value_m=value, text=_format_dimension_text(value, decimals)))
     if height_a != height_b and (_inside(height_a, bounds) or _inside(height_b, bounds)):
         value = max_y - min_y
-        result.append(DrawingDimension(id=_derived_id("dimension", opening.id, "height"), source_ids=(opening.id,), start=height_a, end=height_b, offset_m=0.15, value_m=value, text=f"{_fmt_number(value)} m"))
+        result.append(DrawingDimension(id=_derived_id("dimension", opening.id, "height"), source_ids=(opening.id,), start=height_a, end=height_b, offset_m=0.15, value_m=value, text=_format_dimension_text(value, decimals)))
     return result
 
 
@@ -965,6 +1056,52 @@ def _label_anchor(
     return Point2(x=sum(p.x for p in points) / len(points), y=sum(p.y for p in points) / len(points))
 
 
+def _label_box(anchor: Point2, text: str, scale: float) -> tuple[float, float, float, float]:
+    """Estimated label box in model units as ``(min_x, min_y, max_x, max_y)``.
+
+    At view scale 1:s the annotated text height of ``_LABEL_TEXT_HEIGHT_PAPER_M``
+    on paper is ``char_h = _LABEL_TEXT_HEIGHT_PAPER_M * scale`` model units, the
+    average glyph width is ``_LABEL_CHAR_WIDTH_RATIO * char_h``, so the box is
+    ``len(text)`` characters wide and one character tall. The anchor is the SVG
+    start anchor and baseline, so the box spans rightward from it and one
+    ``char_h`` above it.
+    """
+    char_h = _LABEL_TEXT_HEIGHT_PAPER_M * scale
+    char_w = char_h * _LABEL_CHAR_WIDTH_RATIO
+    width = max(len(text), 1) * char_w
+    return (anchor.x, anchor.y - char_h, anchor.x + width, anchor.y)
+
+
+def _boxes_intersect(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> bool:
+    """Strict axis-aligned box intersection; merely touching edges do not count."""
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def _drop_overlapping_labels(primitives: list[DrawingPrimitive], scale: float) -> tuple[list[DrawingPrimitive], int]:
+    """Drop text labels whose estimated box hits an already kept label's box.
+
+    Labels are evaluated in sorted source-id order, so the surviving label for a
+    cluster is always the one with the lowest source id. Only
+    ``annotations:labels`` text primitives are candidates; symbols, dimensions,
+    and geometry are never dropped. Returns the filtered list and the skipped
+    count for the view's ``skipped_labels`` metadata entry.
+    """
+    labels = [item for item in primitives if item.kind == "text" and item.layer == "annotations:labels"]
+    if not labels:
+        return primitives, 0
+    kept_boxes: list[tuple[float, float, float, float]] = []
+    dropped_ids: set[str] = set()
+    for primitive in sorted(labels, key=lambda item: (item.source_ids, item.id)):
+        box = _label_box(primitive.points[0], primitive.text or "", scale)
+        if any(_boxes_intersect(box, kept) for kept in kept_boxes):
+            dropped_ids.add(primitive.id)
+            continue
+        kept_boxes.append(box)
+    if not dropped_ids:
+        return primitives, 0
+    return [item for item in primitives if item.id not in dropped_ids], len(dropped_ids)
+
+
 def _convex_hull(points: tuple[Point2, ...]) -> tuple[Point2, ...]:
     unique = sorted(set(points))
     if len(unique) <= 2:
@@ -1063,3 +1200,34 @@ def _fmt_number(value: float) -> str:
 
 def _fmt_optional(value: float | None) -> str:
     return "" if value is None else _fmt_number(value)
+
+
+def _validated_dimension_decimals(dimension_decimals: int | None) -> int | None:
+    if dimension_decimals is None:
+        return None
+    if isinstance(dimension_decimals, bool) or not isinstance(dimension_decimals, int) or not 0 <= dimension_decimals <= 4:
+        raise ValueError("dimension_decimals must be None or an integer in 0..4")
+    return dimension_decimals
+
+
+def _validated_label_overlap(label_overlap: str) -> str:
+    if label_overlap not in {"keep", "skip"}:
+        raise ValueError('label_overlap must be "keep" or "skip"')
+    return label_overlap
+
+
+def _format_dimension_text(value: float, decimals: int | None) -> str:
+    """Render a dimension's display text; ``value_m`` always keeps full precision.
+
+    ``None`` keeps the historic ``_fmt_number`` text. An integer 0-4 prints
+    exactly that many decimals, rounded once with ``decimal`` ``ROUND_HALF_EVEN``
+    applied to the value's shortest repr (deterministic across platforms); 0
+    prints no decimal point (``3`` not ``3.0``) and trailing zeros are kept at
+    higher precisions (``3.10`` at 2).
+    """
+    if decimals is None:
+        return f"{_fmt_number(value)} m"
+    quantized = Decimal(repr(float(value))).quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_EVEN)
+    if quantized == 0:
+        quantized = abs(quantized)
+    return f"{format(quantized, 'f')} m"

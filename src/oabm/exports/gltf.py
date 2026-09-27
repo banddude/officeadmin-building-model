@@ -1277,6 +1277,19 @@ def _plan_cross(
     return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 
 
+def _plan_ring_area(
+    plan: list[tuple[float, float]],
+    ring: list[int],
+) -> float:
+    """Twice the signed area of a plan ring (CCW: > 0)."""
+
+    return math.fsum(
+        plan[ring[position]][0] * plan[ring[(position + 1) % len(ring)]][1]
+        - plan[ring[(position + 1) % len(ring)]][0] * plan[ring[position]][1]
+        for position in range(len(ring))
+    )
+
+
 def _plan_is_convex(plan: list[tuple[float, float]]) -> bool:
     """True when every turn has the same sign, collinear vertices ignored."""
 
@@ -1452,19 +1465,17 @@ def _plan_ring_triangles(
 ) -> list[tuple[int, int, int]] | None:
     """Ear-clip one plan ring, splitting it at self-touching seams first.
 
-    Each seam split shrinks the rings, so the recursion is bounded; if any
-    sub-ring still cannot be clipped the whole ring reports failure and the
-    caller falls back to the fan.
+    Each seam split shrinks the rings, so the recursion is bounded. A
+    sub-ring wound against the split's parent is a hole behind a bridge
+    seam, not floor: it is never filled, and the whole ring reports
+    failure so the caller falls back to the fan. The same happens when a
+    sub-ring is degenerate or still cannot be clipped.
     """
 
     ring = _plan_clean_ring(plan, ring)
     if ring is None:
         return None
-    area = math.fsum(
-        plan[ring[position]][0] * plan[ring[(position + 1) % len(ring)]][1]
-        - plan[ring[(position + 1) % len(ring)]][0] * plan[ring[position]][1]
-        for position in range(len(ring))
-    )
+    area = _plan_ring_area(plan, ring)
     if abs(area) <= 2.0 * _PLAN_EPSILON:
         return None
     if area < 0.0:
@@ -1473,6 +1484,15 @@ def _plan_ring_triangles(
     if subrings is not None:
         triangles: list[tuple[int, int, int]] = []
         for subring in subrings:
+            sub_area = _plan_ring_area(plan, subring)
+            if abs(sub_area) <= 2.0 * _PLAN_EPSILON:
+                return None  # a collapsed sliver from the split
+            if sub_area < 0.0:
+                # The parent ring is CCW here, so a negative sub-ring is
+                # wound against it: the split walked around a hole and
+                # isolated it. Filling it would cover the hole and count
+                # its area twice; fail closed to the disclosed fan.
+                return None
             sub_triangles = _plan_ring_triangles(plan, subring)
             if sub_triangles is None:
                 return None
@@ -1489,9 +1509,12 @@ def _plan_ear_triangles(
     Returns index triangles in CCW order. A keyhole ring — one that touches
     itself at a seam, through a repeated vertex or a vertex lying on another
     edge — is split at the seam into simple sub-rings that are ear-clipped
-    independently. Returns None when the footprint is degenerate or
-    self-intersecting so badly that no ear can be clipped; the caller then
-    falls back to the fan instead of raising.
+    independently. A split that isolates a sub-ring wound against its parent
+    has found a hole behind a bridge seam; the hole is never filled, and the
+    ring reports failure like any other unclippable footprint. Returns None
+    when the footprint is degenerate or self-intersecting so badly that no
+    ear can be clipped; the caller then falls back to the fan instead of
+    raising.
     """
 
     return _plan_ring_triangles(plan, list(range(len(plan))))
@@ -1508,9 +1531,10 @@ def _prism_vertices(
     byte-identical. Non-convex footprints get deterministic ear clipping with
     the fan's cap winding (bottom faces down, top faces up); a keyhole ring
     that touches itself at a seam is split into simple sub-rings first and
-    each sub-ring is ear-clipped. Degenerate or still-unclippable footprints
-    fall back to the fan and report ``"fan-fallback"`` so the node can
-    disclose it in ``extras``.
+    each floor-wound sub-ring is ear-clipped, while a split that isolates a
+    hole behind a bridge seam is never filled. Degenerate or
+    still-unclippable footprints fall back to the fan and report
+    ``"fan-fallback"`` so the node can disclose it in ``extras``.
     """
 
     plan = [(point.x, point.y) for point in points]

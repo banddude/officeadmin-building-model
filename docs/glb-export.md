@@ -56,6 +56,12 @@ footprint polygon:
   are scanned from the lowest remaining index. The caps keep the fan's
   winding convention (bottom faces down, top faces up); side walls are
   unchanged.
+- A **keyhole** footprint — one that touches itself at a seam, through a
+  repeated vertex or a vertex lying on another edge — is split at the seam
+  into simple sub-rings that are ear-clipped independently. A sub-ring wound
+  against its parent is a hole behind a bridge seam (a room wrapping a
+  column or core); it is never filled, so such a footprint falls back to the
+  disclosed fan rather than silently covering the hole.
 - A **degenerate or self-intersecting** footprint falls back to the fan, and
   its node discloses that as `extras["triangulation"] = "fan-fallback"`.
   The export never raises on a bad footprint.

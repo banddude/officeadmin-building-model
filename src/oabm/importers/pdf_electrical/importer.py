@@ -2007,6 +2007,35 @@ def _paths_touch(
     )
 
 
+def _topology_candidate_pairs(
+    vectors: Sequence[PdfVectorPathObservation],
+    tolerance_pt: float,
+) -> Iterable[tuple[int, int]]:
+    """Pairs whose path bounds are close enough for the exact touch test.
+
+    A touching endpoint lies on or within ``tolerance_pt`` of the other
+    path, so their bounding boxes must be that close on both axes. Sweep in
+    x order and keep only overlapping prior boxes; the exact path test still
+    makes every connectivity decision. Indices refer to the source order.
+    """
+
+    bounds = [_vector_bbox(vector) for vector in vectors]
+    by_page: dict[int, list[int]] = {}
+    for index, vector in enumerate(vectors):
+        by_page.setdefault(vector.page, []).append(index)
+    for page in sorted(by_page):
+        active: list[int] = []
+        for index in sorted(by_page[page], key=lambda item: (bounds[item][0], item)):
+            min_x, min_y, _max_x, max_y = bounds[index]
+            active = [prior for prior in active if bounds[prior][2] >= min_x - tolerance_pt]
+            for prior in active:
+                prior_min_y, prior_max_y = bounds[prior][1], bounds[prior][3]
+                if prior_max_y < min_y - tolerance_pt or max_y < prior_min_y - tolerance_pt:
+                    continue
+                yield (prior, index) if prior < index else (index, prior)
+            active.append(index)
+
+
 def _paths_cross_or_touch(
     first: PdfVectorPathObservation,
     second: PdfVectorPathObservation,
@@ -4855,9 +4884,9 @@ def _heading_distance_to_group(
     vectors: Sequence[PdfVectorPathObservation],
     *,
     allow_beside: bool,
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> float | None:
     min_x, min_y, max_x, max_y = _legend_group_bounds(rows)
-    connected = _leader_connects_heading_to_rows(heading, rows, vectors)
     above = heading.y_pt >= max_y + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
     beside = (
         allow_beside
@@ -4872,7 +4901,12 @@ def _heading_distance_to_group(
     dx = max(min_x - heading.x_pt, heading.x_pt - max_x, 0.0)
     dy = max(min_y - heading.y_pt, heading.y_pt - max_y, 0.0)
     distance = math.hypot(dx, dy)
-    if not connected and distance > _LEGEND_TITLE_REGION_RADIUS_PT:
+    # The leader check can only rescue a heading farther than the ordinary
+    # title radius. Nearby headings and headings outside the allowed above/
+    # beside positions never need to inspect vectors.
+    if distance > _LEGEND_TITLE_REGION_RADIUS_PT and not _leader_connects_heading_to_rows(
+        heading, rows, vectors, endpoints=endpoints
+    ):
         return None
     return distance
 
@@ -4884,6 +4918,7 @@ def _nearest_section_heading(
     *,
     allow_beside: bool,
     require_legend_title: bool = False,
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> PdfTextObservation | None:
     if not rows:
         return None
@@ -4905,6 +4940,7 @@ def _nearest_section_heading(
             rows,
             vectors,
             allow_beside=allow_beside,
+            endpoints=endpoints,
         )
         if distance is None:
             continue
@@ -5422,39 +5458,140 @@ def _legend_group_density(rows: Sequence[_LegendRow]) -> float:
     return len(rows) / max(span, 1.0)
 
 
+class _VectorEndpointGrid:
+    """Uniform grid over the open-vector endpoints of one vectors tuple, one cell
+    per leader-endpoint search radius (issue #218: page import time grew
+    superlinearly on dense vector pages).
+
+    ``_leader_connects_heading_to_rows`` used to rescan every vector for every
+    (heading candidate, legend group) pair -- O(headings x groups x vectors),
+    which dominated dense pages. The grid answers "which vectors have an endpoint
+    near this point" from a 3x3 cell neighbourhood instead. Candidates come back
+    in the vectors tuple's own order and callers re-check the exact endpoint
+    distance, so the first connecting vector -- and therefore every downstream
+    decision -- is identical to the full scan.
+    """
+
+    CELL_PT = _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+
+    def __init__(self, vectors: Sequence[PdfVectorPathObservation]) -> None:
+        self._open: dict[int, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
+        self._grid: dict[int, dict[tuple[int, int], list[int]]] = {}
+        for vector in vectors:
+            if vector.closed or len(vector.points_pt) < 2:
+                continue
+            page = vector.page
+            endpoints = (vector.points_pt[0], vector.points_pt[-1])
+            page_endpoints = self._open.setdefault(page, [])
+            page_endpoints.append(endpoints)
+            page_grid = self._grid.setdefault(page, {})
+            for x, y in endpoints:
+                page_grid.setdefault(
+                    (math.floor(x / self.CELL_PT), math.floor(y / self.CELL_PT)),
+                    [],
+                ).append(len(page_endpoints) - 1)
+
+    def candidates(
+        self,
+        page: int,
+        x: float,
+        y: float,
+    ) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+        """Open-vector endpoint pairs in the nearby cells, in vectors order.
+
+        The caller checks the exact radius after this conservative lookup.
+        """
+        page_grid = self._grid.get(page)
+        if not page_grid:
+            return ()
+        cell_x = math.floor(x / self.CELL_PT)
+        cell_y = math.floor(y / self.CELL_PT)
+        slots: set[int] = set()
+        for neighbour_x in (cell_x - 1, cell_x, cell_x + 1):
+            for neighbour_y in (cell_y - 1, cell_y, cell_y + 1):
+                slots.update(page_grid.get((neighbour_x, neighbour_y), ()))
+        page_endpoints = self._open[page]
+        return tuple(page_endpoints[slot] for slot in sorted(slots))
+
+
+class _AnchorPointGrid:
+    """Uniform grid over fixed anchor points for one radius-bounded
+    min-distance query (issue #218).
+
+    ``min()`` over the grid's 3x3 cell neighbourhood equals ``min()`` over all
+    anchors whenever that minimum is within the radius -- the only comparison
+    the leader check makes -- because every anchor within the radius lies
+    inside the neighbourhood. With no anchors at all the minimum is infinity.
+    """
+
+    def __init__(
+        self,
+        points: Sequence[tuple[float, float]],
+        cell_pt: float,
+    ) -> None:
+        self._cell_pt = cell_pt
+        self._grid: dict[tuple[int, int], list[tuple[float, float]]] = {}
+        for x, y in points:
+            self._grid.setdefault(
+                (math.floor(x / cell_pt), math.floor(y / cell_pt)),
+                [],
+            ).append((x, y))
+
+    def min_distance(self, x: float, y: float) -> float:
+        cell_x = math.floor(x / self._cell_pt)
+        cell_y = math.floor(y / self._cell_pt)
+        best = math.inf
+        for neighbour_x in (cell_x - 1, cell_x, cell_x + 1):
+            for neighbour_y in (cell_y - 1, cell_y, cell_y + 1):
+                for point_x, point_y in self._grid.get((neighbour_x, neighbour_y), ()):
+                    distance = _distance_pt(x, y, point_x, point_y)
+                    if distance < best:
+                        best = distance
+        return best
+
+
 def _leader_connects_heading_to_rows(
     heading: PdfTextObservation,
     rows: Sequence[_LegendRow],
     vectors: Sequence[PdfVectorPathObservation],
+    *,
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> bool:
-    def distance_to_rows(point: tuple[float, float]) -> float:
-        return min(
-            min(
-                _distance_pt(point[0], point[1], row.label.x_pt, row.label.y_pt),
-                _distance_pt(
-                    point[0],
-                    point[1],
-                    row.cluster.center_pt[0],
-                    row.cluster.center_pt[1],
-                ),
-            )
-            for row in rows
-        )
+    radius = _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+    row_anchors: _AnchorPointGrid | None = None
 
-    for vector in vectors:
-        if vector.page != heading.page or vector.closed or len(vector.points_pt) < 2:
-            continue
-        endpoints = (vector.points_pt[0], vector.points_pt[-1])
-        for heading_end, legend_end in (endpoints, tuple(reversed(endpoints))):
+    def distance_to_rows(point: tuple[float, float]) -> float:
+        nonlocal row_anchors
+        if row_anchors is None:
+            row_anchors = _AnchorPointGrid(
+                [
+                    anchor
+                    for row in rows
+                    for anchor in (
+                        (row.label.x_pt, row.label.y_pt),
+                        (row.cluster.center_pt[0], row.cluster.center_pt[1]),
+                    )
+                ],
+                radius,
+            )
+        return row_anchors.min_distance(point[0], point[1])
+
+    if endpoints is None:
+        candidates = [
+            (vector.points_pt[0], vector.points_pt[-1])
+            for vector in vectors
+            if vector.page == heading.page
+            and not vector.closed
+            and len(vector.points_pt) >= 2
+        ]
+    else:
+        candidates = endpoints.candidates(heading.page, heading.x_pt, heading.y_pt)
+    for first_pt, last_pt in candidates:
+        for heading_end, legend_end in ((first_pt, last_pt), (last_pt, first_pt)):
             if (
-                _distance_pt(
-                    heading.x_pt,
-                    heading.y_pt,
-                    heading_end[0],
-                    heading_end[1],
-                )
-                <= _LEGEND_LEADER_ENDPOINT_RADIUS_PT
-                and distance_to_rows(legend_end) <= _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+                _distance_pt(heading.x_pt, heading.y_pt, heading_end[0], heading_end[1])
+                <= radius
+                and distance_to_rows(legend_end) <= radius
             ):
                 return True
     return False
@@ -6206,6 +6343,7 @@ def _join_framed_legend_columns(
     page_groups: Sequence[tuple[_LegendRow, ...]],
     texts: Sequence[PdfTextObservation],
     vectors: Sequence[PdfVectorPathObservation],
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> _LegendRegion:
     """Add the other columns of a ruled legend block to its title-matched region.
 
@@ -6232,6 +6370,7 @@ def _join_framed_legend_columns(
         texts,
         vectors,
         allow_beside=True,
+        endpoints=endpoints,
     )
     if (
         own_heading is not None
@@ -6245,7 +6384,9 @@ def _join_framed_legend_columns(
             continue
         if not all(_row_inside(row, frame) for row in group):
             continue
-        heading = _nearest_section_heading(group, texts, vectors, allow_beside=True)
+        heading = _nearest_section_heading(
+            group, texts, vectors, allow_beside=True, endpoints=endpoints
+        )
         if heading is not None and _heading_has_rejected_legend_context(heading):
             # A rejected section heading is only fatal for the whole group when
             # it sits outside the legend frame (a notes column beside the
@@ -6302,6 +6443,7 @@ def _detect_legend_regions(
     vectors: Sequence[PdfVectorPathObservation],
     preferred_regions: Sequence[_LegendRegion] = (),
 ) -> tuple[_LegendRegion, ...]:
+    endpoints = _VectorEndpointGrid(vectors) if rows else None
     regions_by_page: dict[int, _LegendRegion] = {
         region.page: region for region in preferred_regions
     }
@@ -6326,6 +6468,7 @@ def _detect_legend_regions(
                 vectors,
                 allow_beside=True,
                 require_legend_title=True,
+                endpoints=endpoints,
             )
             if heading is None:
                 continue
@@ -6352,6 +6495,7 @@ def _detect_legend_regions(
                 page_groups,
                 texts,
                 vectors,
+                endpoints=endpoints,
             )
 
     signature_counts: dict[tuple[int, str], int] = {}
@@ -6378,6 +6522,7 @@ def _detect_legend_regions(
             texts,
             vectors,
             allow_beside=False,
+            endpoints=endpoints,
         )
         if (
             nearest_heading is not None
@@ -6422,6 +6567,7 @@ def _detect_legend_regions(
                 texts,
                 vectors,
                 allow_beside=True,
+                endpoints=endpoints,
             )
             if heading is None:
                 continue
@@ -11528,15 +11674,15 @@ class ElectricalPdfImporter:
                 else:
                     parent[first_root] = second_root
 
-        for first_index, first_vector in enumerate(topology_vectors):
-            for second_index in range(first_index + 1, len(topology_vectors)):
-                second_vector = topology_vectors[second_index]
-                if _paths_touch(
-                    first_vector,
-                    second_vector,
-                    tolerance_pt=self.topology_snap_radius_pt,
-                ):
-                    union(first_index, second_index)
+        for first_index, second_index in _topology_candidate_pairs(
+            topology_vectors, self.topology_snap_radius_pt
+        ):
+            if _paths_touch(
+                topology_vectors[first_index],
+                topology_vectors[second_index],
+                tolerance_pt=self.topology_snap_radius_pt,
+            ):
+                union(first_index, second_index)
 
         topology_components: dict[int, list[PdfVectorPathObservation]] = {}
         for index, vector in enumerate(topology_vectors):

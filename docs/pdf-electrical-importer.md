@@ -600,3 +600,189 @@ unknown or non-unique codes remain unresolved with the source code recorded.
 Long legend descriptions remain semantic labels in full, so an explanatory
 trailing sentence does not prevent a leading tele/data J-box phrase from
 classifying as `junction_box_data`.
+
+## Device-sheet selection
+
+`oabm.importers.pdf_electrical.sheet_selection.select_device_pages(document,
+*, importer=None)` answers one question for public callers (#180): which
+sheets of a set carry electrical devices? Per page, in page order, it returns
+a frozen `SheetChoice` (`page`, `sheet_id`, `discipline`, `device_count`,
+`recognized_device_count`, `symbol_like_count`, `included`, `reason`) wrapped
+in a `DeviceSheetSelection` (`pages`, `import_mode`,
+`import_fallback_reason`) whose `to_dict()` is deterministic.
+
+The document is imported **once**, with the default importer or the
+caller-supplied `importer`, and every canonical device is counted on the page
+its recognition recorded (`attributes.pdf_electrical.source_page`, else the
+page of its first provenance record). The per-page counts therefore add up to
+exactly the devices the caller's own whole-document import produces, and
+callers with project-specific `SymbolRule` sets or instance hints get
+matching counts. On pages whose symbols are resolved only through a legend on
+another sheet, this counts the devices that a page imported in isolation
+would miss; everywhere else the counts equal per-page isolation (the tests
+assert both).
+
+Selection never raises because the importer refuses the document. The
+whole-document import can legitimately raise `ElectricalPdfError`, most often
+because the same tagged equipment (for example one panel) is drawn on two
+sheets and the importer will not canonicalize one identity from two source
+locations. Selection then falls back to importing each page on its own (every
+other page's observations removed, page numbering and page provenance kept)
+and uses that import's device count. `import_mode` records which path ran:
+`"document"` for the single import, `"per_page_fallback"` otherwise.
+`import_fallback_reason` is `None` for `"document"`; for the fallback it is the
+error class and a fixed short summary, such as `"ElectricalPdfError: the same
+stable semantic identity was recognized at multiple source locations"`, and
+never the importer's message, which quotes source tags. Unrecognized refusals
+get the generic summary `the whole-document import refused the document`. If a
+page's own import also raises, its device count is 0 and an electrical or
+unknown-discipline page is excluded as `import_failed`; other disciplines keep
+`<discipline>_sheet`. Only `ElectricalPdfError` triggers the fallback; any
+other exception is a bug and propagates.
+
+`device_count` and `recognized_device_count` are the same number: devices the
+importer *recognized* on the page. The count is only as good as the importer's
+recall on the set, so `symbol_like_count` sits next to it: the page's symbol
+observations plus its tag-like text observations. A text is tag-like when it
+is a single token of at most ten characters that is either a one-to-three
+character code (`a`, `WP`, `GFI`, `$3`) or a letter-led tag with a digit
+(`RECEPT-1`, `D1`), and is not a printed sheet id. Common short words and
+drafting abbreviations that fit the code shape are never tag-like, compared
+case-insensitively: `AND`, `THE`, `ALL`, `FOR`, `OF`, `SEE`, `NOT`, `TO`,
+`AT`, `IN`, `ON`, `BY`, `OR`, `NO`, `AS`, `IS`, `BE`, `IF`, `UP`, `SET`,
+`PER`, `VIA`, `TYP`, `EQ`. Without them, an extractor that emits general
+notes word by word would inflate the count on notes-only sheets. A lone `A` is
+deliberately not a stop word, because `a` is a common switch-leg code. An
+electrical sheet with
+zero recognized devices and zero symbol-like observations is empty; one with
+zero recognized devices and many symbol-like observations most likely uses
+symbols the importer does not recognize. `symbol_like_count` is a disclosure
+only and never changes a verdict.
+
+The discipline comes from the printed sheet-number prefix. A printed sheet id
+is a discipline prefix and a sheet number (`E-110`, `FP-2`, `E-2.1`). Dotted
+numbers also accept no separator, a space, or an en/em dash (`E2.1`,
+`E 2.1`, `E–2.1`); all normalize to the hyphen form. Undotted unseparated
+tokens (`E110`) remain excluded because grid bubbles and device tags use
+that form. A sheet id must also stand alone
+as a token: it may not be preceded by a word character or a hyphen, and it
+may not be followed by a word character, a hyphen, or `.digit`. So a
+panel/circuit callout such as `P-1-12` holds no plumbing sheet `P-1`, and
+`HP-E-3`, `LF-1`, `E-201-4`, `E-2.1.3` and `E-12345` hold no sheet id either;
+two such callouts can never outvote a single title-block sheet number.
+Sentence punctuation after an id is accepted (`SEE E-201.`, `(FP-2)`,
+`SHEET M-101, NOTE 3`). Comma/slash number continuations such as `A-1,3`
+and `P-1/12` are rejected. The prefixes are `E`/`EL`/`ELEC` →
+`electrical`, `M` → `mechanical`, `P` → `plumbing`, `FP`/`FA` →
+`fire_protection`, `A`/`ID` → `architectural`, `S` → `structural`, `C` →
+`civil`, matched case-insensitively with the longest prefix first. A different
+prefix such as `PP-1.0` supplies no discipline. When a
+page prints no sheet number, discipline words **inside the title-block band**
+decide (`ELECTRIC`/`ELECTRICAL`, `MECHANICAL`/`HVAC`, `PLUMBING`,
+`FIRE PROTECTION`/`FIRE ALARM`, `ARCHITECTURAL`, `STRUCTURAL`, `CIVIL`; most
+frequent wins, ties lexicographic). The band is the strip along the displayed
+right edge plus the strip along the displayed bottom edge, each
+`TITLE_BLOCK_BAND_FRACTION` = 0.15 of the displayed page width or height (the
+page's text extent when extraction provenance has no displayed page size).
+General notes elsewhere on the sheet that name another trade never decide the
+discipline. If the band has neither a sheet number nor a discipline word, the
+largest drawing title outside it can supply a discipline when the same text
+names both a trade and a drawing kind, for example `MECHANICAL PLAN` or
+`HVAC FLOOR PLAN`. Otherwise the discipline is `unknown` and the sheet id is
+`None`.
+
+One sheet number usually prints more than once (title block, border
+callouts). A candidate in the title-block band whose text height is at least
+1.5 times the next candidate's height wins even when smaller cross-references
+repeat more often. Without a clear height winner, the most frequent candidate
+wins. Ties are
+broken by the candidate occurrence closest to the displayed bottom-right
+title-block corner (using the extracted displayed page size, falling back to
+the page's text extent when provenance is absent), then lexicographically,
+so the choice is always deterministic. This rule is exposed as
+`sheet_identity(document, page) -> (sheet_id, discipline)`, the electrical
+lane's shared sheet-identity function.
+
+Selection rules, in precedence order: an electrical sheet with at least one
+recognized device is included (`electrical_with_devices`); an electrical
+sheet with no recognized devices is excluded
+(`electrical_no_recognized_devices`); an unknown-discipline page with devices
+is excluded as `unknown_discipline_with_devices` so it is surfaced rather than
+silently used; any other discipline is excluded as `<discipline>_sheet`. The
+module reads only extracted observations and the importer's output and never
+changes importer behaviour; default import output stays byte-identical.
+
+### Cross-discipline sheets and page type filters
+
+An item the electrical side owns is sometimes printed only within another
+trade's package; duct-mounted smoke detection shown with the mechanical work
+is the standard example. It may be counted from that sheet only when the
+electrical legend claims the type. A symbol on a foreign sheet alone is never
+scope.
+
+Duct smoke detectors have their own canonical type `duct_smoke_detector`
+(aliases `DSD`, `DUCT DETECTOR`, and `DUCT SMOKE DETECTOR`). The rule sits
+before the generic smoke rules, so a duct detector is never typed as a
+`smoke_alarm` or `smoke_co_alarm`.
+
+The printed sheet number carries the discipline, and the lane has exactly one
+definition of it: `sheet_selection.sheet_identity(document, page)` (see
+Device-sheet selection above). A page is an electrical sheet when
+`sheet_identity(document, page)[1] == "electrical"`: an `E-`, `EL-` or
+`ELEC-` sheet number such as `E-1` or `E-2.1`, or, when no sheet number is
+printed, an electrical discipline word inside the title-block band. Fixture,
+panel and keynote tags (`LF-1`, `HP-E-3`) and project numbers never qualify.
+`printed_sheet_ids(document)` is a thin wrapper that maps each page with a
+printed sheet id to the id `sheet_identity` chose.
+
+`electrical_scope_types(document)` reads the electrical legend's scope from
+those electrical sheets. Every text row on an electrical sheet is classified
+with the default symbol rules used for legend rows. An unambiguous row adds
+its canonical type to `defined`. A defined type also joins
+`cross_discipline` when the row's own text names the electrical side as
+responsible. The documented phrase list:
+
+- `WIRED BY E` (also with `E.C.` or `EC` after it)
+- `BY ELECTRICAL`
+- `BY E.C.` / `BY EC` (a bare `BY E` matches too)
+- the contractor-name phrase, matched as `ELECTRICAL\s+CONTRACTOR`
+- `FURNISHED BY M`, `MECH`, or `MECHANICAL`, paired with
+  `INSTALLED BY E`; the furnished half alone never claims electrical scope
+
+`cross_discipline` also always includes `CROSS_DISCIPLINE_DEFAULT_TYPES`,
+which starts as `{"duct_smoke_detector"}`. A row that ties between two types
+defines neither. The function returns an `ElectricalScopeTypes(defined,
+cross_discipline)` pair and never changes import output by itself.
+
+`ElectricalPdfImporter.import_document(..., page_type_filters=...)` is the
+opt-in consumer. The mapping keys are 1-based page indices and the values are
+sets of canonical types. On a listed page, only entities whose canonical type
+is in that page's set are imported; each kept entity gains
+`attributes.pdf_electrical.cross_discipline_sheet` (the sheet id
+`sheet_identity` chose for the page, or the page number when none is printed), its confidence is capped at
+`CROSS_DISCIPLINE_MAX_CONFIDENCE` (0.6), and it gains one `inferred`
+provenance record (`cross-discipline-page-filter`, source element
+`p<page>:page-type-filter`, because the sheet id is a page-level vote rather
+than one text element) recording the filter. An
+entity dropped by the filter is retained as explicit evidence under
+`unresolved_observations` with status `excluded_by_page_type_filter`, so a
+filtered sheet never silently loses recognized devices. Unlisted pages behave
+exactly as before, and `None` or `{}` produces byte-identical output.
+
+Composition is a caller-side step; there is no automatic wiring. Identify the
+non-electrical pages with `sheet_identity`, read the electrical legend's
+claim with `electrical_scope_types`, and pass the cross-discipline types for
+each page of another known discipline (pages of `unknown` discipline are left
+unfiltered):
+
+```python
+scope = electrical_scope_types(document)
+filters = {
+    page: scope.cross_discipline
+    for page in range(1, document.page_count + 1)
+    if sheet_identity(document, page)[1] not in {"electrical", "unknown"}
+}
+model = ElectricalPdfImporter().import_document(
+    document, page_type_filters=filters
+)
+```

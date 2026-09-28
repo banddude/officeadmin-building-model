@@ -444,6 +444,16 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         "speaker",
         0.95,
     ),
+    # Duct smoke detectors are mechanical-duct devices that electrical legends
+    # frequently claim ("FURNISHED BY M, WIRED BY E"). They are listed before
+    # the generic smoke rows so a duct detector is never typed as a room smoke
+    # alarm; cross-discipline reading is gated by electrical_scope_types.
+    SymbolRule(
+        r"\bDUCT\s+(?:SMOKE\s+)?DETECTOR\b|\bDSD\b",
+        "device",
+        "duct_smoke_detector",
+        0.95,
+    ),
     SymbolRule(
         r"\bSMOKE\s*/\s*(?:CARBON\s+)?MONOXIDE\b",
         "device",
@@ -506,6 +516,9 @@ class _EntityCandidate:
     shape_recognition: dict[str, Any] | None = None
     annotation_recognition: dict[str, Any] | None = None
     lighting_recognition: dict[str, Any] | None = None
+    # Set only when the caller's page_type_filters kept this candidate from a
+    # non-electrical sheet; records the printed sheet id (or page number).
+    cross_discipline_sheet: str | None = None
 
     def merge_source(
         self,
@@ -1994,6 +2007,35 @@ def _paths_touch(
     )
 
 
+def _topology_candidate_pairs(
+    vectors: Sequence[PdfVectorPathObservation],
+    tolerance_pt: float,
+) -> Iterable[tuple[int, int]]:
+    """Pairs whose path bounds are close enough for the exact touch test.
+
+    A touching endpoint lies on or within ``tolerance_pt`` of the other
+    path, so their bounding boxes must be that close on both axes. Sweep in
+    x order and keep only overlapping prior boxes; the exact path test still
+    makes every connectivity decision. Indices refer to the source order.
+    """
+
+    bounds = [_vector_bbox(vector) for vector in vectors]
+    by_page: dict[int, list[int]] = {}
+    for index, vector in enumerate(vectors):
+        by_page.setdefault(vector.page, []).append(index)
+    for page in sorted(by_page):
+        active: list[int] = []
+        for index in sorted(by_page[page], key=lambda item: (bounds[item][0], item)):
+            min_x, min_y, _max_x, max_y = bounds[index]
+            active = [prior for prior in active if bounds[prior][2] >= min_x - tolerance_pt]
+            for prior in active:
+                prior_min_y, prior_max_y = bounds[prior][1], bounds[prior][3]
+                if prior_max_y < min_y - tolerance_pt or max_y < prior_min_y - tolerance_pt:
+                    continue
+                yield (prior, index) if prior < index else (index, prior)
+            active.append(index)
+
+
 def _paths_cross_or_touch(
     first: PdfVectorPathObservation,
     second: PdfVectorPathObservation,
@@ -2299,6 +2341,198 @@ def _scope_status_attributes(
         "scope_legend_text": sorted({text for _, _, text in entries})[0],
         "scope_legend_source_element_ids": legend_ids,
     }
+
+# Cross-discipline scope (#181): a wiring item the electrical side owns is
+# sometimes printed only within another trade's package -- duct-mounted smoke
+# detection shown with the mechanical work is the classic example. Reading
+# such an item off that sheet is legitimate only when the electrical legend
+# itself claims the type; a symbol printed on a foreign sheet is not scope on
+# its own. Which trade owns a page is decided by the electrical lane's one
+# shared sheet-identity function, sheet_selection.sheet_identity (printed
+# discipline-prefixed sheet number, frequency vote, title-block tie-break);
+# this module keeps no second sheet-id definition.
+# A row counts as electrical scope even on a foreign sheet when its own text
+# names the electrical side as responsible. The documented phrase list:
+#   WIRED BY E (also with E.C. or EC after it)
+#   BY ELECTRICAL
+#   BY E.C. / BY EC (a bare BY E matches too)
+#   the contractor name, matched as ELECTRICAL\s+CONTRACTOR
+#   FURNISHED BY M, MECH or MECHANICAL, paired with INSTALLED BY E;
+#     the furnished half alone never claims electrical scope
+_CROSS_DISCIPLINE_RESPONSIBILITY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bWIRED\s+BY\s+(?:THE\s+)?E\.?C?\.?\b", re.IGNORECASE),
+    re.compile(r"\bBY\s+E\.?C?\.?\b", re.IGNORECASE),
+    re.compile(r"\bBY\s+ELECTRICAL\b", re.IGNORECASE),
+    re.compile(r"\bELECTRICAL\s+CONTRACTOR\b", re.IGNORECASE),
+)
+_CROSS_DISCIPLINE_FURNISHED_BY_MECH_RE = re.compile(
+    r"\bFURNISHED\s+BY\s+(?:THE\s+)?M(?:ECH(?:ANICAL)?)?\.?\b",
+    re.IGNORECASE,
+)
+_CROSS_DISCIPLINE_INSTALLED_BY_ELECTRICAL_RE = re.compile(
+    r"\bINSTALLED\s+BY\s+(?:THE\s+)?E(?:\.?C?\.?|LECTRICAL)\b",
+    re.IGNORECASE,
+)
+# Types the electrical legend claims cross-discipline even without a printed
+# responsibility phrase. Starts with duct smoke detectors and grows only by
+# explicit, documented change.
+CROSS_DISCIPLINE_DEFAULT_TYPES: frozenset[str] = frozenset(
+    {"duct_smoke_detector"}
+)
+# A device kept from a non-electrical sheet was not located by electrical
+# recognition on an electrical sheet; its type evidence is legend-scoped, so
+# its confidence never exceeds this cap.
+CROSS_DISCIPLINE_MAX_CONFIDENCE = 0.6
+# Same default ambiguity margin as ElectricalPdfImporter: a legend row that
+# ties between two types defines neither.
+_ELECTRICAL_SCOPE_AMBIGUITY_MARGIN = 0.08
+
+
+@dataclass(frozen=True, slots=True)
+class ElectricalScopeTypes:
+    """Electrical legend scope read from a document's E-discipline sheets.
+
+    ``defined`` lists every canonical type an E-sheet legend row classifies
+    as. ``cross_discipline`` is the subset the electrical legend explicitly
+    claims from other disciplines (rows carrying a responsibility phrase),
+    unioned with ``CROSS_DISCIPLINE_DEFAULT_TYPES``.
+    """
+
+    defined: frozenset[str]
+    cross_discipline: frozenset[str]
+
+
+def _page_sheet_identities(
+    document: PdfElectricalDocument,
+) -> dict[int, tuple[str | None, str]]:
+    """Per page (1-based, in page order): ``(sheet_id, discipline)``.
+
+    Delegates to the lane's shared
+    :func:`oabm.importers.pdf_electrical.sheet_selection.sheet_identity`.
+    ``sheet_selection`` imports this module at load time, so the import is
+    deferred to call time to keep the module graph acyclic at import.
+    """
+
+    from oabm.importers.pdf_electrical.sheet_selection import sheet_identity
+
+    return {
+        page: sheet_identity(document, page)
+        for page in range(1, document.page_count + 1)
+    }
+
+
+def printed_sheet_ids(document: PdfElectricalDocument) -> dict[int, str]:
+    """Map every page that prints a sheet id to that id, in page order.
+
+    The id is the one the shared sheet-identity function chose
+    (:func:`oabm.importers.pdf_electrical.sheet_selection.sheet_identity`);
+    pages without a printed sheet id are omitted.
+    """
+
+    return {
+        page: sheet_id
+        for page, (sheet_id, _discipline) in _page_sheet_identities(
+            document
+        ).items()
+        if sheet_id is not None
+    }
+
+
+def _row_claims_electrical_responsibility(text: str) -> bool:
+    """Whether one legend row's text puts its device in electrical scope."""
+
+    if any(
+        pattern.search(text)
+        for pattern in _CROSS_DISCIPLINE_RESPONSIBILITY_PATTERNS
+    ):
+        return True
+    return bool(
+        _CROSS_DISCIPLINE_FURNISHED_BY_MECH_RE.search(text)
+        and _CROSS_DISCIPLINE_INSTALLED_BY_ELECTRICAL_RE.search(text)
+    )
+
+
+def electrical_scope_types(
+    document: PdfElectricalDocument,
+) -> ElectricalScopeTypes:
+    """Canonical types the electrical legend defines, per its electrical sheets.
+
+    A page is an electrical sheet when the shared sheet-identity function
+    (:func:`oabm.importers.pdf_electrical.sheet_selection.sheet_identity`)
+    gives it the ``electrical`` discipline. Every text row on
+    such a page is classified with the default symbol rules -- the same
+    classification legend rows go through -- and its canonical type counts as
+    ``defined`` when the classification is unambiguous. A defined type also
+    counts as ``cross_discipline`` when the row carries a responsibility
+    phrase (see ``_CROSS_DISCIPLINE_RESPONSIBILITY_PATTERNS``); the
+    documented ``CROSS_DISCIPLINE_DEFAULT_TYPES`` are always included. This
+    helper only reads scope; nothing here changes import output by itself.
+    """
+
+    electrical_pages = {
+        page
+        for page, (_sheet_id, discipline) in _page_sheet_identities(
+            document
+        ).items()
+        if discipline == "electrical"
+    }
+    defined: set[str] = set()
+    cross: set[str] = set()
+    for observation in document.texts:
+        if observation.page not in electrical_pages:
+            continue
+        text = " ".join(observation.text.split())
+        if not text:
+            continue
+        classification, _ranked = _classify_semantic_text(
+            text,
+            DEFAULT_SYMBOL_RULES,
+            ambiguity_margin=_ELECTRICAL_SCOPE_AMBIGUITY_MARGIN,
+        )
+        if classification is None:
+            continue
+        _kind, canonical_type, _confidence = classification
+        defined.add(canonical_type)
+        if _row_claims_electrical_responsibility(text):
+            cross.add(canonical_type)
+    return ElectricalScopeTypes(
+        defined=frozenset(defined),
+        cross_discipline=frozenset(cross) | CROSS_DISCIPLINE_DEFAULT_TYPES,
+    )
+
+
+def _normalize_page_type_filters(
+    page_type_filters: Mapping[int, frozenset[str]] | None,
+    page_count: int,
+) -> dict[int, frozenset[str]]:
+    """Validate caller page filters; empty means no page is filtered."""
+
+    if page_type_filters is None:
+        return {}
+    filters: dict[int, frozenset[str]] = {}
+    for page, allowed in page_type_filters.items():
+        if (
+            isinstance(page, bool)
+            or not isinstance(page, int)
+            or not 1 <= page <= page_count
+        ):
+            raise ElectricalPdfError(
+                f"page_type_filters references page {page!r}, but page_count "
+                f"is {page_count}"
+            )
+        if isinstance(allowed, (str, bytes)) or not isinstance(allowed, Iterable):
+            raise ElectricalPdfError(
+                f"page_type_filters for page {page} must be a collection of "
+                "canonical type strings"
+            )
+        filter_set = frozenset(allowed)
+        if not all(isinstance(item, str) and item.strip() for item in filter_set):
+            raise ElectricalPdfError(
+                f"page_type_filters for page {page} must contain only "
+                "non-empty canonical type strings"
+            )
+        filters[page] = filter_set
+    return filters
 
 # Lighting is intentionally a separate recognition path from power-device
 # legends. A fixture's readable type tag is the semantic evidence; geometry
@@ -4650,9 +4884,9 @@ def _heading_distance_to_group(
     vectors: Sequence[PdfVectorPathObservation],
     *,
     allow_beside: bool,
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> float | None:
     min_x, min_y, max_x, max_y = _legend_group_bounds(rows)
-    connected = _leader_connects_heading_to_rows(heading, rows, vectors)
     above = heading.y_pt >= max_y + _LEGEND_ROW_VERTICAL_TOLERANCE_PT
     beside = (
         allow_beside
@@ -4667,7 +4901,12 @@ def _heading_distance_to_group(
     dx = max(min_x - heading.x_pt, heading.x_pt - max_x, 0.0)
     dy = max(min_y - heading.y_pt, heading.y_pt - max_y, 0.0)
     distance = math.hypot(dx, dy)
-    if not connected and distance > _LEGEND_TITLE_REGION_RADIUS_PT:
+    # The leader check can only rescue a heading farther than the ordinary
+    # title radius. Nearby headings and headings outside the allowed above/
+    # beside positions never need to inspect vectors.
+    if distance > _LEGEND_TITLE_REGION_RADIUS_PT and not _leader_connects_heading_to_rows(
+        heading, rows, vectors, endpoints=endpoints
+    ):
         return None
     return distance
 
@@ -4679,6 +4918,7 @@ def _nearest_section_heading(
     *,
     allow_beside: bool,
     require_legend_title: bool = False,
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> PdfTextObservation | None:
     if not rows:
         return None
@@ -4700,6 +4940,7 @@ def _nearest_section_heading(
             rows,
             vectors,
             allow_beside=allow_beside,
+            endpoints=endpoints,
         )
         if distance is None:
             continue
@@ -5217,39 +5458,140 @@ def _legend_group_density(rows: Sequence[_LegendRow]) -> float:
     return len(rows) / max(span, 1.0)
 
 
+class _VectorEndpointGrid:
+    """Uniform grid over the open-vector endpoints of one vectors tuple, one cell
+    per leader-endpoint search radius (issue #218: page import time grew
+    superlinearly on dense vector pages).
+
+    ``_leader_connects_heading_to_rows`` used to rescan every vector for every
+    (heading candidate, legend group) pair -- O(headings x groups x vectors),
+    which dominated dense pages. The grid answers "which vectors have an endpoint
+    near this point" from a 3x3 cell neighbourhood instead. Candidates come back
+    in the vectors tuple's own order and callers re-check the exact endpoint
+    distance, so the first connecting vector -- and therefore every downstream
+    decision -- is identical to the full scan.
+    """
+
+    CELL_PT = _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+
+    def __init__(self, vectors: Sequence[PdfVectorPathObservation]) -> None:
+        self._open: dict[int, list[tuple[tuple[float, float], tuple[float, float]]]] = {}
+        self._grid: dict[int, dict[tuple[int, int], list[int]]] = {}
+        for vector in vectors:
+            if vector.closed or len(vector.points_pt) < 2:
+                continue
+            page = vector.page
+            endpoints = (vector.points_pt[0], vector.points_pt[-1])
+            page_endpoints = self._open.setdefault(page, [])
+            page_endpoints.append(endpoints)
+            page_grid = self._grid.setdefault(page, {})
+            for x, y in endpoints:
+                page_grid.setdefault(
+                    (math.floor(x / self.CELL_PT), math.floor(y / self.CELL_PT)),
+                    [],
+                ).append(len(page_endpoints) - 1)
+
+    def candidates(
+        self,
+        page: int,
+        x: float,
+        y: float,
+    ) -> tuple[tuple[tuple[float, float], tuple[float, float]], ...]:
+        """Open-vector endpoint pairs in the nearby cells, in vectors order.
+
+        The caller checks the exact radius after this conservative lookup.
+        """
+        page_grid = self._grid.get(page)
+        if not page_grid:
+            return ()
+        cell_x = math.floor(x / self.CELL_PT)
+        cell_y = math.floor(y / self.CELL_PT)
+        slots: set[int] = set()
+        for neighbour_x in (cell_x - 1, cell_x, cell_x + 1):
+            for neighbour_y in (cell_y - 1, cell_y, cell_y + 1):
+                slots.update(page_grid.get((neighbour_x, neighbour_y), ()))
+        page_endpoints = self._open[page]
+        return tuple(page_endpoints[slot] for slot in sorted(slots))
+
+
+class _AnchorPointGrid:
+    """Uniform grid over fixed anchor points for one radius-bounded
+    min-distance query (issue #218).
+
+    ``min()`` over the grid's 3x3 cell neighbourhood equals ``min()`` over all
+    anchors whenever that minimum is within the radius -- the only comparison
+    the leader check makes -- because every anchor within the radius lies
+    inside the neighbourhood. With no anchors at all the minimum is infinity.
+    """
+
+    def __init__(
+        self,
+        points: Sequence[tuple[float, float]],
+        cell_pt: float,
+    ) -> None:
+        self._cell_pt = cell_pt
+        self._grid: dict[tuple[int, int], list[tuple[float, float]]] = {}
+        for x, y in points:
+            self._grid.setdefault(
+                (math.floor(x / cell_pt), math.floor(y / cell_pt)),
+                [],
+            ).append((x, y))
+
+    def min_distance(self, x: float, y: float) -> float:
+        cell_x = math.floor(x / self._cell_pt)
+        cell_y = math.floor(y / self._cell_pt)
+        best = math.inf
+        for neighbour_x in (cell_x - 1, cell_x, cell_x + 1):
+            for neighbour_y in (cell_y - 1, cell_y, cell_y + 1):
+                for point_x, point_y in self._grid.get((neighbour_x, neighbour_y), ()):
+                    distance = _distance_pt(x, y, point_x, point_y)
+                    if distance < best:
+                        best = distance
+        return best
+
+
 def _leader_connects_heading_to_rows(
     heading: PdfTextObservation,
     rows: Sequence[_LegendRow],
     vectors: Sequence[PdfVectorPathObservation],
+    *,
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> bool:
-    def distance_to_rows(point: tuple[float, float]) -> float:
-        return min(
-            min(
-                _distance_pt(point[0], point[1], row.label.x_pt, row.label.y_pt),
-                _distance_pt(
-                    point[0],
-                    point[1],
-                    row.cluster.center_pt[0],
-                    row.cluster.center_pt[1],
-                ),
-            )
-            for row in rows
-        )
+    radius = _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+    row_anchors: _AnchorPointGrid | None = None
 
-    for vector in vectors:
-        if vector.page != heading.page or vector.closed or len(vector.points_pt) < 2:
-            continue
-        endpoints = (vector.points_pt[0], vector.points_pt[-1])
-        for heading_end, legend_end in (endpoints, tuple(reversed(endpoints))):
+    def distance_to_rows(point: tuple[float, float]) -> float:
+        nonlocal row_anchors
+        if row_anchors is None:
+            row_anchors = _AnchorPointGrid(
+                [
+                    anchor
+                    for row in rows
+                    for anchor in (
+                        (row.label.x_pt, row.label.y_pt),
+                        (row.cluster.center_pt[0], row.cluster.center_pt[1]),
+                    )
+                ],
+                radius,
+            )
+        return row_anchors.min_distance(point[0], point[1])
+
+    if endpoints is None:
+        candidates = [
+            (vector.points_pt[0], vector.points_pt[-1])
+            for vector in vectors
+            if vector.page == heading.page
+            and not vector.closed
+            and len(vector.points_pt) >= 2
+        ]
+    else:
+        candidates = endpoints.candidates(heading.page, heading.x_pt, heading.y_pt)
+    for first_pt, last_pt in candidates:
+        for heading_end, legend_end in ((first_pt, last_pt), (last_pt, first_pt)):
             if (
-                _distance_pt(
-                    heading.x_pt,
-                    heading.y_pt,
-                    heading_end[0],
-                    heading_end[1],
-                )
-                <= _LEGEND_LEADER_ENDPOINT_RADIUS_PT
-                and distance_to_rows(legend_end) <= _LEGEND_LEADER_ENDPOINT_RADIUS_PT
+                _distance_pt(heading.x_pt, heading.y_pt, heading_end[0], heading_end[1])
+                <= radius
+                and distance_to_rows(legend_end) <= radius
             ):
                 return True
     return False
@@ -6001,6 +6343,7 @@ def _join_framed_legend_columns(
     page_groups: Sequence[tuple[_LegendRow, ...]],
     texts: Sequence[PdfTextObservation],
     vectors: Sequence[PdfVectorPathObservation],
+    endpoints: _VectorEndpointGrid | None = None,
 ) -> _LegendRegion:
     """Add the other columns of a ruled legend block to its title-matched region.
 
@@ -6027,6 +6370,7 @@ def _join_framed_legend_columns(
         texts,
         vectors,
         allow_beside=True,
+        endpoints=endpoints,
     )
     if (
         own_heading is not None
@@ -6040,7 +6384,9 @@ def _join_framed_legend_columns(
             continue
         if not all(_row_inside(row, frame) for row in group):
             continue
-        heading = _nearest_section_heading(group, texts, vectors, allow_beside=True)
+        heading = _nearest_section_heading(
+            group, texts, vectors, allow_beside=True, endpoints=endpoints
+        )
         if heading is not None and _heading_has_rejected_legend_context(heading):
             # A rejected section heading is only fatal for the whole group when
             # it sits outside the legend frame (a notes column beside the
@@ -6097,6 +6443,7 @@ def _detect_legend_regions(
     vectors: Sequence[PdfVectorPathObservation],
     preferred_regions: Sequence[_LegendRegion] = (),
 ) -> tuple[_LegendRegion, ...]:
+    endpoints = _VectorEndpointGrid(vectors) if rows else None
     regions_by_page: dict[int, _LegendRegion] = {
         region.page: region for region in preferred_regions
     }
@@ -6121,6 +6468,7 @@ def _detect_legend_regions(
                 vectors,
                 allow_beside=True,
                 require_legend_title=True,
+                endpoints=endpoints,
             )
             if heading is None:
                 continue
@@ -6147,6 +6495,7 @@ def _detect_legend_regions(
                 page_groups,
                 texts,
                 vectors,
+                endpoints=endpoints,
             )
 
     signature_counts: dict[tuple[int, str], int] = {}
@@ -6173,6 +6522,7 @@ def _detect_legend_regions(
             texts,
             vectors,
             allow_beside=False,
+            endpoints=endpoints,
         )
         if (
             nearest_heading is not None
@@ -6217,6 +6567,7 @@ def _detect_legend_regions(
                 texts,
                 vectors,
                 allow_beside=True,
+                endpoints=endpoints,
             )
             if heading is None:
                 continue
@@ -9198,6 +9549,7 @@ class ElectricalPdfImporter:
         document: PdfElectricalDocument,
         *,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
+        page_type_filters: Mapping[int, frozenset[str]] | None = None,
     ) -> BuildingModel:
         transforms, region_transforms, has_explicit_registration = _resolve_page_transforms(
             document,
@@ -9969,6 +10321,73 @@ class ElectricalPdfImporter:
                     )
                     attached_note_ids.add(observation.element_id)
 
+        # Cross-discipline pages (#181): on a caller-filtered page, keep only
+        # the types the electrical legend put in scope. Dropped candidates are
+        # recorded as exclusion evidence; kept ones carry the printed sheet
+        # id, a confidence cap, and an inferred provenance note, because their
+        # type evidence is legend-scoped rather than read off this sheet.
+        filters = _normalize_page_type_filters(page_type_filters, document.page_count)
+        if filters:
+            sheet_identities = _page_sheet_identities(document)
+            for key in sorted(candidates):
+                candidate = candidates[key]
+                allowed = filters.get(candidate.page)
+                if allowed is None:
+                    continue
+                printed_id, _discipline = sheet_identities[candidate.page]
+                label = printed_id if printed_id is not None else str(candidate.page)
+                if candidate.canonical_type not in allowed:
+                    del candidates[key]
+                    unresolved_observations.append(
+                        {
+                            "kind": "page_type_filter",
+                            "page": candidate.page,
+                            "source_element_id": (
+                                min(candidate.source_element_ids)
+                                if candidate.source_element_ids
+                                else f"p{candidate.page}:page-type-filter"
+                            ),
+                            "position_pt": {
+                                "x": candidate.x_pt,
+                                "y": candidate.y_pt,
+                            },
+                            "recognized_classification": {
+                                "entity_kind": candidate.entity_kind,
+                                "canonical_type": candidate.canonical_type,
+                            },
+                            "page_type_filters": sorted(allowed),
+                            "cross_discipline_sheet": label,
+                            "status": "excluded_by_page_type_filter",
+                            "reason": (
+                                "recognized type is outside the caller-supplied "
+                                "page_type_filters set for this page"
+                            ),
+                        }
+                    )
+                    continue
+                capped = min(candidate.confidence, CROSS_DISCIPLINE_MAX_CONFIDENCE)
+                candidate.confidence = capped
+                candidate.cross_discipline_sheet = label
+                candidate.provenance.append(
+                    _provenance(
+                        document,
+                        element_id=f"p{candidate.page}:page-type-filter",
+                        page=candidate.page,
+                        method="cross-discipline-page-filter",
+                        confidence=capped,
+                        derivation=DERIVATION_INFERRED,
+                        attributes={
+                            "cross_discipline_sheet": label,
+                            "page_type_filters": sorted(allowed),
+                            "note": (
+                                "kept by the caller-supplied page_type_filters on a "
+                                "non-electrical sheet; the type scope comes from the "
+                                "electrical legend, not from this sheet"
+                            ),
+                        },
+                    )
+                )
+
         equipment: list[ElectricalEquipment] = []
         devices: list[ElectricalDevice] = []
         entity_by_page_tag: dict[tuple[int, str], ElectricalEquipment | ElectricalDevice] = {}
@@ -10060,6 +10479,10 @@ class ElectricalPdfImporter:
                 lane_attributes["tag"] = candidate.tag
             if candidate.symbol_names:
                 lane_attributes["symbol_names"] = sorted(set(candidate.symbol_names))
+            if candidate.cross_discipline_sheet is not None:
+                lane_attributes["cross_discipline_sheet"] = (
+                    candidate.cross_discipline_sheet
+                )
             if candidate.shape_recognition is not None:
                 lane_attributes["shape_recognition"] = dict(candidate.shape_recognition)
                 if candidate.shape_recognition.get("tags"):
@@ -11251,15 +11674,15 @@ class ElectricalPdfImporter:
                 else:
                     parent[first_root] = second_root
 
-        for first_index, first_vector in enumerate(topology_vectors):
-            for second_index in range(first_index + 1, len(topology_vectors)):
-                second_vector = topology_vectors[second_index]
-                if _paths_touch(
-                    first_vector,
-                    second_vector,
-                    tolerance_pt=self.topology_snap_radius_pt,
-                ):
-                    union(first_index, second_index)
+        for first_index, second_index in _topology_candidate_pairs(
+            topology_vectors, self.topology_snap_radius_pt
+        ):
+            if _paths_touch(
+                topology_vectors[first_index],
+                topology_vectors[second_index],
+                tolerance_pt=self.topology_snap_radius_pt,
+            ):
+                union(first_index, second_index)
 
         topology_components: dict[int, list[PdfVectorPathObservation]] = {}
         for index, vector in enumerate(topology_vectors):
@@ -11968,19 +12391,24 @@ def import_document(
 
 
 __all__ = [
+    "CROSS_DISCIPLINE_DEFAULT_TYPES",
+    "CROSS_DISCIPLINE_MAX_CONFIDENCE",
     "DEFAULT_SYMBOL_RULES",
     "POINT_TO_M",
     "DrawingRegionTransform",
     "ElectricalPdfError",
     "ElectricalPdfImporter",
     "ElectricalInstanceHint",
+    "ElectricalScopeTypes",
     "PdfElectricalDocument",
     "PdfPageTransform",
     "PdfSymbolObservation",
     "PdfTextObservation",
     "PdfVectorPathObservation",
     "SymbolRule",
+    "electrical_scope_types",
     "extract_pdf",
     "import_document",
     "import_pdf",
+    "printed_sheet_ids",
 ]

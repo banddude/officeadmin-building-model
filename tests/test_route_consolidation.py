@@ -142,6 +142,91 @@ def acceptance_model() -> BuildingModel:
     )
 
 
+def test_closed_detour_is_reported_per_route_while_other_bundle_consolidates() -> None:
+    ordinary = acceptance_model()
+    source = _device("device:detour-source", (100.0, 0.0, 3.0))
+    load = _device("device:detour-load", (120.0, 0.0, 3.0))
+    source_port = _port("port:detour-source", source.id, (100.0, 0.0, 3.0), "source")
+    load_port = _port("port:detour-load", load.id, (120.0, 0.0, 3.0), "load")
+    detour = _route(
+        "route:detour", source_port.id, load_port.id,
+        ((100, 0, 3), (110, 0, 3), (110, 1, 3), (110, 0, 3), (120, 0, 3)),
+    )
+    neighbor = _route(
+        "route:detour-neighbor", source_port.id, load_port.id,
+        ((100, 0, 3), (120, 0, 3)),
+    )
+    circuits = list(ordinary.circuits)
+    conductors = list(ordinary.conductors)
+    for index, route in enumerate((detour, neighbor), start=500):
+        _wiring(circuits, conductors, index, route.id, source_port.id, load_port.id)
+    model = dataclasses.replace(
+        ordinary,
+        electrical_devices=(*ordinary.electrical_devices, source, load),
+        ports=(*ordinary.ports, source_port, load_port),
+        routes=(*ordinary.routes, detour, neighbor),
+        circuits=tuple(circuits), conductors=tuple(conductors),
+    )
+    validate_model(model)
+    first = consolidate_bundled_routes(model)
+    second = consolidate_bundled_routes(model)
+    validate_model(first.model)
+    assert first == second
+    assert first.report.untouched_route_reasons == ((
+        detour.id, "closed_branch_detour_requires_fitting_geometry",
+    ),)
+    assert first.report.routes_left_untouched == 2  # detour and its now-solo neighbor
+    assert detour in first.model.routes and neighbor in first.model.routes
+    assert len(_trunks(first.model)) == 1
+    assert _total_length(first.model) == pytest.approx(_total_length(model) - 40.0)
+    old_routes = {route.id: route for route in model.routes}
+    new_routes = {route.id: route for route in first.model.routes}
+    for before, after in zip(model.conductors, first.model.conductors):
+        assert sum(_length(old_routes[route_id]) for route_id in before.route_ids) == pytest.approx(
+            sum(_length(new_routes[route_id]) for route_id in after.route_ids)
+        )
+
+
+def test_adjacent_routes_retracing_one_trunk_are_left_distinct() -> None:
+    ordinary = acceptance_model()
+    devices = (
+        _device("device:chain-start", (100, 0, 3)),
+        _device("device:chain-bottom", (110, 0, 0)),
+        _device("device:chain-end", (120, 0, 3)),
+    )
+    ports = (
+        _port("port:chain-start", devices[0].id, (100, 0, 3), "source"),
+        _port("port:chain-bottom", devices[1].id, (110, 0, 0), "junction"),
+        _port("port:chain-end", devices[2].id, (120, 0, 3), "load"),
+    )
+    down = _route("route:chain-down", ports[0].id, ports[1].id,
+                  ((100, 0, 3), (110, 0, 3), (110, 0, 0)))
+    up = _route("route:chain-up", ports[1].id, ports[2].id,
+                ((110, 0, 0), (110, 0, 3), (120, 0, 3)))
+    parallel = _route("route:chain-parallel", ports[1].id, ports[0].id,
+                      ((110, 0, 0), (110, 0, 3), (100, 0, 3)))
+    chain = Circuit(id="circuit:chain", source_port_id=ports[0].id,
+                    load_port_ids=(ports[2].id,), route_ids=(down.id, up.id))
+    wire = Conductor(id="conductor:chain", circuit_id=chain.id, role="circuit",
+                     count=2, route_ids=(down.id, up.id))
+    model = dataclasses.replace(
+        ordinary, electrical_devices=(*ordinary.electrical_devices, *devices),
+        ports=(*ordinary.ports, *ports), routes=(*ordinary.routes, down, up, parallel),
+        circuits=(*ordinary.circuits, chain), conductors=(*ordinary.conductors, wire),
+    )
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    assert (up.id, "adjacent_retrace_requires_distinct_traversal") in result.report.untouched_route_reasons
+    assert up in result.model.routes
+    new_wire = next(c for c in result.model.conductors if c.id == wire.id)
+    assert all(a != b for a, b in zip(new_wire.route_ids, new_wire.route_ids[1:]))
+    old_by_id = {route.id: route for route in model.routes}
+    new_by_id = {route.id: route for route in result.model.routes}
+    assert sum(_length(old_by_id[route_id]) for route_id in wire.route_ids) == pytest.approx(
+        sum(_length(new_by_id[route_id]) for route_id in new_wire.route_ids)
+    )
+
+
 def test_retraced_shared_stretch_keeps_conductor_length_and_reports_physical_takeoff() -> None:
     panel = ElectricalEquipment(
         id="equipment:retrace", equipment_type="panelboard",

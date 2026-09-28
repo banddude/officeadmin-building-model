@@ -217,6 +217,7 @@ def find_overlapping_route_runs(
     model: BuildingModel,
     *,
     tolerance_m: float = _DEFAULT_TOLERANCE_M,
+    excluded_route_ids: frozenset[str] = frozenset(),
 ) -> tuple[RouteOverlap, ...]:
     """Collinear, overlapping route runs of the same type, longest order stable.
 
@@ -234,10 +235,11 @@ def find_overlapping_route_runs(
 
     if tolerance_m < 0.0:
         raise ValueError("tolerance_m must be non-negative")
-    spans_by_route = {route.id: _axis_spans(route) for route in model.routes}
-    routes_by_id = {route.id: route for route in model.routes}
+    eligible_routes = tuple(route for route in model.routes if route.id not in excluded_route_ids)
+    spans_by_route = {route.id: _axis_spans(route) for route in eligible_routes}
+    routes_by_id = {route.id: route for route in eligible_routes}
     by_type: dict[str, list[Route]] = {}
-    for route in sorted(model.routes, key=lambda item: item.id):
+    for route in sorted(eligible_routes, key=lambda item: item.id):
         by_type.setdefault(route.route_type, []).append(route)
 
     overlaps: list[RouteOverlap] = []

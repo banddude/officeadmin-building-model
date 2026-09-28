@@ -54,6 +54,7 @@ class ConsolidationReport:
     trunk_routes: int
     branch_routes: int
     routes_left_untouched: int
+    untouched_route_reasons: tuple[tuple[str, str], ...]
     fittings_before: int
     fittings_after: int
     ports_added: int
@@ -483,6 +484,94 @@ def _split_route(
     return pieces, vertex_owners, cut_vertices
 
 
+def _closed_branch_reason(
+    pieces: list[tuple[str, object]], route: Route, tolerance_m: float,
+) -> str | None:
+    """Identify a branch whose removal needs geometry we cannot represent."""
+    for index, (kind, piece) in enumerate(pieces):
+        if kind != "branch" or _distance(piece.points[0], piece.points[-1]) > _VERTEX_EPSILON:
+            continue
+        piece_length = math.fsum(
+            _distance(a, b) for a, b in zip(piece.points, piece.points[1:])
+        )
+        if piece_length > 2 * tolerance_m + _VERTEX_EPSILON or route.fitting_ids:
+            return "closed_branch_detour_requires_fitting_geometry"
+        if not any(label == "trunk" for label, _ in (*pieces[:index], *pieces[index + 1:])):
+            return "closed_branch_detour_without_shared_neighbor"
+    return None
+
+
+def _eligible_runs_and_specs(
+    model: BuildingModel, tolerance_m: float,
+) -> tuple[list, list[_TrunkSpec], dict[str, str]]:
+    """Remove unrepresentable members, then recalculate the physical union.
+
+    Skipping a member can dissolve or shorten a shared run. Recomputing is
+    necessary so the trunk membership, takeoff identity, and route splitting
+    all describe the same eligible set. The loop is monotone and bounded by
+    the number of input routes.
+    """
+    skipped: dict[str, str] = {}
+    routes_by_id = {route.id: route for route in model.routes}
+    while True:
+        runs = find_overlapping_route_runs(
+            model, tolerance_m=tolerance_m, excluded_route_ids=frozenset(skipped),
+        )
+        specs = _split_specs_at_reversals(
+            _trunk_specs(runs, routes_by_id, tolerance_m), routes_by_id, tolerance_m,
+        )
+        newly_skipped: dict[str, str] = {}
+        split_pieces: dict[str, list[tuple[str, object]]] = {}
+        for route in sorted(model.routes, key=lambda item: item.id):
+            if route.id in skipped:
+                continue
+            try:
+                pieces, _, _ = _split_route(route, specs, tolerance_m)
+            except RoutingError as exc:
+                if str(exc) != "snap connector exceeds consolidation tolerance":
+                    raise
+                newly_skipped[route.id] = "snap_connector_exceeds_tolerance"
+                continue
+            if all(kind == "branch" for kind, _ in pieces):
+                continue
+            reason = _closed_branch_reason(pieces, route, tolerance_m)
+            if reason is not None:
+                newly_skipped[route.id] = reason
+                continue
+            split_pieces[route.id] = pieces
+        # Two successive source routes can walk the same physical trunk down
+        # and back up. A canonical route may be traversed twice, but this
+        # particular representation cannot retain that traversal and also
+        # satisfy the no-consecutive-duplicate invariant. Keep the second
+        # source route unchanged, then recompute the eligible union.
+        for conductor in model.conductors:
+            previous_key = None
+            previous_origin = None
+            for route_id in conductor.route_ids:
+                if route_id in skipped or route_id in newly_skipped:
+                    previous_key = None
+                    previous_origin = None
+                    continue
+                pieces = split_pieces.get(route_id)
+                keys = (
+                    [("trunk", id(piece)) if kind == "trunk" else (route_id, piece.ordinal)
+                     for kind, piece in pieces]
+                    if pieces is not None else [("original", route_id)]
+                )
+                for key in keys:
+                    if key == previous_key and route_id != previous_origin:
+                        newly_skipped.setdefault(route_id, "adjacent_retrace_requires_distinct_traversal")
+                        break
+                    previous_key = key
+                    previous_origin = route_id
+                if route_id in newly_skipped:
+                    previous_key = None
+                    previous_origin = None
+        if not newly_skipped:
+            return runs, specs, skipped
+        skipped.update(newly_skipped)
+
+
 class _JunctionPorts:
     """Reuse actual route endpoints; give new junctions fitting ownership."""
 
@@ -560,7 +649,7 @@ def consolidate_bundled_routes(
 
     if tolerance_m < 0.0:
         raise ValueError("tolerance_m must be non-negative")
-    runs = find_overlapping_route_runs(model, tolerance_m=tolerance_m)
+    runs, specs, skipped = _eligible_runs_and_specs(model, tolerance_m)
     routes_before = len(model.routes)
     fittings_before = len(model.route_fittings)
     if not runs:
@@ -572,6 +661,7 @@ def consolidate_bundled_routes(
                 trunk_routes=0,
                 branch_routes=0,
                 routes_left_untouched=routes_before,
+                untouched_route_reasons=tuple(sorted(skipped.items())),
                 fittings_before=fittings_before,
                 fittings_after=fittings_before,
                 ports_added=0,
@@ -588,9 +678,6 @@ def consolidate_bundled_routes(
     routes_by_id = {route.id: route for route in model.routes}
     ports_by_id = {port.id: port for port in model.ports}
     model_id = model.model_id
-    specs = _split_specs_at_reversals(
-        _trunk_specs(runs, routes_by_id, tolerance_m), routes_by_id, tolerance_m,
-    )
     # The overlap report unions each route's own coverage. Account for a
     # member that traverses a shared physical stretch more than once.
     traversed: dict[int, float] = {id(spec): 0.0 for spec in specs}
@@ -614,6 +701,8 @@ def consolidate_bundled_routes(
     collapsed_by_route: dict[str, float] = {}
     collapsed_by_spec: dict[int, list[dict]] = {}
     for route in sorted(model.routes, key=lambda item: item.id):
+        if route.id in skipped:
+            continue
         pieces, vertex_owners, cut_vertices = _split_route(route, specs, tolerance_m)
         if all(kind == "branch" for kind, _ in pieces):
             continue  # touches no shared stretch: the route stays as it is
@@ -1017,6 +1106,7 @@ def consolidate_bundled_routes(
         routes_left_untouched=sum(
             1 for route in model.routes if route.id not in piece_lists
         ),
+        untouched_route_reasons=tuple(sorted(skipped.items())),
         fittings_before=fittings_before,
         fittings_after=len(consolidated.route_fittings),
         ports_added=len(junction_ports.added),

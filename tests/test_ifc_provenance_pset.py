@@ -67,6 +67,7 @@ def _assumed_thickness_wall_model() -> BuildingModel:
 
     return BuildingModel(
         model_id="model:pset-wall",
+        name="Synthetic provenance pset model",
         levels=(Level(id="level:pset-wall", elevation_m=0.0, height_m=2.7),),
         walls=(Wall(
             id="wall:pset-0",
@@ -118,6 +119,7 @@ def _route_model(attributes: dict[str, Any] | None = None) -> BuildingModel:
     )
     return BuildingModel(
         model_id="model:pset-route",
+        name="Synthetic provenance pset model",
         levels=(Level(id="level:pset-route", elevation_m=0.0, height_m=2.7),),
         electrical_equipment=(equipment,),
         ports=(
@@ -168,6 +170,7 @@ def test_route_without_design_status_omits_the_property() -> None:
 def test_fully_inferred_device_reads_inferred_without_claims() -> None:
     model = BuildingModel(
         model_id="model:pset-inferred",
+        name="Synthetic provenance pset model",
         levels=(Level(id="level:pset-inferred", elevation_m=0.0, height_m=2.7),),
         electrical_devices=(ElectricalDevice(
             id="device:pset-inferred",
@@ -191,6 +194,7 @@ def test_fully_inferred_device_reads_inferred_without_claims() -> None:
 def test_entity_without_provenance_reads_unstated() -> None:
     model = BuildingModel(
         model_id="model:pset-unstated",
+        name="Synthetic provenance pset model",
         levels=(Level(id="level:pset-unstated", elevation_m=0.0, height_m=2.7),),
         electrical_devices=(ElectricalDevice(
             id="device:pset-unstated",
@@ -220,6 +224,7 @@ def test_long_sources_truncate_deterministically() -> None:
     )
     model = BuildingModel(
         model_id="model:pset-truncate",
+        name="Synthetic provenance pset model",
         levels=(Level(id="level:pset-truncate", elevation_m=0.0, height_m=2.7),),
         electrical_devices=(ElectricalDevice(
             id="device:pset-truncate",

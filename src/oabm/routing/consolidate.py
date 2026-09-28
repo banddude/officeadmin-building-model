@@ -520,6 +520,23 @@ def consolidate_bundled_routes(
     specs = _split_specs_at_reversals(
         _trunk_specs(runs, routes_by_id, tolerance_m), routes_by_id, tolerance_m,
     )
+    # A tolerance hit is evidence of possible sharing, not permission to move
+    # a branch endpoint. Without a connector in the source geometry, snapping
+    # offset centerlines would create a gap or alter conductor length.
+    for route in model.routes:
+        for portions in _segment_portions(route, specs, tolerance_m):
+            for spec, start, _ in portions:
+                if spec is None:
+                    continue
+                fixed = tuple(
+                    (start.x, start.y, start.z)[axis]
+                    for axis in range(3) if axis != spec.axis
+                )
+                if not _same_line(spec.fixed, fixed, 1e-6):
+                    raise RoutingError(
+                        "offset shared centerlines need an explicit connector "
+                        "before consolidation"
+                    )
     # The overlap report unions each route's own coverage. Account for a
     # member that traverses a shared physical stretch more than once.
     traversed: dict[int, float] = {id(spec): 0.0 for spec in specs}

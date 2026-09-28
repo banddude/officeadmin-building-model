@@ -182,6 +182,32 @@ def test_retraced_shared_stretch_keeps_conductor_length_and_reports_physical_tak
         for item in extract_quantities(result.model).items
     )
 
+
+def test_offset_centerlines_refuse_a_disconnected_shared_trunk() -> None:
+    devices = (
+        _device("device:offset-a", (0.0, 0.0, 3.0)),
+        _device("device:offset-b", (10.0, 0.0, 3.0)),
+        _device("device:offset-c", (0.0, 0.005, 3.0)),
+        _device("device:offset-d", (10.0, 0.005, 3.0)),
+    )
+    ports = tuple(
+        _port(f"port:offset-{index}", device.id,
+              (device.pose.position.x, device.pose.position.y, 3.0), "junction")
+        for index, device in enumerate(devices)
+    )
+    model = BuildingModel(
+        model_id="model:offset-shared-lines", electrical_devices=devices, ports=ports,
+        routes=(
+            _route("route:offset-a", ports[0].id, ports[1].id,
+                   ((0.0, 0.0, 3.0), (10.0, 0.0, 3.0))),
+            _route("route:offset-b", ports[2].id, ports[3].id,
+                   ((0.0, 0.005, 3.0), (10.0, 0.005, 3.0))),
+        ),
+    )
+    assert find_overlapping_route_runs(model, tolerance_m=0.01)
+    with pytest.raises(RoutingError, match="offset shared centerlines"):
+        consolidate_bundled_routes(model, tolerance_m=0.01)
+
 def messy_model() -> BuildingModel:
     """Partial overlaps on one line plus a route that turns a corner.
 

@@ -219,6 +219,8 @@ def extract_quantities(
         )
 
     for fitting in sorted(model.route_fittings, key=lambda item: item.id):
+        if fitting.attributes.get("consolidation", {}).get("nonmaterial") is True:
+            continue  # a route-split port owner, not a physical fitting
         # A fitting inherits its route's group unless the caller named the
         # fitting itself; ``route_id`` is reference-checked above.
         fitting_group = group_owner.get(fitting.id)
@@ -546,11 +548,18 @@ def _merge_provenance(*groups: Iterable[Provenance]) -> tuple[Provenance, ...]:
 
 
 def _validate_no_duplicate_references(model: BuildingModel) -> None:
+    traversals = {
+        route.id for route in model.routes
+        if "member_route_ids" in route.attributes.get("consolidation", {})
+    }
     checks: list[tuple[str, tuple[str, ...]]] = []
     checks.extend((f"{route.id}.fitting_ids", route.fitting_ids) for route in model.routes)
-    checks.extend((f"{circuit.id}.route_ids", circuit.route_ids) for circuit in model.circuits)
-    checks.extend((f"{conductor.id}.route_ids", conductor.route_ids) for conductor in model.conductors)
     checks.extend((f"{circuit.id}.load_port_ids", circuit.load_port_ids) for circuit in model.circuits)
     for label, refs in checks:
         if len(refs) != len(set(refs)):
             raise QuantityError(f"{label} contains duplicate references; refusing to double-count")
+    for entity in (*model.circuits, *model.conductors):
+        refs = entity.route_ids
+        duplicated = {route_id for route_id in refs if refs.count(route_id) > 1}
+        if duplicated - traversals:
+            raise QuantityError(f"{entity.id}.route_ids contains duplicate references; refusing to double-count")

@@ -63,6 +63,7 @@ def _wall(**overrides: object) -> Wall:
 def _model(*walls: Wall) -> BuildingModel:
     return BuildingModel(
         model_id="model:construction",
+        name="Synthetic construction wall",
         levels=(Level(id="level:ground", elevation_m=0.0),),
         walls=walls,
     )

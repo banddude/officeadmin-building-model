@@ -187,8 +187,8 @@ def test_offset_centerlines_snap_with_connectors_and_refuse_beyond_tolerance() -
     devices = (
         _device("device:offset-a", (0.0, 0.0, 3.0)),
         _device("device:offset-b", (10.0, 0.0, 3.0)),
-        _device("device:offset-c", (0.0, 0.005, 3.0)),
-        _device("device:offset-d", (10.0, 0.005, 3.0)),
+        _device("device:offset-c", (0.0, 0.024, 3.0)),
+        _device("device:offset-d", (10.0, 0.024, 3.0)),
     )
     ports = tuple(
         _port(f"port:offset-{index}", device.id,
@@ -205,17 +205,17 @@ def test_offset_centerlines_snap_with_connectors_and_refuse_beyond_tolerance() -
             _route("route:offset-a", ports[0].id, ports[1].id,
                    ((0.0, 0.0, 3.0), (10.0, 0.0, 3.0))),
             _route("route:offset-b", ports[2].id, ports[3].id,
-                   ((0.0, 0.005, 3.0), (10.0, 0.005, 3.0))),
+                   ((0.0, 0.024, 3.0), (10.0, 0.024, 3.0))),
         ),
         circuits=tuple(circuits), conductors=tuple(conductors),
     )
     assert find_overlapping_route_runs(model, tolerance_m=0.025)
     result = consolidate_bundled_routes(model)
     validate_model(result.model)
-    assert result.report.snap_added_length_m == pytest.approx(0.01)
-    assert result.report.conductor_length_delta_m == pytest.approx(0.01)
+    assert result.report.snap_added_length_m == pytest.approx(0.048)
+    assert result.report.conductor_length_delta_m == pytest.approx(0.048)
     assert result.report.snap_adjustments >= 3
-    assert _total_length(result.model) == pytest.approx(10.01)
+    assert _total_length(result.model) == pytest.approx(10.048)
     assert any(
         record.method == "route-consolidation-snap"
         for route in result.model.routes for record in route.provenance

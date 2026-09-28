@@ -345,6 +345,14 @@ def _sheet_anchor(page: PdfPageObservation) -> str | None:
         match = pattern.search(_clean_text(observation.text))
         if match:
             return _anchor(match.group(1))
+    # Some title blocks print the discipline and number with a hyphen
+    # (A-110). Keep the legacy match above first so established IDs do not
+    # change on sheets that already supplied an anchor.
+    hyphenated = re.compile(r"\b([A-Z]{1,3}-\d+(?:[.-]\d+)*(?:\s+[A-Z])?)\b", re.IGNORECASE)
+    for observation in page.texts:
+        match = hyphenated.search(_clean_text(observation.text))
+        if match:
+            return _anchor(match.group(1))
     return None
 
 
@@ -383,6 +391,21 @@ def _find_dimension(text: str) -> tuple[float, tuple[int, int]] | None:
 _NON_FLOOR_PLAN_TITLE_RE = re.compile(r"\b(?:SITE|PLOT|VICINITY|ROOF)\s+PLANS?\b")
 
 
+def _construction_title_and_sheet_mark(page: PdfPageObservation) -> bool:
+    titles = any(
+        re.search(r"\bCONSTRUCTION\s+PLANS?\b", _clean_text(item.text).upper())
+        and item.center_pt[1] <= 0.25 * page.height_pt
+        for item in page.texts
+    )
+    sheet_mark = any(
+        re.search(r"\bA[-.]?\d", _clean_text(item.text).upper())
+        and item.center_pt[0] >= 0.75 * page.width_pt
+        and item.center_pt[1] <= 0.25 * page.height_pt
+        for item in page.texts
+    )
+    return titles and sheet_mark
+
+
 def classify_page(page: PdfPageObservation) -> SheetClassification:
     drawing_title = _explicit_drawing_title(page)
     if drawing_title and re.search(r"\b(?:DETAILS?|MILLWORK|INTERIOR ELEVATIONS?)\b", drawing_title):
@@ -411,6 +434,23 @@ def classify_page(page: PdfPageObservation) -> SheetClassification:
     ):
         if phrase in text:
             electrical_score += weight
+
+    # A-series construction plans often carry an electrical coordination note
+    # or a power-plan reference in their legend. Treat the drawing title and
+    # substantial plan vectors as evidence of the sheet's own discipline;
+    # incidental note text must not turn its wall geometry into an E sheet.
+    if _construction_title_and_sheet_mark(page):
+        substantial = [
+            line for line in page.lines
+            if math.dist(line.start_pt, line.end_pt) >= 0.02 * min(page.width_pt, page.height_pt)
+            and max(line.start_pt[0], line.end_pt[0]) < 0.90 * page.width_pt
+            and max(line.start_pt[1], line.end_pt[1]) < 0.90 * page.height_pt
+        ]
+        if len(substantial) >= 8:
+            xs = [point[0] for line in substantial for point in (line.start_pt, line.end_pt)]
+            ys = [point[1] for line in substantial for point in (line.start_pt, line.end_pt)]
+            if max(xs) - min(xs) >= 0.15 * page.width_pt and max(ys) - min(ys) >= 0.15 * page.height_pt:
+                return SheetClassification("architectural_plan", 0.85, architectural_score, electrical_score)
 
     if electrical_score >= 5 and electrical_score > architectural_score:
         confidence = min(1.0, 0.65 + 0.04 * (electrical_score - architectural_score))
@@ -585,6 +625,13 @@ def _title_block_exclusion(
     candidate_boxes = [
         item.bbox_pt for item in _ordinary_vector_rect_loops(page)
     ] + [item.bbox_pt for item in page.rects]
+    # A ruled sheet frame can enclose every strong title on a sheet with no
+    # separately boxed title block. It must never exclude the whole drawing.
+    if _construction_title_and_sheet_mark(page):
+        candidate_boxes = [
+            bbox for bbox in candidate_boxes
+            if not _is_sheet_frame_enclosure(page, bbox)
+        ]
     multi_label_boxes = [
         bbox
         for bbox in candidate_boxes
@@ -1066,6 +1113,15 @@ _FLOOR_TITLE_RE = re.compile(
     rf"(?:\s*[-\u2013\u2014:,]\s*{_TITLE_QUALIFIER_WORDS}|\s*\(\s*{_TITLE_QUALIFIER_WORDS}\s*\))?)?$",
     re.IGNORECASE,
 )
+_CONSTRUCTION_LEVEL_TITLE_RE = re.compile(
+    r"^CONSTRUCTION\s+PLAN\s*[-:\u2013\u2014]\s*"
+    r"(?:\([A-Z]\)\s*)?"
+    r"(GROUND|FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|LOWER|MAIN|UPPER|BASEMENT|"
+    r"\d{1,2}(?:ST|ND|RD|TH))\s+FLOOR\b|"
+    r"^CONSTRUCTION\s+PLAN\s*[-:\u2013\u2014]\s*(?:\([A-Z]\)\s*)?"
+    r"(MEZZANINE)\b",
+    re.IGNORECASE,
+)
 
 
 def _level_name_candidates(
@@ -1087,6 +1143,14 @@ def _level_name_candidates(
             designation = match.group(1)
             designation = designation.capitalize() if designation.isalpha() else designation.lower()
             result.append((f"{designation} Floor", item))
+            continue
+        if item.center_pt[1] <= 0.25 * page.height_pt and len(text) <= 80:
+            match = _CONSTRUCTION_LEVEL_TITLE_RE.search(text)
+            if match:
+                designation = match.group(1) or match.group(2)
+                name = (f"{designation.capitalize()} Floor" if match.group(1)
+                        else "Mezzanine")
+                result.append((name, item))
     return tuple(result)
 
 
@@ -6205,13 +6269,15 @@ def _drawing_region_evidence(
 ) -> tuple[str, tuple[RegionEvidence, ...]]:
     """Wall evidence that says where building drawings sit on a sheet."""
 
+    recovered_construction = _construction_title_and_sheet_mark(page)
     # Wall-layer rectangles count as wall evidence here too, for the same
     # reason as the wall-loop path; sheet frames are not a drawing location.
     wall_rect_segments = _rect_edge_segments(
         (
             rect
             for rect in _wall_layer_rects(page)
-            if not _is_sheet_frame_enclosure(page, rect.bbox_pt)
+            if (not rect.filled or not recovered_construction)
+            and not _is_sheet_frame_enclosure(page, rect.bbox_pt)
         ),
         page.page_number,
     )
@@ -6219,6 +6285,7 @@ def _drawing_region_evidence(
         *(
             line for line in page.lines
             if any(_is_wall_source_layer(layer) for layer in line.source_layers)
+            and (not line.filled or not recovered_construction)
             and line.element_id not in excluded_line_ids
             and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
         ),
@@ -6255,6 +6322,47 @@ def _drawing_region_evidence(
             if not _is_sheet_border_segment(page, pair.start_pt, pair.end_pt)
             and set(pair.primitive_families) != {"curve"}
         )
+    # The canonical wall recognizer already validates filled poché strips by
+    # shape, scale-derived thickness, elongation, and simple-polygon gates.
+    # Reuse accepted centerlines as drawing-region and registration evidence.
+    # Face pairing also emits centerlines, so suppress duplicates where both
+    # recognizers found the same strip. Raw filled edges, hatch fields, and symbols are
+    # never promoted merely because they sit on a wall-pattern layer.
+    # Preserve the existing evidence path where it already spans a drawing.
+    # Filled recognition is needed when ordinary face pairing only finds a
+    # small incidental patch, as on flattened construction sheets.
+    if evidence:
+        span_x = max(item.bbox_pt[2] for item in evidence) - min(item.bbox_pt[0] for item in evidence)
+        span_y = max(item.bbox_pt[3] for item in evidence) - min(item.bbox_pt[1] for item in evidence)
+    else:
+        span_x = span_y = 0.0
+    sparse = (len(evidence) < _REGION_MIN_WALL_LAYER_SEGMENTS
+              or span_x < 0.15 * page.width_pt
+              or span_y < 0.15 * page.height_pt)
+    if sparse and any(line.filled for line in page.lines):
+        provisional = _Transform2D(
+            meters_per_point=meters_per_point, rotation_radians=0.0,
+            tx_m=0.0, ty_m=0.0, method="scale-only filled-wall evidence",
+            confidence=1.0,
+        )
+        eligible = tuple(
+            line for line in page.lines if line.element_id not in excluded_line_ids
+            and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
+        )
+        legs, _, _, _ = _poche_strip_polygons(
+            eligible, provisional, options, page.page_number,
+        )
+        def segment_key(item: RegionEvidence) -> tuple[tuple[float, float], tuple[float, float]]:
+            return tuple(sorted((tuple(round(v, 4) for v in item.start_pt),
+                                 tuple(round(v, 4) for v in item.end_pt))))
+
+        known = {segment_key(item) for item in evidence}
+        for leg in legs:
+            item = RegionEvidence(leg.start_pt, leg.end_pt, leg.element_ids)
+            key = segment_key(item)
+            if key not in known:
+                evidence.append(item)
+                known.add(key)
     return "paired_wall_faces", tuple(evidence)
 
 
@@ -6368,6 +6476,37 @@ def _split_sheet(
             if any(_inside(box, text.center_pt) for box in title_boxes)
         ),
     )
+    # Construction sheets can carry wall-like details above the floor plan.
+    # A drawing title directly below a region identifies the plan area without
+    # promoting those disconnected details as additional unnamed floors.
+    if len(split.regions) > 1:
+        titles = [
+            item for item in page.texts
+            if re.search(r"\bCONSTRUCTION\s+PLANS?\b", _clean_text(item.text).upper())
+            and item.center_pt[1] <= 0.25 * page.height_pt
+        ]
+        titled_regions = []
+        for region in split.regions:
+            associated = [
+                item for item in titles
+                if region.bbox_pt[0] - 0.05 * page.width_pt <= item.center_pt[0] <= region.bbox_pt[2] + 0.05 * page.width_pt
+                and 0 <= region.bbox_pt[1] - item.center_pt[1] <= 0.5 * (region.bbox_pt[3] - region.bbox_pt[1])
+            ]
+            if associated:
+                scoped_texts = {
+                    item.element_id: item for item in (*region.page.texts, *associated)
+                }
+                titled_regions.append(replace(
+                    region,
+                    page=replace(region.page, texts=tuple(
+                        scoped_texts[key] for key in sorted(scoped_texts)
+                    )),
+                ))
+        if titled_regions:
+            split = replace(
+                split, regions=tuple(titled_regions),
+                qualifying_cluster_count=len(titled_regions),
+            )
     return evidence_kind, evidence, split, separation_pt
 
 
@@ -6575,7 +6714,7 @@ def _sheet_drawing_regions(
         )
         for region in regions:
             setattr(region, attribute, assigned.get(region.index))
-    return _SheetRegions(multiple=bool(split.regions), regions=regions, detection=detection)
+    return _SheetRegions(multiple=len(split.regions) > 1, regions=regions, detection=detection)
 
 
 def _reason_codes_since(
@@ -7712,7 +7851,19 @@ def import_observations(
                 geometric_diagnostics.get("partial_pair_count", 0)
             )
 
-    for page in ordered_pages:
+    # A construction sheet recovered from incidental electrical-note scoring
+    # establishes the project frame before an earlier key or egress sheet can
+    # claim it. All other imports retain their established page order.
+    geometry_pages = tuple(sorted(
+        ordered_pages,
+        key=lambda item: (
+            0 if classifications[item.page_number].kind == "architectural_plan"
+            and classifications[item.page_number].electrical_score
+            > classifications[item.page_number].architectural_score else 1,
+            item.page_number,
+        ),
+    ))
+    for page in geometry_pages:
         classification = classifications[page.page_number]
         page_record: dict[str, object] = {
             "page": page.page_number,
@@ -7759,6 +7910,8 @@ def import_observations(
             page_record["stable_native_line_count"] = sum(1 for item in page.lines if item.native_id)
             page_record["untagged_vector_line_count"] = sum(1 for item in page.lines if not item.native_id)
         page_metadata.append(page_record)
+
+    page_metadata.sort(key=lambda item: int(item["page"]))
 
     drawing_regions = [
         _region_record(

@@ -58,22 +58,39 @@ _SHEET_PREFIX_DISCIPLINES: Mapping[str, str] = {
     "S": "structural",
     "C": "civil",
 }
-# A printed sheet id is the discipline prefix, a hyphen, and the sheet
-# number, e.g. `E-110` or `FP-2`. Unseparated (`E110`) and space-separated
-# (`E 110`) forms are deliberately not sheet ids: unseparated letter+digit
-# tokens are dominated by grid bubbles and device tags (`A1`, `P1`), so
-# accepting them would misread ordinary plan annotation as sheet numbers.
+# A printed sheet id is the discipline prefix, a separator, and the sheet
+# number, e.g. `E-110`, `FP-2`, `E2.1`, `E 2.1` or `E–2.1` (#219). The
+# unseparated and space-separated forms are accepted only with a dotted
+# number (`E2.1`, `E 2.1`): the dot is what keeps them apart from the grid
+# bubbles and device tags (`A1`, `P1`) that dominate ordinary plan
+# annotation, so a bare letter+digit token (`E110`, `E 1`) is still not a
+# sheet id. An en dash or em dash separator (`E–2.1`, `E—2.1`) is accepted
+# the same way. The normalized id always uses the hyphen form, so every
+# separator spelling maps to the same discipline.
+#
+# The discipline prefixes are exactly the documented list in
+# :data:`_SHEET_PREFIX_DISCIPLINES`. A token with a non-standard prefix
+# (`PP-1.0`, a pricing plan) matches no candidate, so the sheet stays
+# ``unknown`` unless a discipline word inside the title-block band decides
+# it; the prefix list is never extended by what a set happens to print.
 #
 # The id must stand alone as a token. It may not be preceded by a word
-# character or hyphen (`LF-1` and `HP-E-3` hold no sheet id), and it may not
-# be followed by a word character, a hyphen, or `.digit`. A plain trailing
-# `\b` is not enough: a following hyphen satisfies it, so a panel/circuit
-# callout such as `P-1-12` would yield the truncated id `P-1`, and two such
-# callouts would outvote the single title-block sheet number. Sentence
-# punctuation after the id (`SEE E-201.`) is still accepted.
+# character, hyphen, comma, or slash (`LF-1`, `HP-E-3`, and the `3/A-1`
+# half of a detail reference hold no sheet id), and it may not be followed
+# by a word character, a hyphen, `.digit`, or a comma/slash that continues
+# into another number. That continuation rule is what rejects the
+# multi-sheet callouts `A-1,3` and `P-1/12` (and a truncated `A-1` inside
+# them) while a sentence comma still reads fine: `SHEET M-101, NOTE 3`
+# keeps its id because the comma is followed by a word, not a digit. A
+# plain trailing `\b` is not enough: a following hyphen satisfies it, so a
+# panel/circuit callout such as `P-1-12` would yield the truncated id
+# `P-1`. Sentence punctuation after the id (`SEE E-201.`) is still
+# accepted.
 _SHEET_ID_RE = re.compile(
-    r"(?<![-\w])(?P<prefix>ELEC|EL|E|FP|FA|ID|M|P|A|S|C)"
-    r"-(?P<number>\d{1,4}(?:\.\d{1,3})?)(?![-\w]|\.\d)",
+    r"(?<![-\w.,/])(?P<prefix>ELEC|EL|E|FP|FA|ID|M|P|A|S|C)"
+    r"(?:-(?P<number>\d{1,4}(?:\.\d{1,3})?)"
+    r"|[\s–—]?(?P<dotted>\d{1,3}\.\d{1,3}))"
+    r"(?![-\w]|\.\d|[,/]\d)",
     re.IGNORECASE,
 )
 
@@ -91,12 +108,29 @@ _DISCIPLINE_WORD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bCIVIL\b", re.IGNORECASE), "civil"),
 )
 
+# An unnumbered drawing can name its trade in the drawing title even when
+# that title is outside the narrow title-block band. Require a drawing kind
+# as well as a discipline word so ordinary notes cannot supply an identity.
+_DRAWING_TITLE_RE = re.compile(
+    r"\b(?:PLAN|ELEVATION|SECTION|SCHEDULE|DIAGRAM|DETAIL|RCP)\b",
+    re.IGNORECASE,
+)
+_DRAWING_NOTE_START_RE = re.compile(
+    r"^(?:SEE|REFER|COORDINATE|NOTE|NOTES|VERIFY|PROVIDE)\b",
+    re.IGNORECASE,
+)
+
 # The title block is taken to be the band along the displayed right edge or
 # the displayed bottom edge of the sheet, each this fraction of the page's
 # width or height. Only text inside the band can decide the discipline-word
 # fallback, so general notes elsewhere on the sheet that mention another
 # trade do not decide the sheet's discipline.
 TITLE_BLOCK_BAND_FRACTION = 0.15
+
+# The sheet-number cell holds the band's largest text: a band candidate at
+# least this much taller than the runner-up is the sheet's own number, however
+# often smaller references to other sheets repeat beside it (#219).
+_SHEET_NUMBER_HEIGHT_RATIO = 1.5
 
 # Text that looks like a device tag or symbol code: a single token of at most
 # ten characters that is either a one-to-three character code (`a`, `WP`,
@@ -399,19 +433,37 @@ def sheet_identity(
 
     This is the electrical lane's shared sheet-identity function.
 
-    Discipline precedence: the prefix of the printed sheet number wins. When
-    a page prints no sheet number, discipline words inside the title-block
-    band decide (see :data:`TITLE_BLOCK_BAND_FRACTION`); words elsewhere on
-    the sheet are ignored. When neither is present the discipline is
-    ``unknown`` and the sheet id is ``None``.
+    Discipline precedence: the prefix of the printed sheet number wins. The
+    documented prefixes in :data:`_SHEET_PREFIX_DISCIPLINES` are the whole
+    list: a non-standard prefix (``PP-1.0``, a pricing plan) matches no
+    candidate, so such a sheet stays ``unknown`` unless a discipline word
+    inside the title-block band decides it. When a page prints no sheet
+    number, those discipline words decide (see
+    :data:`TITLE_BLOCK_BAND_FRACTION`); ordinary notes elsewhere are
+    ignored. When neither is present, a drawing title outside the band can
+    supply a discipline if it names both a trade and a drawing kind (for
+    example ``MECHANICAL PLAN``). The largest such title wins. Otherwise the
+    discipline is ``unknown`` and the sheet id is ``None``.
 
-    One printed sheet number usually repeats (title block, border callouts),
-    so the page's sheet id is the most frequent candidate. Ties are broken by
-    title-block position: the candidate whose occurrence sits closest to the
-    displayed bottom-right page corner, then lexicographically, so the choice
-    is always deterministic. Proximity uses the displayed page size from
-    extraction provenance when available, otherwise the extent of the page's
-    own text positions.
+    Separators: the canonical id is ``PREFIX-number`` (``E-110``, ``FP-2``).
+    A dotted number also accepts a missing, space, or en/em dash separator
+    (``E2.1``, ``E 2.1``, ``E–2.1``) and normalizes to the hyphen form, so
+    every spelling maps to the same discipline; a bare undotted token still
+    needs the hyphen, which keeps grid bubbles and device tags (``A1``,
+    ``P1``) out. A callout is not a sheet id: the token may not touch a
+    comma or slash on either side, so ``A-1,3`` and ``P-1/12`` (and ``3/A-1``)
+    match nothing.
+
+    Which candidate is the sheet's own number: the sheet-number cell holds
+    the title-block band's largest text, so a band candidate printed clearly
+    largest -- a text height at least :data:`_SHEET_NUMBER_HEIGHT_RATIO`
+    times the runner-up's -- wins outright, however often smaller references
+    to other sheets (``SEE E-3.1``) repeat. Ties and unknown heights fall
+    back to frequency: the most frequent candidate, then the occurrence
+    closest to the displayed bottom-right page corner, then lexicographically,
+    so the choice is always deterministic. Proximity uses the displayed page
+    size from extraction provenance when available, otherwise the extent of
+    the page's own text positions.
     """
 
     texts = [item for item in document.texts if item.page == page]
@@ -425,17 +477,29 @@ def _identity_from_texts(
 ) -> tuple[str | None, str]:
     if not texts:
         return None, "unknown"
+    band = _title_block_band(document, page, texts)
+    band_texts = [item for item in texts if _in_band(item.x_pt, item.y_pt, band)]
     candidates = _sheet_id_candidates(texts)
+    band_candidates = _sheet_id_candidates(band_texts)
+    if not band_candidates:
+        band_discipline = _discipline_word_fallback(band_texts)
+        if band_discipline != "unknown":
+            return None, band_discipline
+        outside_texts = [
+            item for item in texts if not _in_band(item.x_pt, item.y_pt, band)
+        ]
+        title_discipline = _drawing_title_discipline(outside_texts)
+        if title_discipline != "unknown":
+            return None, title_discipline
     if candidates:
         sheet_id = _tally_candidates(
             candidates,
             corner=_title_block_corner(document, page, texts),
+            band=_title_block_band(document, page, texts),
         )
         prefix = sheet_id.split("-", 1)[0]
         return sheet_id, _SHEET_PREFIX_DISCIPLINES[prefix]
-    return None, _discipline_word_fallback(
-        _title_block_texts(document, page, texts)
-    )
+    return None, "unknown"
 
 
 # Kept for callers that used the private name before it became public.
@@ -444,16 +508,21 @@ _sheet_identity = sheet_identity
 
 def _sheet_id_candidates(
     texts: Sequence[PdfTextObservation],
-) -> list[tuple[str, float, float]]:
-    """`(normalized id, x_pt, y_pt)` for every sheet-number match, in text order."""
+) -> list[tuple[str, float, float, float | None]]:
+    """`(normalized id, x_pt, y_pt, text height)` for every match, in text order."""
 
-    candidates: list[tuple[str, float, float]] = []
+    candidates: list[tuple[str, float, float, float | None]] = []
     for observation in texts:
         for match in _SHEET_ID_RE.finditer(observation.text):
             prefix = match.group("prefix").upper()
-            number = match.group("number")
+            number = match.group("number") or match.group("dotted")
             candidates.append(
-                (f"{prefix}-{number}", observation.x_pt, observation.y_pt)
+                (
+                    f"{prefix}-{number}",
+                    observation.x_pt,
+                    observation.y_pt,
+                    observation.font_size_pt,
+                )
             )
     return candidates
 
@@ -493,6 +562,35 @@ def _page_extent(
     )
 
 
+def _title_block_band(
+    document: PdfElectricalDocument,
+    page: int,
+    texts: Sequence[PdfTextObservation],
+) -> tuple[float, float, float, float]:
+    """`(min_x, min_y, max_x, max_y)` of the page, naming the band's extent.
+
+    The band itself is the strip along the displayed right edge plus the
+    strip along the displayed bottom edge, each
+    :data:`TITLE_BLOCK_BAND_FRACTION` of the page's width or height; a point
+    is in the band when `_in_band` says so against these bounds.
+    """
+
+    return _page_extent(document, page, texts)
+
+
+def _in_band(
+    x_pt: float,
+    y_pt: float,
+    band: tuple[float, float, float, float],
+) -> bool:
+    """Whether one text position lies in the title-block band."""
+
+    min_x, min_y, max_x, max_y = band
+    right_band_start = max_x - TITLE_BLOCK_BAND_FRACTION * (max_x - min_x)
+    bottom_band_end = min_y + TITLE_BLOCK_BAND_FRACTION * (max_y - min_y)
+    return x_pt >= right_band_start or y_pt <= bottom_band_end
+
+
 def _title_block_texts(
     document: PdfElectricalDocument,
     page: int,
@@ -505,30 +603,51 @@ def _title_block_texts(
     of the page's width or height.
     """
 
-    min_x, min_y, max_x, max_y = _page_extent(document, page, texts)
-    right_band_start = max_x - TITLE_BLOCK_BAND_FRACTION * (max_x - min_x)
-    bottom_band_end = min_y + TITLE_BLOCK_BAND_FRACTION * (max_y - min_y)
-    return [
-        item
-        for item in texts
-        if item.x_pt >= right_band_start or item.y_pt <= bottom_band_end
-    ]
+    band = _title_block_band(document, page, texts)
+    return [item for item in texts if _in_band(item.x_pt, item.y_pt, band)]
 
 
 def _tally_candidates(
-    candidates: Sequence[tuple[str, float, float]],
+    candidates: Sequence[tuple[str, float, float, float | None]],
     *,
     corner: tuple[float, float],
+    band: tuple[float, float, float, float],
 ) -> str:
-    """Pick one sheet id: most frequent, then closest to the corner, then lexical."""
+    """Pick one sheet id: title block first, then most frequent, corner, lexical.
+
+    The sheet's own number sits in the sheet-number cell of the title block:
+    inside the band, it is the candidate printed clearly largest -- a text
+    height at least :data:`_SHEET_NUMBER_HEIGHT_RATIO` times the runner-up's.
+    Frequency alone would let keyed notes that repeat another sheet's number
+    outvote it, so the large candidate wins outright. Without a clear height
+    winner (equal sizes, or heights unknown to the extractor), the choice is
+    the previous rule: most frequent, then the occurrence closest to the
+    displayed bottom-right corner, then lexicographic.
+    """
 
     tally: dict[str, int] = {}
     best_position: dict[str, float] = {}
-    for sheet_id, x_pt, y_pt in candidates:
+    best_height: dict[str, float] = {}
+    for sheet_id, x_pt, y_pt, height in candidates:
         tally[sheet_id] = tally.get(sheet_id, 0) + 1
         distance = _distance_to_corner(x_pt, y_pt, corner)
         if sheet_id not in best_position or distance < best_position[sheet_id]:
             best_position[sheet_id] = distance
+        if height is not None and _in_band(x_pt, y_pt, band):
+            if sheet_id not in best_height or height > best_height[sheet_id]:
+                best_height[sheet_id] = height
+    largest = sorted(
+        best_height,
+        key=lambda sheet_id: (-best_height[sheet_id], best_position[sheet_id], sheet_id),
+    )
+    if len(largest) >= 2 and best_height[largest[0]] >= (
+        _SHEET_NUMBER_HEIGHT_RATIO * best_height[largest[1]]
+    ):
+        return largest[0]
+    if len(largest) == 1:
+        # One height-bearing candidate in the band: it is the sheet-number
+        # cell, whatever repeats elsewhere without a height.
+        return largest[0]
     return min(
         tally,
         key=lambda sheet_id: (
@@ -562,3 +681,26 @@ def _discipline_word_fallback(texts: Sequence[PdfTextObservation]) -> str:
     if not tally:
         return "unknown"
     return min(tally, key=lambda discipline: (-tally[discipline], discipline))
+
+
+def _drawing_title_discipline(texts: Sequence[PdfTextObservation]) -> str:
+    """Discipline of the largest outside-band drawing title, if readable."""
+
+    candidates: list[tuple[float, float, str]] = []
+    for observation in texts:
+        label = observation.text.strip()
+        if (
+            len(label) > 100
+            or len(label.split()) > 10
+            or _DRAWING_NOTE_START_RE.search(label)
+            or not _DRAWING_TITLE_RE.search(label)
+        ):
+            continue
+        discipline = _discipline_word_fallback((observation,))
+        if discipline == "unknown":
+            continue
+        height = observation.font_size_pt or 0.0
+        candidates.append((-height, observation.y_pt, discipline))
+    if not candidates:
+        return "unknown"
+    return min(candidates)[2]

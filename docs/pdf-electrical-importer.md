@@ -660,20 +660,23 @@ symbols the importer does not recognize. `symbol_like_count` is a disclosure
 only and never changes a verdict.
 
 The discipline comes from the printed sheet-number prefix. A printed sheet id
-is a discipline prefix, a hyphen, and the sheet number (`E-110`, `FP-2`,
-`E-2.1`); unseparated (`E110`) and space-separated (`E 110`) forms are
-deliberately not sheet ids, because unseparated letter+digit tokens are
-dominated by grid bubbles and device tags. A sheet id must also stand alone
+is a discipline prefix and a sheet number (`E-110`, `FP-2`, `E-2.1`). Dotted
+numbers also accept no separator, a space, or an en/em dash (`E2.1`,
+`E 2.1`, `E–2.1`); all normalize to the hyphen form. Undotted unseparated
+tokens (`E110`) remain excluded because grid bubbles and device tags use
+that form. A sheet id must also stand alone
 as a token: it may not be preceded by a word character or a hyphen, and it
 may not be followed by a word character, a hyphen, or `.digit`. So a
 panel/circuit callout such as `P-1-12` holds no plumbing sheet `P-1`, and
 `HP-E-3`, `LF-1`, `E-201-4`, `E-2.1.3` and `E-12345` hold no sheet id either;
 two such callouts can never outvote a single title-block sheet number.
 Sentence punctuation after an id is accepted (`SEE E-201.`, `(FP-2)`,
-`SHEET M-101, NOTE 3`). The prefixes are `E`/`EL`/`ELEC` →
+`SHEET M-101, NOTE 3`). Comma/slash number continuations such as `A-1,3`
+and `P-1/12` are rejected. The prefixes are `E`/`EL`/`ELEC` →
 `electrical`, `M` → `mechanical`, `P` → `plumbing`, `FP`/`FA` →
 `fire_protection`, `A`/`ID` → `architectural`, `S` → `structural`, `C` →
-`civil`, matched case-insensitively with the longest prefix first. When a
+`civil`, matched case-insensitively with the longest prefix first. A different
+prefix such as `PP-1.0` supplies no discipline. When a
 page prints no sheet number, discipline words **inside the title-block band**
 decide (`ELECTRIC`/`ELECTRICAL`, `MECHANICAL`/`HVAC`, `PLUMBING`,
 `FIRE PROTECTION`/`FIRE ALARM`, `ARCHITECTURAL`, `STRUCTURAL`, `CIVIL`; most
@@ -682,11 +685,17 @@ right edge plus the strip along the displayed bottom edge, each
 `TITLE_BLOCK_BAND_FRACTION` = 0.15 of the displayed page width or height (the
 page's text extent when extraction provenance has no displayed page size).
 General notes elsewhere on the sheet that name another trade never decide the
-discipline. With neither signal the discipline is `unknown` and the sheet id
-is `None`.
+discipline. If the band has neither a sheet number nor a discipline word, the
+largest drawing title outside it can supply a discipline when the same text
+names both a trade and a drawing kind, for example `MECHANICAL PLAN` or
+`HVAC FLOOR PLAN`. Otherwise the discipline is `unknown` and the sheet id is
+`None`.
 
 One sheet number usually prints more than once (title block, border
-callouts), so the page's sheet id is the most frequent candidate. Ties are
+callouts). A candidate in the title-block band whose text height is at least
+1.5 times the next candidate's height wins even when smaller cross-references
+repeat more often. Without a clear height winner, the most frequent candidate
+wins. Ties are
 broken by the candidate occurrence closest to the displayed bottom-right
 title-block corner (using the extracted displayed page size, falling back to
 the page's text extent when provenance is absent), then lexicographically,

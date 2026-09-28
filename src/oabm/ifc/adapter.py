@@ -176,6 +176,17 @@ def to_ifc(
     Body needs gets no Body and no invented default; the reason is recorded on
     its ``OABM_Adapter`` property set (``Body=no`` with ``BodyReason``).
 
+    The canonical contract lets ``name`` be None, but IFC4 gives ``IfcProject``
+    and ``IfcBuildingElementProxy`` an ``exists(Name)`` where-rule, and
+    ``from_ifc`` deliberately reads ``Name`` back as the canonical name (a
+    Bonsai rename flows into the model). Exporting a nameless model or a
+    nameless obstacle would therefore either write EXPRESS-invalid IFC or
+    silently fabricate a canonical name on the way back, so ``to_ifc`` refuses
+    both with ``IfcAdapterError`` naming the canonical ids — the same
+    fail-closed rule as unrepresentable port fan-out. Every model the adapter
+    does export passes ``ifcopenshell.validate`` with ``express_rules=True``
+    clean.
+
     The keyword-only ``groups`` option maps a caller-chosen group name (for
     example ``"ALTERNATES"``) to the canonical entity ids that belong to it,
     so an alternate scope is one selectable, hideable set in Bonsai or Revit.
@@ -220,6 +231,22 @@ def to_ifc(
     and a model whose walls all lack a token writes the same bytes as a
     default export without the option ever being present.
     """
+
+    # IFC4 where-rules give IfcProject and IfcBuildingElementProxy an
+    # ``exists(Name)`` requirement, and ``from_ifc`` reads ``Name`` back as the
+    # canonical name. A nameless model or obstacle would export EXPRESS-invalid
+    # IFC or import with a fabricated name, so refuse before writing anything.
+    if model.name is None:
+        raise IfcAdapterError(
+            "IfcProject requires a Name (IFC4 exists(Name) where-rule); "
+            f"canonical model {model.model_id!r} has no name"
+        )
+    nameless_obstacles = [obstacle.id for obstacle in model.obstacles if obstacle.name is None]
+    if nameless_obstacles:
+        raise IfcAdapterError(
+            "IfcBuildingElementProxy requires a Name (IFC4 exists(Name) where-rule); "
+            f"nameless canonical obstacles: {nameless_obstacles!r}"
+        )
 
     ifc = ifcopenshell.api.project.create_file(version=IFC_SCHEMA)
     project = _create_root(ifc, "IfcProject", model.model_id, model.name)

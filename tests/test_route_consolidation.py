@@ -432,8 +432,12 @@ def test_messy_partial_overlaps_split_at_coverage_boundaries() -> None:
 
     # One physical tee at the corner where the branch joins the trunk.
     junctions = [port for port in consolidated.ports if port.role == "junction"]
-    assert len(junctions) == 1
-    assert (junctions[0].pose.position.x, junctions[0].pose.position.y, junctions[0].pose.position.z) == (8.0, 0.0, 3.0)
+    assert len(junctions) == 2
+    assert (8.0, 0.0, 3.0) in {
+        (port.pose.position.x, port.pose.position.y, port.pose.position.z)
+        for port in junctions
+    }
+    assert all(port.owner_id in {fitting.id for fitting in consolidated.route_fittings} for port in junctions)
     assert not any(fitting.fitting_type.startswith("elbow") for fitting in consolidated.route_fittings)
     tees = [fitting for fitting in consolidated.route_fittings if fitting.fitting_type == "tee"]
     assert len(tees) == 1
@@ -443,12 +447,12 @@ def test_messy_partial_overlaps_split_at_coverage_boundaries() -> None:
     )
     assert tee_positions == [(8.0, 0.0, 3.0)]
     for trunk in trunks:
-        own_tees = sorted(
-            (fitting for fitting in tees if fitting.route_id == trunk.id),
+        own_fittings = sorted(
+            (fitting for fitting in consolidated.route_fittings if fitting.route_id == trunk.id),
             key=lambda fitting: fitting.pose.position.x,
         )
-        assert trunk.fitting_ids == tuple(fitting.id for fitting in own_tees)
-    assert result.report.ports_added == 1
+        assert trunk.fitting_ids == tuple(fitting.id for fitting in own_fittings)
+    assert result.report.ports_added == 2
     assert result.report.routes_after == 6
 
 

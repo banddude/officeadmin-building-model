@@ -422,19 +422,34 @@ class _JunctionPorts:
     def __init__(self, model: BuildingModel) -> None:
         self._model_id = model.model_id
         self._by_position: dict[tuple[str, tuple[float, float, float]], Port] = {}
+        self._endpoint_candidates: dict[
+            tuple[str, tuple[float, float, float]], list[tuple[str, Port]]
+        ] = {}
         ports = {port.id: port for port in model.ports}
         for route in sorted(model.routes, key=lambda item: item.id):
             for port_id in (route.start_port_id, route.end_port_id):
                 port = ports[port_id]
-                self._by_position.setdefault((route.route_type, _position_key(port.pose.position)), port)
+                key = (route.route_type, _position_key(port.pose.position))
+                self._endpoint_candidates.setdefault(key, []).append((route.id, port))
         self.added: list[Port] = []
         self.owner_routes: dict[str, tuple[str, str]] = {}
 
-    def port_for(self, point: Point3, route_type: str, route_id: str) -> Port:
+    def port_for(
+        self, point: Point3, route_type: str, route_id: str,
+        members: tuple[str, ...] = (),
+    ) -> Port:
         key = (route_type, _position_key(point))
         existing = self._by_position.get(key)
         if existing is not None:
             return existing
+        member_ids = set(members)
+        endpoint = next((
+            port for source_id, port in self._endpoint_candidates.get(key, ())
+            if source_id in member_ids
+        ), None)
+        if endpoint is not None:
+            self._by_position[key] = endpoint
+            return endpoint
         owner_id = stable_id("fitting", f"route-consolidation-junction:{route_type}:{_point_key(point)}")
         port = Port(
             id=stable_id("port", f"route-consolidation:{route_type}:{_point_key(point)}"),
@@ -559,8 +574,8 @@ def consolidate_bundled_routes(
         route = Route(
             id=trunk_id,
             route_type=spec.route_type,
-            start_port_id=port_for(start, spec.route_type, trunk_id).id,
-            end_port_id=port_for(end, spec.route_type, trunk_id).id,
+            start_port_id=port_for(start, spec.route_type, trunk_id, spec.members).id,
+            end_port_id=port_for(end, spec.route_type, trunk_id, spec.members).id,
             centerline=Polyline3D(points=(start, end)),
             nominal_diameter_m=diameter,
             confidence=confidence,

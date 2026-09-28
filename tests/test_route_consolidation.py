@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import random
+from pathlib import Path
 
 import pytest
 
 from oabm.model import (
     BuildingModel, Circuit, Conductor, ElectricalDevice, ElectricalEquipment,
-    Level, Point3, Polyline3D, Port, Pose, Route, RouteFitting, Vector3,
+    Level, Point3, Polyline3D, Port, Pose, Provenance, Route, RouteFitting, Vector3,
     validate_model,
 )
 from oabm.quantities import extract_quantities
@@ -23,6 +25,8 @@ from oabm.routing import (
     consolidate_bundled_routes, find_overlapping_route_runs, RoutingError,
 )
 from oabm.ifc.adapter import from_ifc, to_ifc
+from oabm.ifc import canonical_id_to_ifc_guid
+from oabm.qa import load_golden_cases, load_golden_model
 
 
 def _length(route: Route) -> float:
@@ -109,6 +113,7 @@ def acceptance_model() -> BuildingModel:
         id="equipment:acc-panel", equipment_type="panelboard",
         pose=Pose(position=Point3(x=0.0, y=0.0, z=3.0)),
     )
+
     panel_port = _port("port:acc-panel-out", panel.id, (0.0, 0.0, 3.0), "source")
     drops = ((20.0, 3.0, 3.0), (20.0, -3.0, 3.0), (20.0, 0.0, 6.0))
     devices: list[ElectricalDevice] = []
@@ -136,6 +141,46 @@ def acceptance_model() -> BuildingModel:
         conductors=tuple(conductors),
     )
 
+
+def test_retraced_shared_stretch_keeps_conductor_length_and_reports_physical_takeoff() -> None:
+    panel = ElectricalEquipment(
+        id="equipment:retrace", equipment_type="panelboard",
+        pose=Pose(position=Point3(x=0.0, y=0.0, z=3.0)),
+    )
+    load = _device("device:retrace", (3.0, 0.0, 3.0))
+    source_port = _port("port:retrace-source", panel.id, (0.0, 0.0, 3.0), "source")
+    load_port = _port("port:retrace-load", load.id, (3.0, 0.0, 3.0), "load")
+    routes = (
+        _route("route:retrace-a", source_port.id, load_port.id,
+               ((0.0, 0.0, 3.0), (2.0, 0.0, 3.0), (1.0, 0.0, 3.0), (3.0, 0.0, 3.0))),
+        _route("route:retrace-b", source_port.id, load_port.id,
+               ((0.0, 0.0, 3.0), (3.0, 0.0, 3.0))),
+    )
+    circuits: list[Circuit] = []
+    conductors: list[Conductor] = []
+    for index, route in enumerate(routes):
+        _wiring(circuits, conductors, index + 100, route.id, source_port.id, load_port.id)
+    model = BuildingModel(
+        model_id="model:retrace", electrical_equipment=(panel,), electrical_devices=(load,),
+        ports=(source_port, load_port), routes=routes,
+        circuits=tuple(circuits), conductors=tuple(conductors),
+    )
+    result = consolidate_bundled_routes(model)
+    assert validate_model(result.model) is None
+    assert _total_length(result.model) == pytest.approx(3.0)
+    assert result.report.double_counted_length_m == pytest.approx(5.0)
+    assert result.report.within_route_repeated_length_m == pytest.approx(2.0)
+    by_id = {route.id: route for route in result.model.routes}
+    lengths = {
+        conductor.id: sum(_length(by_id[route_id]) for route_id in conductor.route_ids)
+        for conductor in result.model.conductors
+    }
+    assert sorted(lengths.values()) == pytest.approx([3.0, 5.0])
+    assert any(f.fitting_type == "logical-junction" for f in result.model.route_fittings)
+    assert not any(
+        item.category == "fitting" and item.item_type == "logical-junction"
+        for item in extract_quantities(result.model).items
+    )
 
 def messy_model() -> BuildingModel:
     """Partial overlaps on one line plus a route that turns a corner.
@@ -254,6 +299,11 @@ def test_acceptance_bundle_becomes_one_trunk_and_three_branches() -> None:
     assert result.report.routes_after == 4
     assert result.report.trunk_routes == 1
     assert result.report.branch_routes == 3
+    assert result.report.shared_length_m == pytest.approx(20.0)
+    assert result.report.double_counted_length_m == pytest.approx(40.0)
+    assert result.report.fittings_before == 0
+    assert result.report.fittings_after == 1
+    assert result.report.ports_added == 1
     assert _total_length(consolidated) == pytest.approx(29.0)
 
     trunks = _trunks(consolidated)
@@ -279,11 +329,8 @@ def test_acceptance_bundle_becomes_one_trunk_and_three_branches() -> None:
     junction = next(port for port in consolidated.ports if port.role == "junction")
     assert trunk.end_port_id == junction.id
     assert (junction.pose.position.x, junction.pose.position.y, junction.pose.position.z) == (20.0, 0.0, 3.0)
-    owner = next(
-        entity for entity in (*consolidated.electrical_devices, *consolidated.electrical_equipment)
-        if entity.id == junction.owner_id
-    )
-    assert isinstance(owner, ElectricalDevice)
+    owner = next(fitting for fitting in consolidated.route_fittings if fitting.id == junction.owner_id)
+    assert owner.fitting_type == "tee"
 
 
 def test_one_tee_where_the_branches_leave_the_trunk() -> None:
@@ -295,6 +342,18 @@ def test_one_tee_where_the_branches_leave_the_trunk() -> None:
     assert tee.route_id == trunk.id
     assert (tee.pose.position.x, tee.pose.position.y, tee.pose.position.z) == (20.0, 0.0, 3.0)
     assert trunk.fitting_ids == (tee.id,)
+
+
+def test_fitting_owned_junction_port_exports_with_its_true_ifc_owner() -> None:
+    consolidated = consolidate_bundled_routes(acceptance_model()).model
+    port = next(port for port in consolidated.ports if port.role == "junction")
+    fitting = next(item for item in consolidated.route_fittings if item.id == port.owner_id)
+    ifc = to_ifc(consolidated)
+    ifc_port = ifc.by_guid(canonical_id_to_ifc_guid(port.id))
+    ifc_fitting = ifc.by_guid(canonical_id_to_ifc_guid(fitting.id))
+    assert ifc_fitting.is_a("IfcCableCarrierFitting")
+    assert len(ifc_port.Nests) == 1
+    assert ifc_port.Nests[0].RelatingObject == ifc_fitting
 
 
 def test_total_length_matches_the_overlap_identity() -> None:
@@ -371,21 +430,18 @@ def test_messy_partial_overlaps_split_at_coverage_boundaries() -> None:
     assert pieces["conductor:messy-2"] == [5.0]
     assert pieces["conductor:messy-3"] == [7.0, 2.0, 5.0, 5.0]
 
-    # One junction port at the corner vertex (8, 0, 3); the elbow gives way to tees.
+    # One physical tee at the corner where the branch joins the trunk.
     junctions = [port for port in consolidated.ports if port.role == "junction"]
     assert len(junctions) == 1
     assert (junctions[0].pose.position.x, junctions[0].pose.position.y, junctions[0].pose.position.z) == (8.0, 0.0, 3.0)
     assert not any(fitting.fitting_type.startswith("elbow") for fitting in consolidated.route_fittings)
     tees = [fitting for fitting in consolidated.route_fittings if fitting.fitting_type == "tee"]
-    assert len(tees) == 7
+    assert len(tees) == 1
     tee_positions = sorted(
         (fitting.pose.position.x, fitting.pose.position.y, fitting.pose.position.z)
         for fitting in tees
     )
-    assert tee_positions.count((5.0, 0.0, 3.0)) == 1
-    assert tee_positions.count((8.0, 0.0, 3.0)) == 2
-    assert tee_positions.count((10.0, 0.0, 3.0)) == 2
-    assert tee_positions.count((15.0, 0.0, 3.0)) == 2
+    assert tee_positions == [(8.0, 0.0, 3.0)]
     for trunk in trunks:
         own_tees = sorted(
             (fitting for fitting in tees if fitting.route_id == trunk.id),
@@ -443,11 +499,10 @@ def test_trunk_sizing_takes_the_largest_member_diameter() -> None:
     assert trunk.nominal_diameter_m == pytest.approx(0.035)
 
 
-def test_junction_ports_fail_closed_without_a_device_owner() -> None:
+def test_junction_ports_use_fittings_without_borrowing_a_device_owner() -> None:
     level = Level(id="level:orphan", elevation_m=0.0)
-    # The messy bundle's geometry, but every port owned by the level: a trunk
-    # junction at the corner vertex (8, 0, 3) then has no distribution
-    # element to hang the new port on, so consolidation must fail closed.
+    # No electrical owner is available for a new port. It still belongs to
+    # its exact junction fitting, never an unrelated nearby entity.
     model = messy_model()
     orphan_ports = tuple(
         dataclasses.replace(port, owner_id=level.id) for port in model.ports
@@ -460,8 +515,11 @@ def test_junction_ports_fail_closed_without_a_device_owner() -> None:
         electrical_devices=(),
         ports=orphan_ports,
     )
-    with pytest.raises(RoutingError, match="junction port needs an electrical device"):
-        consolidate_bundled_routes(model)
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    fitting_ids = {fitting.id for fitting in result.model.route_fittings}
+    original_ids = {port.id for port in model.ports}
+    assert all(port.owner_id in fitting_ids for port in result.model.ports if port.id not in original_ids)
 
 
 def test_fitting_off_a_vertex_fails_closed() -> None:
@@ -551,3 +609,235 @@ def test_provenance_marks_new_entities_as_inferred() -> None:
         if fitting.fitting_type == "tee":
             assert fitting.provenance[0].method == "route-consolidation"
             assert fitting.provenance[0].derivation == "inferred"
+
+
+def test_backward_member_traverses_its_branch_before_the_trunk() -> None:
+    model = acceptance_model()
+    old = next(r for r in model.routes if r.id == "route:acc-1")
+    backwards = dataclasses.replace(
+        old, start_port_id=old.end_port_id, end_port_id=old.start_port_id,
+        centerline=Polyline3D(points=tuple(reversed(old.centerline.points))),
+    )
+    model = dataclasses.replace(model, routes=tuple(
+        backwards if r.id == old.id else r for r in model.routes
+    ))
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    ids = next(c.route_ids for c in result.model.conductors if c.id == "conductor:acc-1")
+    routes = {r.id: r for r in result.model.routes}
+    assert [_length(routes[i]) for i in ids] == [3.0, 20.0]
+    assert _total_length(result.model) == pytest.approx(29.0)
+
+
+def test_collinear_vertex_does_not_repeat_a_trunk_in_a_conductor() -> None:
+    model = acceptance_model()
+    old = next(r for r in model.routes if r.id == "route:acc-0")
+    points = (old.centerline.points[0], Point3(x=10, y=0, z=3), *old.centerline.points[1:])
+    model = dataclasses.replace(model, routes=tuple(
+        dataclasses.replace(old, centerline=Polyline3D(points=points)) if r.id == old.id else r
+        for r in model.routes
+    ))
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    ids = next(c.route_ids for c in result.model.conductors if c.id == "conductor:acc-0")
+    assert len(ids) == 2
+    assert ids[0] != ids[1]
+    assert extract_quantities(result.model)
+
+
+def test_tolerance_touch_does_not_repoint_a_nonmember() -> None:
+    model = acceptance_model()
+    a = _device("device:touch-a", (19.995, 0, 3))
+    b = _device("device:touch-b", (25, 0, 3))
+    pa = _port("port:touch-a", a.id, (19.995, 0, 3), "load")
+    pb = _port("port:touch-b", b.id, (25, 0, 3), "load")
+    touch = _route("route:touch-only", pa.id, pb.id,
+                   ((19.995, 0, 3), (25, 0, 3)))
+    model = dataclasses.replace(
+        model, electrical_devices=(*model.electrical_devices, a, b),
+        ports=(*model.ports, pa, pb), routes=(*model.routes, touch),
+    )
+    result = consolidate_bundled_routes(model)
+    assert touch in result.model.routes
+    assert result.report.routes_left_untouched == 1
+
+
+def test_new_routes_preserve_every_original_source_record() -> None:
+    model = acceptance_model()
+    source = Provenance(source_kind="synthetic", source_id="source:sample", method="drawn")
+    marked = tuple(dataclasses.replace(r, provenance=(source,)) for r in model.routes)
+    model = dataclasses.replace(model, routes=marked)
+    result = consolidate_bundled_routes(model)
+    assert all(source in r.provenance for r in (*_trunks(result.model), *_branches(result.model)))
+    assert all(any(p.method == "route-consolidation" for p in r.provenance)
+               for r in (*_trunks(result.model), *_branches(result.model)))
+
+
+def test_bend_retained_inside_a_branch_is_listed_by_its_new_route() -> None:
+    model = acceptance_model()
+    old_route = next(r for r in model.routes if r.id == "route:acc-0")
+    old_port = next(p for p in model.ports if p.id == "port:acc-0")
+    old_device = next(d for d in model.electrical_devices if d.id == "device:acc-0")
+    finish = Point3(x=23, y=3, z=3)
+    bend = RouteFitting(
+        id="fitting:branch-bend", route_id=old_route.id, fitting_type="elbow-90",
+        pose=Pose(position=Point3(x=20, y=3, z=3)), angle_radians=math.pi / 2,
+    )
+    route = dataclasses.replace(
+        old_route, centerline=Polyline3D(points=(*old_route.centerline.points, finish)),
+        fitting_ids=(bend.id,),
+    )
+    model = dataclasses.replace(
+        model,
+        electrical_devices=tuple(dataclasses.replace(d, pose=Pose(position=finish))
+                                 if d.id == old_device.id else d for d in model.electrical_devices),
+        ports=tuple(dataclasses.replace(p, pose=Pose(position=finish))
+                    if p.id == old_port.id else p for p in model.ports),
+        routes=tuple(route if r.id == old_route.id else r for r in model.routes),
+        route_fittings=(bend,),
+    )
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    moved = next(f for f in result.model.route_fittings if f.id == bend.id)
+    branch = next(r for r in result.model.routes if r.id == moved.route_id)
+    assert moved.id in branch.fitting_ids
+    assert _length(branch) == pytest.approx(6.0)
+
+
+def test_two_pull_boxes_on_one_shared_span_become_one() -> None:
+    model = acceptance_model()
+    pull_fittings = []
+    routes = []
+    for r in model.routes:
+        if r.id not in {"route:acc-0", "route:acc-1"}:
+            routes.append(r)
+            continue
+        fitting = RouteFitting(
+            id=f"fitting:pull-{r.id[-1]}", route_id=r.id, fitting_type="pull",
+            pose=Pose(position=Point3(x=10, y=0, z=3)),
+            provenance=(Provenance(source_kind="synthetic", source_id=f"source:pull-{r.id[-1]}"),),
+        )
+        pull_fittings.append(fitting)
+        routes.append(dataclasses.replace(
+            r,
+            centerline=Polyline3D(points=(r.centerline.points[0], Point3(x=10,y=0,z=3),
+                                          *r.centerline.points[1:])),
+            fitting_ids=(fitting.id,),
+        ))
+    model = dataclasses.replace(model, routes=tuple(routes), route_fittings=tuple(pull_fittings))
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    pulls = [f for f in result.model.route_fittings if f.fitting_type == "pull"]
+    assert len(pulls) == 1
+    assert pulls[0].route_id == _trunks(result.model)[0].id
+    assert pulls[0].id in _trunks(result.model)[0].fitting_ids
+    assert pulls[0].attributes["consolidation"]["source_fitting_ids"] == [
+        "fitting:pull-0", "fitting:pull-1",
+    ]
+    assert {p.source_id for p in pulls[0].provenance} >= {"source:pull-0", "source:pull-1"}
+    assert any(p.x == 10 for p in _trunks(result.model)[0].centerline.points)
+
+
+def test_shared_corner_has_one_elbow_and_no_tee() -> None:
+    panel = ElectricalEquipment(
+        id="equipment:corner-panel", equipment_type="panelboard",
+        pose=Pose(position=Point3(x=0, y=0, z=3)),
+    )
+    device = _device("device:corner-load", (10, 10, 3))
+    ports = (_port("port:corner-source", panel.id, (0,0,3), "source"),
+             _port("port:corner-load", device.id, (10,10,3), "load"))
+    routes = []
+    fittings = []
+    circuits, conductors = [], []
+    for index in range(2):
+        route_id = f"route:corner-{index}"
+        fitting = RouteFitting(
+            id=f"fitting:corner-{index}", route_id=route_id,
+            fitting_type="elbow-90", pose=Pose(position=Point3(x=10,y=0,z=3)),
+            angle_radians=math.pi/2,
+        )
+        routes.append(dataclasses.replace(
+            _route(route_id, ports[0].id, ports[1].id,
+                   ((0,0,3),(10,0,3),(10,10,3))),
+            fitting_ids=(fitting.id,),
+        ))
+        fittings.append(fitting)
+        _wiring(circuits, conductors, index, route_id, ports[0].id, ports[1].id)
+    model = BuildingModel(
+        model_id="model:corner", electrical_equipment=(panel,), electrical_devices=(device,),
+        ports=ports, routes=tuple(routes), route_fittings=tuple(fittings),
+        circuits=tuple(circuits), conductors=tuple(conductors),
+    )
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    assert [f.fitting_type for f in result.model.route_fittings] == ["elbow-90"]
+    assert _total_length(result.model) == pytest.approx(20.0)
+
+
+def test_seeded_bundles_preserve_every_conductor_and_total_identity() -> None:
+    rng = random.Random(217)
+    for case in range(12):
+        model = acceptance_model()
+        routes = []
+        ports = list(model.ports)
+        devices = list(model.electrical_devices)
+        for index, old in enumerate(model.routes):
+            drop = rng.randint(1, 5)
+            end = (Point3(x=20,y=drop,z=3) if index == 0 else
+                   Point3(x=20,y=-drop,z=3) if index == 1 else
+                   Point3(x=20,y=0,z=3+drop))
+            points = [Point3(x=0,y=0,z=3)]
+            if rng.choice((True, False)):
+                points.append(Point3(x=rng.randint(1,19),y=0,z=3))
+            points.extend((Point3(x=20,y=0,z=3), end))
+            start_port, end_port = old.start_port_id, old.end_port_id
+            if rng.choice((True, False)):
+                points.reverse()
+                start_port, end_port = end_port, start_port
+            routes.append(dataclasses.replace(old, start_port_id=start_port,
+                                               end_port_id=end_port,
+                                               centerline=Polyline3D(points=tuple(points))))
+            ports = [dataclasses.replace(p, pose=Pose(position=end)) if p.id == old.end_port_id else p
+                     for p in ports]
+            devices = [dataclasses.replace(d, pose=Pose(position=end))
+                       if d.id == f"device:acc-{index}" else d for d in devices]
+        model = dataclasses.replace(model, model_id=f"model:seeded-{case}",
+                                    routes=tuple(routes), ports=tuple(ports),
+                                    electrical_devices=tuple(devices))
+        runs = find_overlapping_route_runs(model)
+        result = consolidate_bundled_routes(model)
+        validate_model(result.model)
+        new_by_id = {r.id: r for r in result.model.routes}
+        old_by_id = {r.id: r for r in model.routes}
+        old_wires = {c.id: c for c in model.conductors}
+        for conductor in result.model.conductors:
+            ids = conductor.route_ids
+            assert all(a != b for a, b in zip(ids, ids[1:]))
+            assert sum(_length(new_by_id[i]) for i in ids) == pytest.approx(
+                sum(_length(old_by_id[i]) for i in old_wires[conductor.id].route_ids)
+            )
+        assert _total_length(result.model) == pytest.approx(
+            _total_length(model) - sum(run.double_counted_length_m for run in runs)
+        )
+
+
+def test_public_golden_with_branch_bends_validates_and_round_trips(tmp_path) -> None:
+    root = Path(__file__).resolve().parents[1] / "fixtures" / "golden" / "v1"
+    case = next(c for c in load_golden_cases(root) if c.name == "commercial-ti-alternates")
+    original = load_golden_model(case)
+    result = consolidate_bundled_routes(original)
+    validate_model(result.model)
+    assert result.report.routes_before == len(original.routes)
+    assert result.report.routes_after == len(result.model.routes)
+    assert result.report.fittings_before == len(original.route_fittings)
+    assert result.report.fittings_after == len(result.model.route_fittings)
+    assert _total_length(result.model) == pytest.approx(
+        _total_length(original) - result.report.double_counted_length_m
+    )
+    output = tmp_path / "golden.ifc"
+    to_ifc(result.model, output)
+    restored = from_ifc(output)
+    validate_model(restored)
+    assert len(restored.routes) == len(result.model.routes)
+    assert len(restored.route_fittings) == len(result.model.route_fittings)
+    assert _total_length(restored) == pytest.approx(_total_length(result.model))

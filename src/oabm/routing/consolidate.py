@@ -43,10 +43,9 @@ class ConsolidationReport:
     """What one consolidation pass did, in counts and meters.
 
     ``shared_length_m`` is the union length now carried by trunk routes and
-    ``double_counted_length_m`` the coverage surplus the overlap detector
-    said a per-route takeoff counts more than once. Together they reconcile
-    the totals: the consolidated model's total route length equals the old
-    total minus ``double_counted_length_m`` within 1e-6 m per route.
+    ``double_counted_length_m`` is the total length removed from per-route
+    takeoff, including retraced stretches within one member route. The
+    latter is also reported separately as ``within_route_repeated_length_m``.
     """
 
     routes_before: int
@@ -59,6 +58,7 @@ class ConsolidationReport:
     ports_added: int
     shared_length_m: float
     double_counted_length_m: float
+    within_route_repeated_length_m: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +150,32 @@ def _consolidation_provenance(model_id: str, confidence: float) -> tuple[Provena
     ),)
 
 
+def _derived_provenance(
+    model_id: str, confidence: float, *sources,
+) -> tuple[Provenance, ...]:
+    """Carry every source observation forward before adding this derivation."""
+    records: list[Provenance] = []
+    for source in sources:
+        for record in source.provenance:
+            if record not in records:
+                records.append(record)
+    for record in _consolidation_provenance(model_id, confidence):
+        if record not in records:
+            records.append(record)
+    return tuple(records)
+
+
+def _is_turn_fitting(fitting_type: str) -> bool:
+    return fitting_type.lower().startswith(("elbow", "bend"))
+
+
+def _point_on_centerline(point: Point3, route: Route) -> bool:
+    return any(
+        abs(_distance(a, point) + _distance(point, b) - _distance(a, b)) <= 1e-7
+        for a, b in zip(route.centerline.points, route.centerline.points[1:])
+    )
+
+
 def _constant_member_intervals(
     run, routes_by_id: dict[str, Route], tolerance_m: float,
 ) -> list[tuple[float, float, tuple[str, ...]]]:
@@ -224,6 +250,34 @@ def _trunk_specs(
     return [specs[key] for key in sorted(specs)]
 
 
+def _split_specs_at_reversals(
+    specs: list[_TrunkSpec], routes_by_id: dict[str, Route], tolerance_m: float,
+) -> list[_TrunkSpec]:
+    """Keep a member's out-and-back traversal as separate trunk references.
+
+    A maximal physical trunk can cross a route's reversal vertex. Splitting
+    there lets that route reference the same physical subtrunk twice while
+    its conductor retains the actual traversal length.
+    """
+    result: list[_TrunkSpec] = []
+    for spec in specs:
+        cuts = {spec.lo, spec.hi}
+        for route_id in spec.members:
+            points = routes_by_id[route_id].centerline.points
+            for before, pivot, after in zip(points, points[1:], points[2:]):
+                first = _axis_coordinate(pivot, spec.axis) - _axis_coordinate(before, spec.axis)
+                second = _axis_coordinate(after, spec.axis) - _axis_coordinate(pivot, spec.axis)
+                if first * second >= 0:
+                    continue
+                fixed = tuple((pivot.x, pivot.y, pivot.z)[axis] for axis in range(3) if axis != spec.axis)
+                at = _axis_coordinate(pivot, spec.axis)
+                if _same_line(spec.fixed, fixed, tolerance_m) and spec.lo + _SEGMENT_EPSILON < at < spec.hi - _SEGMENT_EPSILON:
+                    cuts.add(at)
+        edges = sorted(cuts)
+        result.extend(replace(spec, lo=lo, hi=hi) for lo, hi in zip(edges, edges[1:]))
+    return result
+
+
 def _portion_point(start: Point3, end: Point3, axis: int, at: float) -> Point3:
     """The point on segment ``start``->``end`` whose axis coordinate is ``at``.
 
@@ -268,6 +322,8 @@ def _segment_portions(
         fixed = tuple(coords[other][0] for other in range(3) if other != axis)
         cuts: list[tuple[float, float, _TrunkSpec]] = []
         for spec in specs:
+            if route.id not in spec.members:
+                continue  # a nearby touch does not make this route a trunk member
             if spec.route_type != route.route_type:
                 continue  # trunks never mix route types
             if spec.axis != axis or not _same_line(spec.fixed, fixed, tolerance_m):
@@ -296,6 +352,8 @@ def _segment_portions(
             first = _portion_point(start, end, axis, lo)
             second = _portion_point(start, end, axis, hi)
             portions.append((spec, first, second) if forward else (spec, second, first))
+        if not forward:
+            portions.reverse()
         segment_portions.append(portions)
     return segment_portions
 
@@ -317,10 +375,12 @@ def _split_route(
     pieces: list[tuple[str, object]] = []
     portion_owners: list[list[int]] = []
     current_branch: _BranchPiece | None = None
+    last_trunk_direction: int | None = None
     for portions in segment_portions:
         owners: list[int] = []
         for spec, start, end in portions:
             if spec is None:
+                last_trunk_direction = None
                 if current_branch is None:
                     current_branch = _BranchPiece(
                         origin_id=route.id, ordinal=len(pieces), points=[start],
@@ -332,7 +392,13 @@ def _split_route(
                     current_branch.points.append(end)
             else:
                 current_branch = None
-                pieces.append(("trunk", spec))
+                direction = 1 if _axis_coordinate(end, spec.axis) > _axis_coordinate(start, spec.axis) else -1
+                if not (
+                    pieces and pieces[-1][0] == "trunk"
+                    and pieces[-1][1] is spec and last_trunk_direction == direction
+                ):
+                    pieces.append(("trunk", spec))
+                last_trunk_direction = direction
             owners.append(len(pieces) - 1)
         portion_owners.append(owners)
 
@@ -351,57 +417,38 @@ def _split_route(
 
 
 class _JunctionPorts:
-    """Position-keyed registry of the ports trunk and branch ends attach to.
-
-    Existing model ports are reused when one already sits at the requested
-    point; otherwise a junction port is created once per distinct point. A
-    created port needs an owner that downstream IFC export accepts -- the
-    adapter materializes a canonical port on its owner as a distribution
-    element -- so the nearest electrical device or equipment owner is chosen
-    deterministically, and consolidation fails closed when the model offers
-    none.
-    """
+    """Reuse actual route endpoints; give new junctions fitting ownership."""
 
     def __init__(self, model: BuildingModel) -> None:
-        self._model = model
-        self._by_position: dict[tuple[float, float, float], Port] = {}
-        for port in sorted(model.ports, key=lambda item: item.id):
-            self._by_position.setdefault(_position_key(port.pose.position), port)
+        self._model_id = model.model_id
+        self._by_position: dict[tuple[str, tuple[float, float, float]], Port] = {}
+        ports = {port.id: port for port in model.ports}
+        for route in sorted(model.routes, key=lambda item: item.id):
+            for port_id in (route.start_port_id, route.end_port_id):
+                port = ports[port_id]
+                self._by_position.setdefault((route.route_type, _position_key(port.pose.position)), port)
         self.added: list[Port] = []
-        self._eligible = [
-            (port, owner)
-            for owner in (*model.electrical_devices, *model.electrical_equipment)
-            for port in model.ports
-            if port.owner_id == owner.id
-        ]
+        self.owner_routes: dict[str, tuple[str, str]] = {}
 
-    def port_for(self, point: Point3) -> Port:
-        existing = self._by_position.get(_position_key(point))
+    def port_for(self, point: Point3, route_type: str, route_id: str) -> Port:
+        key = (route_type, _position_key(point))
+        existing = self._by_position.get(key)
         if existing is not None:
             return existing
-        if not self._eligible:
-            raise RoutingError(
-                f"cannot consolidate {self._model.model_id!r}: a trunk junction "
-                "port needs an electrical device or equipment owner, and no "
-                "port in the model has one"
-            )
-        anchor, owner = min(
-            self._eligible,
-            key=lambda item: (_distance(item[0].pose.position, point), item[0].id),
-        )
+        owner_id = stable_id("fitting", f"route-consolidation-junction:{route_type}:{_point_key(point)}")
         port = Port(
-            id=stable_id("port", f"route-consolidation:{_point_key(point)}"),
-            owner_id=owner.id,
-            domain=anchor.domain,
+            id=stable_id("port", f"route-consolidation:{route_type}:{_point_key(point)}"),
+            owner_id=owner_id,
+            domain="raceway",
             role="junction",
             pose=Pose(position=point),
             direction=Vector3(x=1.0, y=0.0, z=0.0),
-            confidence=anchor.confidence,
-            provenance=_consolidation_provenance(self._model.model_id, anchor.confidence),
+            provenance=_consolidation_provenance(self._model_id, 1.0),
             attributes={"consolidation": {"junction": True}},
         )
-        self._by_position[_position_key(point)] = port
+        self._by_position[key] = port
         self.added.append(port)
+        self.owner_routes[owner_id] = (route_type, route_id)
         return port
 
 
@@ -448,13 +495,28 @@ def consolidate_bundled_routes(
                 ports_added=0,
                 shared_length_m=0.0,
                 double_counted_length_m=0.0,
+                within_route_repeated_length_m=0.0,
             ),
         )
 
     routes_by_id = {route.id: route for route in model.routes}
     ports_by_id = {port.id: port for port in model.ports}
     model_id = model.model_id
-    specs = _trunk_specs(runs, routes_by_id, tolerance_m)
+    specs = _split_specs_at_reversals(
+        _trunk_specs(runs, routes_by_id, tolerance_m), routes_by_id, tolerance_m,
+    )
+    # The overlap report unions each route's own coverage. Account for a
+    # member that traverses a shared physical stretch more than once.
+    traversed: dict[int, float] = {id(spec): 0.0 for spec in specs}
+    for route in model.routes:
+        for portions in _segment_portions(route, specs, tolerance_m):
+            for spec, start, end in portions:
+                if spec is not None:
+                    traversed[id(spec)] += _distance(start, end)
+    within_route_repeated = math.fsum(
+        max(0.0, traversed[id(spec)] - len(spec.members) * (spec.hi - spec.lo))
+        for spec in specs
+    )
     junction_ports = _JunctionPorts(model)
     port_for = junction_ports.port_for
 
@@ -474,17 +536,10 @@ def consolidate_bundled_routes(
             piece for kind, piece in pieces if kind == "branch"
         )
 
-    # --- trunk identity, size, and their junction tees ----------------------
-    # Tees are decided before the trunk Route is built so fitting_ids can
-    # carry them in centerline order.
-    piece_endpoints = [
-        point
-        for piece in branch_pieces
-        for point in (piece.points[0], piece.points[-1])
-    ]
+    # --- trunk identity and size -------------------------------------------
+    # Junction fittings are decided once all physical pieces are known.
     trunk_route_by_spec: dict[int, Route] = {}
     trunk_records: list[tuple[_TrunkSpec, Route]] = []
-    tee_records: list[RouteFitting] = []
     for spec in specs:
         start = _axis_point(spec.axis, spec.fixed, spec.lo)
         end = _axis_point(spec.axis, spec.fixed, spec.hi)
@@ -501,43 +556,15 @@ def consolidate_bundled_routes(
             f"{spec.route_type}|{','.join(spec.members)}|"
             f"{_point_key(start)}|{_point_key(end)}",
         )
-        tees: list[RouteFitting] = []
-        other_endpoints = [
-            point
-            for other in specs
-            if other is not spec
-            for point in (
-                _axis_point(other.axis, other.fixed, other.lo),
-                _axis_point(other.axis, other.fixed, other.hi),
-            )
-        ]
-        for endpoint in (start, end):
-            if not any(
-                _distance(point, endpoint) <= tolerance_m
-                for point in (*piece_endpoints, *other_endpoints)
-            ):
-                continue  # the trunk just terminates there; nothing taps in
-            tees.append(RouteFitting(
-                id=stable_id("fitting", f"{trunk_id}:tee:{_point_key(endpoint)}"),
-                route_id=trunk_id,
-                fitting_type="tee",
-                pose=Pose(position=endpoint),
-                nominal_diameter_m=diameter,
-                confidence=confidence,
-                provenance=_consolidation_provenance(model_id, confidence),
-            ))
-        tees.sort(key=lambda item: _axis_coordinate(item.pose.position, spec.axis))
-        tee_records.extend(tees)
         route = Route(
             id=trunk_id,
             route_type=spec.route_type,
-            start_port_id=port_for(start).id,
-            end_port_id=port_for(end).id,
+            start_port_id=port_for(start, spec.route_type, trunk_id).id,
+            end_port_id=port_for(end, spec.route_type, trunk_id).id,
             centerline=Polyline3D(points=(start, end)),
             nominal_diameter_m=diameter,
             confidence=confidence,
-            provenance=_consolidation_provenance(model_id, confidence),
-            fitting_ids=tuple(item.id for item in tees),
+            provenance=_derived_provenance(model_id, confidence, *members),
             attributes={
                 "consolidation": {
                     "member_route_ids": list(spec.members),
@@ -548,7 +575,7 @@ def consolidate_bundled_routes(
         trunk_route_by_spec[id(spec)] = route
         trunk_records.append((spec, route))
 
-    def origin_port_id(origin: Route, point: Point3) -> str:
+    def origin_port_id(origin: Route, point: Point3, branch_id: str) -> str:
         """The origin's own port when the piece end sits on one, else a junction port."""
 
         for port_id, endpoint in (
@@ -557,25 +584,33 @@ def consolidate_bundled_routes(
         ):
             if _distance(ports_by_id[port_id].pose.position, point) <= _VERTEX_EPSILON:
                 return port_id
-        return port_for(point).id
+        matching = next((
+            record for record in trunk_records
+            if record[0].route_type == origin.route_type
+            and (_distance(record[1].centerline.points[0], point) <= _VERTEX_EPSILON
+                 or _distance(record[1].centerline.points[-1], point) <= _VERTEX_EPSILON)
+        ), None)
+        owner_route_id = matching[1].id if matching is not None else branch_id
+        return port_for(point, origin.route_type, owner_route_id).id
 
     branch_routes: dict[int, Route] = {}
     for piece in branch_pieces:
         origin = routes_by_id[piece.origin_id]
         start, end = piece.points[0], piece.points[-1]
+        branch_id = stable_id(
+            "route",
+            "route-consolidation-branch:"
+            f"{piece.origin_id}|{piece.ordinal}|{_point_key(start)}|{_point_key(end)}",
+        )
         branch_routes[id(piece)] = Route(
-            id=stable_id(
-                "route",
-                "route-consolidation-branch:"
-                f"{piece.origin_id}|{piece.ordinal}|{_point_key(start)}|{_point_key(end)}",
-            ),
+            id=branch_id,
             route_type=origin.route_type,
-            start_port_id=origin_port_id(origin, start),
-            end_port_id=origin_port_id(origin, end),
+            start_port_id=origin_port_id(origin, start, branch_id),
+            end_port_id=origin_port_id(origin, end, branch_id),
             centerline=Polyline3D(points=tuple(piece.points)),
             nominal_diameter_m=origin.nominal_diameter_m,
             confidence=origin.confidence,
-            provenance=_consolidation_provenance(model_id, origin.confidence),
+            provenance=_derived_provenance(model_id, origin.confidence, origin),
             attributes={
                 "consolidation": {
                     "source_route_id": piece.origin_id,
@@ -612,9 +647,11 @@ def consolidate_bundled_routes(
         for conductor in sorted(model.conductors, key=lambda item: item.id)
     )
 
-    # --- fittings: re-parent to branches, drop turns that became junctions --
+    # --- fittings: preserve branch fittings, deduplicate shared fittings ---
     kept_fittings: list[RouteFitting] = []
     moved_fittings: list[RouteFitting] = []
+    shared_fittings: dict[tuple[str, str, tuple[float, float, float]], list[RouteFitting]] = {}
+    original_at_junction: dict[tuple[str, tuple[float, float, float]], list[RouteFitting]] = {}
     fitting_by_id = {fitting.id: fitting for fitting in model.route_fittings}
     for route in sorted(model.routes, key=lambda item: item.id):
         if route.id not in piece_lists:
@@ -642,19 +679,171 @@ def consolidate_bundled_routes(
                     "consolidation can only re-parent vertex fittings"
                 )
             cursor = vertex + 1
+            pos_key = _position_key(fitting.pose.position)
+            original_at_junction.setdefault((route.route_type, pos_key), []).append(fitting)
             if vertex in cut_maps[route.id]:
-                continue  # the junction tee replaces the turn fitting here
+                if not _is_turn_fitting(fitting.fitting_type):
+                    shared_fittings.setdefault((route.route_type, fitting.fitting_type, pos_key), []).append(fitting)
+                continue
             piece = branch_by_vertex.get(vertex)
             if piece is None:
-                continue  # a redundant vertex inside a straight trunk
+                if not _is_turn_fitting(fitting.fitting_type):
+                    shared_fittings.setdefault((route.route_type, fitting.fitting_type, pos_key), []).append(fitting)
+                continue
             moved_fittings.append(replace(
                 fitting, route_id=branch_routes[id(piece)].id,
             ))
 
+    # At a junction the physical outgoing directions decide the fitting.
+    # Exactly one tee or elbow is placed at a position for a route type; a
+    # collinear continuation needs no fitting even when member sets change.
+    physical_routes = [route for _, route in trunk_records] + list(branch_routes.values())
+    trunk_ids = {route.id for _, route in trunk_records}
+    incident: dict[tuple[str, tuple[float, float, float]], list[tuple[Route, Vector3]]] = {}
+    for route in physical_routes:
+        points = route.centerline.points
+        for point, adjacent in ((points[0], points[1]), (points[-1], points[-2])):
+            length = _distance(point, adjacent)
+            direction = Vector3(
+                x=(adjacent.x - point.x) / length,
+                y=(adjacent.y - point.y) / length,
+                z=(adjacent.z - point.z) / length,
+            )
+            incident.setdefault((route.route_type, _position_key(point)), []).append((route, direction))
+
+    junction_fittings: list[RouteFitting] = []
+    for (route_type, pos_key), entries in sorted(incident.items()):
+        trunks_here = sorted((route for route, _ in entries if route.id in trunk_ids),
+                             key=lambda route: route.id)
+        if not trunks_here:
+            continue
+        directions = {
+            (round(direction.x, 6), round(direction.y, 6), round(direction.z, 6))
+            for _, direction in entries
+        }
+        if len(directions) >= 3:
+            kind = "tee"
+            angle = None
+        elif len(directions) == 2:
+            first, second = tuple(sorted(directions))
+            if all(abs(a + b) <= 1e-6 for a, b in zip(first, second)):
+                continue  # straight-through, no physical fitting
+            angle = math.acos(max(-1.0, min(1.0, -sum(a * b for a, b in zip(first, second)))))
+            kind = "elbow-90" if abs(angle - math.pi / 2) <= 1e-6 else "elbow"
+        else:
+            continue
+        owner = trunks_here[0]
+        sources = original_at_junction.get((route_type, pos_key), ())
+        point = Point3(x=pos_key[0], y=pos_key[1], z=pos_key[2])
+        junction_fittings.append(RouteFitting(
+            id=stable_id("fitting", f"route-consolidation:{route_type}:{kind}:{_point_key(point)}"),
+            route_id=owner.id, fitting_type=kind, pose=Pose(position=point),
+            nominal_diameter_m=max(
+                (route.nominal_diameter_m or 0 for route, _ in entries), default=0
+            ) or None,
+            angle_radians=angle,
+            confidence=min(route.confidence for route, _ in entries),
+            provenance=_derived_provenance(model_id, min(route.confidence for route, _ in entries), *sources),
+            attributes={"consolidation": {"source_fitting_ids": sorted(source.id for source in sources)}},
+        ))
+
+    # Same-type fittings on a shared span are one physical part. Preserve all
+    # source provenance records, attach them to the shared trunk, and insert
+    # their position as a centerline vertex for IFC ordering.
+    shared_records: list[RouteFitting] = []
+    for (route_type, kind, pos_key), sources in sorted(shared_fittings.items()):
+        point = Point3(x=pos_key[0], y=pos_key[1], z=pos_key[2])
+        owners = sorted((
+            route for _, route in trunk_records
+            if route.route_type == route_type and _point_on_centerline(point, route)
+        ), key=lambda route: route.id)
+        if not owners:
+            raise RoutingError(f"shared fitting at {_point_key(point)} has no trunk")
+        owner = owners[0]
+        shared_records.append(RouteFitting(
+            id=stable_id("fitting", f"route-consolidation:{route_type}:{kind}:{_point_key(point)}"),
+            route_id=owner.id, fitting_type=kind, pose=Pose(position=point),
+            nominal_diameter_m=max((source.nominal_diameter_m or 0 for source in sources), default=0) or None,
+            confidence=min(source.confidence for source in sources),
+            provenance=_derived_provenance(model_id, min(source.confidence for source in sources), *sources),
+            attributes={"consolidation": {"source_fitting_ids": sorted(source.id for source in sources)}},
+        ))
+
+    # A canonical junction port must belong to the fitting at that position.
+    # Straight bookkeeping cuts need a logical junction occurrence, explicitly
+    # marked nonmaterial so a derived takeoff never calls it a physical part.
+    trunk_types = {route.id: spec.route_type for spec, route in trunk_records}
+    physical_by_position: dict[tuple[str, tuple[float, float, float]], RouteFitting] = {}
+    for fitting in (*junction_fittings, *shared_records):
+        key = (trunk_types[fitting.route_id], _position_key(fitting.pose.position))
+        physical_by_position.setdefault(key, fitting)  # the junction fitting owns a junction
+    logical_fittings: list[RouteFitting] = []
+    resolved_ports: list[Port] = []
+    derived_routes = {route.id: route for _, route in trunk_records}
+    derived_routes.update({route.id: route for route in branch_routes.values()})
+    for port in junction_ports.added:
+        route_type, route_id = junction_ports.owner_routes[port.owner_id]
+        key = (route_type, _position_key(port.pose.position))
+        physical = physical_by_position.get(key)
+        if physical is not None:
+            resolved_ports.append(replace(
+                port, owner_id=physical.id, confidence=physical.confidence,
+                provenance=_derived_provenance(model_id, physical.confidence, physical),
+            ))
+            continue
+        owner = derived_routes[route_id]
+        logical = RouteFitting(
+            id=port.owner_id, route_id=route_id, fitting_type="logical-junction",
+            pose=port.pose, nominal_diameter_m=owner.nominal_diameter_m,
+            confidence=owner.confidence,
+            provenance=_derived_provenance(model_id, owner.confidence, owner),
+            attributes={"consolidation": {"logical": True, "nonmaterial": True}},
+        )
+        logical_fittings.append(logical)
+        resolved_ports.append(replace(
+            port, confidence=owner.confidence,
+            provenance=_derived_provenance(model_id, owner.confidence, owner),
+        ))
+
+    trunk_fittings: dict[str, list[RouteFitting]] = {}
+    for fitting in (*junction_fittings, *shared_records, *logical_fittings):
+        trunk_fittings.setdefault(fitting.route_id, []).append(fitting)
+    updated_trunks: list[tuple[_TrunkSpec, Route]] = []
+    for spec, route in trunk_records:
+        fittings = sorted(trunk_fittings.get(route.id, ()), key=lambda fitting: (
+            _axis_coordinate(fitting.pose.position, spec.axis), fitting.id,
+        ))
+        interior = sorted({
+            _axis_coordinate(fitting.pose.position, spec.axis)
+            for fitting in fittings
+            if spec.lo + _VERTEX_EPSILON < _axis_coordinate(fitting.pose.position, spec.axis) < spec.hi - _VERTEX_EPSILON
+        })
+        points = (route.centerline.points[0], *(
+            _axis_point(spec.axis, spec.fixed, at) for at in interior
+        ), route.centerline.points[-1])
+        updated = replace(route, centerline=Polyline3D(points=points),
+                          fitting_ids=tuple(fitting.id for fitting in fittings))
+        updated_trunks.append((spec, updated))
+        trunk_route_by_spec[id(spec)] = updated
+    trunk_records = updated_trunks
+
+    # A Route owns the ordered fitting_ids of every fitting re-parented to it.
+    # Updating RouteFitting.route_id alone leaves the canonical model invalid.
+    moved_by_route: dict[str, list[str]] = {}
+    for fitting in moved_fittings:
+        moved_by_route.setdefault(fitting.route_id, []).append(fitting.id)
+    for fitting in logical_fittings:
+        if fitting.route_id in {route.id for route in branch_routes.values()}:
+            moved_by_route.setdefault(fitting.route_id, []).append(fitting.id)
+    for key, route in list(branch_routes.items()):
+        branch_routes[key] = replace(
+            route, fitting_ids=tuple(moved_by_route.get(route.id, ())),
+        )
+
     consolidated = replace(
         model,
         ports=tuple(sorted(
-            (*model.ports, *junction_ports.added), key=lambda item: item.id,
+            (*model.ports, *resolved_ports), key=lambda item: item.id,
         )),
         routes=tuple(sorted(
             (
@@ -665,7 +854,7 @@ def consolidate_bundled_routes(
             key=lambda item: item.id,
         )),
         route_fittings=tuple(sorted(
-            (*kept_fittings, *moved_fittings, *tee_records), key=lambda item: item.id,
+            (*kept_fittings, *moved_fittings, *junction_fittings, *shared_records, *logical_fittings), key=lambda item: item.id,
         )),
         circuits=circuits,
         conductors=conductors,
@@ -682,6 +871,24 @@ def consolidate_bundled_routes(
         fittings_after=len(consolidated.route_fittings),
         ports_added=len(junction_ports.added),
         shared_length_m=math.fsum(spec.hi - spec.lo for spec, _ in trunk_records),
-        double_counted_length_m=math.fsum(run.double_counted_length_m for run in runs),
+        double_counted_length_m=math.fsum(run.double_counted_length_m for run in runs) + within_route_repeated,
+        within_route_repeated_length_m=within_route_repeated,
     )
+    # A valid canonical model can still carry a mistaken electrical traversal.
+    # Refuse the result if any conductor length or the takeoff identity drifts.
+    new_routes = {route.id: route for route in consolidated.routes}
+    old_conductors = {conductor.id: conductor for conductor in model.conductors}
+    for conductor in consolidated.conductors:
+        old_length = math.fsum(_route_length(routes_by_id[route_id]) for route_id in old_conductors[conductor.id].route_ids)
+        new_length = math.fsum(_route_length(new_routes[route_id]) for route_id in conductor.route_ids)
+        if abs(old_length - new_length) > 1e-6 * max(1, len(old_conductors[conductor.id].route_ids)):
+            raise RoutingError(f"consolidation changed conductor length on {conductor.id}")
+    old_total = math.fsum(_route_length(route) for route in model.routes)
+    new_total = math.fsum(_route_length(route) for route in consolidated.routes)
+    if abs(new_total - (old_total - report.double_counted_length_m)) > 1e-6 * max(1, len(model.routes)):
+        raise RoutingError(
+            "consolidation route totals do not match overlap coverage: "
+            f"before={old_total:.6f} after={new_total:.6f} "
+            f"double_counted={report.double_counted_length_m:.6f}"
+        )
     return ConsolidationResult(model=consolidated, report=report)

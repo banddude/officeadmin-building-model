@@ -422,6 +422,58 @@ def to_ifc(
             item.ObjectType = device.device_type
         _mark_body(ifc, item, _assign_box_body(ifc, item, body_context, device.size))
 
+    # Fittings are canonical distribution elements and may own junction ports.
+    # Materialize them before their canonical ports.
+    fitting_ifc: dict[str, Any] = {}
+    fitting_ports: dict[str, tuple[Any, Any]] = {}
+    for ordinal, fitting in enumerate(model.route_fittings):
+        route = next((r for r in model.routes if r.id == fitting.route_id), None)
+        route_type = route.route_type if route is not None else "emt"
+        ifc_class = "IfcCableFitting" if route_type == "cable" else "IfcCableCarrierFitting"
+        item = _create_root(
+            ifc,
+            ifc_class,
+            fitting.id,
+            fitting.name,
+            predefined_type=_fitting_predefined_type(fitting.fitting_type),
+        )
+        _set_pose(ifc, item, fitting.pose)
+        _mark_adapter(
+            ifc,
+            item,
+            Body="no",
+            BodyReason="fitting is a placement-only occurrence on its conduit run",
+        )
+        _add_canonical_pset(
+            ifc,
+            item,
+            "route_fitting",
+            ordinal,
+            model_document["route_fittings"][ordinal],
+        )
+        fitting_ifc[fitting.id] = item
+        entity_ifc[fitting.id] = item
+        p0 = _add_adapter_port(
+            ifc,
+            item,
+            f"{fitting.id}#port:0",
+            fitting.pose.position,
+            Vector3(x=1, y=0, z=0),
+            route_id=fitting.route_id,
+            role="fitting-port",
+        )
+        p1 = _add_adapter_port(
+            ifc,
+            item,
+            f"{fitting.id}#port:1",
+            fitting.pose.position,
+            Vector3(x=-1, y=0, z=0),
+            route_id=fitting.route_id,
+            role="fitting-port",
+        )
+        fitting_ports[fitting.id] = (p0, p1)
+        _assign_spatial_container(ifc, fitting, item, storeys, spaces, model=model)
+
     canonical_ports: dict[str, Any] = {}
     canonical_port_owners: dict[str, Any] = {}
     model_ports = {port.id: port for port in model.ports}
@@ -476,56 +528,6 @@ def to_ifc(
                 continue
             port_links.append((canonical_ports[port.id], canonical_ports[other_id]))
             linked.add(pair)
-
-    fitting_ifc: dict[str, Any] = {}
-    fitting_ports: dict[str, tuple[Any, Any]] = {}
-    for ordinal, fitting in enumerate(model.route_fittings):
-        route = next((r for r in model.routes if r.id == fitting.route_id), None)
-        route_type = route.route_type if route is not None else "emt"
-        ifc_class = "IfcCableFitting" if route_type == "cable" else "IfcCableCarrierFitting"
-        item = _create_root(
-            ifc,
-            ifc_class,
-            fitting.id,
-            fitting.name,
-            predefined_type=_fitting_predefined_type(fitting.fitting_type),
-        )
-        _set_pose(ifc, item, fitting.pose)
-        _mark_adapter(
-            ifc,
-            item,
-            Body="no",
-            BodyReason="fitting is a placement-only occurrence on its conduit run",
-        )
-        _add_canonical_pset(
-            ifc,
-            item,
-            "route_fitting",
-            ordinal,
-            model_document["route_fittings"][ordinal],
-        )
-        fitting_ifc[fitting.id] = item
-        entity_ifc[fitting.id] = item
-        p0 = _add_adapter_port(
-            ifc,
-            item,
-            f"{fitting.id}#port:0",
-            fitting.pose.position,
-            Vector3(x=1, y=0, z=0),
-            route_id=fitting.route_id,
-            role="fitting-port",
-        )
-        p1 = _add_adapter_port(
-            ifc,
-            item,
-            f"{fitting.id}#port:1",
-            fitting.pose.position,
-            Vector3(x=-1, y=0, z=0),
-            route_id=fitting.route_id,
-            role="fitting-port",
-        )
-        fitting_ports[fitting.id] = (p0, p1)
-        _assign_spatial_container(ifc, fitting, item, storeys, spaces, model=model)
 
     for ordinal, route in enumerate(model.routes):
         route_system = ifcopenshell.api.system.add_system(ifc, ifc_class="IfcDistributionSystem")
@@ -2041,6 +2043,8 @@ def _segment_ifc_type(route_type: str) -> tuple[str, str | None]:
 
 def _fitting_predefined_type(token: str) -> str:
     token = token.lower()
+    if token == "logical-junction":
+        return "NOTDEFINED"
     if "tee" in token:
         return "TEE"
     if "cross" in token:

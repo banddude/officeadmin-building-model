@@ -183,7 +183,7 @@ def test_retraced_shared_stretch_keeps_conductor_length_and_reports_physical_tak
     )
 
 
-def test_offset_centerlines_refuse_a_disconnected_shared_trunk() -> None:
+def test_offset_centerlines_snap_with_connectors_and_refuse_beyond_tolerance() -> None:
     devices = (
         _device("device:offset-a", (0.0, 0.0, 3.0)),
         _device("device:offset-b", (10.0, 0.0, 3.0)),
@@ -195,6 +195,10 @@ def test_offset_centerlines_refuse_a_disconnected_shared_trunk() -> None:
               (device.pose.position.x, device.pose.position.y, 3.0), "junction")
         for index, device in enumerate(devices)
     )
+    circuits: list[Circuit] = []
+    conductors: list[Conductor] = []
+    _wiring(circuits, conductors, 300, "route:offset-a", ports[0].id, ports[1].id)
+    _wiring(circuits, conductors, 301, "route:offset-b", ports[2].id, ports[3].id)
     model = BuildingModel(
         model_id="model:offset-shared-lines", electrical_devices=devices, ports=ports,
         routes=(
@@ -203,10 +207,29 @@ def test_offset_centerlines_refuse_a_disconnected_shared_trunk() -> None:
             _route("route:offset-b", ports[2].id, ports[3].id,
                    ((0.0, 0.005, 3.0), (10.0, 0.005, 3.0))),
         ),
+        circuits=tuple(circuits), conductors=tuple(conductors),
     )
-    assert find_overlapping_route_runs(model, tolerance_m=0.01)
-    with pytest.raises(RoutingError, match="offset shared centerlines"):
-        consolidate_bundled_routes(model, tolerance_m=0.01)
+    assert find_overlapping_route_runs(model, tolerance_m=0.025)
+    result = consolidate_bundled_routes(model)
+    validate_model(result.model)
+    assert result.report.snap_added_length_m == pytest.approx(0.01)
+    assert result.report.conductor_length_delta_m == pytest.approx(0.01)
+    assert result.report.snap_adjustments >= 3
+    assert _total_length(result.model) == pytest.approx(10.01)
+    assert any(
+        record.method == "route-consolidation-snap"
+        for route in result.model.routes for record in route.provenance
+    )
+    farther_ports = tuple(
+        dataclasses.replace(port, pose=Pose(position=Point3(
+            x=port.pose.position.x, y=0.026, z=3.0,
+        ))) if port.id in {ports[2].id, ports[3].id} else port
+        for port in ports
+    )
+    farther_route = _route("route:offset-b", ports[2].id, ports[3].id,
+                           ((0.0, 0.026, 3.0), (10.0, 0.026, 3.0)))
+    farther = dataclasses.replace(model, ports=farther_ports, routes=(model.routes[0], farther_route))
+    assert consolidate_bundled_routes(farther).model is farther
 
 def messy_model() -> BuildingModel:
     """Partial overlaps on one line plus a route that turns a corner.

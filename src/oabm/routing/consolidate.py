@@ -7,12 +7,13 @@ then counts the trunk once per circuit (#196). This module is the separate,
 opt-in post-process behind the read-only report in ``overlap.py``: it merges
 the genuinely shared stretches into trunk ``Route`` records, splits each
 member's remainder into branch ``Route`` records, and re-points conductors
-and circuits so every conductor keeps its exact old length.
+and circuits in traversal order. Aligned geometry keeps exact conductor
+length; near-aligned geometry gets short, recorded connectors.
 
 The consolidation is deterministic bookkeeping on existing geometry: trunks
 run on the shared line the overlap detector reports, branches keep their
-route's own vertices, and every cut point is an existing centerline
-coordinate, so split pieces sum back to their original lengths. Nothing here
+route's own vertices where possible, and a bounded transverse offset is
+snapped with its adjustment recorded in provenance. Nothing here
 changes the canonical contract; a model that carries no overlapping runs is
 returned as the same object, untouched.
 """
@@ -23,7 +24,7 @@ import math
 from dataclasses import dataclass, replace
 
 from oabm.model import (
-    BuildingModel, DERIVATION_INFERRED, ElectricalDevice, ElectricalEquipment,
+    BuildingModel, DERIVATION_INFERRED,
     Point3, Polyline3D, Port, Pose, Provenance, Route, RouteFitting, Vector3,
     stable_id,
 )
@@ -43,9 +44,9 @@ class ConsolidationReport:
     """What one consolidation pass did, in counts and meters.
 
     ``shared_length_m`` is the union length now carried by trunk routes and
-    ``double_counted_length_m`` is the total length removed from per-route
-    takeoff, including retraced stretches within one member route. The
-    latter is also reported separately as ``within_route_repeated_length_m``.
+    ``double_counted_length_m`` is net route length removed from per-route
+    takeoff, including retraced stretches and bounded snap connectors.
+    Snap adjustments and signed conductor length changes are explicit.
     """
 
     routes_before: int
@@ -59,6 +60,10 @@ class ConsolidationReport:
     shared_length_m: float
     double_counted_length_m: float
     within_route_repeated_length_m: float
+    snap_adjustments: int
+    snap_added_length_m: float
+    snap_collapsed_length_m: float
+    conductor_length_delta_m: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +93,7 @@ class _BranchPiece:
     origin_id: str
     ordinal: int
     points: list[Point3]
+    adjustments: list[dict]
 
 
 def _moving_axis(start: Point3, end: Point3) -> int:
@@ -163,6 +169,22 @@ def _derived_provenance(
         if record not in records:
             records.append(record)
     return tuple(records)
+
+
+def _snap_provenance(
+    model_id: str, confidence: float, adjustments: list[dict],
+) -> tuple[Provenance, ...]:
+    if not adjustments:
+        return ()
+    return (Provenance(
+        source_kind="derived", source_id=model_id,
+        method="route-consolidation-snap", confidence=confidence,
+        derivation=DERIVATION_INFERRED,
+        attributes={
+            "adjustments": adjustments,
+            "length_delta_m": math.fsum(item["length_delta_m"] for item in adjustments),
+        },
+    ),)
 
 
 def _is_turn_fitting(fitting_type: str) -> bool:
@@ -376,6 +398,21 @@ def _split_route(
     portion_owners: list[list[int]] = []
     current_branch: _BranchPiece | None = None
     last_trunk_direction: int | None = None
+    previous_trunk_end: Point3 | None = None
+
+    def append_adjustment(piece: _BranchPiece, before: Point3, after: Point3) -> None:
+        distance = _distance(before, after)
+        if distance <= _VERTEX_EPSILON:
+            return
+        if distance > tolerance_m + _VERTEX_EPSILON:
+            raise RoutingError("snap connector exceeds consolidation tolerance")
+        piece.points.append(after)
+        piece.adjustments.append({
+            "from_m": [before.x, before.y, before.z],
+            "to_m": [after.x, after.y, after.z],
+            "length_delta_m": distance,
+        })
+
     for portions in segment_portions:
         owners: list[int] = []
         for spec, start, end in portions:
@@ -383,14 +420,35 @@ def _split_route(
                 last_trunk_direction = None
                 if current_branch is None:
                     current_branch = _BranchPiece(
-                        origin_id=route.id, ordinal=len(pieces), points=[start],
+                        origin_id=route.id, ordinal=len(pieces),
+                        points=[previous_trunk_end or start], adjustments=[],
                     )
                     pieces.append(("branch", current_branch))
+                    if previous_trunk_end is not None:
+                        append_adjustment(current_branch, previous_trunk_end, start)
                 if _distance(current_branch.points[-1], start) > _VERTEX_EPSILON:
                     current_branch.points.append(start)
                 if _distance(current_branch.points[-1], end) > _VERTEX_EPSILON:
                     current_branch.points.append(end)
+                previous_trunk_end = None
             else:
+                snapped_start = _axis_point(spec.axis, spec.fixed, _axis_coordinate(start, spec.axis))
+                snapped_end = _axis_point(spec.axis, spec.fixed, _axis_coordinate(end, spec.axis))
+                if current_branch is not None:
+                    append_adjustment(current_branch, current_branch.points[-1], snapped_start)
+                elif previous_trunk_end is not None and _distance(previous_trunk_end, snapped_start) > _VERTEX_EPSILON:
+                    connector = _BranchPiece(
+                        origin_id=route.id, ordinal=len(pieces),
+                        points=[previous_trunk_end], adjustments=[],
+                    )
+                    append_adjustment(connector, previous_trunk_end, snapped_start)
+                    pieces.append(("branch", connector))
+                elif previous_trunk_end is None and not pieces and _distance(start, snapped_start) > _VERTEX_EPSILON:
+                    connector = _BranchPiece(
+                        origin_id=route.id, ordinal=len(pieces), points=[start], adjustments=[],
+                    )
+                    append_adjustment(connector, start, snapped_start)
+                    pieces.append(("branch", connector))
                 current_branch = None
                 direction = 1 if _axis_coordinate(end, spec.axis) > _axis_coordinate(start, spec.axis) else -1
                 if not (
@@ -399,8 +457,17 @@ def _split_route(
                 ):
                     pieces.append(("trunk", spec))
                 last_trunk_direction = direction
+                previous_trunk_end = snapped_end
             owners.append(len(pieces) - 1)
         portion_owners.append(owners)
+
+    if previous_trunk_end is not None and _distance(previous_trunk_end, points[-1]) > _VERTEX_EPSILON:
+        connector = _BranchPiece(
+            origin_id=route.id, ordinal=len(pieces),
+            points=[previous_trunk_end], adjustments=[],
+        )
+        append_adjustment(connector, previous_trunk_end, points[-1])
+        pieces.append(("branch", connector))
 
     vertex_owners: list[tuple[int, object]] = []
     cut_vertices: set[int] = set()
@@ -470,17 +537,17 @@ class _JunctionPorts:
 def consolidate_bundled_routes(
     model: BuildingModel,
     *,
-    tolerance_m: float = 0.01,
+    tolerance_m: float = 0.025,
 ) -> ConsolidationResult:
     """Merge overlapping same-type routes into shared trunk raceways.
 
     Collinear, overlapping route runs of one ``route_type`` (as reported by
     :func:`find_overlapping_route_runs`) become trunk ``Route`` records, and
     each member route keeps its unshared ends as branch ``Route`` records.
-    Every cut point is an existing centerline coordinate, so the pieces of a
-    split route sum back to its exact original length, and a conductor
-    re-pointed across its route's pieces in centerline order keeps its old
-    length exactly.
+    Aligned pieces preserve each conductor's exact original length. Near
+    centerlines within the 25 mm default tolerance share one trunk; small
+    connector pieces keep the geometry connected, and every adjustment and
+    length delta is recorded in provenance and the report.
 
     Trunks are sized to the largest member diameter; fill-based trade-size
     upsizing is out of scope here, and each trunk's attributes record its
@@ -511,6 +578,10 @@ def consolidate_bundled_routes(
                 shared_length_m=0.0,
                 double_counted_length_m=0.0,
                 within_route_repeated_length_m=0.0,
+                snap_adjustments=0,
+                snap_added_length_m=0.0,
+                snap_collapsed_length_m=0.0,
+                conductor_length_delta_m=0.0,
             ),
         )
 
@@ -520,23 +591,6 @@ def consolidate_bundled_routes(
     specs = _split_specs_at_reversals(
         _trunk_specs(runs, routes_by_id, tolerance_m), routes_by_id, tolerance_m,
     )
-    # A tolerance hit is evidence of possible sharing, not permission to move
-    # a branch endpoint. Without a connector in the source geometry, snapping
-    # offset centerlines would create a gap or alter conductor length.
-    for route in model.routes:
-        for portions in _segment_portions(route, specs, tolerance_m):
-            for spec, start, _ in portions:
-                if spec is None:
-                    continue
-                fixed = tuple(
-                    (start.x, start.y, start.z)[axis]
-                    for axis in range(3) if axis != spec.axis
-                )
-                if not _same_line(spec.fixed, fixed, 1e-6):
-                    raise RoutingError(
-                        "offset shared centerlines need an explicit connector "
-                        "before consolidation"
-                    )
     # The overlap report unions each route's own coverage. Account for a
     # member that traverses a shared physical stretch more than once.
     traversed: dict[int, float] = {id(spec): 0.0 for spec in specs}
@@ -557,10 +611,38 @@ def consolidate_bundled_routes(
     vertex_maps: dict[str, list[tuple[int, object]]] = {}
     cut_maps: dict[str, set[int]] = {}
     branch_pieces: list[_BranchPiece] = []
+    collapsed_by_route: dict[str, float] = {}
+    collapsed_by_spec: dict[int, list[dict]] = {}
     for route in sorted(model.routes, key=lambda item: item.id):
         pieces, vertex_owners, cut_vertices = _split_route(route, specs, tolerance_m)
         if all(kind == "branch" for kind, _ in pieces):
             continue  # touches no shared stretch: the route stays as it is
+        retained: list[tuple[str, object]] = []
+        for index, (kind, piece) in enumerate(pieces):
+            if kind != "branch" or _distance(piece.points[0], piece.points[-1]) > _VERTEX_EPSILON:
+                retained.append((kind, piece))
+                continue
+            piece_length = math.fsum(
+                _distance(a, b) for a, b in zip(piece.points, piece.points[1:])
+            )
+            if piece_length > 2 * tolerance_m + _VERTEX_EPSILON or route.fitting_ids:
+                raise RoutingError("a closed branch detour needs explicit fitting geometry")
+            original_length = piece_length - math.fsum(
+                adjustment["length_delta_m"] for adjustment in piece.adjustments
+            )
+            neighbor = next((value for label, value in pieces[index + 1:] if label == "trunk"), None)
+            if neighbor is None:
+                neighbor = next((value for label, value in reversed(pieces[:index]) if label == "trunk"), None)
+            if neighbor is None:
+                raise RoutingError("a closed branch detour has no shared neighbor")
+            collapsed_by_route[route.id] = collapsed_by_route.get(route.id, 0.0) + original_length
+            collapsed_by_spec.setdefault(id(neighbor), []).append({
+                "source_route_id": route.id,
+                "at_m": [piece.points[0].x, piece.points[0].y, piece.points[0].z],
+                "collapsed_detour_m": original_length,
+                "length_delta_m": -original_length,
+            })
+        pieces = retained
         piece_lists[route.id] = pieces
         vertex_maps[route.id] = vertex_owners
         cut_maps[route.id] = cut_vertices
@@ -572,6 +654,7 @@ def consolidate_bundled_routes(
     # Junction fittings are decided once all physical pieces are known.
     trunk_route_by_spec: dict[int, Route] = {}
     trunk_records: list[tuple[_TrunkSpec, Route]] = []
+    trunk_snap_count = 0
     for spec in specs:
         start = _axis_point(spec.axis, spec.fixed, spec.lo)
         end = _axis_point(spec.axis, spec.fixed, spec.hi)
@@ -582,6 +665,28 @@ def consolidate_bundled_routes(
             if member.nominal_diameter_m is not None
         ]
         diameter = max(diameters, default=None)
+        spec_adjustments: list[dict] = []
+        for member in members:
+            for portions in _segment_portions(member, [spec], tolerance_m):
+                for matched, original_start, original_end in portions:
+                    if matched is not spec:
+                        continue
+                    snapped_start = _axis_point(spec.axis, spec.fixed, _axis_coordinate(original_start, spec.axis))
+                    snapped_end = _axis_point(spec.axis, spec.fixed, _axis_coordinate(original_end, spec.axis))
+                    offset = max(_distance(original_start, snapped_start), _distance(original_end, snapped_end))
+                    if offset <= _VERTEX_EPSILON:
+                        continue
+                    spec_adjustments.append({
+                        "source_route_id": member.id,
+                        "from_start_m": [original_start.x, original_start.y, original_start.z],
+                        "from_end_m": [original_end.x, original_end.y, original_end.z],
+                        "to_start_m": [snapped_start.x, snapped_start.y, snapped_start.z],
+                        "to_end_m": [snapped_end.x, snapped_end.y, snapped_end.z],
+                        "transverse_offset_m": offset,
+                        "length_delta_m": 0.0,
+                    })
+        trunk_snap_count += len(spec_adjustments)
+        collapsed_adjustments = collapsed_by_spec.get(id(spec), [])
         trunk_id = stable_id(
             "route",
             "route-consolidation:"
@@ -596,7 +701,11 @@ def consolidate_bundled_routes(
             centerline=Polyline3D(points=(start, end)),
             nominal_diameter_m=diameter,
             confidence=confidence,
-            provenance=_derived_provenance(model_id, confidence, *members),
+            provenance=(
+                *_derived_provenance(model_id, confidence, *members),
+                *_snap_provenance(model_id, confidence, spec_adjustments),
+                *_snap_provenance(model_id, confidence, collapsed_adjustments),
+            ),
             attributes={
                 "consolidation": {
                     "member_route_ids": list(spec.members),
@@ -642,11 +751,15 @@ def consolidate_bundled_routes(
             centerline=Polyline3D(points=tuple(piece.points)),
             nominal_diameter_m=origin.nominal_diameter_m,
             confidence=origin.confidence,
-            provenance=_derived_provenance(model_id, origin.confidence, origin),
+            provenance=(
+                *_derived_provenance(model_id, origin.confidence, origin),
+                *_snap_provenance(model_id, origin.confidence, piece.adjustments),
+            ),
             attributes={
                 "consolidation": {
                     "source_route_id": piece.origin_id,
                     "piece_ordinal": piece.ordinal,
+                    "snap_adjustments": len(piece.adjustments),
                 },
             },
         )
@@ -891,6 +1004,11 @@ def consolidate_bundled_routes(
         circuits=circuits,
         conductors=conductors,
     )
+    snap_added = math.fsum(
+        adjustment["length_delta_m"]
+        for piece in branch_pieces for adjustment in piece.adjustments
+    )
+    snap_collapsed = math.fsum(collapsed_by_route.values())
     report = ConsolidationReport(
         routes_before=routes_before,
         routes_after=len(consolidated.routes),
@@ -903,18 +1021,42 @@ def consolidate_bundled_routes(
         fittings_after=len(consolidated.route_fittings),
         ports_added=len(junction_ports.added),
         shared_length_m=math.fsum(spec.hi - spec.lo for spec, _ in trunk_records),
-        double_counted_length_m=math.fsum(run.double_counted_length_m for run in runs) + within_route_repeated,
+        double_counted_length_m=(
+            math.fsum(run.double_counted_length_m for run in runs)
+            + within_route_repeated - snap_added + snap_collapsed
+        ),
         within_route_repeated_length_m=within_route_repeated,
+        snap_adjustments=(
+            trunk_snap_count
+            + sum(len(piece.adjustments) for piece in branch_pieces)
+            + sum(len(items) for items in collapsed_by_spec.values())
+        ),
+        snap_added_length_m=snap_added,
+        snap_collapsed_length_m=snap_collapsed,
+        conductor_length_delta_m=0.0,
     )
     # A valid canonical model can still carry a mistaken electrical traversal.
     # Refuse the result if any conductor length or the takeoff identity drifts.
     new_routes = {route.id: route for route in consolidated.routes}
     old_conductors = {conductor.id: conductor for conductor in model.conductors}
+    conductor_deltas: list[float] = []
     for conductor in consolidated.conductors:
         old_length = math.fsum(_route_length(routes_by_id[route_id]) for route_id in old_conductors[conductor.id].route_ids)
         new_length = math.fsum(_route_length(new_routes[route_id]) for route_id in conductor.route_ids)
-        if abs(old_length - new_length) > 1e-6 * max(1, len(old_conductors[conductor.id].route_ids)):
+        expected_delta = math.fsum(
+            adjustment["length_delta_m"]
+            for route_id in old_conductors[conductor.id].route_ids
+            for kind, piece in piece_lists.get(route_id, ())
+            if kind == "branch"
+            for adjustment in piece.adjustments
+        ) - math.fsum(
+            collapsed_by_route.get(route_id, 0.0)
+            for route_id in old_conductors[conductor.id].route_ids
+        )
+        if abs((new_length - old_length) - expected_delta) > 1e-6 * max(1, len(old_conductors[conductor.id].route_ids)):
             raise RoutingError(f"consolidation changed conductor length on {conductor.id}")
+        conductor_deltas.append(new_length - old_length)
+    report = replace(report, conductor_length_delta_m=math.fsum(conductor_deltas))
     old_total = math.fsum(_route_length(route) for route in model.routes)
     new_total = math.fsum(_route_length(route) for route in consolidated.routes)
     if abs(new_total - (old_total - report.double_counted_length_m)) > 1e-6 * max(1, len(model.routes)):

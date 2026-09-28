@@ -133,6 +133,7 @@ def acceptance_model() -> BuildingModel:
         _wiring(circuits, conductors, index, f"route:acc-{index}", panel_port.id, device_port.id)
     return BuildingModel(
         model_id="model:route-consolidation-acceptance",
+        name="Synthetic route consolidation acceptance model",
         electrical_equipment=(panel,),
         electrical_devices=tuple(devices),
         ports=tuple(ports),
@@ -383,6 +384,7 @@ def messy_model() -> BuildingModel:
         ))
     return BuildingModel(
         model_id="model:route-consolidation-messy",
+        name="Synthetic route consolidation messy model",
         electrical_equipment=(panel,),
         electrical_devices=devices,
         ports=tuple(ports),

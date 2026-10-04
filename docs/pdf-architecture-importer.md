@@ -258,3 +258,30 @@ reconciliation rules.
 The source-text layout support is intentionally bounded. Other datum symbols,
 label arrangements and cross-project vertical frames remain unresolved; the
 prepass does not treat every nearby dimension as an elevation.
+
+## Rotated native text (#246)
+
+Native text at orthogonal 0/90/180/270-degree baselines is grouped in its actual
+reading direction, using the glyph text matrix. Both clockwise and
+counterclockwise vertical captions and upside-down text retain their logical
+word order. Word and annotation spacing are measured along that baseline;
+separate columns and distant annotations still split. Emitted bounding boxes
+remain in the displayed, bottom-origin page frame.
+
+For vertical text, pdfplumber's displayed `size` can represent glyph advance
+rather than font height. The extractor uses the perpendicular displayed extent
+for grouping and font-size evidence, while retaining original space characters.
+It does not infer direction merely because a box is tall. Missing, diagonal or
+reflected direction metadata retains the previous observation path rather than
+inventing an orthogonal reading order.
+
+Unchanged horizontal observations retain their existing text/bbox-derived IDs.
+This repairs source observations only: a newly readable continuation caption
+or dimension does not by itself establish a registration transform. Cached
+observations must be re-extracted to exercise this change.
+
+The supported minimum is pdfplumber 0.11.10, verified against the complete
+engine suite. Although 0.11.3 introduced the required public
+`extract_words(return_chars=True)` API and passes the text-specific tests, its
+older curve and scaled-stroke observations fail existing geometry regressions.
+The dependency minimum therefore covers both text and geometry requirements.

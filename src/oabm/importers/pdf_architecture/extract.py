@@ -66,72 +66,188 @@ def _native_id(obj: dict[str, object], kind: str) -> str | None:
     return None
 
 
-def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ...]:
-    words = page.extract_words(  # type: ignore[attr-defined]
+def _char_quarter_turn(char: dict[str, object]) -> int | None:
+    """Supported displayed baseline direction; never infer it from a tall box."""
+    advance = char.get("adv")
+    if advance is not None:
+        try:
+            if not math.isfinite(float(advance)) or float(advance) < 0:
+                return None  # Negative text scaling is a reflection, not a rotation.
+        except (TypeError, ValueError):
+            return None
+    matrix = char.get("matrix")
+    if not isinstance(matrix, (tuple, list)) or len(matrix) < 4:
+        return None
+    try:
+        a, b, c, d = (float(value) for value in matrix[:4])
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (a, b, c, d)) or a * d - b * c <= 0:
+        return None
+    angle = math.atan2(b, a)
+    quarter = round(angle / (math.pi / 2))
+    if abs(angle - quarter * math.pi / 2) > 1e-5:
+        return None
+    return quarter % 4
+
+
+def _oriented_words(page: object) -> tuple[tuple[int, list[dict[str, object]]], ...]:
+    original = page.extract_words(  # type: ignore[attr-defined]
         use_text_flow=False,
         keep_blank_chars=False,
         extra_attrs=["size"],
+        return_chars=True,
     )
-    rows: list[list[dict[str, object]]] = []
-    for word in sorted(words, key=lambda item: (round(float(item["top"]), 1), float(item["x0"]))):
-        top = float(word["top"])
-        if not rows or abs(top - float(rows[-1][0]["top"])) > 2.5:
-            rows.append([word])
-        else:
-            rows[-1].append(word)
+    chars = getattr(page, "chars", None)
+    if not isinstance(chars, (list, tuple)) or not any(
+        _char_quarter_turn(c) in (1, 2, 3) for c in chars
+    ):
+        return ((0, original),)
 
+    legacy: list[dict[str, object]] = []
+    preserved_chars: set[int] = set()
+    rebuild_horizontal = False
+    for word in original:
+        members = word.get("chars")
+        if not isinstance(members, (list, tuple)) or not members:
+            legacy.append(word)
+            continue
+        directions = {_char_quarter_turn(char) for char in members}
+        if None in directions or not directions.intersection({1, 2, 3}):
+            legacy.append(word)
+            if None in directions:
+                preserved_chars.update(id(char) for char in members)
+        else:
+            # An upside-down run can share pdfplumber's `upright` group with
+            # normal text. Rebuild both components instead of losing a prefix.
+            rebuild_horizontal |= 0 in directions
+    if rebuild_horizontal:
+        legacy = [
+            word
+            for word in legacy
+            if not word.get("chars")
+            or any(_char_quarter_turn(char) is None for char in word["chars"])
+        ]
+
+    batches: list[tuple[int, list[dict[str, object]]]] = [(0, legacy)]
+    directions = {
+        0: ("ttb", "ltr"),
+        1: ("ltr", "btt"),
+        2: ("btt", "rtl"),
+        3: ("rtl", "ttb"),
+    }
+    for quarter in range(4):
+        if quarter == 0 and not rebuild_horizontal:
+            continue
+        selected: list[dict[str, object]] = []
+        for char in chars:
+            if id(char) in preserved_chars or _char_quarter_turn(char) != quarter:
+                continue
+            copied = dict(char)
+            if quarter in (1, 3):
+                # LTChar.size is the displayed vertical extent, hence glyph
+                # advance for vertical text. Its perpendicular extent is the
+                # rendered font height and does not split W/I into different
+                # style groups. Keep original spaces in the character stream.
+                size = float(char["x1"]) - float(char["x0"])
+                if not math.isfinite(size) or size <= 0:
+                    continue
+                copied["size"] = round(size, 6)
+            selected.append(copied)
+        if not selected:
+            continue
+        line_dir, char_dir = directions[quarter]
+        words = pdfplumber.utils.extract_words(
+            selected,
+            use_text_flow=False,
+            keep_blank_chars=False,
+            extra_attrs=["size"],
+            line_dir=line_dir,
+            char_dir=char_dir,
+            line_dir_rotated=line_dir,
+            char_dir_rotated=char_dir,
+        )
+        batches.append((quarter, words))
+    return tuple(batches)
+
+
+def _word_local_box(
+    word: dict[str, object], quarter: int, page_height: float
+) -> tuple[float, float, float, float]:
+    x0, x1 = float(word["x0"]), float(word["x1"])
+    top, bottom = float(word["top"]), float(word["bottom"])
+    if quarter == 0:
+        return x0, top, x1, bottom
+    y0, y1 = page_height - bottom, page_height - top
+    if quarter == 1:
+        return y0, x0, y1, x1
+    if quarter == 2:
+        return -x1, y0, -x0, y1
+    return -y1, -x1, -y0, -x0
+
+
+def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ...]:
     result: list[PdfTextObservation] = []
     page_height = float(page.height)  # type: ignore[attr-defined]
-    for row in rows:
-        row.sort(key=lambda item: float(item["x0"]))
-        groups: list[list[dict[str, object]]] = []
-        current: list[dict[str, object]] = []
-        for word in row:
-            if current:
-                previous = current[-1]
-                gap = float(word["x0"]) - float(previous["x1"])
-                previous_height = float(previous["bottom"]) - float(previous["top"])
-                word_height = float(word["bottom"]) - float(word["top"])
-                # PDF plans often place unrelated room labels, dimensions, and
-                # keynotes on the same text baseline.  Keep normal word spacing
-                # together, but do not merge widely separated annotations into
-                # one synthetic source observation.
-                split_gap = max(6.0, 1.5 * max(previous_height, word_height))
-                if gap > split_gap:
-                    groups.append(current)
-                    current = []
-            current.append(word)
-        if current:
-            groups.append(current)
+    for quarter, words in _oriented_words(page):
+        boxes = {
+            id(word): _word_local_box(word, quarter, page_height) for word in words
+        }
+        rows: list[list[dict[str, object]]] = []
+        for word in sorted(
+            words, key=lambda item: (round(boxes[id(item)][1], 1), boxes[id(item)][0])
+        ):
+            top = boxes[id(word)][1]
+            if not rows or abs(top - boxes[id(rows[-1][0])][1]) > 2.5:
+                rows.append([word])
+            else:
+                rows[-1].append(word)
 
-        for group in groups:
-            text = " ".join(str(item["text"]) for item in group).strip()
-            if not text:
-                continue
-            x0 = min(float(item["x0"]) for item in group)
-            x1 = max(float(item["x1"]) for item in group)
-            top = min(float(item["top"]) for item in group)
-            bottom = max(float(item["bottom"]) for item in group)
-            y0 = page_height - bottom
-            y1 = page_height - top
-            signature = f"{text}|{x0:.3f}|{y0:.3f}|{x1:.3f}|{y1:.3f}"
-            font_sizes: list[float] = []
-            for item in group:
-                value = item.get("size")
-                try:
-                    size = float(value)
-                except (TypeError, ValueError):
+        for row in rows:
+            row.sort(key=lambda item: boxes[id(item)][0])
+            groups: list[list[dict[str, object]]] = []
+            current: list[dict[str, object]] = []
+            for word in row:
+                if current:
+                    previous = boxes[id(current[-1])]
+                    box = boxes[id(word)]
+                    gap = box[0] - previous[2]
+                    split_gap = max(
+                        6.0, 1.5 * max(previous[3] - previous[1], box[3] - box[1])
+                    )
+                    if gap > split_gap:
+                        groups.append(current)
+                        current = []
+                current.append(word)
+            if current:
+                groups.append(current)
+
+            for group in groups:
+                text = " ".join(str(item["text"]) for item in group).strip()
+                if not text:
                     continue
-                if size > 0:
-                    font_sizes.append(size)
-            result.append(
-                PdfTextObservation(
-                    element_id=_element_id("text", page_number, signature),
-                    text=text,
-                    bbox_pt=(x0, y0, x1, y1),
-                    font_size_pt=median(font_sizes) if font_sizes else None,
+                x0 = min(float(item["x0"]) for item in group)
+                x1 = max(float(item["x1"]) for item in group)
+                top = min(float(item["top"]) for item in group)
+                bottom = max(float(item["bottom"]) for item in group)
+                y0, y1 = page_height - bottom, page_height - top
+                signature = f"{text}|{x0:.3f}|{y0:.3f}|{x1:.3f}|{y1:.3f}"
+                font_sizes: list[float] = []
+                for item in group:
+                    try:
+                        size = float(item.get("size"))
+                    except (TypeError, ValueError):
+                        continue
+                    if size > 0:
+                        font_sizes.append(size)
+                result.append(
+                    PdfTextObservation(
+                        element_id=_element_id("text", page_number, signature),
+                        text=text,
+                        bbox_pt=(x0, y0, x1, y1),
+                        font_size_pt=median(font_sizes) if font_sizes else None,
+                    )
                 )
-            )
     return tuple(result)
 
 

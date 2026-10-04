@@ -1,5 +1,7 @@
 """IFC4 / Bonsai interoperability for the canonical OABM model."""
 
+from .comparison import IFC_LINEAR_TOLERANCE_M, IFC_QUATERNION_TOLERANCE, round_trip_differences
+
 from .adapter import (
     ADAPTER_PSET,
     CANONICAL_PSET,
@@ -12,6 +14,9 @@ from .adapter import (
 )
 
 __all__ = [
+    "IFC_LINEAR_TOLERANCE_M",
+    "IFC_QUATERNION_TOLERANCE",
+    "round_trip_differences",
     "ADAPTER_PSET",
     "CANONICAL_PSET",
     "IFC_SCHEMA",

@@ -178,3 +178,53 @@ The rule is conservative: unresolved facts remain unresolved instead of being co
 ## Fixtures and tests
 
 `fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe, and its known-answer canonical model is checked in alongside it. `fixtures/pdf_architecture/v1/cad-export-scale-no-registration.pdf` is the #51 two-page CAD-style source-only fixture: both pages carry printed scale/level text, the second page has no registration cue, and an offset synthetic title block proves the geometry fallback does not anchor on title-block extents; it has no expected-output companion. `fixtures/pdf_architecture/v1/ordinary-vector-room.json` is a tiny synthetic observation fixture for the ordinary untagged line-loop family. `fixtures/pdf_architecture/v1/cad-derived-wall-faces.json` is a geometry-only, public-safe derivative for #44 with no native IDs or customer text; it is source input only, not an expected-output artifact. `fixtures/pdf_architecture/v1/cad-wall-primitive-families.pdf` is the #55 source-only geometry fixture: split collinear line runs, dashed lines, multi-segment polylines, and curve paths form one synthetic wall enclosure with no text or expected-output companion. `fixtures/pdf_architecture/v1/cad-export-geometry-plus-text.pdf` is the #45 geometry-plus-text source fixture. It contains the normalized CAD geometry plus synthetic numeric label and dimension/keynote/title-block distractors and has no expected-output companion. `fixtures/pdf_architecture/v1/dense-room-labels.pdf` is the #52 source-only fixture with three enclosures, adjacent number/name room labels, varied font sizes, dimensions, keynotes, leader tags, and ordinary text distractors; it has no expected-output companion. Tests also cover open/competing enclosures, extraction-order independence, arbitrary numeric/abbreviated room labels, close-score label ambiguity, ambiguous scale, missing height, explicit registration, inter-sheet registration, resolved pages that emit no geometry, stable identity, repeatability, and lane isolation. No customer plan set is used.
+
+## Concentric curved walls (#226)
+
+Visible stroked, pure cubic PDF paths are also retained as source curves. Adaptive
+De Casteljau subdivision requires both control points to lie within 0.1 drawing
+point of each finite chord, giving a convex-hull error bound; nonfinite or
+unbounded subdivision fails closed. The old line/chord observations are retained
+unchanged for existing consumers. These source observations do not change the
+canonical model contract.
+
+A curved wall requires two uniquely paired circular boundaries. Circle fitting
+must have radial spread at most 0.1 pt. Centers and angular endpoints must agree
+within the smaller of 0.2 pt and 5% of the face gap. The gap must fall inside the
+existing scale-backed minimum/maximum wall thickness, and both arcs must span at
+least 24 inches. Dashed, isolated, inconsistent, competing, near-straight and
+closed-circle evidence is refused with explicit `curved_wall_*` reason codes.
+Title-block and bounded legend geometry is excluded. Hidden-layer, classification,
+level, drawing-region, scale and registration rules still apply before promotion.
+
+The derived mean centerline is a canonical `Polyline3D`, sampled at maximum
+0.1 pt circular sag. Circle approximation and fitting error are separate from
+that chord bound; synthetic quarter-circle centerline checks bound total radial
+error by 0.15 pt (well below the issue's 2 pt ceiling). Both original curve IDs
+remain provenance. Height assumptions and frame confidence still cap confidence.
+Hatch strokes alone are never promoted: a bounded hatched band contributes the
+same supported boundary pair with or without its hatch. No closed room or space
+is inferred from an open arc pair.
+
+Accepted curved boundaries' old endpoint chords cannot become additional straight
+walls. A thickness-compatible straight face pair can use a coincident curved-wall
+endpoint as junction evidence. Repeated curved walls are compared along the full
+polyline; a straight chord with the same endpoints is not that wall. Opening
+annotations nearest a curved wall remain `curved_wall_opening_host_unresolved`
+until supported opening orientation and extent exist; they are never placed on
+an imaginary straight chord.
+
+The synthetic source-PDF regressions cover paired curves, bounded hatch, mixed
+joins, refused evidence, error bounds, provenance, deterministic order, rotation,
+translation, elevations and opening refusal. Private pilot validation is a separate
+acceptance gate and must not be inferred from these synthetic tests.
+
+CAD exporters may represent circular boundaries entirely as straight `l` segments.
+Open polygonal chains with at least five vertices use the same circle checks;
+they are retained only when each source chord stays within 1 pt of its fitted
+circle. Mixed/closed paths and non-circular chains are not silently reinterpreted.
+Their original segment IDs remain available to old consumers, but an accepted
+curved wall consumes those segments so they cannot become duplicate straight
+walls. A contained overprint of a matched arc band enriches the longer wall's
+boundary provenance instead of counting the same wall twice. Source sampling
+error is recorded separately from the derived centerline's 0.1 pt chord bound.

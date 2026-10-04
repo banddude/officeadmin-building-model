@@ -290,6 +290,10 @@ def split_drawing_regions(
             lines=lines,
             rects=rects,
             hidden_wall_source_present=page.hidden_wall_source_present,
+            curves=tuple(curve for curve in page.curves
+                         if all(_contains(scope, point) for point in curve.points_pt)
+                         and not any(_contains(box, point) for box in others
+                                     for point in curve.points_pt)),
         )
         regions.append(
             SourceDrawingRegion(

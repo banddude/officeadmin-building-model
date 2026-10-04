@@ -97,6 +97,27 @@ class PdfRectObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class PdfCurveObservation:
+    """One visible cubic source path, sampled in displayed bottom-origin points."""
+
+    element_id: str
+    points_pt: tuple[tuple[float, float], ...]
+    chord_endpoints: tuple[tuple[tuple[float, float], tuple[float, float]], ...] = ()
+    dashed: bool = False
+    source_layers: tuple[str, ...] = ()
+    max_chord_error_pt: float = 0.1
+    primitive_family: str = "curve"
+
+    def __post_init__(self) -> None:
+        if len(self.points_pt) < 3:
+            raise ValueError("a sampled curve requires at least three points")
+        for point in self.points_pt:
+            _point2(point, "curve point")
+        if not math.isfinite(self.max_chord_error_pt) or self.max_chord_error_pt <= 0:
+            raise ValueError("curve chord tolerance must be positive and finite")
+
+
+@dataclass(frozen=True, slots=True)
 class PdfPageObservation:
     page_number: int
     width_pt: float
@@ -105,6 +126,7 @@ class PdfPageObservation:
     lines: tuple[PdfLineObservation, ...] = ()
     rects: tuple[PdfRectObservation, ...] = ()
     hidden_wall_source_present: bool = False
+    curves: tuple[PdfCurveObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

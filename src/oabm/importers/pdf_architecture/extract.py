@@ -6,6 +6,7 @@ source observations.  Semantic interpretation remains in ``importer.py``.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import math
 import re
@@ -335,8 +336,40 @@ def _shx_annotation_texts(
     return tuple(result)
 
 
-def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple[PdfRectObservation, ...]:
-    seen: set[tuple[float, float, float, float, str | None]] = set()
+def _source_fill_grays(obj: dict[str, object]) -> tuple[float | None, ...]:
+    if not obj.get("fill", obj.get("_oabm_filled", False)):
+        return ()
+    try:
+        gray = _stroke_gray(obj.get("non_stroking_color"))
+    except (TypeError, ValueError):
+        gray = None
+    return (gray,)
+
+
+def _merge_fill_grays(*paints: tuple[float | None, ...]) -> tuple[float | None, ...]:
+    return tuple(
+        sorted(
+            {value for group in paints for value in group},
+            key=lambda value: -1 if value is None else value,
+        )
+    )
+
+
+def _source_stroke(obj: dict[str, object]) -> bool | None:
+    value = obj.get("stroke")
+    return value if isinstance(value, bool) else None
+
+
+def _merge_stroke_presence(first: bool | None, second: bool | None) -> bool | None:
+    if first is True or second is True:
+        return True
+    return False if first is False and second is False else None
+
+
+def _unique_rects(
+    rects: Iterable[dict[str, object]], page_number: int
+) -> tuple[PdfRectObservation, ...]:
+    seen: dict[tuple[float, float, float, float, str | None], int] = {}
     result: list[PdfRectObservation] = []
     for obj in rects:
         bbox = (
@@ -346,12 +379,25 @@ def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple
             round(float(obj["y1"]), 4),
         )
         layer_value = obj.get("_oabm_source_layer")
-        source_layer = layer_value if isinstance(layer_value, str) and layer_value else None
+        source_layer = (
+            layer_value if isinstance(layer_value, str) and layer_value else None
+        )
         # Identical outlines on different optional-content layers are distinct
         # source evidence and must not dedupe into one rectangle.
-        if (*bbox, source_layer) in seen or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
             continue
-        seen.add((*bbox, source_layer))
+        key = (*bbox, source_layer)
+        if key in seen:
+            prior = result[seen[key]]
+            result[seen[key]] = replace(
+                prior,
+                fill_grays=_merge_fill_grays(prior.fill_grays, _source_fill_grays(obj)),
+                stroke_present=_merge_stroke_presence(
+                    prior.stroke_present, _source_stroke(obj)
+                ),
+            )
+            continue
+        seen[key] = len(result)
         signature = "|".join(f"{value:.4f}" for value in bbox)
         if source_layer is not None:
             signature = f"{signature}|{source_layer}"
@@ -362,22 +408,29 @@ def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple
                 native_id=_native_id(obj, "rect"),
                 filled=bool(obj.get("fill", False)),
                 source_layer=source_layer,
+                fill_grays=_source_fill_grays(obj),
+                stroke_present=_source_stroke(obj),
             )
         )
-    return tuple(sorted(result, key=lambda item: (item.bbox_pt, item.source_layer or "")))
+    return tuple(
+        sorted(result, key=lambda item: (item.bbox_pt, item.source_layer or ""))
+    )
 
 
 def _wall_layer_rects(page: PdfPageObservation) -> tuple[PdfRectObservation, ...]:
     """Rectangles on a source layer already accepted as a wall layer."""
 
-    return tuple(sorted(
-        (
-            rect
-            for rect in page.rects
-            if rect.source_layer is not None and _is_wall_source_layer(rect.source_layer)
-        ),
-        key=lambda rect: (rect.bbox_pt, rect.element_id),
-    ))
+    return tuple(
+        sorted(
+            (
+                rect
+                for rect in page.rects
+                if rect.source_layer is not None
+                and _is_wall_source_layer(rect.source_layer)
+            ),
+            key=lambda rect: (rect.bbox_pt, rect.element_id),
+        )
+    )
 
 
 def _rect_edge_segments(
@@ -408,6 +461,8 @@ def _rect_edge_segments(
                     end_pt=end,
                     primitive_family="rect",
                     filled=rect.filled,
+                    fill_grays=rect.fill_grays,
+                    stroke_present=rect.stroke_present,
                     source_layers=(rect.source_layer,) if rect.source_layer else (),
                     line_width_pt=getattr(rect, "line_width_pt", None),
                     stroke_gray=getattr(rect, "stroke_gray", None),
@@ -503,10 +558,18 @@ def _merge_stroke(
     return (max(widths) if widths else None, min(grays) if grays else None)
 
 
-def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple[PdfLineObservation, ...]:
+def _unique_lines(
+    lines: Iterable[dict[str, object]], page_number: int
+) -> tuple[PdfLineObservation, ...]:
     evidence: dict[
         tuple[float, float, float, float],
-        tuple[dict[str, object], set[str], float | None, float | None],
+        tuple[
+            dict[str, object],
+            set[str],
+            tuple[float | None, float | None],
+            tuple[float | None, ...],
+            bool | None,
+        ],
     ] = {}
     for obj in lines:
         a = (round(float(obj["x0"]), 4), round(float(obj["y0"]), 4))
@@ -516,16 +579,41 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
         start, end = sorted((a, b))
         signature_tuple = (start[0], start[1], end[0], end[1])
         layer = obj.get("_oabm_source_layer")
-        stroke = (_line_width_pt(obj.get("linewidth")), _stroke_gray(obj.get("stroking_color")))
+        stroke = (
+            _line_width_pt(obj.get("linewidth")),
+            _stroke_gray(obj.get("stroking_color")),
+        )
         if signature_tuple in evidence:
-            kept_obj, source_layers, kept_stroke = evidence[signature_tuple]
+            kept_obj, source_layers, kept_stroke, kept_fill, kept_presence = evidence[
+                signature_tuple
+            ]
             if isinstance(layer, str) and layer:
                 source_layers.add(layer)
-            evidence[signature_tuple] = (kept_obj, source_layers, _merge_stroke(kept_stroke, stroke))
+            evidence[signature_tuple] = (
+                kept_obj,
+                source_layers,
+                _merge_stroke(kept_stroke, stroke),
+                _merge_fill_grays(
+                    kept_fill, obj.get("_oabm_fill_grays", _source_fill_grays(obj))
+                ),
+                _merge_stroke_presence(kept_presence, _source_stroke(obj)),
+            )
             continue
-        evidence[signature_tuple] = (obj, {layer} if isinstance(layer, str) and layer else set(), stroke)
+        evidence[signature_tuple] = (
+            obj,
+            {layer} if isinstance(layer, str) and layer else set(),
+            stroke,
+            obj.get("_oabm_fill_grays", _source_fill_grays(obj)),
+            _source_stroke(obj),
+        )
     result: list[PdfLineObservation] = []
-    for signature_tuple, (obj, source_layers, (line_width_pt, stroke_gray)) in evidence.items():
+    for signature_tuple, (
+        obj,
+        source_layers,
+        (line_width_pt, stroke_gray),
+        fill_grays,
+        stroke_present,
+    ) in evidence.items():
         start = (signature_tuple[0], signature_tuple[1])
         end = (signature_tuple[2], signature_tuple[3])
         signature = "|".join(f"{value:.4f}" for value in signature_tuple)
@@ -542,6 +630,8 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
                 source_layers=tuple(sorted(source_layers)),
                 line_width_pt=line_width_pt,
                 stroke_gray=stroke_gray,
+                fill_grays=fill_grays,
+                stroke_present=stroke_present,
             )
         )
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
@@ -601,6 +691,8 @@ def _curve_polyline_segments(
                 "_oabm_primitive_family": primitive_family,
                 "_oabm_dashed": dashed,
                 "_oabm_filled": filled,
+                "_oabm_fill_grays": _source_fill_grays(curve),
+                "stroke": _source_stroke(curve),
                 "_oabm_source_layer": curve.get("_oabm_source_layer"),
                 # Stroke style rides along so _unique_lines merges curve
                 # segments exactly like drawn lines.

@@ -304,3 +304,24 @@ is never counted as a successful corner/junction fill.
 
 This does not expand the permitted wall-source layers, promote arbitrary
 unlayered fills or establish a drawing's registration frame.
+
+## Fill paint and annotation masks (#252)
+
+Source line and rectangle observations retain `fill_grays`, the distinct
+non-stroking fill luminances seen on coincident paths, and `stroke_present`.
+These are source facts, separate from stroke gray. Unknown fill is represented
+by `None`; older observations with no paint data remain readable. Coincident
+paint is aggregated deterministically rather than taking the first path's fill
+color. Source geometry IDs do not change merely because paint evidence is added.
+
+Known white or conflicting fill-only outlines are excluded from wall-geometry
+views while the original source observations remain intact. A positively
+observed stroke is retained as independent outline evidence; white fill still
+never supplies poché material. This is not a general PDF paint-order/occlusion
+renderer.
+
+Unknown paint can retain the existing explicit-wall-layer behavior. It is not
+positive evidence for a new unlayered filled-wall inference: callers using that
+path must require known paint. The strip recognizer exposes
+`require_known_paint=True` for that purpose. Shape, scale, topology and layer
+rules still apply; known dark paint alone is not a wall classification.

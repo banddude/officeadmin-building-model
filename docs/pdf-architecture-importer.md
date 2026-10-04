@@ -218,3 +218,13 @@ The synthetic source-PDF regressions cover paired curves, bounded hatch, mixed
 joins, refused evidence, error bounds, provenance, deterministic order, rotation,
 translation, elevations and opening refusal. Private pilot validation is a separate
 acceptance gate and must not be inferred from these synthetic tests.
+
+CAD exporters may represent circular boundaries entirely as straight `l` segments.
+Open polygonal chains with at least five vertices use the same circle checks;
+they are retained only when each source chord stays within 1 pt of its fitted
+circle. Mixed/closed paths and non-circular chains are not silently reinterpreted.
+Their original segment IDs remain available to old consumers, but an accepted
+curved wall consumes those segments so they cannot become duplicate straight
+walls. A contained overprint of a matched arc band enriches the longer wall's
+boundary provenance instead of counting the same wall twice. Source sampling
+error is recorded separately from the derived centerline's 0.1 pt chord bound.

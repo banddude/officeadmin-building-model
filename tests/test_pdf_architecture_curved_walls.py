@@ -289,3 +289,67 @@ def test_duplicate_pdf_strokes_do_not_duplicate_walls(tmp_path):
     model = _import(path)
     assert len(model.walls) == 1
     assert len(model.walls[0].attributes["pdf_architecture"]["source_boundaries"]) == 2
+
+
+@pytest.mark.parametrize("segments", [16, 32, 64])
+def test_polygonal_cad_arcs_are_recognized_without_duplicate_segments(
+    tmp_path, segments
+):
+    path = _pdf(tmp_path / "wall.pdf")
+
+    def polygonal(text):
+        commands = text.splitlines()[:3]
+        for radius in (100, 106):
+            points = [
+                (
+                    200 + radius * math.cos(i * math.pi / (2 * segments)),
+                    200 + radius * math.sin(i * math.pi / (2 * segments)),
+                )
+                for i in range(segments + 1)
+            ]
+            commands.append(
+                " ".join(
+                    f"{x:.6f} {y:.6f} " + ("m" if i == 0 else "l")
+                    for i, (x, y) in enumerate(points)
+                )
+                + " S"
+            )
+        return "\n".join(commands)
+
+    _rewrite(path, polygonal)
+    model = _import(path)
+    assert len(model.walls) == 1
+    wall = model.walls[0]
+    mpp = 100 * 0.0254 / 72
+    assert len(wall.centerline.points) > 2
+    assert wall.thickness_m == pytest.approx(6 * mpp, abs=0.0001)
+    assert model.to_json() == _import(path).to_json()
+    assert not validate_model(model)
+
+
+def test_overprinted_partial_arc_pair_does_not_double_count_wall(tmp_path):
+    path = _pdf(tmp_path / "wall.pdf")
+
+    def overprint(text):
+        commands = [text]
+        for radius in (100, 106):
+            points = [
+                (
+                    200 + radius * math.cos(0.3 + i * 0.6 / 16),
+                    200 + radius * math.sin(0.3 + i * 0.6 / 16),
+                )
+                for i in range(17)
+            ]
+            commands.append(
+                " ".join(
+                    f"{x:.6f} {y:.6f} " + ("m" if i == 0 else "l")
+                    for i, (x, y) in enumerate(points)
+                )
+                + " S"
+            )
+        return "\n".join(commands)
+
+    _rewrite(path, overprint)
+    model = _import(path)
+    assert len(model.walls) == 1
+    assert len(model.walls[0].attributes["pdf_architecture"]["source_boundaries"]) == 4

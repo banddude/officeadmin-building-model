@@ -106,6 +106,7 @@ class PdfCurveObservation:
     dashed: bool = False
     source_layers: tuple[str, ...] = ()
     max_chord_error_pt: float = 0.1
+    primitive_family: str = "curve"
 
     def __post_init__(self) -> None:
         if len(self.points_pt) < 3:

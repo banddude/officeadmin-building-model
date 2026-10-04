@@ -5363,6 +5363,7 @@ def _curved_wall_entities(
             "recognition": "concentric_curved_wall_faces",
             "source_boundaries": sources,
             "max_chord_error_pt": 0.1,
+            "source_chord_error_pt": max(c.max_chord_error_pt for c in pair.boundaries),
             "circle_fit_radial_range_pt": 0.1,
             "closed_enclosure_proven": False,
         }
@@ -5397,7 +5398,7 @@ def _curved_wall_entities(
         )
         walls.append(_WallContext(wall, page.page_number, None, None))
         for line in page.lines:
-            if line.primitive_family == "curve" and any(
+            if line.primitive_family in {"curve", "polyline"} and any(
                 all(
                     math.dist(p, q) < 0.001
                     for p, q in zip(sorted((line.start_pt, line.end_pt)), sorted(chord))

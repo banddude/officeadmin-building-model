@@ -24,6 +24,7 @@ from oabm.importers.pdf_display import (
     page_display_transform,
 )
 
+from .curve_geometry import fit_circle
 from .types import (
     PdfCurveObservation,
     PdfDocumentObservation,
@@ -541,11 +542,12 @@ def _sample_curves(
         path = curve.get("path")
         if not isinstance(path, (tuple, list)) or not path:
             continue
-        # A mixed/closed path has additional semantics. Do not discard its
-        # edges to manufacture an apparently independent circular boundary.
-        if str(path[0][0]).lower() != "m" or any(
-            str(item[0]).lower() != "c" for item in path[1:]
-        ):
+        if str(path[0][0]).lower() != "m":
+            continue
+        operations = [str(item[0]).lower() for item in path[1:]]
+        cubic = bool(operations) and all(op == "c" for op in operations)
+        polyline = len(operations) >= 4 and all(op == "l" for op in operations)
+        if not cubic and not polyline:
             continue
         try:
             convert = lambda p: (float(p[0]), page_height - float(p[1]))
@@ -553,10 +555,16 @@ def _sample_curves(
             points = [start]
             chords = []
             for item in path[1:]:
-                b, c, d = (convert(p) for p in item[1:])
-                if not all(math.isfinite(v) for p in (start, b, c, d) for v in p):
-                    raise ValueError("nonfinite curve")
-                points.extend(sample(start, b, c, d)[1:])
+                if cubic:
+                    b, c, d = (convert(p) for p in item[1:])
+                    if not all(math.isfinite(v) for p in (start, b, c, d) for v in p):
+                        raise ValueError("nonfinite curve")
+                    points.extend(sample(start, b, c, d)[1:])
+                else:
+                    d = convert(item[1])
+                    if not all(math.isfinite(v) for v in d):
+                        raise ValueError("nonfinite polyline")
+                    points.append(d)
                 chords.append((start, d))
                 start = d
             if len(points) < 3:
@@ -571,14 +579,28 @@ def _sample_curves(
         key = (pts, _dash_present(curve.get("dash")))
         if key in result:
             layers = tuple(sorted(set(layers) | set(result[key].source_layers)))
-        result[key] = PdfCurveObservation(
+        observation = PdfCurveObservation(
             element_id=_element_id("curve", page_number, signature),
             points_pt=pts,
             chord_endpoints=tuple(chords),
             dashed=key[1],
             source_layers=layers,
-            max_chord_error_pt=tolerance,
+            max_chord_error_pt=tolerance if cubic else 1.0,
+            primitive_family="curve" if cubic else "polyline",
         )
+        if polyline:
+            # Polygonal CAD arcs already carry their sampling. Retain only
+            # genuinely circular chains, with bounded source chord sag.
+            circle = fit_circle(observation)
+            if circle is None:
+                continue
+            center, radius, _, _ = circle
+            if any(
+                abs(math.dist(mid(a, b), center) - radius) > 1.0
+                for a, b in zip(pts, pts[1:])
+            ):
+                continue
+        result[key] = observation
     return tuple(result[key] for key in sorted(result))
 
 

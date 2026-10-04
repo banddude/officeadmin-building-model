@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-import numpy as np
 
+from .curve_geometry import Circle, fit_circle as _circle
 from .extract import _is_wall_source_layer
 from .types import ImportOptions, PdfCurveObservation, PdfPageObservation
 
@@ -15,37 +15,7 @@ from .types import ImportOptions, PdfCurveObservation, PdfPageObservation
 class ArcPair:
     points_pt: tuple[tuple[float, float], ...]
     thickness_m: float
-    boundaries: tuple[PdfCurveObservation, PdfCurveObservation]
-
-
-# center, radius, counterclockwise start, sweep, all in source points/radians.
-Circle = tuple[tuple[float, float], float, float, float]
-
-
-def _circle(curve: PdfCurveObservation) -> Circle | None:
-    points = np.asarray(curve.points_pt, dtype=float)
-    origin = points.mean(axis=0)
-    local = points - origin
-    matrix = np.column_stack((2 * local[:, 0], 2 * local[:, 1], np.ones(len(local))))
-    solution, _, rank, _ = np.linalg.lstsq(
-        matrix, np.sum(local * local, axis=1), rcond=None
-    )
-    if rank != 3:
-        return None
-    center = solution[:2] + origin
-    distances = np.linalg.norm(points - center, axis=1)
-    radius = float(np.mean(distances))
-    if radius <= 0 or float(np.ptp(distances)) > 0.1:
-        return None
-    angles = np.unwrap(np.arctan2(points[:, 1] - center[1], points[:, 0] - center[0]))
-    if angles[-1] < angles[0]:
-        angles = angles[::-1]
-    sweep = float(angles[-1] - angles[0])
-    # Closed bubbles and tiny nearly straight arcs cannot establish a wall.
-    if not 0.1 <= sweep <= math.pi * 1.95 or np.any(np.diff(angles) < -1e-6):
-        return None
-    start = float(angles[0] % (2 * math.pi))
-    return (tuple(float(v) for v in center), radius, start, sweep)
+    boundaries: tuple[PdfCurveObservation, ...]
 
 
 def arc_pairs(
@@ -149,4 +119,42 @@ def arc_pairs(
         pairs.append(
             ArcPair(points, abs(a[1] - b[1]) * meters_per_point, (curve, other))
         )
-    return tuple(pairs), rejected
+    # CAD can overprint a shorter copy of an existing boundary. Its matched
+    # band is additional source evidence, not a second wall occupying it.
+    circles = [
+        (_circle(PdfCurveObservation("pair", pair.points_pt)), pair) for pair in pairs
+    ]
+    circles.sort(
+        key=lambda item: (
+            -item[0][3],
+            item[0][:3],
+            tuple(c.element_id for c in item[1].boundaries),
+        )
+    )
+    unique: list[tuple[Circle, ArcPair]] = []
+    for circle, pair in circles:
+        for index, (kept_circle, kept) in enumerate(unique):
+            relative_start = (circle[2] - kept_circle[2]) % (2 * math.pi)
+            if relative_start > 2 * math.pi - 0.001:
+                relative_start -= 2 * math.pi
+            if (
+                math.dist(circle[0], kept_circle[0]) <= 0.1
+                and abs(circle[1] - kept_circle[1]) <= 0.1
+                and abs(pair.thickness_m - kept.thickness_m) <= 0.1 * meters_per_point
+                and relative_start >= -0.001
+                and relative_start + circle[3] <= kept_circle[3] + 0.001
+            ):
+                boundaries = {
+                    c.element_id: c for c in (*kept.boundaries, *pair.boundaries)
+                }
+                unique[index] = (
+                    kept_circle,
+                    replace(
+                        kept,
+                        boundaries=tuple(boundaries[k] for k in sorted(boundaries)),
+                    ),
+                )
+                break
+        else:
+            unique.append((circle, pair))
+    return tuple(pair for _, pair in unique), rejected

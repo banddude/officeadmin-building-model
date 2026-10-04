@@ -15,6 +15,13 @@ def _point2(value: tuple[float, float], label: str) -> None:
         raise ValueError(f"{label} must contain two finite numbers")
 
 
+def _paint_evidence(grays: tuple[float | None, ...], stroke: bool | None) -> None:
+    if any(value is not None and (not math.isfinite(value) or not 0 <= value <= 1) for value in grays):
+        raise ValueError("fill grays must be finite values in [0, 1] or None")
+    if stroke is not None and not isinstance(stroke, bool):
+        raise ValueError("stroke presence must be boolean or unknown")
+
+
 @dataclass(frozen=True, slots=True)
 class PdfTextObservation:
     element_id: str
@@ -49,8 +56,13 @@ class PdfLineObservation:
     # observation-level groundwork only: no importer decision reads them yet.
     line_width_pt: float | None = None
     stroke_gray: float | None = None
+    # All observed fill paints on coincident source paths. None is unknown;
+    # an empty tuple preserves compatibility with older source observations.
+    fill_grays: tuple[float | None, ...] = ()
+    stroke_present: bool | None = None
 
     def __post_init__(self) -> None:
+        _paint_evidence(self.fill_grays, self.stroke_present)
         _point2(self.start_pt, "start_pt")
         _point2(self.end_pt, "end_pt")
         if self.start_pt == self.end_pt:
@@ -74,8 +86,11 @@ class PdfRectObservation:
     # Optional-content layer name when the source rectangle sits on one, so
     # wall-layer filtering can treat rectangles the way it treats lines.
     source_layer: str | None = None
+    fill_grays: tuple[float | None, ...] = ()
+    stroke_present: bool | None = None
 
     def __post_init__(self) -> None:
+        _paint_evidence(self.fill_grays, self.stroke_present)
         x0, y0, x1, y1 = self.bbox_pt
         if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in self.bbox_pt):
             raise ValueError("rectangle coordinates must be finite")
@@ -97,6 +112,27 @@ class PdfRectObservation:
 
 
 @dataclass(frozen=True, slots=True)
+class PdfCurveObservation:
+    """One visible cubic source path, sampled in displayed bottom-origin points."""
+
+    element_id: str
+    points_pt: tuple[tuple[float, float], ...]
+    chord_endpoints: tuple[tuple[tuple[float, float], tuple[float, float]], ...] = ()
+    dashed: bool = False
+    source_layers: tuple[str, ...] = ()
+    max_chord_error_pt: float = 0.1
+    primitive_family: str = "curve"
+
+    def __post_init__(self) -> None:
+        if len(self.points_pt) < 3:
+            raise ValueError("a sampled curve requires at least three points")
+        for point in self.points_pt:
+            _point2(point, "curve point")
+        if not math.isfinite(self.max_chord_error_pt) or self.max_chord_error_pt <= 0:
+            raise ValueError("curve chord tolerance must be positive and finite")
+
+
+@dataclass(frozen=True, slots=True)
 class PdfPageObservation:
     page_number: int
     width_pt: float
@@ -105,6 +141,7 @@ class PdfPageObservation:
     lines: tuple[PdfLineObservation, ...] = ()
     rects: tuple[PdfRectObservation, ...] = ()
     hidden_wall_source_present: bool = False
+    curves: tuple[PdfCurveObservation, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

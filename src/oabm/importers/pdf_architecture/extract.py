@@ -6,6 +6,7 @@ source observations.  Semantic interpretation remains in ``importer.py``.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import math
 import re
@@ -24,7 +25,9 @@ from oabm.importers.pdf_display import (
     page_display_transform,
 )
 
+from .curve_geometry import fit_circle
 from .types import (
+    PdfCurveObservation,
     PdfDocumentObservation,
     PdfLineObservation,
     PdfPageObservation,
@@ -64,72 +67,188 @@ def _native_id(obj: dict[str, object], kind: str) -> str | None:
     return None
 
 
-def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ...]:
-    words = page.extract_words(  # type: ignore[attr-defined]
+def _char_quarter_turn(char: dict[str, object]) -> int | None:
+    """Supported displayed baseline direction; never infer it from a tall box."""
+    advance = char.get("adv")
+    if advance is not None:
+        try:
+            if not math.isfinite(float(advance)) or float(advance) < 0:
+                return None  # Negative text scaling is a reflection, not a rotation.
+        except (TypeError, ValueError):
+            return None
+    matrix = char.get("matrix")
+    if not isinstance(matrix, (tuple, list)) or len(matrix) < 4:
+        return None
+    try:
+        a, b, c, d = (float(value) for value in matrix[:4])
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (a, b, c, d)) or a * d - b * c <= 0:
+        return None
+    angle = math.atan2(b, a)
+    quarter = round(angle / (math.pi / 2))
+    if abs(angle - quarter * math.pi / 2) > 1e-5:
+        return None
+    return quarter % 4
+
+
+def _oriented_words(page: object) -> tuple[tuple[int, list[dict[str, object]]], ...]:
+    original = page.extract_words(  # type: ignore[attr-defined]
         use_text_flow=False,
         keep_blank_chars=False,
         extra_attrs=["size"],
+        return_chars=True,
     )
-    rows: list[list[dict[str, object]]] = []
-    for word in sorted(words, key=lambda item: (round(float(item["top"]), 1), float(item["x0"]))):
-        top = float(word["top"])
-        if not rows or abs(top - float(rows[-1][0]["top"])) > 2.5:
-            rows.append([word])
-        else:
-            rows[-1].append(word)
+    chars = getattr(page, "chars", None)
+    if not isinstance(chars, (list, tuple)) or not any(
+        _char_quarter_turn(c) in (1, 2, 3) for c in chars
+    ):
+        return ((0, original),)
 
+    legacy: list[dict[str, object]] = []
+    preserved_chars: set[int] = set()
+    rebuild_horizontal = False
+    for word in original:
+        members = word.get("chars")
+        if not isinstance(members, (list, tuple)) or not members:
+            legacy.append(word)
+            continue
+        directions = {_char_quarter_turn(char) for char in members}
+        if None in directions or not directions.intersection({1, 2, 3}):
+            legacy.append(word)
+            if None in directions:
+                preserved_chars.update(id(char) for char in members)
+        else:
+            # An upside-down run can share pdfplumber's `upright` group with
+            # normal text. Rebuild both components instead of losing a prefix.
+            rebuild_horizontal |= 0 in directions
+    if rebuild_horizontal:
+        legacy = [
+            word
+            for word in legacy
+            if not word.get("chars")
+            or any(_char_quarter_turn(char) is None for char in word["chars"])
+        ]
+
+    batches: list[tuple[int, list[dict[str, object]]]] = [(0, legacy)]
+    directions = {
+        0: ("ttb", "ltr"),
+        1: ("ltr", "btt"),
+        2: ("btt", "rtl"),
+        3: ("rtl", "ttb"),
+    }
+    for quarter in range(4):
+        if quarter == 0 and not rebuild_horizontal:
+            continue
+        selected: list[dict[str, object]] = []
+        for char in chars:
+            if id(char) in preserved_chars or _char_quarter_turn(char) != quarter:
+                continue
+            copied = dict(char)
+            if quarter in (1, 3):
+                # LTChar.size is the displayed vertical extent, hence glyph
+                # advance for vertical text. Its perpendicular extent is the
+                # rendered font height and does not split W/I into different
+                # style groups. Keep original spaces in the character stream.
+                size = float(char["x1"]) - float(char["x0"])
+                if not math.isfinite(size) or size <= 0:
+                    continue
+                copied["size"] = round(size, 6)
+            selected.append(copied)
+        if not selected:
+            continue
+        line_dir, char_dir = directions[quarter]
+        words = pdfplumber.utils.extract_words(
+            selected,
+            use_text_flow=False,
+            keep_blank_chars=False,
+            extra_attrs=["size"],
+            line_dir=line_dir,
+            char_dir=char_dir,
+            line_dir_rotated=line_dir,
+            char_dir_rotated=char_dir,
+        )
+        batches.append((quarter, words))
+    return tuple(batches)
+
+
+def _word_local_box(
+    word: dict[str, object], quarter: int, page_height: float
+) -> tuple[float, float, float, float]:
+    x0, x1 = float(word["x0"]), float(word["x1"])
+    top, bottom = float(word["top"]), float(word["bottom"])
+    if quarter == 0:
+        return x0, top, x1, bottom
+    y0, y1 = page_height - bottom, page_height - top
+    if quarter == 1:
+        return y0, x0, y1, x1
+    if quarter == 2:
+        return -x1, y0, -x0, y1
+    return -y1, -x1, -y0, -x0
+
+
+def _group_words(page: object, page_number: int) -> tuple[PdfTextObservation, ...]:
     result: list[PdfTextObservation] = []
     page_height = float(page.height)  # type: ignore[attr-defined]
-    for row in rows:
-        row.sort(key=lambda item: float(item["x0"]))
-        groups: list[list[dict[str, object]]] = []
-        current: list[dict[str, object]] = []
-        for word in row:
-            if current:
-                previous = current[-1]
-                gap = float(word["x0"]) - float(previous["x1"])
-                previous_height = float(previous["bottom"]) - float(previous["top"])
-                word_height = float(word["bottom"]) - float(word["top"])
-                # PDF plans often place unrelated room labels, dimensions, and
-                # keynotes on the same text baseline.  Keep normal word spacing
-                # together, but do not merge widely separated annotations into
-                # one synthetic source observation.
-                split_gap = max(6.0, 1.5 * max(previous_height, word_height))
-                if gap > split_gap:
-                    groups.append(current)
-                    current = []
-            current.append(word)
-        if current:
-            groups.append(current)
+    for quarter, words in _oriented_words(page):
+        boxes = {
+            id(word): _word_local_box(word, quarter, page_height) for word in words
+        }
+        rows: list[list[dict[str, object]]] = []
+        for word in sorted(
+            words, key=lambda item: (round(boxes[id(item)][1], 1), boxes[id(item)][0])
+        ):
+            top = boxes[id(word)][1]
+            if not rows or abs(top - boxes[id(rows[-1][0])][1]) > 2.5:
+                rows.append([word])
+            else:
+                rows[-1].append(word)
 
-        for group in groups:
-            text = " ".join(str(item["text"]) for item in group).strip()
-            if not text:
-                continue
-            x0 = min(float(item["x0"]) for item in group)
-            x1 = max(float(item["x1"]) for item in group)
-            top = min(float(item["top"]) for item in group)
-            bottom = max(float(item["bottom"]) for item in group)
-            y0 = page_height - bottom
-            y1 = page_height - top
-            signature = f"{text}|{x0:.3f}|{y0:.3f}|{x1:.3f}|{y1:.3f}"
-            font_sizes: list[float] = []
-            for item in group:
-                value = item.get("size")
-                try:
-                    size = float(value)
-                except (TypeError, ValueError):
+        for row in rows:
+            row.sort(key=lambda item: boxes[id(item)][0])
+            groups: list[list[dict[str, object]]] = []
+            current: list[dict[str, object]] = []
+            for word in row:
+                if current:
+                    previous = boxes[id(current[-1])]
+                    box = boxes[id(word)]
+                    gap = box[0] - previous[2]
+                    split_gap = max(
+                        6.0, 1.5 * max(previous[3] - previous[1], box[3] - box[1])
+                    )
+                    if gap > split_gap:
+                        groups.append(current)
+                        current = []
+                current.append(word)
+            if current:
+                groups.append(current)
+
+            for group in groups:
+                text = " ".join(str(item["text"]) for item in group).strip()
+                if not text:
                     continue
-                if size > 0:
-                    font_sizes.append(size)
-            result.append(
-                PdfTextObservation(
-                    element_id=_element_id("text", page_number, signature),
-                    text=text,
-                    bbox_pt=(x0, y0, x1, y1),
-                    font_size_pt=median(font_sizes) if font_sizes else None,
+                x0 = min(float(item["x0"]) for item in group)
+                x1 = max(float(item["x1"]) for item in group)
+                top = min(float(item["top"]) for item in group)
+                bottom = max(float(item["bottom"]) for item in group)
+                y0, y1 = page_height - bottom, page_height - top
+                signature = f"{text}|{x0:.3f}|{y0:.3f}|{x1:.3f}|{y1:.3f}"
+                font_sizes: list[float] = []
+                for item in group:
+                    try:
+                        size = float(item.get("size"))
+                    except (TypeError, ValueError):
+                        continue
+                    if size > 0:
+                        font_sizes.append(size)
+                result.append(
+                    PdfTextObservation(
+                        element_id=_element_id("text", page_number, signature),
+                        text=text,
+                        bbox_pt=(x0, y0, x1, y1),
+                        font_size_pt=median(font_sizes) if font_sizes else None,
+                    )
                 )
-            )
     return tuple(result)
 
 
@@ -217,8 +336,40 @@ def _shx_annotation_texts(
     return tuple(result)
 
 
-def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple[PdfRectObservation, ...]:
-    seen: set[tuple[float, float, float, float, str | None]] = set()
+def _source_fill_grays(obj: dict[str, object]) -> tuple[float | None, ...]:
+    if not obj.get("fill", obj.get("_oabm_filled", False)):
+        return ()
+    try:
+        gray = _stroke_gray(obj.get("non_stroking_color"))
+    except (TypeError, ValueError):
+        gray = None
+    return (gray,)
+
+
+def _merge_fill_grays(*paints: tuple[float | None, ...]) -> tuple[float | None, ...]:
+    return tuple(
+        sorted(
+            {value for group in paints for value in group},
+            key=lambda value: -1 if value is None else value,
+        )
+    )
+
+
+def _source_stroke(obj: dict[str, object]) -> bool | None:
+    value = obj.get("stroke")
+    return value if isinstance(value, bool) else None
+
+
+def _merge_stroke_presence(first: bool | None, second: bool | None) -> bool | None:
+    if first is True or second is True:
+        return True
+    return False if first is False and second is False else None
+
+
+def _unique_rects(
+    rects: Iterable[dict[str, object]], page_number: int
+) -> tuple[PdfRectObservation, ...]:
+    seen: dict[tuple[float, float, float, float, str | None], int] = {}
     result: list[PdfRectObservation] = []
     for obj in rects:
         bbox = (
@@ -228,12 +379,25 @@ def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple
             round(float(obj["y1"]), 4),
         )
         layer_value = obj.get("_oabm_source_layer")
-        source_layer = layer_value if isinstance(layer_value, str) and layer_value else None
+        source_layer = (
+            layer_value if isinstance(layer_value, str) and layer_value else None
+        )
         # Identical outlines on different optional-content layers are distinct
         # source evidence and must not dedupe into one rectangle.
-        if (*bbox, source_layer) in seen or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
             continue
-        seen.add((*bbox, source_layer))
+        key = (*bbox, source_layer)
+        if key in seen:
+            prior = result[seen[key]]
+            result[seen[key]] = replace(
+                prior,
+                fill_grays=_merge_fill_grays(prior.fill_grays, _source_fill_grays(obj)),
+                stroke_present=_merge_stroke_presence(
+                    prior.stroke_present, _source_stroke(obj)
+                ),
+            )
+            continue
+        seen[key] = len(result)
         signature = "|".join(f"{value:.4f}" for value in bbox)
         if source_layer is not None:
             signature = f"{signature}|{source_layer}"
@@ -244,22 +408,29 @@ def _unique_rects(rects: Iterable[dict[str, object]], page_number: int) -> tuple
                 native_id=_native_id(obj, "rect"),
                 filled=bool(obj.get("fill", False)),
                 source_layer=source_layer,
+                fill_grays=_source_fill_grays(obj),
+                stroke_present=_source_stroke(obj),
             )
         )
-    return tuple(sorted(result, key=lambda item: (item.bbox_pt, item.source_layer or "")))
+    return tuple(
+        sorted(result, key=lambda item: (item.bbox_pt, item.source_layer or ""))
+    )
 
 
 def _wall_layer_rects(page: PdfPageObservation) -> tuple[PdfRectObservation, ...]:
     """Rectangles on a source layer already accepted as a wall layer."""
 
-    return tuple(sorted(
-        (
-            rect
-            for rect in page.rects
-            if rect.source_layer is not None and _is_wall_source_layer(rect.source_layer)
-        ),
-        key=lambda rect: (rect.bbox_pt, rect.element_id),
-    ))
+    return tuple(
+        sorted(
+            (
+                rect
+                for rect in page.rects
+                if rect.source_layer is not None
+                and _is_wall_source_layer(rect.source_layer)
+            ),
+            key=lambda rect: (rect.bbox_pt, rect.element_id),
+        )
+    )
 
 
 def _rect_edge_segments(
@@ -290,6 +461,8 @@ def _rect_edge_segments(
                     end_pt=end,
                     primitive_family="rect",
                     filled=rect.filled,
+                    fill_grays=rect.fill_grays,
+                    stroke_present=rect.stroke_present,
                     source_layers=(rect.source_layer,) if rect.source_layer else (),
                     line_width_pt=getattr(rect, "line_width_pt", None),
                     stroke_gray=getattr(rect, "stroke_gray", None),
@@ -385,10 +558,18 @@ def _merge_stroke(
     return (max(widths) if widths else None, min(grays) if grays else None)
 
 
-def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple[PdfLineObservation, ...]:
+def _unique_lines(
+    lines: Iterable[dict[str, object]], page_number: int
+) -> tuple[PdfLineObservation, ...]:
     evidence: dict[
         tuple[float, float, float, float],
-        tuple[dict[str, object], set[str], float | None, float | None],
+        tuple[
+            dict[str, object],
+            set[str],
+            tuple[float | None, float | None],
+            tuple[float | None, ...],
+            bool | None,
+        ],
     ] = {}
     for obj in lines:
         a = (round(float(obj["x0"]), 4), round(float(obj["y0"]), 4))
@@ -398,16 +579,41 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
         start, end = sorted((a, b))
         signature_tuple = (start[0], start[1], end[0], end[1])
         layer = obj.get("_oabm_source_layer")
-        stroke = (_line_width_pt(obj.get("linewidth")), _stroke_gray(obj.get("stroking_color")))
+        stroke = (
+            _line_width_pt(obj.get("linewidth")),
+            _stroke_gray(obj.get("stroking_color")),
+        )
         if signature_tuple in evidence:
-            kept_obj, source_layers, kept_stroke = evidence[signature_tuple]
+            kept_obj, source_layers, kept_stroke, kept_fill, kept_presence = evidence[
+                signature_tuple
+            ]
             if isinstance(layer, str) and layer:
                 source_layers.add(layer)
-            evidence[signature_tuple] = (kept_obj, source_layers, _merge_stroke(kept_stroke, stroke))
+            evidence[signature_tuple] = (
+                kept_obj,
+                source_layers,
+                _merge_stroke(kept_stroke, stroke),
+                _merge_fill_grays(
+                    kept_fill, obj.get("_oabm_fill_grays", _source_fill_grays(obj))
+                ),
+                _merge_stroke_presence(kept_presence, _source_stroke(obj)),
+            )
             continue
-        evidence[signature_tuple] = (obj, {layer} if isinstance(layer, str) and layer else set(), stroke)
+        evidence[signature_tuple] = (
+            obj,
+            {layer} if isinstance(layer, str) and layer else set(),
+            stroke,
+            obj.get("_oabm_fill_grays", _source_fill_grays(obj)),
+            _source_stroke(obj),
+        )
     result: list[PdfLineObservation] = []
-    for signature_tuple, (obj, source_layers, (line_width_pt, stroke_gray)) in evidence.items():
+    for signature_tuple, (
+        obj,
+        source_layers,
+        (line_width_pt, stroke_gray),
+        fill_grays,
+        stroke_present,
+    ) in evidence.items():
         start = (signature_tuple[0], signature_tuple[1])
         end = (signature_tuple[2], signature_tuple[3])
         signature = "|".join(f"{value:.4f}" for value in signature_tuple)
@@ -424,6 +630,8 @@ def _unique_lines(lines: Iterable[dict[str, object]], page_number: int) -> tuple
                 source_layers=tuple(sorted(source_layers)),
                 line_width_pt=line_width_pt,
                 stroke_gray=stroke_gray,
+                fill_grays=fill_grays,
+                stroke_present=stroke_present,
             )
         )
     return tuple(sorted(result, key=lambda item: (item.start_pt, item.end_pt)))
@@ -483,6 +691,8 @@ def _curve_polyline_segments(
                 "_oabm_primitive_family": primitive_family,
                 "_oabm_dashed": dashed,
                 "_oabm_filled": filled,
+                "_oabm_fill_grays": _source_fill_grays(curve),
+                "stroke": _source_stroke(curve),
                 "_oabm_source_layer": curve.get("_oabm_source_layer"),
                 # Stroke style rides along so _unique_lines merges curve
                 # segments exactly like drawn lines.
@@ -493,6 +703,113 @@ def _curve_polyline_segments(
                 segment["mcid"] = curve["mcid"]
             segments.append(segment)
     return tuple(segments)
+
+
+def _sample_curves(
+    curves: Iterable[dict[str, object]],
+    page_height: float,
+    page_number: int,
+) -> tuple[PdfCurveObservation, ...]:
+    """Flatten pure cubic subpaths by a convex-hull chord-error bound (0.1 pt).
+
+    Control points must be near the finite chord, not just its infinite line;
+    this rejects flat-looking backtracking. Depth exhaustion fails closed.
+    Legacy line observations remain byte-identical for existing consumers.
+    """
+    tolerance = 0.1
+
+    def distance(p, a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        denominator = dx * dx + dy * dy
+        t = (
+            max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / denominator))
+            if denominator
+            else 0.0
+        )
+        return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+    def mid(a, b):
+        return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+    def sample(a, b, c, d, depth=0):
+        if max(distance(b, a, d), distance(c, a, d)) <= tolerance:
+            return [a, d]
+        if depth >= 20:
+            raise ValueError("curve subdivision exhausted")
+        ab, bc, cd = mid(a, b), mid(b, c), mid(c, d)
+        abc, bcd = mid(ab, bc), mid(bc, cd)
+        center = mid(abc, bcd)
+        return sample(a, ab, abc, center, depth + 1)[:-1] + sample(
+            center, bcd, cd, d, depth + 1
+        )
+
+    result = {}
+    for curve in curves:
+        if not curve.get("stroke"):
+            continue
+        path = curve.get("path")
+        if not isinstance(path, (tuple, list)) or not path:
+            continue
+        if str(path[0][0]).lower() != "m":
+            continue
+        operations = [str(item[0]).lower() for item in path[1:]]
+        cubic = bool(operations) and all(op == "c" for op in operations)
+        polyline = len(operations) >= 4 and all(op == "l" for op in operations)
+        if not cubic and not polyline:
+            continue
+        try:
+            convert = lambda p: (float(p[0]), page_height - float(p[1]))
+            start = convert(path[0][1])
+            points = [start]
+            chords = []
+            for item in path[1:]:
+                if cubic:
+                    b, c, d = (convert(p) for p in item[1:])
+                    if not all(math.isfinite(v) for p in (start, b, c, d) for v in p):
+                        raise ValueError("nonfinite curve")
+                    points.extend(sample(start, b, c, d)[1:])
+                else:
+                    d = convert(item[1])
+                    if not all(math.isfinite(v) for v in d):
+                        raise ValueError("nonfinite polyline")
+                    points.append(d)
+                chords.append((start, d))
+                start = d
+            if len(points) < 3:
+                continue
+        except (ValueError, TypeError, IndexError):
+            continue
+        pts = tuple((round(x, 6), round(y, 6)) for x, y in points)
+        pts = min(pts, tuple(reversed(pts)))
+        signature = repr(pts)
+        layer = curve.get("_oabm_source_layer")
+        layers = (layer,) if isinstance(layer, str) and layer else ()
+        key = (pts, _dash_present(curve.get("dash")))
+        if key in result:
+            layers = tuple(sorted(set(layers) | set(result[key].source_layers)))
+        observation = PdfCurveObservation(
+            element_id=_element_id("curve", page_number, signature),
+            points_pt=pts,
+            chord_endpoints=tuple(chords),
+            dashed=key[1],
+            source_layers=layers,
+            max_chord_error_pt=tolerance if cubic else 1.0,
+            primitive_family="curve" if cubic else "polyline",
+        )
+        if polyline:
+            # Polygonal CAD arcs already carry their sampling. Retain only
+            # genuinely circular chains, with bounded source chord sag.
+            circle = fit_circle(observation)
+            if circle is None:
+                continue
+            center, radius, _, _ = circle
+            if any(
+                abs(math.dist(mid(a, b), center) - radius) > 1.0
+                for a, b in zip(pts, pts[1:])
+            ):
+                continue
+        result[key] = observation
+    return tuple(result[key] for key in sorted(result))
 
 
 def _reference_ids(value: object) -> set[int]:
@@ -676,6 +993,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                         index,
                     ),
                     rects=_unique_rects(page.rects, index),
+                    curves=_sample_curves(page.curves, float(page.height), index),
                     hidden_wall_source_present=hidden_wall_source_present,
                 )
             )

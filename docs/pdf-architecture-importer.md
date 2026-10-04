@@ -178,3 +178,150 @@ The rule is conservative: unresolved facts remain unresolved instead of being co
 ## Fixtures and tests
 
 `fixtures/pdf_architecture/v1/simple-floor-plan.pdf` is synthetic and public-safe, and its known-answer canonical model is checked in alongside it. `fixtures/pdf_architecture/v1/cad-export-scale-no-registration.pdf` is the #51 two-page CAD-style source-only fixture: both pages carry printed scale/level text, the second page has no registration cue, and an offset synthetic title block proves the geometry fallback does not anchor on title-block extents; it has no expected-output companion. `fixtures/pdf_architecture/v1/ordinary-vector-room.json` is a tiny synthetic observation fixture for the ordinary untagged line-loop family. `fixtures/pdf_architecture/v1/cad-derived-wall-faces.json` is a geometry-only, public-safe derivative for #44 with no native IDs or customer text; it is source input only, not an expected-output artifact. `fixtures/pdf_architecture/v1/cad-wall-primitive-families.pdf` is the #55 source-only geometry fixture: split collinear line runs, dashed lines, multi-segment polylines, and curve paths form one synthetic wall enclosure with no text or expected-output companion. `fixtures/pdf_architecture/v1/cad-export-geometry-plus-text.pdf` is the #45 geometry-plus-text source fixture. It contains the normalized CAD geometry plus synthetic numeric label and dimension/keynote/title-block distractors and has no expected-output companion. `fixtures/pdf_architecture/v1/dense-room-labels.pdf` is the #52 source-only fixture with three enclosures, adjacent number/name room labels, varied font sizes, dimensions, keynotes, leader tags, and ordinary text distractors; it has no expected-output companion. Tests also cover open/competing enclosures, extraction-order independence, arbitrary numeric/abbreviated room labels, close-score label ambiguity, ambiguous scale, missing height, explicit registration, inter-sheet registration, resolved pages that emit no geometry, stable identity, repeatability, and lane isolation. No customer plan set is used.
+
+## Concentric curved walls (#226)
+
+Visible stroked, pure cubic PDF paths are also retained as source curves. Adaptive
+De Casteljau subdivision requires both control points to lie within 0.1 drawing
+point of each finite chord, giving a convex-hull error bound; nonfinite or
+unbounded subdivision fails closed. The old line/chord observations are retained
+unchanged for existing consumers. These source observations do not change the
+canonical model contract.
+
+A curved wall requires two uniquely paired circular boundaries. Circle fitting
+must have radial spread at most 0.1 pt. Centers and angular endpoints must agree
+within the smaller of 0.2 pt and 5% of the face gap. The gap must fall inside the
+existing scale-backed minimum/maximum wall thickness, and both arcs must span at
+least 24 inches. Dashed, isolated, inconsistent, competing, near-straight and
+closed-circle evidence is refused with explicit `curved_wall_*` reason codes.
+Title-block and bounded legend geometry is excluded. Hidden-layer, classification,
+level, drawing-region, scale and registration rules still apply before promotion.
+
+The derived mean centerline is a canonical `Polyline3D`, sampled at maximum
+0.1 pt circular sag. Circle approximation and fitting error are separate from
+that chord bound; synthetic quarter-circle centerline checks bound total radial
+error by 0.15 pt (well below the issue's 2 pt ceiling). Both original curve IDs
+remain provenance. Height assumptions and frame confidence still cap confidence.
+Hatch strokes alone are never promoted: a bounded hatched band contributes the
+same supported boundary pair with or without its hatch. No closed room or space
+is inferred from an open arc pair.
+
+Accepted curved boundaries' old endpoint chords cannot become additional straight
+walls. A thickness-compatible straight face pair can use a coincident curved-wall
+endpoint as junction evidence. Repeated curved walls are compared along the full
+polyline; a straight chord with the same endpoints is not that wall. Opening
+annotations nearest a curved wall remain `curved_wall_opening_host_unresolved`
+until supported opening orientation and extent exist; they are never placed on
+an imaginary straight chord.
+
+The synthetic source-PDF regressions cover paired curves, bounded hatch, mixed
+joins, refused evidence, error bounds, provenance, deterministic order, rotation,
+translation, elevations and opening refusal. Private pilot validation is a separate
+acceptance gate and must not be inferred from these synthetic tests.
+
+CAD exporters may represent circular boundaries entirely as straight `l` segments.
+Open polygonal chains with at least five vertices use the same circle checks;
+they are retained only when each source chord stays within 1 pt of its fitted
+circle. Mixed/closed paths and non-circular chains are not silently reinterpreted.
+Their original segment IDs remain available to old consumers, but an accepted
+curved wall consumes those segments so they cannot become duplicate straight
+walls. A contained overprint of a matched arc band enriches the longer wall's
+boundary provenance instead of counting the same wall twice. Source sampling
+error is recorded separately from the derived centerline's 0.1 pt chord bound.
+
+## Printed building-section floor datums (#244)
+
+Before resolving plan levels, the importer reads a narrow class of explicit
+printed floor datums on pages titled `BUILDING SECTIONS` or `BUILDING ELEVATIONS`.
+An aligned text stack must identify `FINISHED FLOOR`, a named level, and a
+complete signed metric or imperial dimension. Nonzero elevations additionally
+need an unambiguous aligned finished-floor zero datum in the appropriate
+vertical direction. An unnamed zero identifies the reference only; it never
+assigns an observed elevation or identity to an otherwise unnamed plan level.
+
+The prepass does not promote section geometry to a floor plan or registration
+target. It only supplies elevation evidence to the matching named plan level.
+It does not derive wall/story height, remove assumed-height warnings, or bypass
+horizontal registration. Ceiling, soffit, parapet, AFF-relative, malformed and
+unbounded note text remain ineligible. Interior elevations are excluded because
+they can use independent room-local zeros.
+
+Agreeing observations retain all contributing source pages and element IDs in
+field-scoped elevation provenance. `VIF` / `VERIFY IN FIELD`, including a
+separate adjacent qualifier line, lowers confidence. Conflicting equally
+authoritative source elevations block the level rather than selecting a page.
+A recognized named floor with unreadable datum text or a missing zero reference
+cannot silently fall back to an assumed zero. Independently explicit plan
+height/elevation evidence and explicit caller overrides retain their existing
+reconciliation rules.
+
+The source-text layout support is intentionally bounded. Other datum symbols,
+label arrangements and cross-project vertical frames remain unresolved; the
+prepass does not treat every nearby dimension as an elevation.
+
+## Rotated native text (#246)
+
+Native text at orthogonal 0/90/180/270-degree baselines is grouped in its actual
+reading direction, using the glyph text matrix. Both clockwise and
+counterclockwise vertical captions and upside-down text retain their logical
+word order. Word and annotation spacing are measured along that baseline;
+separate columns and distant annotations still split. Emitted bounding boxes
+remain in the displayed, bottom-origin page frame.
+
+For vertical text, pdfplumber's displayed `size` can represent glyph advance
+rather than font height. The extractor uses the perpendicular displayed extent
+for grouping and font-size evidence, while retaining original space characters.
+It does not infer direction merely because a box is tall. Missing, diagonal or
+reflected direction metadata retains the previous observation path rather than
+inventing an orthogonal reading order.
+
+Unchanged horizontal observations retain their existing text/bbox-derived IDs.
+This repairs source observations only: a newly readable continuation caption
+or dimension does not by itself establish a registration transform. Cached
+observations must be re-extracted to exercise this change.
+
+The supported minimum is pdfplumber 0.11.10, verified against the complete
+engine suite. Although 0.11.3 introduced the required public
+`extract_words(return_chars=True)` API and passes the text-specific tests, its
+older curve and scaled-stroke observations fail existing geometry regressions.
+The dependency minimum therefore covers both text and geometry requirements.
+
+## Bounded wall-strip coordinate fitting (#250)
+
+Filled poché strips with tiny coordinate noise can be orthogonally fitted
+before the rectangular-band sweep. The fit retains edge adjacency and must
+remain a simple, non-collapsed polygon. The maximum displacement is bounded
+by both 0.1 displayed PDF point and 1 mm at the resolved scale. Original
+boundary endpoints are checked too, so earlier collinear preprocessing cannot
+hide a larger deviation in a newly fitted strip.
+
+Affected walls keep their original source IDs and carry an additional inferred
+provenance record, scoped to centerline and thickness, with maximum fitting
+error in points and metres. Exact strips use their existing geometry and
+provenance. Meaningful skew, invalid topology or an over-bound fit remains
+unresolved. A band sweep with no measured legs is explicitly unresolved; it
+is never counted as a successful corner/junction fill.
+
+This does not expand the permitted wall-source layers, promote arbitrary
+unlayered fills or establish a drawing's registration frame.
+
+## Fill paint and annotation masks (#252)
+
+Source line and rectangle observations retain `fill_grays`, the distinct
+non-stroking fill luminances seen on coincident paths, and `stroke_present`.
+These are source facts, separate from stroke gray. Unknown fill is represented
+by `None`; older observations with no paint data remain readable. Coincident
+paint is aggregated deterministically rather than taking the first path's fill
+color. Source geometry IDs do not change merely because paint evidence is added.
+
+Known white or conflicting fill-only outlines are excluded from wall-geometry
+views while the original source observations remain intact. A positively
+observed stroke is retained as independent outline evidence; white fill still
+never supplies poché material. This is not a general PDF paint-order/occlusion
+renderer.
+
+Unknown paint can retain the existing explicit-wall-layer behavior. It is not
+positive evidence for a new unlayered filled-wall inference: callers using that
+path must require known paint. The strip recognizer exposes
+`require_known_paint=True` for that purpose. Shape, scale, topology and layer
+rules still apply; known dark paint alone is not a wall classification.

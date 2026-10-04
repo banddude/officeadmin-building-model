@@ -60,7 +60,8 @@ def _model(*, door: bool = False) -> BuildingModel:
         size=Size3(x=0.2, y=0.2, z=2),
     ),) if door else ()
     return BuildingModel(
-        model_id="model:synthetic-design", levels=(level,), spaces=spaces,
+        model_id="model:synthetic-design", name="Synthetic electrical design",
+        levels=(level,), spaces=spaces,
         walls=walls, openings=openings, electrical_devices=devices,
     )
 

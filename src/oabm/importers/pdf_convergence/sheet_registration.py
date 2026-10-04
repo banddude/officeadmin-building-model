@@ -43,6 +43,7 @@ from oabm.importers.pdf_architecture import (
     sheet_wall_evidence,
 )
 from oabm.importers.pdf_architecture.extract import extract_pdf as extract_sheet_observations
+from oabm.importers.pdf_architecture.grid_rings import grid_ring_labels
 from oabm.importers.pdf_architecture.types import (
     PdfDocumentObservation,
     PdfPageObservation,
@@ -68,7 +69,6 @@ from oabm.model import DERIVATION_INFERRED, BuildingModel
 REGISTERED = "registered"
 REGISTRATION_PENDING = "registration_pending"
 
-_GRID_LABEL_CHARS = frozenset("ABCDEFGHJKLMNPQRSTUVWXYZ0123456789.")
 _METHOD_CONFIDENCE = {
     "wall_vectors_and_grid_labels": 0.95,
     "wall_vectors": 0.85,
@@ -253,63 +253,8 @@ def _grid_bubbles(
     page: PdfPageObservation,
     scope: tuple[float, float, float, float] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Short labels enclosed by a drawn ring; a label seen twice is dropped.
-
-    With ``scope``, only labels inside those extents count, so a grid repeated
-    on each drawing of a multi-drawing sheet stays usable for each drawing.
-    """
-
-    found: dict[str, list[tuple[float, float]]] = {}
-    cell = 40.0
-    near: dict[tuple[int, int], list[int]] = {}
-    for index, line in enumerate(page.lines):
-        keys = {
-            (math.floor(point[0] / cell), math.floor(point[1] / cell))
-            for point in (line.start_pt, line.end_pt)
-        }
-        for key in keys:
-            near.setdefault(key, []).append(index)
-    for text in page.texts:
-        label = text.text.strip().upper()
-        if not 1 <= len(label) <= 3 or not set(label) <= _GRID_LABEL_CHARS or label.startswith("."):
-            continue
-        center = text.center_pt
-        if scope is not None and not (
-            scope[0] <= center[0] <= scope[2] and scope[1] <= center[1] <= scope[3]
-        ):
-            continue
-        distances: list[float] = []
-        angles: list[float] = []
-        cx, cy = math.floor(center[0] / cell), math.floor(center[1] / cell)
-        indexes = sorted({
-            index
-            for dx in (-1, 0, 1)
-            for dy in (-1, 0, 1)
-            for index in near.get((cx + dx, cy + dy), ())
-        })
-        for line in (page.lines[index] for index in indexes):
-            ends = [math.dist(center, point) for point in (line.start_pt, line.end_pt)]
-            if not all(4.0 <= value <= 40.0 for value in ends):
-                continue
-            if abs(ends[0] - ends[1]) > 0.15 * max(ends):
-                continue
-            distances.extend(ends)
-            angles.extend(
-                math.atan2(point[1] - center[1], point[0] - center[0])
-                for point in (line.start_pt, line.end_pt)
-            )
-        if len(distances) < 6:
-            continue
-        radius = median(distances)
-        if any(abs(value - radius) > 0.15 * radius for value in distances):
-            continue
-        ordered = sorted(angle % (2.0 * math.pi) for angle in angles)
-        gaps = [second - first for first, second in zip(ordered, ordered[1:])]
-        gaps.append(ordered[0] + 2.0 * math.pi - ordered[-1])
-        if max(gaps) >= math.pi:
-            continue
-        found.setdefault(label, []).append(center)
-    return {label: points[0] for label, points in sorted(found.items()) if len(points) == 1}
+    """Source ring centers, independent of the label font's box offset."""
+    return grid_ring_labels(page, scope)
 
 
 def _match_grid(

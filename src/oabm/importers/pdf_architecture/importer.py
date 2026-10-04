@@ -37,6 +37,9 @@ from oabm.model import (
     stable_id,
 )
 
+from .fill_paint import wall_fill_paint, wall_geometry_page
+from .curved_walls import arc_pairs
+from .section_datums import section_floor_datums
 from .drawing_regions import (
     DrawingRegionSplit,
     RegionEvidence,
@@ -176,6 +179,7 @@ class _Measurement:
     # clears it, a default that wins keeps it) and so every entity that
     # inherits the height can restate it as scoped inferred provenance.
     assumed_default: bool = False
+    source_evidence: tuple[tuple[int, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +294,7 @@ class _PocheStripLeg:
     dashed: bool
     polygon_leg_count: int
     triangle_count: int = 0
+    orthogonal_fit_error_pt: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1473,6 +1478,77 @@ def _elevation_anchor(anchor: str, info: _LevelInfo) -> bool:
     return anchor != _anchor(_UNLABELED_LEVEL_NAME) or info.elevation.priority > 1
 
 
+def _section_level_elevations(
+    pages: tuple[PdfPageObservation, ...],
+    ambiguities: list[dict[str, object]],
+) -> tuple[dict[str, _Measurement], dict[str, str]]:
+    evidence: dict[str, _Measurement] = {}
+    conflicts: set[str] = set()
+    missing_reference: dict[str, str] = {}
+    for page in sorted(pages, key=lambda item: item.page_number):
+        datums, refused = section_floor_datums(page, _find_dimension)
+        ambiguities.extend(refused)
+        for item in refused:
+            missing_reference.setdefault(
+                _anchor(str(item["level_name"])), str(item["code"])
+            )
+        for datum in datums:
+            anchor = _anchor(datum.level_name)
+            candidate = _Measurement(
+                datum.elevation_m,
+                datum.confidence,
+                2,
+                "printed named section floor elevation with aligned finished-floor zero datum",
+                datum.page_number,
+                datum.dimension.text,
+                datum.dimension.element_id,
+                source_evidence=tuple(
+                    (datum.page_number, item.element_id, item.text)
+                    for item in datum.sources
+                ),
+            )
+            existing = evidence.get(anchor)
+            if existing is not None:
+                if not math.isclose(
+                    existing.value_m, candidate.value_m, rel_tol=1e-9, abs_tol=1e-6
+                ):
+                    conflicts.add(anchor)
+                    ambiguities.append(
+                        {
+                            "page": page.page_number,
+                            "code": "section_level_elevation_conflict",
+                            "level_anchor": anchor,
+                            "values_m": sorted((existing.value_m, candidate.value_m)),
+                            "source_element_ids": sorted(
+                                {
+                                    row[1]
+                                    for row in existing.source_evidence
+                                    + candidate.source_evidence
+                                }
+                            ),
+                        }
+                    )
+                    continue
+                candidate = replace(
+                    existing,
+                    confidence=min(existing.confidence, candidate.confidence),
+                    source_evidence=tuple(
+                        sorted(
+                            set(existing.source_evidence + candidate.source_evidence)
+                        )
+                    ),
+                )
+            evidence[anchor] = candidate
+    blocked = {
+        key: missing_reference[key]
+        for key in missing_reference.keys() - evidence.keys()
+    }
+    blocked.update({key: "section_level_elevation_conflict" for key in conflicts})
+    return {
+        key: value for key, value in evidence.items() if key not in conflicts
+    }, blocked
+
+
 def _resolve_level(
     page: PdfPageObservation,
     options: ImportOptions,
@@ -1481,6 +1557,8 @@ def _resolve_level(
     *,
     override: LevelOverride | None,
     require_drawing_level_name: bool = False,
+    section_elevations: dict[str, _Measurement] | None = None,
+    section_blocked: dict[str, str] | None = None,
 ) -> _LevelInfo | None:
     parsed_name, _, distinct_names = _level_name_evidence(page, override)
     if parsed_name is None and len(distinct_names) > 1:
@@ -1521,6 +1599,20 @@ def _resolve_level(
         return None
 
     parsed_elevation = _elevation_from_text(page)
+    section_elevation = (section_elevations or {}).get(anchor)
+    section_refusal = (section_blocked or {}).get(anchor)
+    if (
+        not override
+        and section_refusal
+        and (parsed_elevation is None or section_refusal == "section_level_elevation_conflict")
+    ):
+        ambiguities.append({
+            "page": page.page_number,
+            "code": "level_elevation_unresolved",
+            "level_anchor": anchor,
+            "detail": "section floor datum is conflicting or has no unambiguous zero reference",
+        })
+        return None
     elevation_candidate: _Measurement | None = None
     if override:
         elevation_candidate = _Measurement(
@@ -1540,6 +1632,8 @@ def _resolve_level(
             source_text=parsed_elevation[1].text,
             source_element_id=parsed_elevation[1].element_id,
         )
+    elif section_elevation is not None:
+        elevation_candidate = section_elevation
     elif existing is None:
         # The unlabeled placeholder only ever sits at the assumed local datum.
         # It is not an elevation a named level can be stated against, so the
@@ -1573,6 +1667,24 @@ def _resolve_level(
                 }
             )
             return None
+
+    if section_elevation is not None and parsed_elevation and not override:
+        assert elevation_candidate is not None
+        elevation_candidate, blocked = _reconcile_measurement(
+            elevation_candidate,
+            section_elevation,
+            anchor=anchor,
+            field="elevation",
+            ambiguities=ambiguities,
+        )
+        if blocked:
+            return None
+        elevation_candidate = replace(
+            elevation_candidate,
+            source_evidence=tuple(sorted(set(
+                elevation_candidate.source_evidence + section_elevation.source_evidence
+            ))),
+        )
 
     height_candidate: _Measurement | None = None
     if override and override.height_m is not None:
@@ -2677,7 +2789,6 @@ def _ordinary_vector_shell_candidates(
             }
         )
     return tuple(selected)
-
 
 
 def _provenance(
@@ -3879,6 +3990,8 @@ def _geometric_wall_face_pairs(
 ) -> tuple[_WallFacePair, ...]:
     """Pair wall faces from joined CAD runs, independent of PDF-native IDs."""
 
+    page = wall_geometry_page(page)
+
     diagnostics = diagnostics if diagnostics is not None else {}
     excluded_element_ids = excluded_element_ids or set()
     runs = _collinear_wall_face_runs(
@@ -4618,6 +4731,7 @@ def _join_collinear_poche_legs(
                 leg.polygon_leg_count + other.polygon_leg_count
             ),
             triangle_count=leg.triangle_count + other.triangle_count,
+            orthogonal_fit_error_pt=max(leg.orthogonal_fit_error_pt, other.orthogonal_fit_error_pt),
         )
     return tuple(joined)
 
@@ -4639,6 +4753,7 @@ def _poche_edge_key(
 
 def _triangulated_poche_pieces(
     lines: tuple[PdfLineObservation, ...],
+    *, require_known_paint: bool = False,
 ) -> tuple[
     list[_PocheTrianglePiece],
     dict[
@@ -4663,6 +4778,7 @@ def _triangulated_poche_pieces(
             line
             for line in lines
             if any(_is_wall_pattern_layer(layer) for layer in line.source_layers)
+            and wall_fill_paint(line.fill_grays, require_known=require_known_paint)
         ),
         key=lambda item: item.element_id,
     )
@@ -4877,6 +4993,64 @@ def _outline_is_one_simple_loop(
     return True
 
 
+def _orthogonal_poche_frame(
+    frame: list[tuple[float, float]],
+    meters_per_point: float,
+) -> tuple[list[tuple[float, float]], float] | None:
+    """Fit only tiny coordinate noise, bounded in paper and physical units.
+
+    Axis constraints come from adjacent edges, never global coordinate
+    clustering, which could erase a narrow notch or join separate boundaries.
+    """
+    count = len(frame)
+    edges = [
+        (frame[(i + 1) % count][0] - p[0], frame[(i + 1) % count][1] - p[1])
+        for i, p in enumerate(frame)
+    ]
+    if all(min(abs(dx), abs(dy)) <= _POCHE_VERTEX_TOLERANCE_PT for dx, dy in edges):
+        outline = tuple((frame[i], frame[(i + 1) % count]) for i in range(count))
+        if not _outline_is_one_simple_loop(outline):
+            return None
+        return frame, 0.0
+    parents = [list(range(count)), list(range(count))]
+
+    def find(axis: int, i: int) -> int:
+        while parents[axis][i] != i:
+            parents[axis][i] = parents[axis][parents[axis][i]]
+            i = parents[axis][i]
+        return i
+
+    for i, (dx, dy) in enumerate(edges):
+        length = math.hypot(dx, dy)
+        if length <= _POCHE_VERTEX_TOLERANCE_PT:
+            return None
+        if min(abs(dx), abs(dy)) > math.sin(_POCHE_RECTILINEAR_TOLERANCE_RAD) * length:
+            return None
+        # Vertical edges constrain x, horizontal edges constrain y.
+        axis = 0 if abs(dx) < abs(dy) else 1
+        a, b = find(axis, i), find(axis, (i + 1) % count)
+        parents[axis][max(a, b)] = min(a, b)
+    fitted = [list(p) for p in frame]
+    for axis in (0, 1):
+        groups: dict[int, list[int]] = {}
+        for i in range(count):
+            groups.setdefault(find(axis, i), []).append(i)
+        for members in groups.values():
+            coordinate = math.fsum(frame[i][axis] for i in members) / len(members)
+            for i in members:
+                fitted[i][axis] = coordinate
+    result = [(p[0], p[1]) for p in fitted]
+    error = max(math.dist(a, b) for a, b in zip(frame, result))
+    if error > min(0.1, 0.001 / meters_per_point):
+        return None
+    outline = tuple((result[i], result[(i + 1) % count]) for i in range(count))
+    if any(math.dist(a, b) <= _POCHE_VERTEX_TOLERANCE_PT for a, b in outline):
+        return None
+    if not _outline_is_one_simple_loop(outline):
+        return None
+    return result, error
+
+
 def _poche_strip_loop_legs(
     runs: list[_PocheEdgeRun],
     member_ids: tuple[str, ...],
@@ -4980,7 +5154,8 @@ def _poche_strip_loop_legs(
         span_y = ring[(index + 1) % corner_count][1] - ring[index][1]
         along = span_x * ux + span_y * uy
         across = span_x * nx + span_y * ny
-        if abs(along) > sin_tolerance and abs(across) > sin_tolerance:
+        angular_limit = sin_tolerance * math.hypot(span_x, span_y)
+        if abs(along) > angular_limit and abs(across) > angular_limit:
             rectilinear = False
             break
     if not rectilinear:
@@ -4998,9 +5173,53 @@ def _poche_strip_loop_legs(
         return [], 0
 
     frame = [
-        (point[0] * ux + point[1] * uy, point[0] * nx + point[1] * ny)
-        for point in ring
+        (point[0] * ux + point[1] * uy, point[0] * nx + point[1] * ny) for point in ring
     ]
+    fitted = _orthogonal_poche_frame(frame, transform.meters_per_point)
+    if fitted is None:
+        rejections.append(
+            {
+                "page": page_number,
+                "code": "poche_orthogonal_fit_unresolved",
+                "detail": "filled polygon cannot be orthogonally fitted within both 0.1 source point and 1 mm while preserving topology",
+            }
+        )
+        return [], 0
+    frame, orthogonal_fit_error_pt = fitted
+    if orthogonal_fit_error_pt:
+        # Earlier collinear merging must not hide a larger source-boundary
+        # deviation when a previously unresolved strip is newly fitted.
+        boundary_ids = {element_id for run in runs for element_id in run.element_ids}
+        fitted_edges = tuple(zip(frame, (*frame[1:], frame[0])))
+        for line in candidates:
+            if line.element_id not in boundary_ids:
+                continue
+            for x, y in (line.start_pt, line.end_pt):
+                point = (x * ux + y * uy, x * nx + y * ny)
+                distances = []
+                for a, b in fitted_edges:
+                    dx, dy = b[0] - a[0], b[1] - a[1]
+                    fraction = max(
+                        0.0,
+                        min(
+                            1.0,
+                            ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy)
+                            / (dx * dx + dy * dy),
+                        ),
+                    )
+                    distances.append(
+                        math.dist(point, (a[0] + fraction * dx, a[1] + fraction * dy))
+                    )
+                orthogonal_fit_error_pt = max(orthogonal_fit_error_pt, min(distances))
+        if orthogonal_fit_error_pt > min(0.1, 0.001 / transform.meters_per_point):
+            rejections.append(
+                {
+                    "page": page_number,
+                    "code": "poche_orthogonal_fit_unresolved",
+                    "detail": "original source boundary exceeds the bounded orthogonal fit tolerance",
+                }
+            )
+            return [], 0
     levels = sorted({round(point[1], 6) for point in frame})
     verticals = []
     for index in range(corner_count):
@@ -5090,11 +5309,12 @@ def _poche_strip_loop_legs(
                 dashed=member_dashed,
                 polygon_leg_count=0,
                 triangle_count=triangle_count,
+                orthogonal_fit_error_pt=orthogonal_fit_error_pt,
             )
         )
     if not polygon_legs:
         thickness_ceiling = options.max_wall_thickness_m + 1e-9
-        if all(
+        if measured_legs and all(
             span[0] <= thickness_ceiling and span[1] <= thickness_ceiling
             for span in measured_legs
         ):
@@ -5102,7 +5322,10 @@ def _poche_strip_loop_legs(
             # the wall-thickness ceiling, so the fill only marks a wall
             # junction and is counted in the diagnostics, not recorded.
             return [], 1
-        if saw_not_elongated:
+        if not measured_legs:
+            code = "poche_strip_sweep_unresolved"
+            detail = "filled polygon produced no closed orthogonal strip bands; it is not a proven junction fill"
+        elif saw_not_elongated:
             code = "poche_strip_not_elongated"
             detail = (
                 "a filled closed polygon on a wall layer has no elongated "
@@ -5125,10 +5348,7 @@ def _poche_strip_loop_legs(
         )
         return [], 0
     return (
-        [
-            replace(leg, polygon_leg_count=len(polygon_legs))
-            for leg in polygon_legs
-        ],
+        [replace(leg, polygon_leg_count=len(polygon_legs)) for leg in polygon_legs],
         0,
     )
 
@@ -5138,6 +5358,8 @@ def _poche_strip_polygons(
     transform: _Transform2D,
     options: ImportOptions,
     page_number: int,
+    *,
+    require_known_paint: bool = False,
 ) -> tuple[
     tuple[_PocheStripLeg, ...],
     list[dict[str, object]],
@@ -5176,7 +5398,9 @@ def _poche_strip_polygons(
     consumed: set[str] = set()
     junction_fill_count = 0
 
-    pieces, piece_observations = _triangulated_poche_pieces(lines)
+    pieces, piece_observations = _triangulated_poche_pieces(
+        lines, require_known_paint=require_known_paint
+    )
     piece_edge_ids: set[str] = set()
     for piece in pieces:
         for key in piece.edge_keys:
@@ -5259,6 +5483,7 @@ def _poche_strip_polygons(
         line
         for line in remaining
         if line.filled and line.primitive_family in {"polyline", "rect"}
+        and wall_fill_paint(line.fill_grays, require_known=require_known_paint)
     ]
     if candidates:
         runs = [
@@ -5381,6 +5606,99 @@ def _pair_ends_on_poche_leg(
     return False
 
 
+def _curved_wall_pairs(page, meters_per_point, options):
+    boxes, _ = _title_block_exclusion(page)
+    boxes = list(boxes)
+    for text in page.texts:
+        if re.search(
+            r"\b(?:LEGEND|WALL TYPES?|SYMBOLS?|RADIUS|DIAMETER)\b", text.text, re.I
+        ):
+            containing = [
+                rect.bbox_pt
+                for rect in page.rects
+                if _inside(rect.bbox_pt, text.center_pt)
+            ]
+            if containing:
+                boxes.append(min(containing, key=_bbox_area))
+            elif re.search(r"\b(?:RADIUS|DIAMETER)\b", text.text, re.I):
+                x, y = text.center_pt
+                boxes.append((x - 144, y - 144, x + 144, y + 144))
+    return arc_pairs(page, meters_per_point, options, boxes)
+
+
+def _curved_wall_entities(
+    page, transform, level, level_info, source_id, options, ambiguities
+):
+    if not page.curves or level.height_m is None or level_info.height is None:
+        return (), set()
+    anchor = _sheet_anchor(page)
+    if anchor is None:
+        return (), set()
+    pairs, rejections = _curved_wall_pairs(page, transform.meters_per_point, options)
+    ambiguities.extend(rejections)
+    walls = []
+    consumed = set()
+    for pair in pairs:
+        coordinates = tuple(transform.apply(point) for point in pair.points_pt)
+        coordinates = min(coordinates, tuple(reversed(coordinates)))
+        geometry = "|".join(f"{x:.4f},{y:.4f}" for x, y in coordinates)
+        sources = sorted({curve.element_id for curve in pair.boundaries})
+        confidence = min(
+            transform.confidence,
+            level_info.height_confidence or options.assumed_value_confidence,
+            0.65,
+        )
+        attributes = {
+            "recognition": "concentric_curved_wall_faces",
+            "source_boundaries": sources,
+            "max_chord_error_pt": 0.1,
+            "source_chord_error_pt": max(c.max_chord_error_pt for c in pair.boundaries),
+            "circle_fit_radial_range_pt": 0.1,
+            "closed_enclosure_proven": False,
+        }
+        wall = Wall(
+            id=stable_id(
+                "wall",
+                f"{source_id}|sheet:{anchor}|level:{level_info.anchor}|curved-wall:{geometry}",
+            ),
+            level_id=level.id,
+            centerline=Polyline3D(
+                points=tuple(
+                    Point3(x=x, y=y, z=level.elevation_m) for x, y in coordinates
+                )
+            ),
+            thickness_m=pair.thickness_m,
+            height_m=level.height_m,
+            confidence=confidence,
+            provenance=(
+                _provenance(
+                    source_id,
+                    page.page_number,
+                    method="centerline inferred from unique scale-backed concentric cubic boundaries",
+                    confidence=confidence,
+                    source_element_id="+".join(sources),
+                    attributes=attributes,
+                )
+                + _level_measurement_provenance(
+                    source_id, level_info.height, field="height_m"
+                )
+            ),
+            attributes={"pdf_architecture": attributes},
+        )
+        walls.append(_WallContext(wall, page.page_number, None, None))
+        for line in page.lines:
+            if line.primitive_family in {"curve", "polyline"} and any(
+                all(
+                    math.dist(p, q) < 0.001
+                    for p, q in zip(sorted((line.start_pt, line.end_pt)), sorted(chord))
+                )
+                for curve in pair.boundaries
+                for chord in curve.chord_endpoints
+            ):
+                consumed.add(line.element_id)
+    return tuple(walls), consumed
+
+
 def _geometric_wall_loop_entities(
     page: PdfPageObservation,
     transform: _Transform2D,
@@ -5394,6 +5712,7 @@ def _geometric_wall_loop_entities(
     excluded_element_ids: set[str] | None = None,
     allow_partial_faces: bool = True,
     sheet_anchor: str | None = None,
+    curved_contexts: tuple[_WallContext, ...] = (),
 ) -> tuple[
     tuple[_WallContext, ...],
     tuple[Space, ...],
@@ -5568,12 +5887,23 @@ def _geometric_wall_loop_entities(
         if not pairs[index].junction_supported
         and _pair_ends_on_poche_leg(pairs[index], poche_legs, transform)
     }
+    curve_junction_pair_indexes = {
+        index for index in partial_pair_indexes
+        if any(
+            abs(pairs[index].thickness_m - context.wall.thickness_m) <= .01
+            and any(math.dist(transform.apply(point), (end.x,end.y)) <= .01
+                    for point in (pairs[index].start_pt,pairs[index].end_pt)
+                    for end in (context.wall.centerline.points[0],context.wall.centerline.points[-1]))
+            for context in curved_contexts
+        )
+    }
     no_junction_partial_pair_indexes = {
         index
         for index in partial_pair_indexes
         if index not in short_partial_pair_indexes
         and not pairs[index].junction_supported
         and index not in poche_junction_pair_indexes
+        and index not in curve_junction_pair_indexes
     }
     evidence_supported_partial_pair_indexes = (
         partial_pair_indexes
@@ -5666,10 +5996,12 @@ def _geometric_wall_loop_entities(
             )
         pair_junction_supported = (
             pair.junction_supported or index in poche_junction_pair_indexes
+            or index in curve_junction_pair_indexes
         )
         junction_source_attributes = (
             {"junction_source": "poche_leg"}
             if index in poche_junction_pair_indexes
+            else {"junction_source": "curved_wall"} if index in curve_junction_pair_indexes
             else {}
         )
 
@@ -5779,6 +6111,32 @@ def _geometric_wall_loop_entities(
                 "faces; the closed strip polygon was split into "
                 "rectangular legs at its corners"
             )
+        fit_attributes = (
+            {
+                "orthogonal_fit_max_error_pt": leg.orthogonal_fit_error_pt,
+                "orthogonal_fit_max_error_m": leg.orthogonal_fit_error_pt
+                * transform.meters_per_point,
+            }
+            if leg.orthogonal_fit_error_pt
+            else {}
+        )
+        fit_provenance = (
+            (
+                Provenance(
+                    source_kind="architectural_pdf",
+                    source_id=source_id,
+                    source_element_id="+".join(leg.element_ids),
+                    page=page.page_number,
+                    method="bounded orthogonal fit of source wall-strip coordinates",
+                    confidence=wall_confidence,
+                    derivation=DERIVATION_INFERRED,
+                    scope_paths=("centerline", "thickness_m"),
+                    attributes=fit_attributes,
+                ),
+            )
+            if fit_attributes
+            else ()
+        )
         wall = Wall(
             id=wall_id,
             level_id=level.id,
@@ -5809,8 +6167,10 @@ def _geometric_wall_loop_entities(
                         "poche_leg_count": leg.polygon_leg_count,
                         "poche_leg_length_m": round(leg.length_m, 6),
                         "poche_triangle_count": leg.triangle_count,
+                        **fit_attributes,
                     },
                 )
+                + fit_provenance
                 + _level_measurement_provenance(
                     source_id,
                     level_info.height,
@@ -5830,6 +6190,7 @@ def _geometric_wall_loop_entities(
                     "poche_leg_count": leg.polygon_leg_count,
                     "poche_leg_length_m": round(leg.length_m, 6),
                     "poche_triangle_count": leg.triangle_count,
+                    **fit_attributes,
                 }
             },
         )
@@ -5988,6 +6349,7 @@ def _geometric_wall_loop_entities(
         diagnostics,
     )
 
+
 def _distance_to_segment(
     point: tuple[float, float],
     start: Point3,
@@ -6061,7 +6423,10 @@ def _make_openings(
         nearest: tuple[float, tuple[float, float], _WallContext] | None = None
         for context in wall_contexts:
             points = context.wall.centerline.points
-            distance, projection, _ = _distance_to_segment(source_center, points[0], points[-1])
+            distance, projection, _ = min(
+                (_distance_to_segment(source_center, a, b) for a,b in zip(points,points[1:])),
+                key=lambda item: item[0],
+            )
             candidate = (distance, projection, context)
             if nearest is None or (candidate[0], context.wall.id) < (nearest[0], nearest[2].wall.id):
                 nearest = candidate
@@ -6076,6 +6441,14 @@ def _make_openings(
             continue
         _, projection, context = nearest
         wall = context.wall
+        if len(wall.centerline.points) > 2:
+            ambiguities.append({
+                "page": page.page_number,
+                "code": "curved_wall_opening_host_unresolved",
+                "detail": "a curved host needs supported opening orientation and extent; no chord-based opening was invented",
+                "source_element_ids": [observation.element_id],
+            })
+            continue
         wall_start, wall_end = wall.centerline.points[0], wall.centerline.points[-1]
         wall_length = math.hypot(wall_end.x - wall_start.x, wall_end.y - wall_start.y)
         if width_m > wall_length + 1e-6:
@@ -6363,6 +6736,10 @@ def _drawing_region_evidence(
             if key not in known:
                 evidence.append(item)
                 known.add(key)
+    curved_pairs, _ = _curved_wall_pairs(page, meters_per_point, options)
+    for pair in curved_pairs:
+        sources = tuple(sorted(curve.element_id for curve in pair.boundaries))
+        evidence.extend(RegionEvidence(a,b,sources) for a,b in zip(pair.points_pt,pair.points_pt[1:]))
     return "paired_wall_faces", tuple(evidence)
 
 
@@ -6561,6 +6938,8 @@ def sheet_wall_evidence(
     so a layered sheet can be compared with a flattened one on equal terms.
     """
 
+    page = wall_geometry_page(page)
+
     options = options or ImportOptions()
     if meters_per_point is None:
         meters_per_point = _region_detection_scale(page, options)
@@ -6611,6 +6990,8 @@ def region_wall_evidence(
     use_wall_layers: bool = True,
 ) -> tuple[str, tuple[RegionEvidence, ...]]:
     """Wall evidence lying inside one resolved drawing region's source extents."""
+
+    page = wall_geometry_page(page)
 
     options = options or ImportOptions()
     _, title_line_ids = _title_block_exclusion(page)
@@ -6918,6 +7299,25 @@ def _level_measurement_provenance(
         source_element_id=measurement.source_element_id,
         attributes=attributes,
     )
+    if measurement.source_evidence:
+        records = tuple(replace(record, scope_paths=(field,)) for record in records)
+        for page, element_id, text in measurement.source_evidence:
+            if (
+                page == measurement.page_number
+                and element_id == measurement.source_element_id
+            ):
+                continue
+            records += tuple(
+                replace(record, scope_paths=(field,))
+                for record in _provenance(
+                    source_id,
+                    page,
+                    method="component of bounded section floor datum evidence",
+                    confidence=measurement.confidence,
+                    source_element_id=element_id,
+                    attributes={"field": field, "source_text": text},
+                )
+            )
     if field == "height_m" and measurement.assumed_default:
         records += (_assumed_level_height_provenance(source_id, measurement),)
     return records
@@ -6987,6 +7387,13 @@ def _wall_repeats(
 
     if candidate.level_id != emitted.level_id:
         return None
+    if len(candidate.centerline.points) > 2 or len(emitted.centerline.points) > 2:
+        a, b = candidate.centerline.points, emitted.centerline.points
+        if len(a) != len(b):
+            return None
+        gap = min(max(math.dist((p.x,p.y,p.z),(q.x,q.y,q.z)) for p,q in zip(a,order))
+                  for order in (b,tuple(reversed(b))))
+        return gap if gap <= tolerance_m else None
     a0, a1 = emitted.centerline.points[0], emitted.centerline.points[-1]
     b0, b1 = candidate.centerline.points[0], candidate.centerline.points[-1]
     length = math.hypot(a1.x - a0.x, a1.y - a0.y)
@@ -7187,8 +7594,14 @@ def import_observations(
     ambiguities: list[dict[str, object]] = []
     page_metadata: list[dict[str, object]] = []
     level_info_by_anchor: dict[str, _LevelInfo] = {}
-    ordered_pages = tuple(sorted(document.pages, key=lambda item: item.page_number))
+    ordered_pages = tuple(
+        wall_geometry_page(page)
+        for page in sorted(document.pages, key=lambda item: item.page_number)
+    )
     classifications = {page.page_number: classify_page(page) for page in ordered_pages}
+    section_elevations, section_blocked = _section_level_elevations(
+        ordered_pages, ambiguities
+    )
 
     # Split every architectural sheet into its separately drawn plans first.
     # A sheet with one drawing stays whole and keeps page-level behavior.
@@ -7219,6 +7632,8 @@ def import_observations(
                 ambiguities,
                 override=region.level_hint,
                 require_drawing_level_name=sheet.multiple,
+                section_elevations=section_elevations,
+                section_blocked=section_blocked,
             )
             _tag_region_ambiguities(ambiguities, start, region)
             if level_info is None:
@@ -7566,6 +7981,11 @@ def import_observations(
             if boundary.source_kind == "ordinary_vector_line_loop"
             for source_element_id in boundary.source_element_ids
         }
+        curved_walls, consumed_curve_ids = _curved_wall_entities(
+            region_page, transform, level, level_info, document.source_id, options, ambiguities,
+        )
+        consumed_vector_line_ids |= consumed_curve_ids
+        page_walls.extend(curved_walls)
         blocking_enclosure_codes = {
             "duplicate_room_label",
             "ordinary_vector_enclosure_ambiguous",
@@ -7600,6 +8020,7 @@ def import_observations(
                 excluded_element_ids=consumed_vector_line_ids,
                 allow_partial_faces=not legacy_single_loop_partial_guard,
                 sheet_anchor=_sheet_anchor(page),
+                curved_contexts=curved_walls,
             )
             resolved_geometric_label_anchors = {
                 space.attributes["pdf_architecture"].get("label_anchor")
@@ -7618,6 +8039,9 @@ def import_observations(
 
         def wall_geometry_key(context: _WallContext) -> tuple[object, ...]:
             points = context.wall.centerline.points
+            if len(points) > 2:
+                return ("curve", tuple((round(p.x,4),round(p.y,4)) for p in points),
+                        round(context.wall.thickness_m,4))
             return _wall_geometry_key(
                 (points[0].x, points[0].y),
                 (points[-1].x, points[-1].y),

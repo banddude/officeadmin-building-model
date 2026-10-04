@@ -295,3 +295,20 @@ placed by supplied page and per-drawing transforms, and
 `PdfPageTransform` as `DrawingRegionTransform.to_attributes()`.
 `page_transforms_supplied` records that the caller supplied transforms even
 when the per-drawing assignment later fell back to best effort.
+
+### Ring geometry and font offsets (#248)
+
+Grid-bubble observations use the enclosing ring's geometric center, rather
+than assuming the font bounding-box center is the ring center. The source
+helper extracts closed non-branching endpoint cycles after pruning dangling
+leaders, checks circularity and containment, and refuses competing rings or
+repeated labels in the selected drawing scope. Four cubic cardinal endpoints
+are supported; straight polygon rings require at least eight vertices so a
+square box is not promoted to a circle. Open, filled, dashed, elliptical and
+branching outlines are not accepted.
+
+This changes source evidence only. Existing scale, span, mirror, competing
+target and wall/grid consistency checks still govern registration. A short
+label inside a ring is not by itself proof of a structural grid axis, and ring
+centers must not be used to align disjoint architectural drawings whose labels
+can sit at different positions along the same axis.

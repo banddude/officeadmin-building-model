@@ -228,3 +228,33 @@ curved wall consumes those segments so they cannot become duplicate straight
 walls. A contained overprint of a matched arc band enriches the longer wall's
 boundary provenance instead of counting the same wall twice. Source sampling
 error is recorded separately from the derived centerline's 0.1 pt chord bound.
+
+## Printed building-section floor datums (#244)
+
+Before resolving plan levels, the importer reads a narrow class of explicit
+printed floor datums on pages titled `BUILDING SECTIONS` or `BUILDING ELEVATIONS`.
+An aligned text stack must identify `FINISHED FLOOR`, a named level, and a
+complete signed metric or imperial dimension. Nonzero elevations additionally
+need an unambiguous aligned finished-floor zero datum in the appropriate
+vertical direction. An unnamed zero identifies the reference only; it never
+assigns an observed elevation or identity to an otherwise unnamed plan level.
+
+The prepass does not promote section geometry to a floor plan or registration
+target. It only supplies elevation evidence to the matching named plan level.
+It does not derive wall/story height, remove assumed-height warnings, or bypass
+horizontal registration. Ceiling, soffit, parapet, AFF-relative, malformed and
+unbounded note text remain ineligible. Interior elevations are excluded because
+they can use independent room-local zeros.
+
+Agreeing observations retain all contributing source pages and element IDs in
+field-scoped elevation provenance. `VIF` / `VERIFY IN FIELD`, including a
+separate adjacent qualifier line, lowers confidence. Conflicting equally
+authoritative source elevations block the level rather than selecting a page.
+A recognized named floor with unreadable datum text or a missing zero reference
+cannot silently fall back to an assumed zero. Independently explicit plan
+height/elevation evidence and explicit caller overrides retain their existing
+reconciliation rules.
+
+The source-text layout support is intentionally bounded. Other datum symbols,
+label arrangements and cross-project vertical frames remain unresolved; the
+prepass does not treat every nearby dimension as an elevation.

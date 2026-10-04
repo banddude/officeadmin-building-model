@@ -293,6 +293,7 @@ class _PocheStripLeg:
     dashed: bool
     polygon_leg_count: int
     triangle_count: int = 0
+    orthogonal_fit_error_pt: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -4663,6 +4664,7 @@ def _join_collinear_poche_legs(
                 leg.polygon_leg_count + other.polygon_leg_count
             ),
             triangle_count=leg.triangle_count + other.triangle_count,
+            orthogonal_fit_error_pt=max(leg.orthogonal_fit_error_pt, other.orthogonal_fit_error_pt),
         )
     return tuple(joined)
 
@@ -4922,6 +4924,64 @@ def _outline_is_one_simple_loop(
     return True
 
 
+def _orthogonal_poche_frame(
+    frame: list[tuple[float, float]],
+    meters_per_point: float,
+) -> tuple[list[tuple[float, float]], float] | None:
+    """Fit only tiny coordinate noise, bounded in paper and physical units.
+
+    Axis constraints come from adjacent edges, never global coordinate
+    clustering, which could erase a narrow notch or join separate boundaries.
+    """
+    count = len(frame)
+    edges = [
+        (frame[(i + 1) % count][0] - p[0], frame[(i + 1) % count][1] - p[1])
+        for i, p in enumerate(frame)
+    ]
+    if all(min(abs(dx), abs(dy)) <= _POCHE_VERTEX_TOLERANCE_PT for dx, dy in edges):
+        outline = tuple((frame[i], frame[(i + 1) % count]) for i in range(count))
+        if not _outline_is_one_simple_loop(outline):
+            return None
+        return frame, 0.0
+    parents = [list(range(count)), list(range(count))]
+
+    def find(axis: int, i: int) -> int:
+        while parents[axis][i] != i:
+            parents[axis][i] = parents[axis][parents[axis][i]]
+            i = parents[axis][i]
+        return i
+
+    for i, (dx, dy) in enumerate(edges):
+        length = math.hypot(dx, dy)
+        if length <= _POCHE_VERTEX_TOLERANCE_PT:
+            return None
+        if min(abs(dx), abs(dy)) > math.sin(_POCHE_RECTILINEAR_TOLERANCE_RAD) * length:
+            return None
+        # Vertical edges constrain x, horizontal edges constrain y.
+        axis = 0 if abs(dx) < abs(dy) else 1
+        a, b = find(axis, i), find(axis, (i + 1) % count)
+        parents[axis][max(a, b)] = min(a, b)
+    fitted = [list(p) for p in frame]
+    for axis in (0, 1):
+        groups: dict[int, list[int]] = {}
+        for i in range(count):
+            groups.setdefault(find(axis, i), []).append(i)
+        for members in groups.values():
+            coordinate = math.fsum(frame[i][axis] for i in members) / len(members)
+            for i in members:
+                fitted[i][axis] = coordinate
+    result = [(p[0], p[1]) for p in fitted]
+    error = max(math.dist(a, b) for a, b in zip(frame, result))
+    if error > min(0.1, 0.001 / meters_per_point):
+        return None
+    outline = tuple((result[i], result[(i + 1) % count]) for i in range(count))
+    if any(math.dist(a, b) <= _POCHE_VERTEX_TOLERANCE_PT for a, b in outline):
+        return None
+    if not _outline_is_one_simple_loop(outline):
+        return None
+    return result, error
+
+
 def _poche_strip_loop_legs(
     runs: list[_PocheEdgeRun],
     member_ids: tuple[str, ...],
@@ -5025,7 +5085,8 @@ def _poche_strip_loop_legs(
         span_y = ring[(index + 1) % corner_count][1] - ring[index][1]
         along = span_x * ux + span_y * uy
         across = span_x * nx + span_y * ny
-        if abs(along) > sin_tolerance and abs(across) > sin_tolerance:
+        angular_limit = sin_tolerance * math.hypot(span_x, span_y)
+        if abs(along) > angular_limit and abs(across) > angular_limit:
             rectilinear = False
             break
     if not rectilinear:
@@ -5043,9 +5104,53 @@ def _poche_strip_loop_legs(
         return [], 0
 
     frame = [
-        (point[0] * ux + point[1] * uy, point[0] * nx + point[1] * ny)
-        for point in ring
+        (point[0] * ux + point[1] * uy, point[0] * nx + point[1] * ny) for point in ring
     ]
+    fitted = _orthogonal_poche_frame(frame, transform.meters_per_point)
+    if fitted is None:
+        rejections.append(
+            {
+                "page": page_number,
+                "code": "poche_orthogonal_fit_unresolved",
+                "detail": "filled polygon cannot be orthogonally fitted within both 0.1 source point and 1 mm while preserving topology",
+            }
+        )
+        return [], 0
+    frame, orthogonal_fit_error_pt = fitted
+    if orthogonal_fit_error_pt:
+        # Earlier collinear merging must not hide a larger source-boundary
+        # deviation when a previously unresolved strip is newly fitted.
+        boundary_ids = {element_id for run in runs for element_id in run.element_ids}
+        fitted_edges = tuple(zip(frame, (*frame[1:], frame[0])))
+        for line in candidates:
+            if line.element_id not in boundary_ids:
+                continue
+            for x, y in (line.start_pt, line.end_pt):
+                point = (x * ux + y * uy, x * nx + y * ny)
+                distances = []
+                for a, b in fitted_edges:
+                    dx, dy = b[0] - a[0], b[1] - a[1]
+                    fraction = max(
+                        0.0,
+                        min(
+                            1.0,
+                            ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy)
+                            / (dx * dx + dy * dy),
+                        ),
+                    )
+                    distances.append(
+                        math.dist(point, (a[0] + fraction * dx, a[1] + fraction * dy))
+                    )
+                orthogonal_fit_error_pt = max(orthogonal_fit_error_pt, min(distances))
+        if orthogonal_fit_error_pt > min(0.1, 0.001 / transform.meters_per_point):
+            rejections.append(
+                {
+                    "page": page_number,
+                    "code": "poche_orthogonal_fit_unresolved",
+                    "detail": "original source boundary exceeds the bounded orthogonal fit tolerance",
+                }
+            )
+            return [], 0
     levels = sorted({round(point[1], 6) for point in frame})
     verticals = []
     for index in range(corner_count):
@@ -5135,11 +5240,12 @@ def _poche_strip_loop_legs(
                 dashed=member_dashed,
                 polygon_leg_count=0,
                 triangle_count=triangle_count,
+                orthogonal_fit_error_pt=orthogonal_fit_error_pt,
             )
         )
     if not polygon_legs:
         thickness_ceiling = options.max_wall_thickness_m + 1e-9
-        if all(
+        if measured_legs and all(
             span[0] <= thickness_ceiling and span[1] <= thickness_ceiling
             for span in measured_legs
         ):
@@ -5147,7 +5253,10 @@ def _poche_strip_loop_legs(
             # the wall-thickness ceiling, so the fill only marks a wall
             # junction and is counted in the diagnostics, not recorded.
             return [], 1
-        if saw_not_elongated:
+        if not measured_legs:
+            code = "poche_strip_sweep_unresolved"
+            detail = "filled polygon produced no closed orthogonal strip bands; it is not a proven junction fill"
+        elif saw_not_elongated:
             code = "poche_strip_not_elongated"
             detail = (
                 "a filled closed polygon on a wall layer has no elongated "
@@ -5931,6 +6040,32 @@ def _geometric_wall_loop_entities(
                 "faces; the closed strip polygon was split into "
                 "rectangular legs at its corners"
             )
+        fit_attributes = (
+            {
+                "orthogonal_fit_max_error_pt": leg.orthogonal_fit_error_pt,
+                "orthogonal_fit_max_error_m": leg.orthogonal_fit_error_pt
+                * transform.meters_per_point,
+            }
+            if leg.orthogonal_fit_error_pt
+            else {}
+        )
+        fit_provenance = (
+            (
+                Provenance(
+                    source_kind="architectural_pdf",
+                    source_id=source_id,
+                    source_element_id="+".join(leg.element_ids),
+                    page=page.page_number,
+                    method="bounded orthogonal fit of source wall-strip coordinates",
+                    confidence=wall_confidence,
+                    derivation=DERIVATION_INFERRED,
+                    scope_paths=("centerline", "thickness_m"),
+                    attributes=fit_attributes,
+                ),
+            )
+            if fit_attributes
+            else ()
+        )
         wall = Wall(
             id=wall_id,
             level_id=level.id,
@@ -5961,8 +6096,10 @@ def _geometric_wall_loop_entities(
                         "poche_leg_count": leg.polygon_leg_count,
                         "poche_leg_length_m": round(leg.length_m, 6),
                         "poche_triangle_count": leg.triangle_count,
+                        **fit_attributes,
                     },
                 )
+                + fit_provenance
                 + _level_measurement_provenance(
                     source_id,
                     level_info.height,
@@ -5982,6 +6119,7 @@ def _geometric_wall_loop_entities(
                     "poche_leg_count": leg.polygon_leg_count,
                     "poche_leg_length_m": round(leg.length_m, 6),
                     "poche_triangle_count": leg.triangle_count,
+                    **fit_attributes,
                 }
             },
         )

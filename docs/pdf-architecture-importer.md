@@ -285,3 +285,22 @@ engine suite. Although 0.11.3 introduced the required public
 `extract_words(return_chars=True)` API and passes the text-specific tests, its
 older curve and scaled-stroke observations fail existing geometry regressions.
 The dependency minimum therefore covers both text and geometry requirements.
+
+## Bounded wall-strip coordinate fitting (#250)
+
+Filled poché strips with tiny coordinate noise can be orthogonally fitted
+before the rectangular-band sweep. The fit retains edge adjacency and must
+remain a simple, non-collapsed polygon. The maximum displacement is bounded
+by both 0.1 displayed PDF point and 1 mm at the resolved scale. Original
+boundary endpoints are checked too, so earlier collinear preprocessing cannot
+hide a larger deviation in a newly fitted strip.
+
+Affected walls keep their original source IDs and carry an additional inferred
+provenance record, scoped to centerline and thickness, with maximum fitting
+error in points and metres. Exact strips use their existing geometry and
+provenance. Meaningful skew, invalid topology or an over-bound fit remains
+unresolved. A band sweep with no measured legs is explicitly unresolved; it
+is never counted as a successful corner/junction fill.
+
+This does not expand the permitted wall-source layers, promote arbitrary
+unlayered fills or establish a drawing's registration frame.

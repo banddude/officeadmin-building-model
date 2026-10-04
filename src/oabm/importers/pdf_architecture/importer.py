@@ -37,6 +37,7 @@ from oabm.model import (
     stable_id,
 )
 
+from .fill_paint import wall_fill_paint, wall_geometry_page
 from .curved_walls import arc_pairs
 from .section_datums import section_floor_datums
 from .drawing_regions import (
@@ -3925,6 +3926,8 @@ def _geometric_wall_face_pairs(
 ) -> tuple[_WallFacePair, ...]:
     """Pair wall faces from joined CAD runs, independent of PDF-native IDs."""
 
+    page = wall_geometry_page(page)
+
     diagnostics = diagnostics if diagnostics is not None else {}
     excluded_element_ids = excluded_element_ids or set()
     runs = _collinear_wall_face_runs(
@@ -4686,6 +4689,7 @@ def _poche_edge_key(
 
 def _triangulated_poche_pieces(
     lines: tuple[PdfLineObservation, ...],
+    *, require_known_paint: bool = False,
 ) -> tuple[
     list[_PocheTrianglePiece],
     dict[
@@ -4710,6 +4714,7 @@ def _triangulated_poche_pieces(
             line
             for line in lines
             if any(_is_wall_pattern_layer(layer) for layer in line.source_layers)
+            and wall_fill_paint(line.fill_grays, require_known=require_known_paint)
         ),
         key=lambda item: item.element_id,
     )
@@ -5279,10 +5284,7 @@ def _poche_strip_loop_legs(
         )
         return [], 0
     return (
-        [
-            replace(leg, polygon_leg_count=len(polygon_legs))
-            for leg in polygon_legs
-        ],
+        [replace(leg, polygon_leg_count=len(polygon_legs)) for leg in polygon_legs],
         0,
     )
 
@@ -5292,6 +5294,8 @@ def _poche_strip_polygons(
     transform: _Transform2D,
     options: ImportOptions,
     page_number: int,
+    *,
+    require_known_paint: bool = False,
 ) -> tuple[
     tuple[_PocheStripLeg, ...],
     list[dict[str, object]],
@@ -5330,7 +5334,9 @@ def _poche_strip_polygons(
     consumed: set[str] = set()
     junction_fill_count = 0
 
-    pieces, piece_observations = _triangulated_poche_pieces(lines)
+    pieces, piece_observations = _triangulated_poche_pieces(
+        lines, require_known_paint=require_known_paint
+    )
     piece_edge_ids: set[str] = set()
     for piece in pieces:
         for key in piece.edge_keys:
@@ -5413,6 +5419,7 @@ def _poche_strip_polygons(
         line
         for line in remaining
         if line.filled and line.primitive_family in {"polyline", "rect"}
+        and wall_fill_paint(line.fill_grays, require_known=require_known_paint)
     ]
     if candidates:
         runs = [
@@ -6792,6 +6799,8 @@ def sheet_wall_evidence(
     so a layered sheet can be compared with a flattened one on equal terms.
     """
 
+    page = wall_geometry_page(page)
+
     options = options or ImportOptions()
     if meters_per_point is None:
         meters_per_point = _region_detection_scale(page, options)
@@ -6842,6 +6851,8 @@ def region_wall_evidence(
     use_wall_layers: bool = True,
 ) -> tuple[str, tuple[RegionEvidence, ...]]:
     """Wall evidence lying inside one resolved drawing region's source extents."""
+
+    page = wall_geometry_page(page)
 
     options = options or ImportOptions()
     _, title_line_ids = _title_block_exclusion(page)
@@ -7444,9 +7455,14 @@ def import_observations(
     ambiguities: list[dict[str, object]] = []
     page_metadata: list[dict[str, object]] = []
     level_info_by_anchor: dict[str, _LevelInfo] = {}
-    ordered_pages = tuple(sorted(document.pages, key=lambda item: item.page_number))
+    ordered_pages = tuple(
+        wall_geometry_page(page)
+        for page in sorted(document.pages, key=lambda item: item.page_number)
+    )
     classifications = {page.page_number: classify_page(page) for page in ordered_pages}
-    section_elevations, section_blocked = _section_level_elevations(ordered_pages, ambiguities)
+    section_elevations, section_blocked = _section_level_elevations(
+        ordered_pages, ambiguities
+    )
 
     # Split every architectural sheet into its separately drawn plans first.
     # A sheet with one drawing stays whole and keeps page-level behavior.

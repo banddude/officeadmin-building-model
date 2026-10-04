@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from statistics import median
 from typing import Any, Mapping, Sequence
@@ -57,8 +57,19 @@ class _OpeningHostInference:
     candidates_within_tolerance: tuple[tuple[str, float], ...]
 
 
-@dataclass(frozen=True, slots=True)
-class RoomPlanImportOptions:
+class _OmittedOption:
+    """A constructor omission, distinct from explicitly supplying a default."""
+
+
+_OMITTED = _OmittedOption()
+
+
+class _OptionInputTracking:
+    __slots__ = ("_supplied_fields",)
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class RoomPlanImportOptions(_OptionInputTracking):
     """Importer choices needed where RoomPlan exposes a surface, not a solid."""
 
     wall_surface_thickness_m: float = 0.001
@@ -67,6 +78,49 @@ class RoomPlanImportOptions:
     object_min_dimension_m: float = 0.001
     orphan_opening_host_tolerance_m: float = 0.75
     orphan_opening_host_ambiguity_m: float = 0.01
+
+    def __init__(
+        self,
+        wall_surface_thickness_m: float | _OmittedOption = _OMITTED,
+        floor_surface_thickness_m: float | _OmittedOption = _OMITTED,
+        opening_surface_depth_m: float | _OmittedOption = _OMITTED,
+        object_min_dimension_m: float | _OmittedOption = _OMITTED,
+        orphan_opening_host_tolerance_m: float | _OmittedOption = _OMITTED,
+        orphan_opening_host_ambiguity_m: float | _OmittedOption = _OMITTED,
+    ) -> None:
+        supplied = dict(locals())
+        explicit = []
+        for entry in fields(RoomPlanImportOptions):
+            if entry.name.startswith("_"):
+                continue
+            value = supplied[entry.name]
+            if value is _OMITTED:
+                value = entry.default
+            else:
+                explicit.append(entry.name)
+            object.__setattr__(self, entry.name, value)
+        object.__setattr__(self, "_supplied_fields", tuple(explicit))
+        self.__post_init__()
+
+    def __reduce__(self):
+        # Keep constructor evidence through copying/pickling without adding a
+        # private key to dataclasses.asdict's existing six-option public shape.
+        return (_restore_options, (tuple(getattr(self, f.name) for f in fields(RoomPlanImportOptions)),
+                                   getattr(self, "_supplied_fields", None)))
+
+    def input_records(self) -> dict[str, dict[str, Any]]:
+        """Constructor facts, not guesses about a human's intent."""
+        supplied = getattr(self, "_supplied_fields", None)
+        return {
+            entry.name: {
+                "value": getattr(self, entry.name),
+                "default": entry.default,
+                "provided": entry.name in supplied if supplied is not None else None,
+                "differs_from_default": getattr(self, entry.name) != entry.default,
+            }
+            for entry in fields(RoomPlanImportOptions)
+            if not entry.name.startswith("_")
+        }
 
     def __post_init__(self) -> None:
         for label, value in (
@@ -83,6 +137,25 @@ class RoomPlanImportOptions:
         ):
             if not _is_finite_number(value) or float(value) < 0:
                 raise RoomPlanImportError(f"{label} must be a finite number >= 0")
+
+
+
+def _restore_options(values: tuple[float, ...], supplied: tuple[str, ...] | None) -> RoomPlanImportOptions:
+    options = RoomPlanImportOptions(*values)
+    object.__setattr__(options, "_supplied_fields", supplied)
+    return options
+
+
+def _record_option_use(
+    attributes: dict[str, Any], options: RoomPlanImportOptions,
+    option_name: str, target_paths: tuple[str, ...], *, rule: str = "fallback for absent source dimension",
+) -> None:
+    attributes["roomplan"].setdefault("import_inputs", {})[option_name] = {
+        **options.input_records()[option_name],
+        "target_paths": list(target_paths),
+        "rule": rule,
+        "model_record_path": f"attributes.roomplan.import_inputs.options.{option_name}",
+    }
 
 
 def load_captured_room(
@@ -132,14 +205,17 @@ def import_captured_room(
     if not isinstance(document, Mapping):
         raise RoomPlanImportError("CapturedRoom document must be a mapping")
 
+    options_argument_provided = options is not None
     options = options or RoomPlanImportOptions()
+    document_identifier = _stated_identifier(document, "CapturedRoom")
+    provenance_argument = provenance_source_id
     # A CapturedRoom exported inside a scan bundle carries its identity in the
     # bundle rather than in the room document: the real Bundle v3 envelope has
     # `coreModel` and `referenceOriginTransform` but no top-level identifier.
     # Accept the caller's `source_id` as the identity in that case, because the
     # caller is the thing that knows which capture this is. Identity is still
     # required and still never invented -- with neither, this fails.
-    room_identifier = _stated_identifier(document, "CapturedRoom") or source_id
+    room_identifier = document_identifier or source_id
     if not room_identifier:
         raise RoomPlanImportError(
             "CapturedRoom.identifier is absent, so a source_id is required to "
@@ -236,6 +312,7 @@ def import_captured_room(
             ),
         )
         if source_thickness <= _EPS:
+            _record_option_use(attributes, options, "wall_surface_thickness_m", ("thickness_m",))
             wall_provenance += (
                 _assumed_dimension_provenance(
                     provenance_source_id,
@@ -315,6 +392,7 @@ def import_captured_room(
             ),
         )
         if source_thickness <= _EPS:
+            _record_option_use(attributes, options, "floor_surface_thickness_m", ("thickness_m",))
             slab_provenance += (
                 _assumed_dimension_provenance(
                     provenance_source_id,
@@ -371,6 +449,8 @@ def import_captured_room(
         )
         if inferred_axes:
             attributes["roomplan"]["inferred_size_axes"] = inferred_axes
+            _record_option_use(attributes, options, "object_min_dimension_m",
+                               tuple(f"geometry.size.{axis}" for axis in inferred_axes))
         obstacles.append(
             Obstacle(
                 id=stable_id(
@@ -619,6 +699,9 @@ def import_captured_room(
             attributes["roomplan"]["host_inferred"] = host_inferred
             attributes["roomplan"]["source_confidence_value"] = source_confidence
             if host_inference is not None:
+                for option_name in ("orphan_opening_host_tolerance_m", "orphan_opening_host_ambiguity_m"):
+                    _record_option_use(attributes, options, option_name, ("host_id",),
+                                       rule="geometric orphan-opening host selection")
                 attributes["roomplan"]["host_inference"] = {
                     "distance_m": host_inference.distance_m,
                     "ambiguity_m": options.orphan_opening_host_ambiguity_m,
@@ -632,6 +715,9 @@ def import_captured_room(
                 }
             attributes["roomplan"]["surface_depth_m"] = depth
             attributes["roomplan"]["surface_depth_inferred"] = source_depth <= _EPS
+            if source_depth <= _EPS:
+                _record_option_use(attributes, options, "opening_surface_depth_m", ("size.y",),
+                                   rule="max(host wall thickness, opening surface depth option)")
             openings.append(
                 Opening(
                     id=stable_id(
@@ -662,6 +748,24 @@ def import_captured_room(
             "identifier": room_identifier,
             "version": room_version,
             "story": room_story,
+            "import_inputs": {
+                "version": 1,
+                "identity": {
+                    "value": room_identifier,
+                    "origin": "document.identifier" if document_identifier else "argument.source_id",
+                },
+                "provenance_source_id": {
+                    "value": provenance_source_id,
+                    "origin": ("argument.provenance_source_id" if provenance_argument else
+                               "argument.source_id" if source_id else "document.identifier"),
+                },
+                "name": {
+                    "value": name or f"RoomPlan capture {room_identifier}",
+                    "origin": "argument.name" if name else "generated_from_identity",
+                },
+                "options_argument_provided": options_argument_provided,
+                "options": options.input_records(),
+            },
             "sections": _sections(document.get("sections"), room_story),
             "source_coordinate_system": {
                 "handedness": "right",

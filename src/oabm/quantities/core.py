@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass
-from typing import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass, fields
+from typing import Callable, Iterable, Mapping, get_args, get_origin, get_type_hints
 
 from oabm.model import (
     BuildingModel,
@@ -22,6 +22,7 @@ from oabm.model import (
     Route,
     RouteFitting,
     validate_model,
+    provenance_applies_to,
 )
 from oabm.routing.overlap import RouteOverlap, find_overlapping_route_runs
 
@@ -72,9 +73,10 @@ class QuantityItem:
     #: ``"ALTERNATES"``); ``None`` is the ungrouped base.  Set only when the
     #: caller supplied ``groups`` to :func:`extract_quantities`.
     group: str | None = None
+    quantity_provenance: tuple[Provenance, ...] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        design_status, geometry_status, placement_status = _provenance_statuses(self.provenance)
+        design_status, geometry_status, placement_status = _provenance_statuses(self.provenance if self.quantity_provenance is None else self.quantity_provenance)
         item: dict[str, object] = {
             "category": self.category,
             "item_type": self.item_type,
@@ -89,6 +91,9 @@ class QuantityItem:
             "confidence": self.confidence,
             "assembly_key": self.assembly_key,
         }
+        if self.quantity_provenance is not None:
+            item["quantity_provenance"] = [asdict(entry) for entry in self.quantity_provenance]
+            item["quantity_derivation"] = _quantity_derivation(self.quantity_provenance)
         # Emitted only for grouped lines, so the default output stays
         # byte-identical to the plain takeoff.
         if self.group is not None:
@@ -144,6 +149,7 @@ class _Contribution:
     confidence: float
     assembly_key: str | None
     group: str | None
+    quantity_provenance: tuple[Provenance, ...] | None = None
 
 
 def extract_quantities(
@@ -154,7 +160,10 @@ def extract_quantities(
 ) -> TakeoffReport:
     """Derive deterministic install quantities from canonical semantic objects.
 
-    Route centerlines are the only source of path length.  Fittings are counted
+    Architectural geometry and unmeasured-entity coverage are described in
+    ``docs/quantities.md``. Gross quantities are not a complete assembly takeoff.
+
+    Route centerlines are the only source of electrical path length. Fittings are counted
     from canonical ``RouteFitting`` entities, not reconstructed from geometry.
     Conductors are length-extended only over their explicit ``route_ids`` and
     multiplied by ``count``.  Devices and equipment are each-counted directly.
@@ -187,6 +196,7 @@ def extract_quantities(
     # when callers construct or deserialize models outside this workstream.
     validate_model(model)
     _validate_no_duplicate_references(model)
+    collections = _canonical_entity_collections(model)
 
     group_owner, supplied_group_names = _group_ownership(groups)
     groupable_ids = {
@@ -195,6 +205,7 @@ def extract_quantities(
         *(conductor.id for conductor in model.conductors),
         *(device.id for device in model.electrical_devices),
         *(equipment.id for equipment in model.electrical_equipment),
+        *(entity.id for name in _ARCHITECTURAL for entity in collections[name]),
     }
     unmatched_group_ids = sum(
         1 for member_id in group_owner if member_id not in groupable_ids
@@ -294,6 +305,27 @@ def extract_quantities(
             )
         )
 
+    from .architecture import architectural_claims
+    for claim in architectural_claims(model):
+        if claim.warning is not None:
+            warnings.append(QuantityWarning(claim.warning, claim.message, (claim.entity.id,)))
+            continue
+        contributions.append(_contribution(
+            category=claim.category, item_type=claim.item_type, quantity=claim.quantity,
+            unit=claim.unit, variant=claim.variant, entities=(claim.entity,),
+            assembly_resolver=assembly_resolver, group=group_owner.get(claim.entity.id),
+            consumed_paths=claim.consumed_paths,
+        ))
+    measured = {identity for item in contributions for identity in item.source_entity_ids}
+    for name, entities in collections.items():
+        missing = tuple(sorted(entity.id for entity in entities if entity.id not in measured))
+        if missing:
+            warnings.append(QuantityWarning("unmeasured_entities",
+                f"{name}: {len(missing)} canonical entities have no quantity line; this is not a zero quantity.", missing))
+    if not contributions:
+        warnings.append(QuantityWarning("empty_takeoff",
+            "The model contains no entities." if not any(collections.values()) else
+            "The model contains entities, but none produced a measurable quantity.", ()))
     items = _aggregate(contributions)
     group_summary = _group_summary(
         supplied_group_names, group_owner, groupable_ids, items
@@ -435,6 +467,7 @@ def _contribution(
     assembly_resolver: AssemblyResolver | None,
     assembly_entity: Entity | None = None,
     group: str | None = None,
+    consumed_paths: tuple[str, ...] | None = None,
 ) -> _Contribution:
     if not math.isfinite(quantity) or quantity < 0:
         raise QuantityError(f"non-finite or negative quantity for {category}:{item_type}")
@@ -454,12 +487,15 @@ def _contribution(
         confidence=min(entity.confidence for entity in entities),
         assembly_key=assembly_key,
         group=group,
+        quantity_provenance=None if consumed_paths is None else _merge_provenance(
+            (record for entity in entities for record in entity.provenance
+             if provenance_applies_to(record, consumed_paths))),
     )
 
 
 def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ...]:
     grouped: dict[
-        tuple[str | None, str, str, str, str, str | None, str, str | None, str | None],
+        tuple[str | None, str, str, str, str, str | None, str, str | None, str | None, str | None],
         list[_Contribution],
     ] = {}
     for contribution in contributions:
@@ -478,7 +514,8 @@ def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ..
             contribution.unit,
             variant_key,
             contribution.assembly_key,
-            *_provenance_statuses(contribution.provenance),
+            *_provenance_statuses(contribution.provenance if contribution.quantity_provenance is None else contribution.quantity_provenance),
+            None if contribution.quantity_provenance is None else _quantity_derivation(contribution.quantity_provenance),
         )
         grouped.setdefault(key, []).append(contribution)
 
@@ -505,6 +542,8 @@ def _aggregate(contributions: Iterable[_Contribution]) -> tuple[QuantityItem, ..
                 provenance=provenance,
                 confidence=min(part.confidence for part in parts),
                 group=key[0],
+                quantity_provenance=None if all(part.quantity_provenance is None for part in parts) else
+                    _merge_provenance(*(part.provenance if part.quantity_provenance is None else part.quantity_provenance for part in parts)),
             )
         )
     return tuple(items)
@@ -563,3 +602,34 @@ def _validate_no_duplicate_references(model: BuildingModel) -> None:
         duplicated = {route_id for route_id in refs if refs.count(route_id) > 1}
         if duplicated - traversals:
             raise QuantityError(f"{entity.id}.route_ids contains duplicate references; refusing to double-count")
+
+
+_ARCHITECTURAL = frozenset({"walls", "slabs", "ceilings", "spaces", "openings"})
+_CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | frozenset({
+    "levels", "electrical_equipment", "electrical_devices", "ports", "obstacles",
+    "route_constraints", "routes", "route_fittings", "circuits", "conductors",
+})
+
+def _canonical_entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:
+    """Anchor coverage to the actual model type, never a quantities-only list."""
+    hints = get_type_hints(type(model))
+    result = {}
+    for field in fields(model):
+        hint = hints[field.name]
+        arguments = get_args(hint)
+        if get_origin(hint) is tuple and arguments and isinstance(arguments[0], type) and issubclass(arguments[0], Entity):
+            result[field.name] = getattr(model, field.name)
+    unknown = set(result) - _CLASSIFIED_COLLECTIONS
+    if unknown:
+        raise QuantityError(f"Unclassified canonical entity collections: {sorted(unknown)}")
+    return result
+
+
+def _quantity_derivation(records: tuple[Provenance, ...]) -> str:
+    """Measurement evidence, separate from who directed a design decision."""
+    classes = {record.derivation for record in records}
+    if "inferred" in classes:
+        return "inferred"
+    if not classes or None in classes:
+        return "unknown"
+    return "user" if "user" in classes else "observed"

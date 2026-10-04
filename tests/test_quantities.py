@@ -185,9 +185,9 @@ def test_unrouted_conductor_is_reported_and_not_inferred_from_circuit_routes() -
 
     report = extract_quantities(model)
     assert not [item for item in report.items if item.category == "conductor_length" and item.item_type == "line"]
-    assert len(report.warnings) == 1
-    assert report.warnings[0].code == "unrouted_conductor"
-    assert report.warnings[0].source_entity_ids == (line.id,)
+    unrouted_warnings = [w for w in report.warnings if w.code == "unrouted_conductor"]
+    assert len(unrouted_warnings) == 1
+    assert unrouted_warnings[0].source_entity_ids == (line.id,)
 
 
 def test_assembly_resolver_is_a_downstream_hook_not_model_metadata() -> None:
@@ -215,4 +215,5 @@ def test_invalid_assembly_resolver_value_is_rejected() -> None:
 def test_empty_model_has_empty_takeoff() -> None:
     report = extract_quantities(BuildingModel(model_id="model:empty"))
     assert report.items == ()
-    assert report.warnings == ()
+    assert [w.code for w in report.warnings] == ["empty_takeoff"]
+    assert report.warnings[0].message == "The model contains no entities."

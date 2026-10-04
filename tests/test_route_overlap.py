@@ -245,4 +245,6 @@ def test_no_warning_when_nothing_overlaps() -> None:
         ((10.0, 0.0, 3.0), (20.0, 0.0, 3.0)),
     )
     report = extract_quantities(model)
-    assert report.warnings == ()
+    assert not any(w.code == "overlapping_route_runs" for w in report.warnings)
+    assert {w.code for w in report.warnings} == {"unmeasured_entities"}
+    assert report.warnings[0].source_entity_ids == tuple(sorted(p.id for p in model.ports))

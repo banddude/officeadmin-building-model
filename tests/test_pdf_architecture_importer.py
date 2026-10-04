@@ -2258,7 +2258,13 @@ def test_level_override_updates_already_seen_level_and_all_geometry() -> None:
     assert level.elevation_m == pytest.approx(3.0)
     assert level.height_m == pytest.approx(3.2)
     assert "level_elevation_reconciled" in _ambiguity_codes(model)
-    assert [provenance.page for provenance in level.provenance] == [2, 2]
+    assert [provenance.page for provenance in level.provenance] == [2, 2, 2]
+    height_override_evidence = [
+        provenance for provenance in level.provenance
+        if provenance.derivation == "user" and provenance.scope_paths == ("height_m",)
+    ]
+    assert len(height_override_evidence) == 1
+    assert height_override_evidence[0].attributes["supplied_value_m"] == pytest.approx(3.2)
     assert {
         provenance.attributes.get("field")
         for provenance in level.provenance

@@ -50,6 +50,13 @@ measured wall length/height with inferred thickness produces measured face areas
 but inferred volume. Variant evidence is retained without pretending it was a
 consumed face-area dimension.
 
+The architectural importer also qualifies caller-provided height inputs before
+this lane consumes them. A caller-selected fallback height remains inferred;
+an explicit level-height override is user-directed. Their records are scoped to
+`height_m`, so wall lengths retain their independent source evidence. A printed
+height that wins over an unused fallback remains observed. No geometry, IDs or
+canonical contract fields are changed by this provenance correction.
+
 Existing electrical measurement rules and source records remain unchanged.
 
 ## Coverage is not completeness

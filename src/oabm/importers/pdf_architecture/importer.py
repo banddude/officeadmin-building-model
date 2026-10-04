@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterable
 from oabm.model import (
     DERIVATION_INFERRED,
     DERIVATION_OBSERVED,
+    DERIVATION_USER,
     BuildingModel,
     Ceiling,
     CoordinateSystem,
@@ -180,6 +181,9 @@ class _Measurement:
     # inherits the height can restate it as scoped inferred provenance.
     assumed_default: bool = False
     source_evidence: tuple[tuple[int, str, str], ...] = ()
+    # Caller-selected fallback is still an assumption, not a printed height.
+    caller_default: bool = False
+    user_height_override: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1630,6 +1634,7 @@ def _resolve_level(
             priority=3,
             method=override.note,
             page_number=page.page_number,
+            user_height_override=True,
         )
     elif global_height is not None:
         height_candidate = global_height
@@ -1640,6 +1645,8 @@ def _resolve_level(
             priority=1,
             method="height supplied explicitly by ImportOptions.default_wall_height_m",
             page_number=page.page_number,
+            assumed_default=True,
+            caller_default=True,
         )
     elif page.lines and (existing is None or existing.height is None):
         height_candidate = _Measurement(
@@ -2872,11 +2879,11 @@ def _shell_entities(
     resolved_height_m = selected_height.value_m if selected_height is not None else None
     height_confidence = selected_height.confidence if selected_height is not None else 0.0
     height_provenance: tuple[Provenance, ...] = ()
-    # The scoped inferred record travels only to owners that canonically have
+    # Scoped inferred/user height records travel only to owners that canonically have
     # a height_m field (the space and its walls). A ceiling has none -- its
     # assumed condition is the footprint placement, which has no canonical
     # height path to scope to -- so it keeps its existing records.
-    assumed_height_provenance: tuple[Provenance, ...] = ()
+    qualified_height_provenance: tuple[Provenance, ...] = ()
     if selected_height is not None:
         height_provenance = _provenance(
             source_id,
@@ -2891,8 +2898,12 @@ def _shell_entities(
             },
         )
         if selected_height.assumed_default:
-            assumed_height_provenance = (
+            qualified_height_provenance = (
                 _assumed_level_height_provenance(source_id, selected_height),
+            )
+        elif selected_height.user_height_override:
+            qualified_height_provenance = (
+                _user_level_height_provenance(source_id, selected_height),
             )
     space_confidence = (
         min(base_confidence, height_confidence)
@@ -2968,7 +2979,7 @@ def _shell_entities(
                 attributes=space_source_attributes,
             )
             + height_provenance
-            + assumed_height_provenance
+            + qualified_height_provenance
         ),
         attributes=space_attributes,
     )
@@ -3048,7 +3059,7 @@ def _shell_entities(
                         attributes={"room_anchor": room.anchor, "source_side": side},
                     )
                     + height_provenance
-                    + assumed_height_provenance
+                    + qualified_height_provenance
                 ),
                 attributes={"pdf_architecture": wall_attributes},
             )
@@ -7128,6 +7139,9 @@ def _assumed_level_height_provenance(
         source_id=source_id,
         page=measurement.page_number,
         method=(
+            "assumed default level height: caller supplied ImportOptions.default_wall_height_m; "
+            "this fallback is not a height observed on the plan"
+            if measurement.caller_default else
             "assumed default level height: no level or ceiling height was "
             "printed on the plan; the importer's low-confidence default was "
             "assigned so wall geometry could materialize"
@@ -7138,6 +7152,20 @@ def _assumed_level_height_provenance(
             "assumed_value_m": measurement.value_m,
             "field": "height_m",
         },
+    )
+
+
+def _user_level_height_provenance(source_id: str, measurement: _Measurement) -> Provenance:
+    """An explicit height override is caller evidence, never a sheet measurement."""
+    return Provenance(
+        source_kind="user_override",
+        derivation=DERIVATION_USER,
+        source_id=source_id,
+        page=measurement.page_number,
+        method=measurement.method,
+        confidence=measurement.confidence,
+        scope_paths=("height_m",),
+        attributes={"supplied_value_m": measurement.value_m, "field": "height_m"},
     )
 
 
@@ -7181,6 +7209,8 @@ def _level_measurement_provenance(
             )
     if field == "height_m" and measurement.assumed_default:
         records += (_assumed_level_height_provenance(source_id, measurement),)
+    elif field == "height_m" and measurement.user_height_override:
+        records += (_user_level_height_provenance(source_id, measurement),)
     return records
 
 

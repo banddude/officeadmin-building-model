@@ -38,6 +38,7 @@ from oabm.model import (
 )
 
 from .curved_walls import arc_pairs
+from .section_datums import section_floor_datums
 from .drawing_regions import (
     DrawingRegionSplit,
     RegionEvidence,
@@ -177,6 +178,7 @@ class _Measurement:
     # clears it, a default that wins keeps it) and so every entity that
     # inherits the height can restate it as scoped inferred provenance.
     assumed_default: bool = False
+    source_evidence: tuple[tuple[int, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1410,6 +1412,77 @@ def _elevation_anchor(anchor: str, info: _LevelInfo) -> bool:
     return anchor != _anchor(_UNLABELED_LEVEL_NAME) or info.elevation.priority > 1
 
 
+def _section_level_elevations(
+    pages: tuple[PdfPageObservation, ...],
+    ambiguities: list[dict[str, object]],
+) -> tuple[dict[str, _Measurement], dict[str, str]]:
+    evidence: dict[str, _Measurement] = {}
+    conflicts: set[str] = set()
+    missing_reference: dict[str, str] = {}
+    for page in sorted(pages, key=lambda item: item.page_number):
+        datums, refused = section_floor_datums(page, _find_dimension)
+        ambiguities.extend(refused)
+        for item in refused:
+            missing_reference.setdefault(
+                _anchor(str(item["level_name"])), str(item["code"])
+            )
+        for datum in datums:
+            anchor = _anchor(datum.level_name)
+            candidate = _Measurement(
+                datum.elevation_m,
+                datum.confidence,
+                2,
+                "printed named section floor elevation with aligned finished-floor zero datum",
+                datum.page_number,
+                datum.dimension.text,
+                datum.dimension.element_id,
+                source_evidence=tuple(
+                    (datum.page_number, item.element_id, item.text)
+                    for item in datum.sources
+                ),
+            )
+            existing = evidence.get(anchor)
+            if existing is not None:
+                if not math.isclose(
+                    existing.value_m, candidate.value_m, rel_tol=1e-9, abs_tol=1e-6
+                ):
+                    conflicts.add(anchor)
+                    ambiguities.append(
+                        {
+                            "page": page.page_number,
+                            "code": "section_level_elevation_conflict",
+                            "level_anchor": anchor,
+                            "values_m": sorted((existing.value_m, candidate.value_m)),
+                            "source_element_ids": sorted(
+                                {
+                                    row[1]
+                                    for row in existing.source_evidence
+                                    + candidate.source_evidence
+                                }
+                            ),
+                        }
+                    )
+                    continue
+                candidate = replace(
+                    existing,
+                    confidence=min(existing.confidence, candidate.confidence),
+                    source_evidence=tuple(
+                        sorted(
+                            set(existing.source_evidence + candidate.source_evidence)
+                        )
+                    ),
+                )
+            evidence[anchor] = candidate
+    blocked = {
+        key: missing_reference[key]
+        for key in missing_reference.keys() - evidence.keys()
+    }
+    blocked.update({key: "section_level_elevation_conflict" for key in conflicts})
+    return {
+        key: value for key, value in evidence.items() if key not in conflicts
+    }, blocked
+
+
 def _resolve_level(
     page: PdfPageObservation,
     options: ImportOptions,
@@ -1418,6 +1491,8 @@ def _resolve_level(
     *,
     override: LevelOverride | None,
     require_drawing_level_name: bool = False,
+    section_elevations: dict[str, _Measurement] | None = None,
+    section_blocked: dict[str, str] | None = None,
 ) -> _LevelInfo | None:
     parsed_name, _, distinct_names = _level_name_evidence(page, override)
     if parsed_name is None and len(distinct_names) > 1:
@@ -1458,6 +1533,20 @@ def _resolve_level(
         return None
 
     parsed_elevation = _elevation_from_text(page)
+    section_elevation = (section_elevations or {}).get(anchor)
+    section_refusal = (section_blocked or {}).get(anchor)
+    if (
+        not override
+        and section_refusal
+        and (parsed_elevation is None or section_refusal == "section_level_elevation_conflict")
+    ):
+        ambiguities.append({
+            "page": page.page_number,
+            "code": "level_elevation_unresolved",
+            "level_anchor": anchor,
+            "detail": "section floor datum is conflicting or has no unambiguous zero reference",
+        })
+        return None
     elevation_candidate: _Measurement | None = None
     if override:
         elevation_candidate = _Measurement(
@@ -1477,6 +1566,8 @@ def _resolve_level(
             source_text=parsed_elevation[1].text,
             source_element_id=parsed_elevation[1].element_id,
         )
+    elif section_elevation is not None:
+        elevation_candidate = section_elevation
     elif existing is None:
         # The unlabeled placeholder only ever sits at the assumed local datum.
         # It is not an elevation a named level can be stated against, so the
@@ -1510,6 +1601,24 @@ def _resolve_level(
                 }
             )
             return None
+
+    if section_elevation is not None and parsed_elevation and not override:
+        assert elevation_candidate is not None
+        elevation_candidate, blocked = _reconcile_measurement(
+            elevation_candidate,
+            section_elevation,
+            anchor=anchor,
+            field="elevation",
+            ambiguities=ambiguities,
+        )
+        if blocked:
+            return None
+        elevation_candidate = replace(
+            elevation_candidate,
+            source_evidence=tuple(sorted(set(
+                elevation_candidate.source_evidence + section_elevation.source_evidence
+            ))),
+        )
 
     height_candidate: _Measurement | None = None
     if override and override.height_m is not None:
@@ -6902,6 +7011,25 @@ def _level_measurement_provenance(
         source_element_id=measurement.source_element_id,
         attributes=attributes,
     )
+    if measurement.source_evidence:
+        records = tuple(replace(record, scope_paths=(field,)) for record in records)
+        for page, element_id, text in measurement.source_evidence:
+            if (
+                page == measurement.page_number
+                and element_id == measurement.source_element_id
+            ):
+                continue
+            records += tuple(
+                replace(record, scope_paths=(field,))
+                for record in _provenance(
+                    source_id,
+                    page,
+                    method="component of bounded section floor datum evidence",
+                    confidence=measurement.confidence,
+                    source_element_id=element_id,
+                    attributes={"field": field, "source_text": text},
+                )
+            )
     if field == "height_m" and measurement.assumed_default:
         records += (_assumed_level_height_provenance(source_id, measurement),)
     return records
@@ -7180,6 +7308,7 @@ def import_observations(
     level_info_by_anchor: dict[str, _LevelInfo] = {}
     ordered_pages = tuple(sorted(document.pages, key=lambda item: item.page_number))
     classifications = {page.page_number: classify_page(page) for page in ordered_pages}
+    section_elevations, section_blocked = _section_level_elevations(ordered_pages, ambiguities)
 
     # Split every architectural sheet into its separately drawn plans first.
     # A sheet with one drawing stays whole and keeps page-level behavior.
@@ -7210,6 +7339,8 @@ def import_observations(
                 ambiguities,
                 override=region.level_hint,
                 require_drawing_level_name=sheet.multiple,
+                section_elevations=section_elevations,
+                section_blocked=section_blocked,
             )
             _tag_region_ambiguities(ambiguities, start, region)
             if level_info is None:

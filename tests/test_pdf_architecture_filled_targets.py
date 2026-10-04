@@ -35,6 +35,7 @@ def _strip(key: str, box: list[float], *, filled: bool = True) -> tuple[PdfLineO
     return tuple(PdfLineObservation(
         element_id=f"{key}:{i}", start_pt=corners[i], end_pt=corners[(i + 1) % 4],
         primitive_family="polyline", filled=filled,
+        fill_grays=(0.0,) if filled else (), stroke_present=False if filled else True,
         source_layers=(FIXTURE["fill_layer"],),
     ) for i in range(4))
 
@@ -249,3 +250,48 @@ def test_construction_titles_assign_distinct_floor_and_mezzanine_names() -> None
     ))
     evidence = sheet_wall_evidence(page, meters_per_point=MPP)
     assert evidence.drawing_level_names == (("First Floor",), ("Mezzanine",))
+
+
+def test_single_construction_plan_keeps_legend_boxes_out_of_canonical_rooms() -> None:
+    from oabm.importers.pdf_architecture.types import PdfRectObservation
+    base = _plan(excluded=False)
+    page = replace(
+        base,
+        height_pt=1200,
+        rects=(PdfRectObservation('legend-table', (100, 820, 220, 940)),
+               PdfRectObservation('legend-inner', (106, 826, 214, 934))),
+        texts=(*base.texts, PdfTextObservation('legend-caption', 'BRACING GUIDE', (120, 860, 200, 872)),
+               _text('local-plan-title', 'CONSTRUCTION PLAN', 180, 50)),
+    )
+    model = import_observations(_document(page, 'arch'))
+    validate_model(model)
+    regions = model.attributes['pdf_architecture']['drawing_regions']
+    assert len(regions) == 1 and regions[0]['scope'] == 'region'
+    assert not any(space.name == 'BRACING GUIDE' for space in model.spaces)
+    assert all(point.y < 600 * MPP for wall in model.walls for point in wall.centerline.points)
+    assert all(point.y < 600 * MPP for space in model.spaces for point in space.footprint.points)
+
+
+def test_unlayered_unknown_paint_is_not_positive_filled_registration_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(architecture_importer, '_geometric_wall_face_pairs', lambda *args, **kwargs: [])
+    base = _plan(excluded=False)
+    unknown = replace(base, lines=tuple(replace(line, source_layers=(), fill_grays=(), stroke_present=None) for line in base.lines))
+    assert not sheet_wall_evidence(unknown, meters_per_point=MPP).drawings
+
+
+def test_white_fill_masks_never_supply_the_filled_target_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(architecture_importer, '_geometric_wall_face_pairs', lambda *args, **kwargs: [])
+    base = _plan(excluded=False)
+    white = replace(base, lines=tuple(replace(line, source_layers=(), fill_grays=(1.0,), stroke_present=False) for line in base.lines))
+    assert not sheet_wall_evidence(white, meters_per_point=MPP).drawings
+
+
+def test_single_scoped_plan_retains_an_unambiguous_page_registration_hint() -> None:
+    from oabm.importers.pdf_architecture.types import ImportOptions, RegistrationHint
+    source = _document(_plan(excluded=False), 'arch')
+    hint = RegistrationHint(1, (0, 0), (100, 0), (2, 3), (2 + 100 * MPP, 3))
+    model = import_observations(source, options=ImportOptions(registrations=(hint,)))
+    [region] = model.attributes['pdf_architecture']['drawing_regions']
+    assert region['scope'] == 'region' and region['status'] == 'resolved'
+    assert region['frame']['translation_m'] == pytest.approx([2, 3])
+    assert not any(item['code'] == 'registration_hint_region_unresolved' for item in model.attributes['pdf_architecture']['ambiguities'])

@@ -325,3 +325,13 @@ positive evidence for a new unlayered filled-wall inference: callers using that
 path must require known paint. The strip recognizer exposes
 `require_known_paint=True` for that purpose. Shape, scale, topology and layer
 rules still apply; known dark paint alone is not a wall classification.
+
+### Recovered construction drawing scope (#224)
+
+Recovered construction plans retain a bounded drawing scope even when only one
+plan cluster qualifies. Geometry outside that scope, such as legend/table boxes,
+never becomes canonical rooms or walls. Local construction titles and valid
+scale/level metadata remain available, and an unambiguous page-scoped hint still
+applies to a sole bounded region. Filled fallback evidence additionally requires
+known, non-masking fill paint. These safeguards do not bypass registration or
+real-project acceptance requirements.

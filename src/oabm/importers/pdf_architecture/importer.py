@@ -6724,6 +6724,7 @@ def _drawing_region_evidence(
         )
         legs, _, _, _ = _poche_strip_polygons(
             eligible, provisional, options, page.page_number,
+            require_known_paint=True,
         )
         def segment_key(item: RegionEvidence) -> tuple[tuple[float, float], tuple[float, float]]:
             return tuple(sorted((tuple(round(v, 4) for v in item.start_pt),
@@ -6762,7 +6763,10 @@ def _assign_region_hints(
     """
 
     page_hints = [item for item in hints if item.page_number == page_number]
-    if len(regions) == 1 and regions[0].scope == "sheet":
+    if len(regions) == 1 and (
+        regions[0].scope == "sheet"
+        or all(hint.region_point_pt is None for hint in page_hints)
+    ):
         if len(page_hints) > 1:
             raise ValueError(f"multiple {kind}s supplied for page {page_number}")
         return {regions[0].index: page_hints[0]} if page_hints else {}
@@ -6848,6 +6852,7 @@ def _split_sheet(
             if evidence_kind == "visible_wall_layer"
             else _REGION_MIN_WALL_FACE_SEGMENTS
         ),
+        scope_single_region=_construction_title_and_sheet_mark(page),
         excluded_text_ids=frozenset(
             text.element_id for text in page.texts
             if any(_inside(box, text.center_pt) for box in title_boxes)
@@ -6856,7 +6861,7 @@ def _split_sheet(
     # Construction sheets can carry wall-like details above the floor plan.
     # A drawing title directly below a region identifies the plan area without
     # promoting those disconnected details as additional unnamed floors.
-    if len(split.regions) > 1:
+    if split.regions:
         titles = [
             item for item in page.texts
             if re.search(r"\bCONSTRUCTION\s+PLANS?\b", _clean_text(item.text).upper())

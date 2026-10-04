@@ -37,6 +37,7 @@ from oabm.model import (
     stable_id,
 )
 
+from .curved_walls import arc_pairs
 from .drawing_regions import (
     DrawingRegionSplit,
     RegionEvidence,
@@ -2613,7 +2614,6 @@ def _ordinary_vector_shell_candidates(
             }
         )
     return tuple(selected)
-
 
 
 def _provenance(
@@ -5317,6 +5317,98 @@ def _pair_ends_on_poche_leg(
     return False
 
 
+def _curved_wall_pairs(page, meters_per_point, options):
+    boxes, _ = _title_block_exclusion(page)
+    boxes = list(boxes)
+    for text in page.texts:
+        if re.search(
+            r"\b(?:LEGEND|WALL TYPES?|SYMBOLS?|RADIUS|DIAMETER)\b", text.text, re.I
+        ):
+            containing = [
+                rect.bbox_pt
+                for rect in page.rects
+                if _inside(rect.bbox_pt, text.center_pt)
+            ]
+            if containing:
+                boxes.append(min(containing, key=_bbox_area))
+            elif re.search(r"\b(?:RADIUS|DIAMETER)\b", text.text, re.I):
+                x, y = text.center_pt
+                boxes.append((x - 144, y - 144, x + 144, y + 144))
+    return arc_pairs(page, meters_per_point, options, boxes)
+
+
+def _curved_wall_entities(
+    page, transform, level, level_info, source_id, options, ambiguities
+):
+    if not page.curves or level.height_m is None or level_info.height is None:
+        return (), set()
+    anchor = _sheet_anchor(page)
+    if anchor is None:
+        return (), set()
+    pairs, rejections = _curved_wall_pairs(page, transform.meters_per_point, options)
+    ambiguities.extend(rejections)
+    walls = []
+    consumed = set()
+    for pair in pairs:
+        coordinates = tuple(transform.apply(point) for point in pair.points_pt)
+        coordinates = min(coordinates, tuple(reversed(coordinates)))
+        geometry = "|".join(f"{x:.4f},{y:.4f}" for x, y in coordinates)
+        sources = sorted({curve.element_id for curve in pair.boundaries})
+        confidence = min(
+            transform.confidence,
+            level_info.height_confidence or options.assumed_value_confidence,
+            0.65,
+        )
+        attributes = {
+            "recognition": "concentric_curved_wall_faces",
+            "source_boundaries": sources,
+            "max_chord_error_pt": 0.1,
+            "circle_fit_radial_range_pt": 0.1,
+            "closed_enclosure_proven": False,
+        }
+        wall = Wall(
+            id=stable_id(
+                "wall",
+                f"{source_id}|sheet:{anchor}|level:{level_info.anchor}|curved-wall:{geometry}",
+            ),
+            level_id=level.id,
+            centerline=Polyline3D(
+                points=tuple(
+                    Point3(x=x, y=y, z=level.elevation_m) for x, y in coordinates
+                )
+            ),
+            thickness_m=pair.thickness_m,
+            height_m=level.height_m,
+            confidence=confidence,
+            provenance=(
+                _provenance(
+                    source_id,
+                    page.page_number,
+                    method="centerline inferred from unique scale-backed concentric cubic boundaries",
+                    confidence=confidence,
+                    source_element_id="+".join(sources),
+                    attributes=attributes,
+                )
+                + _level_measurement_provenance(
+                    source_id, level_info.height, field="height_m"
+                )
+            ),
+            attributes={"pdf_architecture": attributes},
+        )
+        walls.append(_WallContext(wall, page.page_number, None, None))
+        for line in page.lines:
+            if line.primitive_family == "curve" and any(
+                all(
+                    math.dist(p, q) < 0.001
+                    for p, q in zip(sorted((line.start_pt, line.end_pt)), sorted(chord))
+                )
+                for curve in pair.boundaries
+                for chord in curve.chord_endpoints
+            ):
+                consumed.add(line.element_id)
+    return tuple(walls), consumed
+
+
 def _geometric_wall_loop_entities(
     page: PdfPageObservation,
     transform: _Transform2D,
@@ -5330,6 +5422,7 @@ def _geometric_wall_loop_entities(
     excluded_element_ids: set[str] | None = None,
     allow_partial_faces: bool = True,
     sheet_anchor: str | None = None,
+    curved_contexts: tuple[_WallContext, ...] = (),
 ) -> tuple[
     tuple[_WallContext, ...],
     tuple[Space, ...],
@@ -5504,12 +5597,23 @@ def _geometric_wall_loop_entities(
         if not pairs[index].junction_supported
         and _pair_ends_on_poche_leg(pairs[index], poche_legs, transform)
     }
+    curve_junction_pair_indexes = {
+        index for index in partial_pair_indexes
+        if any(
+            abs(pairs[index].thickness_m - context.wall.thickness_m) <= .01
+            and any(math.dist(transform.apply(point), (end.x,end.y)) <= .01
+                    for point in (pairs[index].start_pt,pairs[index].end_pt)
+                    for end in (context.wall.centerline.points[0],context.wall.centerline.points[-1]))
+            for context in curved_contexts
+        )
+    }
     no_junction_partial_pair_indexes = {
         index
         for index in partial_pair_indexes
         if index not in short_partial_pair_indexes
         and not pairs[index].junction_supported
         and index not in poche_junction_pair_indexes
+        and index not in curve_junction_pair_indexes
     }
     evidence_supported_partial_pair_indexes = (
         partial_pair_indexes
@@ -5602,10 +5706,12 @@ def _geometric_wall_loop_entities(
             )
         pair_junction_supported = (
             pair.junction_supported or index in poche_junction_pair_indexes
+            or index in curve_junction_pair_indexes
         )
         junction_source_attributes = (
             {"junction_source": "poche_leg"}
             if index in poche_junction_pair_indexes
+            else {"junction_source": "curved_wall"} if index in curve_junction_pair_indexes
             else {}
         )
 
@@ -5924,6 +6030,7 @@ def _geometric_wall_loop_entities(
         diagnostics,
     )
 
+
 def _distance_to_segment(
     point: tuple[float, float],
     start: Point3,
@@ -5997,7 +6104,10 @@ def _make_openings(
         nearest: tuple[float, tuple[float, float], _WallContext] | None = None
         for context in wall_contexts:
             points = context.wall.centerline.points
-            distance, projection, _ = _distance_to_segment(source_center, points[0], points[-1])
+            distance, projection, _ = min(
+                (_distance_to_segment(source_center, a, b) for a,b in zip(points,points[1:])),
+                key=lambda item: item[0],
+            )
             candidate = (distance, projection, context)
             if nearest is None or (candidate[0], context.wall.id) < (nearest[0], nearest[2].wall.id):
                 nearest = candidate
@@ -6012,6 +6122,14 @@ def _make_openings(
             continue
         _, projection, context = nearest
         wall = context.wall
+        if len(wall.centerline.points) > 2:
+            ambiguities.append({
+                "page": page.page_number,
+                "code": "curved_wall_opening_host_unresolved",
+                "detail": "a curved host needs supported opening orientation and extent; no chord-based opening was invented",
+                "source_element_ids": [observation.element_id],
+            })
+            continue
         wall_start, wall_end = wall.centerline.points[0], wall.centerline.points[-1]
         wall_length = math.hypot(wall_end.x - wall_start.x, wall_end.y - wall_start.y)
         if width_m > wall_length + 1e-6:
@@ -6255,6 +6373,10 @@ def _drawing_region_evidence(
             if not _is_sheet_border_segment(page, pair.start_pt, pair.end_pt)
             and set(pair.primitive_families) != {"curve"}
         )
+    curved_pairs, _ = _curved_wall_pairs(page, meters_per_point, options)
+    for pair in curved_pairs:
+        sources = tuple(sorted(curve.element_id for curve in pair.boundaries))
+        evidence.extend(RegionEvidence(a,b,sources) for a,b in zip(pair.points_pt,pair.points_pt[1:]))
     return "paired_wall_faces", tuple(evidence)
 
 
@@ -6848,6 +6970,13 @@ def _wall_repeats(
 
     if candidate.level_id != emitted.level_id:
         return None
+    if len(candidate.centerline.points) > 2 or len(emitted.centerline.points) > 2:
+        a, b = candidate.centerline.points, emitted.centerline.points
+        if len(a) != len(b):
+            return None
+        gap = min(max(math.dist((p.x,p.y,p.z),(q.x,q.y,q.z)) for p,q in zip(a,order))
+                  for order in (b,tuple(reversed(b))))
+        return gap if gap <= tolerance_m else None
     a0, a1 = emitted.centerline.points[0], emitted.centerline.points[-1]
     b0, b1 = candidate.centerline.points[0], candidate.centerline.points[-1]
     length = math.hypot(a1.x - a0.x, a1.y - a0.y)
@@ -7427,6 +7556,11 @@ def import_observations(
             if boundary.source_kind == "ordinary_vector_line_loop"
             for source_element_id in boundary.source_element_ids
         }
+        curved_walls, consumed_curve_ids = _curved_wall_entities(
+            region_page, transform, level, level_info, document.source_id, options, ambiguities,
+        )
+        consumed_vector_line_ids |= consumed_curve_ids
+        page_walls.extend(curved_walls)
         blocking_enclosure_codes = {
             "duplicate_room_label",
             "ordinary_vector_enclosure_ambiguous",
@@ -7461,6 +7595,7 @@ def import_observations(
                 excluded_element_ids=consumed_vector_line_ids,
                 allow_partial_faces=not legacy_single_loop_partial_guard,
                 sheet_anchor=_sheet_anchor(page),
+                curved_contexts=curved_walls,
             )
             resolved_geometric_label_anchors = {
                 space.attributes["pdf_architecture"].get("label_anchor")
@@ -7479,6 +7614,9 @@ def import_observations(
 
         def wall_geometry_key(context: _WallContext) -> tuple[object, ...]:
             points = context.wall.centerline.points
+            if len(points) > 2:
+                return ("curve", tuple((round(p.x,4),round(p.y,4)) for p in points),
+                        round(context.wall.thickness_m,4))
             return _wall_geometry_key(
                 (points[0].x, points[0].y),
                 (points[-1].x, points[-1].y),

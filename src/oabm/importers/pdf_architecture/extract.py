@@ -25,6 +25,7 @@ from oabm.importers.pdf_display import (
 )
 
 from .types import (
+    PdfCurveObservation,
     PdfDocumentObservation,
     PdfLineObservation,
     PdfPageObservation,
@@ -495,6 +496,92 @@ def _curve_polyline_segments(
     return tuple(segments)
 
 
+def _sample_curves(
+    curves: Iterable[dict[str, object]],
+    page_height: float,
+    page_number: int,
+) -> tuple[PdfCurveObservation, ...]:
+    """Flatten pure cubic subpaths by a convex-hull chord-error bound (0.1 pt).
+
+    Control points must be near the finite chord, not just its infinite line;
+    this rejects flat-looking backtracking. Depth exhaustion fails closed.
+    Legacy line observations remain byte-identical for existing consumers.
+    """
+    tolerance = 0.1
+
+    def distance(p, a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        denominator = dx * dx + dy * dy
+        t = (
+            max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / denominator))
+            if denominator
+            else 0.0
+        )
+        return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+    def mid(a, b):
+        return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+
+    def sample(a, b, c, d, depth=0):
+        if max(distance(b, a, d), distance(c, a, d)) <= tolerance:
+            return [a, d]
+        if depth >= 20:
+            raise ValueError("curve subdivision exhausted")
+        ab, bc, cd = mid(a, b), mid(b, c), mid(c, d)
+        abc, bcd = mid(ab, bc), mid(bc, cd)
+        center = mid(abc, bcd)
+        return sample(a, ab, abc, center, depth + 1)[:-1] + sample(
+            center, bcd, cd, d, depth + 1
+        )
+
+    result = {}
+    for curve in curves:
+        if not curve.get("stroke"):
+            continue
+        path = curve.get("path")
+        if not isinstance(path, (tuple, list)) or not path:
+            continue
+        # A mixed/closed path has additional semantics. Do not discard its
+        # edges to manufacture an apparently independent circular boundary.
+        if str(path[0][0]).lower() != "m" or any(
+            str(item[0]).lower() != "c" for item in path[1:]
+        ):
+            continue
+        try:
+            convert = lambda p: (float(p[0]), page_height - float(p[1]))
+            start = convert(path[0][1])
+            points = [start]
+            chords = []
+            for item in path[1:]:
+                b, c, d = (convert(p) for p in item[1:])
+                if not all(math.isfinite(v) for p in (start, b, c, d) for v in p):
+                    raise ValueError("nonfinite curve")
+                points.extend(sample(start, b, c, d)[1:])
+                chords.append((start, d))
+                start = d
+            if len(points) < 3:
+                continue
+        except (ValueError, TypeError, IndexError):
+            continue
+        pts = tuple((round(x, 6), round(y, 6)) for x, y in points)
+        pts = min(pts, tuple(reversed(pts)))
+        signature = repr(pts)
+        layer = curve.get("_oabm_source_layer")
+        layers = (layer,) if isinstance(layer, str) and layer else ()
+        key = (pts, _dash_present(curve.get("dash")))
+        if key in result:
+            layers = tuple(sorted(set(layers) | set(result[key].source_layers)))
+        result[key] = PdfCurveObservation(
+            element_id=_element_id("curve", page_number, signature),
+            points_pt=pts,
+            chord_endpoints=tuple(chords),
+            dashed=key[1],
+            source_layers=layers,
+            max_chord_error_pt=tolerance,
+        )
+    return tuple(result[key] for key in sorted(result))
+
+
 def _reference_ids(value: object) -> set[int]:
     members = resolve1(value)
     if not isinstance(members, (tuple, list)):
@@ -676,6 +763,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                         index,
                     ),
                     rects=_unique_rects(page.rects, index),
+                    curves=_sample_curves(page.curves, float(page.height), index),
                     hidden_wall_source_present=hidden_wall_source_present,
                 )
             )

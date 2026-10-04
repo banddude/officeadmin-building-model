@@ -50,6 +50,7 @@ class RoutingOptions:
     clearance_m: float = 0.0
     search_margin_m: float = 0.25
     corridor_tolerance_m: float = 0.05
+    bundle_alignment_tolerance_m: float = 0.01
     preferred_corridor_discount: float = 0.20
     surface_path_discount: float = 0.05
     # Cost multiplier for a segment whose midpoint lies inside a glazed wall's
@@ -61,12 +62,17 @@ class RoutingOptions:
     coordinate_precision: int = 9
 
     def __post_init__(self) -> None:
+        if isinstance(self.bundle_alignment_tolerance_m, bool) or not isinstance(
+            self.bundle_alignment_tolerance_m, (int, float)
+        ):
+            raise RoutingError("bundle_alignment_tolerance_m must be a number")
         for name in (
             "bend_penalty_m",
             "port_stub_m",
             "clearance_m",
             "search_margin_m",
             "corridor_tolerance_m",
+            "bundle_alignment_tolerance_m",
             "soft_obstacle_penalty_factor",
         ):
             value = getattr(self, name)
@@ -93,8 +99,11 @@ class BundleHints:
 
     paths: tuple[Polyline3D, ...] = ()
     discount: float = 0.25
+    route_type: str | None = None
 
     def __post_init__(self) -> None:
+        if self.route_type is not None and (not isinstance(self.route_type, str) or not self.route_type.strip()):
+            raise RoutingError("route_type must be a nonempty string when supplied")
         if not isinstance(self.paths, tuple) or not all(
             isinstance(item, Polyline3D) for item in self.paths
         ):
@@ -286,7 +295,8 @@ def route_between_ports(
     diameter = _resolve_diameter(start_port, end_port, nominal_diameter_m)
     route_radius = (diameter or 0.0) / 2.0
     geometry = _collect_routing_geometry(model, route_type, route_radius, options)
-    bundle = _bundle_index(bundle_hints, options.coordinate_precision)
+    type_mismatch = bundle_hints is not None and bundle_hints.route_type is not None and bundle_hints.route_type != route_type
+    bundle = _bundle_index(None if type_mismatch else bundle_hints, options.coordinate_precision)
     if bundle is not None:
         geometry = dataclasses.replace(geometry, bundle=bundle)
 
@@ -330,6 +340,11 @@ def route_between_ports(
         options,
     )
     points = _simplify(points)
+    alignment = None
+    if type_mismatch:
+        alignment = {"status": "unchanged", "reason": "route_type_mismatch"}
+    elif bundle is not None and bundle_hints.route_type == route_type:
+        points, alignment = _align_bundle_source(points,bundle,geometry,options,start_anchor,end_anchor)
     bend_count = _count_bends(points)
     if options.max_bends is not None and bend_count > options.max_bends:
         raise NoRouteError(
@@ -354,6 +369,10 @@ def route_between_ports(
             attributes={"route_type": route_type},
         ),
     )
+    if alignment is not None and alignment["status"] == "aligned":
+        provenance += (Provenance(source_kind="router",source_id=model.model_id,
+            source_element_id=f"{start_port_id}->{end_port_id}",method="bundle-source-alignment",
+            confidence=1.0,derivation=DERIVATION_INFERRED,attributes=alignment),)
     fittings = _build_fittings(route_id, points, diameter, provenance)
     length_m = sum(_distance(a, b) for a, b in zip(points, points[1:]))
     attributes = {
@@ -362,6 +381,8 @@ def route_between_ports(
         "length_m": round(length_m, options.coordinate_precision),
         "required_constraint_ids": [item.id for item in geometry.required],
     }
+    if alignment is not None:
+        attributes["bundle_alignment"] = alignment
     if bundle is not None:
         p = options.coordinate_precision
         attributes["bundle_hint_discount"] = float(bundle_hints.discount)
@@ -392,12 +413,152 @@ def route_between_ports(
     return route, fittings
 
 
+def _align_bundle_source(points, index, geometry, options, start_anchor, end_anchor):
+    """Align typed, near-coincident runs before canonical Route construction.
+
+    Actual port stubs, hard clearances, required corridors and bend limits remain
+    authoritative. Short connectors belong to the resulting measured path.
+    """
+    tolerance = options.bundle_alignment_tolerance_m
+    if tolerance == 0:
+        return points, {"status": "unchanged", "reason": "disabled"}
+    expanded = [points[0]]
+    for a, b in zip(points, points[1:]):
+        middle = [
+            p
+            for p in (start_anchor, end_anchor)
+            if _distance(a, p) > _EPS
+            and _distance(p, b) > _EPS
+            and abs(_distance(a, p) + _distance(p, b) - _distance(a, b)) <= _EPS
+        ]
+        expanded.extend(sorted(set(middle), key=lambda p: _distance(a, p)))
+        expanded.append(b)
+    result = list(expanded)
+    changes = []
+    refusals = set()
+    # Work backwards so replacing an interior segment keeps earlier indexes.
+    for position in range(len(expanded) - 3, 0, -1):
+        a, b = expanded[position], expanded[position + 1]
+        axis = _axis_key(a, b, options.coordinate_precision)
+        if axis is None:
+            continue
+        source_key, lo, hi = axis
+        # Never leave an already shared corridor for a nearby alternative.
+        if _bundle_shared_m((a, b), index, options.coordinate_precision) > _EPS:
+            continue
+        candidates = []
+        for key, intervals in sorted(index.lookup.items()):
+            if key[0] != source_key[0]:
+                continue
+            offset = math.hypot(key[1] - source_key[1], key[2] - source_key[2])
+            for left, right in intervals:
+                overlap = (max(lo, left), min(hi, right))
+                if overlap[1] - overlap[0] <= _EPS:
+                    continue
+                if offset <= _EPS:
+                    continue
+                if offset > tolerance:
+                    refusals.add("outside_tolerance")
+                    continue
+                candidates.append((offset, -(overlap[1] - overlap[0]), key, overlap))
+        if not candidates:
+            continue
+        candidates.sort()
+        best = candidates[0]
+        if any(abs(c[0] - best[0]) <= _EPS and c[2] != best[2] for c in candidates[1:]):
+            refusals.add("ambiguous_corridor")
+            continue
+        _, _, key, (left, right) = best
+
+        def point(k, value):
+            x, y, z = _bundle_interval_point(k, value)
+            return Point3(x=x, y=y, z=z)
+
+        direction = getattr(b, ("x", "y", "z")[key[0]]) > getattr(
+            a, ("x", "y", "z")[key[0]]
+        )
+        first, last = (left, right) if direction else (right, left)
+        replacement = [
+            a,
+            point(source_key, first),
+            point(key, first),
+            point(key, last),
+            point(source_key, last),
+            b,
+        ]
+        # Two-coordinate offsets use a deterministic rectilinear connector.
+        connector = []
+        for p in replacement:
+            if connector and _distance(connector[-1], p) <= _EPS:
+                continue
+            if connector:
+                previous = connector[-1]
+                xyz = [previous.x, previous.y, previous.z]
+                target = (p.x, p.y, p.z)
+                for dimension in range(3):
+                    if abs(xyz[dimension] - target[dimension]) > _EPS:
+                        xyz[dimension] = target[dimension]
+                        q = Point3(x=xyz[0], y=xyz[1], z=xyz[2])
+                        if q != p:
+                            connector.append(q)
+            connector.append(p)
+        proposal = result[:position] + connector + result[position + 2 :]
+        proposal = _simplify(proposal)
+        if any(
+            not _segment_clear(p, q, geometry.hard_blockers)
+            for p, q in zip(proposal, proposal[1:])
+        ):
+            refusals.add("obstacle_clearance")
+            continue
+        mask = 0
+        for p, q in zip(proposal, proposal[1:]):
+            mask = _required_mask(mask, p, q, geometry.required)
+        if mask != (1 << len(geometry.required)) - 1:
+            refusals.add("required_corridor")
+            continue
+        if options.max_bends is not None and _count_bends(proposal) > options.max_bends:
+            refusals.add("bend_limit")
+            continue
+        # Retain unsimplified indexing until the whole pass is complete.
+        result = result[:position] + connector + result[position + 2 :]
+        changes.append(
+            {
+                "source_start": [a.x, a.y, a.z],
+                "source_end": [b.x, b.y, b.z],
+                "aligned_start": list(_bundle_interval_point(key, first)),
+                "aligned_end": list(_bundle_interval_point(key, last)),
+                "offset_m": best[0],
+            }
+        )
+    if not changes:
+        return points, {
+            "status": "unchanged",
+            "reason": (
+                sorted(refusals)[0] if refusals else "already_aligned_or_no_overlap"
+            ),
+        }
+    result = _simplify(result)
+    old_length = sum(_distance(a, b) for a, b in zip(points, points[1:]))
+    new_length = sum(_distance(a, b) for a, b in zip(result, result[1:]))
+    return result, {
+        "status": "aligned",
+        "tolerance_m": tolerance,
+        "length_delta_m": round(new_length - old_length, options.coordinate_precision),
+        "adjustments": list(reversed(changes)),
+        "refusal_reasons": sorted(refusals),
+    }
+
+
 def _resolve_diameter(start: Port, end: Port, explicit: float | None) -> float | None:
     if explicit is not None:
         if not math.isfinite(explicit) or explicit <= 0:
             raise RoutingError("nominal_diameter_m must be finite and > 0")
         return float(explicit)
-    values = [value for value in (start.nominal_diameter_m, end.nominal_diameter_m) if value is not None]
+    values = [
+        value
+        for value in (start.nominal_diameter_m, end.nominal_diameter_m)
+        if value is not None
+    ]
     return max(values) if values else None
 
 

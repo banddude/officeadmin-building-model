@@ -93,3 +93,28 @@ Routes and fittings carry `router` provenance with method `deterministic-rectili
 ## Geometry note
 
 The routing grid uses conservative axis-aligned bounds to generate candidate coordinates. Active `RouteConstraint` geometry is evaluated against its actual shape: rotated `Box3D` values use their quaternion pose as oriented boxes with Euclidean clearance, route radius, and corridor tolerance; `Polyline3D` and planar `Polygon3D` values use shape-aware distance checks. Their AABBs are only broad-phase filters. Non-planar or degenerate polygon constraints fail explicitly instead of being reinterpreted. Canonical obstacle and surface-path bounds remain conservative in this first deterministic engine.
+
+## Exact source alignment for typed bundle hints (#223)
+
+`BundleHints(paths=(...), route_type="emt")` explicitly declares the routing type
+of a shared corridor. Matching typed hints also enable a bounded alignment pass
+before canonical route/fitting construction. `RoutingOptions.bundle_alignment_tolerance_m`
+sets the maximum centerline offset (default 0.01 m, zero disables alignment).
+Untyped legacy hints retain their existing cost-only behavior and byte-level
+output; a mismatched declared type is not used for either discount or alignment.
+
+The pass retains original port positions and direction stubs, uses exact hint
+coordinates for the overlapping shared span, and inserts measured rectilinear
+connectors where needed. Reversed traversal and partial overlaps retain their
+actual connected path. An already shared corridor is never displaced toward a
+nearby alternative; tied nearest corridors fail closed. Every proposed path is
+rechecked against expanded hard blockers, required-corridor coverage and the
+bend limit. Out-of-tolerance or rejected alignments leave the original valid
+route untouched with an explicit reason under `attributes.bundle_alignment`.
+
+Successful alignment retains the original routing provenance and adds an inferred
+`bundle-source-alignment` record with source/aligned endpoints, offset, tolerance
+and signed length delta. Route identity is unchanged. Fittings and measured route
+length are generated from the final centerline, so downstream conductor takeoff
+includes connector length rather than omitting a branch-to-trunk gap. This is a
+geometric proposal; it does not add a physical minimum bend-radius design rule.

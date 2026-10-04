@@ -280,6 +280,8 @@ This repairs source observations only: a newly readable continuation caption
 or dimension does not by itself establish a registration transform. Cached
 observations must be re-extracted to exercise this change.
 
-This path requires pdfplumber 0.11.3 or newer, whose public word extraction API
-can return the original characters alongside each word. The dependency minimum
-reflects that requirement.
+The supported minimum is pdfplumber 0.11.10, verified against the complete
+engine suite. Although 0.11.3 introduced the required public
+`extract_words(return_chars=True)` API and passes the text-specific tests, its
+older curve and scaled-stroke observations fail existing geometry regressions.
+The dependency minimum therefore covers both text and geometry requirements.

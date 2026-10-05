@@ -84,6 +84,14 @@ scale, and drawing-role validation. Repeated boundaries are not counted twice;
 white, unknown/conflicting paint, unfilled rectangles, and explicit nonwall
 layers are not promoted by this normalization. Original observations stay intact.
 
+Coincident filled paths and outlines retain both paint and stroke evidence;
+encountering the outline first no longer clears the fill flag or replaces a
+filled path's primitive family. White/unknown paint conflicts remain unresolved.
+Native line extraction uses source endpoints instead of bounding-box corners,
+so crossing diagonals retain their slope and distinct identities across page
+rotations and MediaBox offsets. A diagonal without usable endpoint evidence is
+not reconstructed from its box.
+
 ### Adjacent construction drawings
 
 Separately bounded construction drawings may be adjoining pieces rather than

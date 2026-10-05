@@ -386,12 +386,14 @@ def _unique_rects(
         # source evidence and must not dedupe into one rectangle.
         if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
             continue
+        fill_grays = _source_fill_grays(obj)
         key = (*bbox, source_layer)
         if key in seen:
             prior = result[seen[key]]
             result[seen[key]] = replace(
                 prior,
-                fill_grays=_merge_fill_grays(prior.fill_grays, _source_fill_grays(obj)),
+                filled=prior.filled or bool(fill_grays),
+                fill_grays=_merge_fill_grays(prior.fill_grays, fill_grays),
                 stroke_present=_merge_stroke_presence(
                     prior.stroke_present, _source_stroke(obj)
                 ),
@@ -406,9 +408,9 @@ def _unique_rects(
                 element_id=_element_id("rect", page_number, signature),
                 bbox_pt=bbox,
                 native_id=_native_id(obj, "rect"),
-                filled=bool(obj.get("fill", False)),
+                filled=bool(fill_grays),
                 source_layer=source_layer,
-                fill_grays=_source_fill_grays(obj),
+                fill_grays=fill_grays,
                 stroke_present=_source_stroke(obj),
             )
         )
@@ -571,6 +573,7 @@ def _unique_lines(
             bool | None,
         ],
     ] = {}
+    filled_families: dict[tuple[float, float, float, float], set[str]] = {}
     for obj in lines:
         a = (round(float(obj["x0"]), 4), round(float(obj["y0"]), 4))
         b = (round(float(obj["x1"]), 4), round(float(obj["y1"]), 4))
@@ -578,6 +581,11 @@ def _unique_lines(
             continue
         start, end = sorted((a, b))
         signature_tuple = (start[0], start[1], end[0], end[1])
+        paint = obj.get("_oabm_fill_grays", _source_fill_grays(obj))
+        if paint:
+            filled_families.setdefault(signature_tuple, set()).add(
+                str(obj.get("_oabm_primitive_family") or "line")
+            )
         layer = obj.get("_oabm_source_layer")
         stroke = (
             _line_width_pt(obj.get("linewidth")),
@@ -618,6 +626,14 @@ def _unique_lines(
         end = (signature_tuple[2], signature_tuple[3])
         signature = "|".join(f"{value:.4f}" for value in signature_tuple)
         primitive_family = str(obj.get("_oabm_primitive_family") or "line")
+        # A coincident outline must not erase the independently observed fill
+        # or its path family just because the outline was extracted first.
+        # Curve-only material stays a curve; straight filled paths retain the
+        # same strip checks as a path without a coincident outline.
+        for family in ("polyline", "rect", "curve"):
+            if family in filled_families.get(signature_tuple, ()):
+                primitive_family = family
+                break
         result.append(
             PdfLineObservation(
                 element_id=_element_id("line", page_number, signature),
@@ -626,7 +642,7 @@ def _unique_lines(
                 native_id=_native_id(obj, "line"),
                 primitive_family=primitive_family,
                 dashed=bool(obj.get("_oabm_dashed", False)),
-                filled=bool(obj.get("_oabm_filled", False)),
+                filled=bool(fill_grays),
                 source_layers=tuple(sorted(source_layers)),
                 line_width_pt=line_width_pt,
                 stroke_gray=stroke_gray,
@@ -648,6 +664,36 @@ def _curve_primitive_family(curve: dict[str, object]) -> str:
         if operation in {"c", "v", "y"}:
             return "curve"
     return "polyline"
+
+
+def _native_line_segments(
+    lines: Iterable[dict[str, object]], page_height: float,
+) -> tuple[dict[str, object], ...]:
+    """Keep native line endpoints rather than the corners of their bbox.
+
+    pdfplumber's x0/y0/x1/y1 describe extrema, which lose a diagonal's slope.
+    Its pts retain the actual displayed top-origin endpoints. For older
+    endpoint-less observations only an axis-aligned bbox is unambiguous.
+    """
+    result: list[dict[str, object]] = []
+    for line in lines:
+        points = line.get("pts")
+        if isinstance(points, (list, tuple)) and len(points) == 2:
+            try:
+                a, b = ((float(point[0]), page_height - float(point[1])) for point in points)
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not all(math.isfinite(value) for point in (a, b) for value in point):
+                continue
+            result.append({**line, "x0": a[0], "y0": a[1], "x1": b[0], "y1": b[1]})
+        elif points is None:
+            try:
+                x0, y0, x1, y1 = (float(line[key]) for key in ("x0", "y0", "x1", "y1"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if all(math.isfinite(value) for value in (x0, y0, x1, y1)) and (x0 == x1 or y0 == y1):
+                result.append(line)
+    return tuple(result)
 
 
 def _curve_polyline_segments(
@@ -986,7 +1032,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfDocumen
                                     "_oabm_filled": bool(line.get("fill", False)),
                                     "_oabm_source_layer": line.get("_oabm_source_layer"),
                                 }
-                                for line in page.lines
+                                for line in _native_line_segments(page.lines, float(page.height))
                             ),
                             *_curve_polyline_segments(page.curves, float(page.height)),
                         ),

@@ -739,9 +739,12 @@ def test_generated_pdf_triangulated_strips_import_through_the_real_extractor(
     merged = [
         line
         for line in lines
-        if line.primitive_family == "line" and not line.filled
+        if line.source_layers == ("A-FLOR", PATTERN_LAYER)
     ]
     assert len(merged) == 1
+    # Both the unfilled floor stroke and filled wall path survive deduplication.
+    assert merged[0].filled
+    assert merged[0].primitive_family == "polyline"
     assert merged[0].source_layers == ("A-FLOR", PATTERN_LAYER)
 
     model = import_observations(extracted, options=_options())

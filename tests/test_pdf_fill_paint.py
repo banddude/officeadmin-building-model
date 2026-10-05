@@ -188,3 +188,71 @@ def test_any_actual_stroke_survives_coincident_fill_paths():
     b = raw(0, stroke=True)
     assert _unique_lines([a, b], 1)[0].stroke_present is True
     assert _unique_lines([b, a], 1)[0].stroke_present is True
+
+
+@pytest.mark.parametrize('reversed_order', [False, True])
+def test_coincident_stroke_does_not_erase_a_filled_path(reversed_order):
+    outline = {**raw(.4, stroke=True), 'fill': False, '_oabm_filled': False,
+               '_oabm_primitive_family': 'line'}
+    material = {**raw(.4), '_oabm_primitive_family': 'polyline'}
+    objects = [outline, material]
+    if reversed_order:
+        objects.reverse()
+    [line] = _unique_lines(objects, 1)
+    assert line.filled
+    assert line.primitive_family == 'polyline'
+    assert line.fill_grays == (.4,)
+    assert line.stroke_present is True
+
+
+@pytest.mark.parametrize('reversed_order', [False, True])
+def test_coincident_rectangle_outline_does_not_erase_native_fill(reversed_order):
+    outline = {**raw(.4, stroke=True), 'y1': 30, 'fill': False, '_oabm_filled': False}
+    material = {**raw(.4), 'y1': 30}
+    objects = [outline, material]
+    if reversed_order:
+        objects.reverse()
+    [rect] = _unique_rects(objects, 1)
+    assert rect.filled
+    assert rect.fill_grays == (.4,)
+    assert rect.stroke_present is True
+
+
+def test_curve_only_fill_family_is_not_promoted_by_a_coincident_straight_stroke():
+    outline = {**raw(.4, stroke=True), 'fill': False, '_oabm_filled': False,
+               '_oabm_primitive_family': 'line'}
+    material = {**raw(.4), '_oabm_primitive_family': 'curve'}
+    a = _unique_lines([outline, material], 1)[0]
+    b = _unique_lines([material, outline], 1)[0]
+    assert a == b
+    assert a.filled and a.primitive_family == 'curve'
+
+
+def test_merged_fill_does_not_resolve_a_white_paint_conflict():
+    from oabm.importers.pdf_architecture.fill_paint import wall_fill_paint
+    outline = {**raw(.4, stroke=True), 'fill': False, '_oabm_filled': False,
+               '_oabm_primitive_family': 'line'}
+    material = {**raw(.4), '_oabm_primitive_family': 'polyline'}
+    white = {**raw(1), '_oabm_primitive_family': 'polyline'}
+    a = _unique_lines([outline, material, white], 1)[0]
+    b = _unique_lines([white, material, outline], 1)[0]
+    assert a == b
+    assert a.filled and a.fill_grays == (.4, 1.)
+    assert not wall_fill_paint(a.fill_grays, require_known=True)
+
+
+@pytest.mark.parametrize('fill_first', [False, True])
+def test_native_pdf_fill_survives_coincident_separate_line_outlines(tmp_path, fill_first):
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, NameObject
+    from oabm.importers.pdf_architecture.extract import extract_pdf
+    writer = PdfWriter(); page = writer.add_blank_page(200, 100)
+    stroke = '0 G 20 20 m 170 20 l S 170 20 m 170 30 l S 170 30 m 100 30 l S 100 30 m 100 40 l S 100 40 m 20 40 l S 20 40 m 20 20 l S'
+    fill = '.4 g 20 20 m 170 20 l 170 30 l 100 30 l 100 40 l 20 40 l h f'
+    stream = DecodedStreamObject(); stream.set_data((' '.join([fill, stroke] if fill_first else [stroke, fill])).encode())
+    page[NameObject('/Contents')] = writer._add_object(stream)
+    path = tmp_path/'synthetic-coincident-fill.pdf'; writer.write(path)
+    observed = extract_pdf(path).pages[0]
+    assert len(observed.lines) == 6
+    assert all(line.filled and line.primitive_family == 'polyline' and line.fill_grays == (.4,)
+               for line in observed.lines)

@@ -60,7 +60,7 @@ Architecture entities carry two independent shape representations:
   so viewers (Blender, Bonsai, Revit, Navisworks) see surfaces instead of
   lines or nothing. The Body is a view, never a second source of truth: it is
   authored in canonical metres on the canonical axes from canonical fields
-  only, and import ignores it entirely, so `round_trip` stays exact.
+  only, and import ignores it entirely, so this adds no canonical round-trip difference.
 
 Bodies are written only where the canonical fields fully determine them
 (`IfcExtrudedAreaSolid` throughout; every product with a Body also carries the
@@ -102,13 +102,24 @@ coordinates because the product's `ObjectPlacement` already carries the
 canonical pose; a Bonsai move of the product moves its solid with it, and the
 moved placement flows back into the canonical pose on import.
 
-## Identity and lossless round trip
+## Identity and semantic round trip
 
 Every canonical entity that becomes an IFC rooted object receives a deterministic `GlobalId` computed from its canonical ID. Renaming or moving an object therefore does not change identity. Import rejects a canonical object whose `GlobalId` no longer matches its canonical ID instead of treating replacement as an edit.
 
 IFC does not natively carry every canonical v1 field, especially provenance, confidence, arbitrary attributes, route fitting order, and source-specific metadata. The custom `OABM_Canonical` property set carries a lossless JSON shadow of the canonical entity for those fields. This is serialization metadata, not an independent domain model: on import, IFC-native editable values such as names, placements, port ownership/connectivity, wall axes, and route segment axes override the shadow before the normal `BuildingModel` validator runs. Native connectivity is authoritative even when the native connection set is empty, so a Bonsai disconnect is preserved. Likewise, deleting every native span for a canonical route is rejected explicitly instead of resurrecting stale route geometry from the shadow. Export also raises `IfcAdapterError` if IfcOpenShell cannot materialize explicit canonical port connectivity rather than silently producing divergent native IFC. Because native IFC ports support a single connected peer, canonical fan-out on one port is rejected explicitly; export also verifies the materialized native connectivity graph exactly matches the canonical graph before continuing.
 
 Generated IFC-only objects such as route span ports, route attachment ports (which also record `CanonicalPortId`) and spatial containers use `OABM_Adapter` metadata so the importer can distinguish adapter structure from canonical entities; `from_ifc` ignores them.
+
+### Floating-point round-trip checks
+
+For arbitrary real-valued placements, compare models with
+`round_trip_differences(original, from_ifc(to_ifc(original))) == ()` rather than
+requiring every double to be bit-identical. The [canonical numerical policy](model-contract-v1.md#numerical-equivalence-across-ifc-interchange-79)
+allows 1e-9 m absolute error only in native editable positions/axes/elevations,
+and 1e-12 in pose quaternion components (including whole-quaternion sign).
+Topology, metadata and shadow-only fields remain exact. Canonical serialization,
+IFC byte determinism, native edit authority and existing fixture hashes do not
+change. The helper reports difference paths and never mutates either model.
 
 ## Byte determinism
 
@@ -131,7 +142,7 @@ An id claimed by two groups raises `IfcAdapterError` before the file is written.
 
 `groups=None` or `{}` changes nothing: the written file is byte-identical to a default export. With groups the export is as byte-deterministic as ever — group and relationship GlobalIds derive from the group name, and the relationship `SET` is written in the deterministic order the byte-determinism pass applies to every relationship.
 
-`from_ifc` ignores these groups: the `IfcGroup` carries `OABM_Adapter` metadata only, no canonical payload, so the groups are not canonical and `round_trip` of a grouped export is exact.
+`from_ifc` ignores these groups: the `IfcGroup` carries `OABM_Adapter` metadata only, no canonical payload, so the groups are not canonical and groups add no canonical round-trip difference.
 
 ## Per-token materials and the glazing style
 
@@ -144,7 +155,7 @@ A wall whose canonical `construction` token is set gets a standard material asso
 | `glazed` | `Glass` | `glass` |
 | `masonry` | `Masonry` | `masonry` |
 
-Each association's `GlobalId` is derived from its token through the adapter's stable-GUID helper (the `_WALL_MATERIAL_KEY_PREFIX` key) and pinned at creation, so exports stay byte-deterministic. The material is derived output, never a second source of truth: `from_ifc` keeps reading `construction` from the `OABM_Canonical` pset and ignores the association, so `round_trip` stays exact. Walls without a token get no material, and a model whose walls all lack a token writes bytes identical to a default export.
+Each association's `GlobalId` is derived from its token through the adapter's stable-GUID helper (the `_WALL_MATERIAL_KEY_PREFIX` key) and pinned at creation, so exports stay byte-deterministic. The material is derived output, never a second source of truth: `from_ifc` keeps reading `construction` from the `OABM_Canonical` pset and ignores the association, so this adds no canonical round-trip difference. Walls without a token get no material, and a model whose walls all lack a token writes bytes identical to a default export.
 
 Glazed walls also carry a translucent surface style shared across the file: one `IfcSurfaceStyle` holding an `IfcSurfaceStyleRendering` item (Transparency 0.65 over a light blue-grey colour), put on the glazed `Body` items with `IfcStyledItem` so Bonsai draws glass. The style is written only when some glazed wall actually has a Body to carry it. A glazed wall whose Body was refused (a `BodyReason` on `OABM_Adapter`) keeps its material and simply goes unstyled.
 
@@ -152,7 +163,7 @@ Glazed walls also carry a translucent surface style shared across the file: one 
 
 `to_ifc(..., element_status={"device:rec": "EXISTING", "route:feed": "NEW"})` writes rework phase where IFC viewers already look for it: the standard `Status` property (`PEnum_ElementStatus`) of each named product's applicable common property set, chosen by ifcopenshell's IFC4 pset templates. An outlet gets `Pset_OutletTypeCommon`, a light fixture `Pset_LightFixtureTypeCommon`, a switching device `Pset_SwitchingDeviceTypeCommon`, a distribution board `Pset_ElectricDistributionBoardTypeCommon`, a wall `Pset_WallCommon`, a conduit segment `Pset_CableCarrierSegmentTypeCommon` and a fitting `Pset_CableCarrierFittingTypeCommon`; when several applicable sets carry `Status`, the first by name wins. The legal values are exactly `NEW`, `EXISTING`, `DEMOLISH`, `TEMPORARY`, `OTHER`, `NOTKNOWN` and `UNSET`; anything else raises `IfcAdapterError`.
 
-Which element is new, existing or to demolish is the caller's decision — commercial TI work mixes all three — and the exporter never derives one. A route id expands to its segment and fitting products, exactly like `groups`. A product whose class has no `Status`-bearing set (an `IfcSpace`, for example) is skipped, and an id that matches nothing is ignored; `to_ifc` has no summary channel, so both behaviours are documented here rather than counted. The property set is created only when missing (an existing set just gains `Status`), and its `GlobalId` is pinned from `status-pset:` plus the product's canonical id, so a status-carrying export is as byte-deterministic as a plain one. `element_status=None` or `{}` leaves the written bytes unchanged, and `from_ifc` reads only `OABM_Canonical` and ignores `Status`, so the round trip stays exact.
+Which element is new, existing or to demolish is the caller's decision — commercial TI work mixes all three — and the exporter never derives one. A route id expands to its segment and fitting products, exactly like `groups`. A product whose class has no `Status`-bearing set (an `IfcSpace`, for example) is skipped, and an id that matches nothing is ignored; `to_ifc` has no summary channel, so both behaviours are documented here rather than counted. The property set is created only when missing (an existing set just gains `Status`), and its `GlobalId` is pinned from `status-pset:` plus the product's canonical id, so a status-carrying export is as byte-deterministic as a plain one. `element_status=None` or `{}` leaves the written bytes unchanged, and `from_ifc` reads only `OABM_Canonical` and ignores `Status`, so this adds no canonical round-trip difference.
 
 ### Hiding a group in a viewer
 

@@ -148,6 +148,40 @@ The Python reader is strict about unknown fields and validates:
 
 This strictness is intentional: a workstream should fail at its handoff boundary instead of silently inventing a divergent interpretation.
 
+## Numerical equivalence across IFC interchange (#79)
+
+Canonical serialization remains unquantized: this change does not round stored
+coordinates, rewrite model JSON, change schema version, or change fixture hashes.
+Serializing the same model remains deterministic. IFC interchange equivalence
+is a separate comparison rule, because placement decomposition and composition
+cannot promise bit-identical floating-point components for arbitrary rotations.
+
+Use `oabm.ifc.round_trip_differences(before, after)` to evaluate that boundary.
+An empty tuple means equivalent under this rule; differences are deterministic
+JSON-pointer paths. Only native IFC-editable geometry is tolerant:
+
+- level `elevation_m`, wall/route centerline point coordinates, and position
+  coordinates on openings, equipment, devices, ports and route fittings:
+  absolute difference at most **1e-9 metres**, with **zero relative tolerance**;
+- quaternion components of those poses: absolute difference at most **1e-12**
+  (dimensionless), either directly or after negating the entire quaternion.
+  `q` and `-q` represent the same orientation; negating selected components does
+  not. The comparator does not normalize a malformed/non-unit quaternion.
+
+All other data is compared exactly: identity, collection ordering, references,
+connectivity, type/name, dimensions not reconstructed from native IFC,
+provenance, confidence and arbitrary attributes, including attributes whose
+names resemble geometry. Missing entities or fields are differences. No blanket
+float tolerance is applied to the entire document, and large world coordinates
+do not enlarge the permitted error.
+
+This is the explicit tolerance option from #79, rather than global rounding.
+It preserves existing golden hashes and lets consumers distinguish numerical
+interchange noise from semantic edits. It is a comparison aid, not an importer
+repair: `from_ifc` continues to return native edited values without snapping them
+back to a stored JSON shadow. Existing exact-fixture equality tests remain useful
+stronger regressions, but are not a universal promise for captured orientations.
+
 ## Public fixtures
 
 `fixtures/model/v1/minimal-room.json` is the smallest building example. `fixtures/model/v1/garage-route.json` exercises the v1 building, electrical, port, obstacle/constraint, route/fitting, circuit/conductor, provenance, and confidence fields. The garage fixture is contract coverage only; the later synthetic-garage convergence gate owns routing/IFC acceptance behavior.

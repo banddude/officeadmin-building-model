@@ -67,3 +67,52 @@ Input arrays are sorted by stable native identifiers before import, and emitted 
 ## Scope
 
 This module owns RoomPlan / LiDAR ingestion only. It does not implement IFC, routing, PDF recognition, quantities, drawing generation, or electrical inference.
+
+## Consumed caller inputs (#83)
+
+Each newly imported model records `attributes.roomplan.import_inputs` (record
+version 1). This is scan-specific import metadata, independent of the existing
+observed/inferred provenance classes; it is not a new canonical geometry type.
+
+- `identity` records the effective identifier and whether it came from
+  `document.identifier` or the `source_id` argument. A document identifier still
+  wins; a caller description never silently replaces document identity.
+- `provenance_source_id` records the effective descriptive source and its argument
+  or document origin. These labels describe the `import_captured_room` call
+  boundary: `load_captured_room` passes its file path as the provenance argument
+  when the caller supplied no descriptive source. The path is not capture identity.
+- `name` says whether the caller supplied the effective name, even if it equals
+  the generated name, or it was generated from identity. An empty name is ignored
+  by the existing fallback and is not falsely described as consumed.
+- `options_argument_provided` distinguishes omitted options from an explicitly
+  constructed default options object. Every effective option records `value`,
+  `default`, `provided`, and `differs_from_default`.
+
+`provided` means supplied to the options constructor, not an inference about a
+human's intent. `RoomPlanImportOptions()` and
+`RoomPlanImportOptions(wall_surface_thickness_m=0.001)` have identical values but
+report different `provided` flags. Positional arguments remain supported.
+Dataclass equality still compares effective configuration, while the input
+records preserve the separate construction facts. `dataclasses.asdict` retains
+its six-option shape; copies and new pickles preserve the input evidence.
+Reconstruction with all six values (including `dataclasses.replace`) supplies
+all six constructor arguments and truthfully reports them as provided. A legacy
+options object without constructor evidence reports `provided: null` rather than
+inventing a claim that its values were defaults or explicit choices.
+
+An entity records only options it actually consults at
+`entity.attributes.roomplan.import_inputs.<option>`: the effective/default value,
+constructor flags, affected canonical `target_paths`, rule, and the model-level
+record path. Wall/slab fallback thickness, inferred object size axes, fallback
+opening depth and orphan-opening host selection are traceable this way. Opening
+depth records the actual `max(host wall thickness, option)` rule, so a lower-bound
+option is not misrepresented as the measured or necessarily chosen depth.
+Measured dimensions and explicit parent identifiers do not claim use of a
+fallback option. No option disclosure promotes an assumption to a measurement.
+
+The record is deterministic, includes no timestamps or raw capture envelope,
+and survives canonical JSON/IFC metadata serialization. Default geometry,
+confidence, provenance classes and stable IDs are unchanged. Older stored models
+remain unchanged when merely loaded; only a new import receives these records.
+Other importers are not generalized here; a second lane should define its actual
+consumed-input semantics before sharing a cross-importer contract.

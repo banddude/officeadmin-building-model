@@ -209,3 +209,61 @@ def test_ifc_pset_reads_observed_with_named_height_claim(
     # assumption surfaces as the named per-claim scope beside it.
     assert psets["Derivation"] == "observed"
     assert psets["InferredClaims"] == "height_m"
+
+
+def test_caller_default_height_cannot_be_reported_as_observed_quantity(tmp_path: Path) -> None:
+    from oabm.importers.pdf_architecture import ImportOptions
+    from oabm.quantities import extract_quantities
+
+    source = tmp_path / "caller-default-height.pdf"
+    _write_wall_face_plan(source, printed_height=False)
+    model = import_architectural_pdf(source, source_id=SOURCE_ID,
+        options=ImportOptions(default_wall_height_m=3.25))
+    validate_model(model)
+    for entity in (*model.levels, *model.walls, *model.spaces):
+        assert entity.height_m == pytest.approx(3.25)
+        records = _height_assumption(entity)
+        assert len(records) == 1
+        assert "ImportOptions.default_wall_height_m" in records[0].method
+    rows = extract_quantities(model).to_dict()["items"]
+    faces = [row for row in rows if row["category"] == "wall_face_area"]
+    assert faces and all(row["quantity_derivation"] == "inferred" for row in faces)
+    lengths = [row for row in rows if row["category"] == "wall_length"]
+    assert lengths and all(row["quantity_derivation"] == "observed" for row in lengths)
+
+
+def test_unused_caller_default_does_not_taint_printed_height_quantities(tmp_path: Path) -> None:
+    from oabm.importers.pdf_architecture import ImportOptions
+    from oabm.quantities import extract_quantities
+
+    source = tmp_path / "printed-wins-over-default.pdf"
+    _write_wall_face_plan(source, printed_height=True)
+    model = import_architectural_pdf(source, source_id=SOURCE_ID,
+        options=ImportOptions(default_wall_height_m=3.25))
+    assert all(w.height_m == pytest.approx(PRINTED_HEIGHT_M) for w in model.walls)
+    rows = extract_quantities(model).to_dict()["items"]
+    faces = [row for row in rows if row["category"] == "wall_face_area"]
+    assert faces and all(row["quantity_derivation"] == "observed" for row in faces)
+
+
+def test_explicit_level_height_override_is_user_evidence_not_observed(tmp_path: Path) -> None:
+    from oabm.importers.pdf_architecture import ImportOptions, LevelOverride
+    from oabm.quantities import extract_quantities
+
+    source = tmp_path / "explicit-height-override.pdf"
+    _write_wall_face_plan(source, printed_height=True)
+    options = ImportOptions(level_overrides=(LevelOverride(
+        page_number=1, elevation_m=0, name="GROUND", height_m=3.25,
+        note="synthetic caller-selected height",
+    ),))
+    model = import_architectural_pdf(source, source_id=SOURCE_ID, options=options)
+    validate_model(model)
+    for entity in (*model.levels, *model.walls, *model.spaces):
+        assert entity.height_m == pytest.approx(3.25)
+        records = [p for p in entity.provenance if p.derivation == "user" and p.scope_paths == ("height_m",)]
+        assert len(records) == 1
+    rows = extract_quantities(model).to_dict()["items"]
+    faces = [row for row in rows if row["category"] == "wall_face_area"]
+    assert faces and all(row["quantity_derivation"] == "user" for row in faces)
+    lengths = [row for row in rows if row["category"] == "wall_length"]
+    assert lengths and all(row["quantity_derivation"] == "observed" for row in lengths)

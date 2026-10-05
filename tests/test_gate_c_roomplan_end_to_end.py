@@ -342,7 +342,15 @@ def test_gate_c_roomplan_input_flows_through_route_ifc_quantities_and_derived_vi
     ) == pytest.approx(length_m)
     assert _quantity(report, "device", "evse") == 1
     assert _quantity(report, "equipment", "panelboard") == 1
-    assert report.warnings == ()
+    # Architectural coverage now reports its unresolved assemblies/host deductions.
+    # Electrical routing assertions above remain unchanged.
+    codes = {warning.code for warning in report.warnings}
+    assert codes <= {"assemblies_unresolved", "unmeasured_entities", "opening_deduction_undefined", "wall_solid_undefined"}
+    curved_ids = {wall.id for wall in round_tripped.walls if len(wall.centerline.points) > 2}
+    assert {identity for warning in report.warnings if warning.code == "wall_solid_undefined" for identity in warning.source_entity_ids} == curved_ids
+    assert not any(item.category == "wall_volume" and curved_ids.intersection(item.source_entity_ids) for item in report.items)
+    assert {"assemblies_unresolved", "unmeasured_entities"} <= codes
+    assert any(item.category == "wall_face_area" for item in report.items)
     assert report.to_json(indent=None) == extract_quantities(
         round_tripped
     ).to_json(indent=None)

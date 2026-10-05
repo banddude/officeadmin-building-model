@@ -91,3 +91,27 @@ def test_unclassified_rectangles_keep_the_existing_normalization_path():
     assert wall_geometry_page(page) == page
     no_role = replace(page, texts=tuple(text for text in page.texts if text.element_id != 'title'))
     assert not sheet_wall_evidence(no_role, meters_per_point=MPP).drawings
+
+
+def test_native_rectangle_cannot_recreate_coincident_mask_path_edges():
+    from oabm.importers.pdf_architecture.extract import _rect_edge_segments
+    page = _native_plan()
+    for paints in ((1.,), (None,), (.4, 1.), (.4, None)):
+        masks = tuple(replace(rect, element_id=f"mask-{rect.element_id}",
+                              fill_grays=paints) for rect in page.rects)
+        source = replace(page, lines=_rect_edge_segments(masks, page.page_number))
+        view = wall_geometry_page(source, expand_native_fills=True)
+        assert not any(line.fill_grays == (.4,) for line in view.lines)
+        assert not import_observations(_document(source, 'arch')).walls
+        assert wall_geometry_page(view, expand_native_fills=True) == view
+
+
+def test_coincident_mask_keeps_independent_stroke_without_promoting_its_fill():
+    from oabm.importers.pdf_architecture.extract import _rect_edge_segments
+    page = _native_plan()
+    masks = tuple(replace(rect, element_id=f"mask-{rect.element_id}",
+                          fill_grays=(1.,), stroke_present=True) for rect in page.rects)
+    source = replace(page, lines=_rect_edge_segments(masks, page.page_number))
+    view = wall_geometry_page(source, expand_native_fills=True)
+    assert view.lines == source.lines
+    assert all(line.stroke_present and line.fill_grays == (1.,) for line in view.lines)

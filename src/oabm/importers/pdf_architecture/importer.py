@@ -5711,6 +5711,7 @@ def _geometric_wall_loop_entities(
     *,
     excluded_element_ids: set[str] | None = None,
     allow_partial_faces: bool = True,
+    allow_bounded_unlayered_poche: bool = False,
     sheet_anchor: str | None = None,
     curved_contexts: tuple[_WallContext, ...] = (),
 ) -> tuple[
@@ -5757,13 +5758,28 @@ def _geometric_wall_loop_entities(
             "detail": "hidden wall-layer geometry was excluded; visible wall evidence is insufficient",
         })
         return (), (), diagnostics
+    # A recovered, authoritatively bounded construction plan can have no CAD
+    # wall layers. Use the same known-paint strip proof that established its
+    # registration evidence, rather than sending its material boundaries back
+    # through the proximity-only dimension-line rejection. This does not exempt
+    # ordinary strokes from dimension checks or admit sheet-wide legend fills.
+    poche_source_lines = explicit_wall_lines
+    if allow_bounded_unlayered_poche:
+        explicit_ids = {line.element_id for line in explicit_wall_lines}
+        poche_source_lines = (*explicit_wall_lines, *(
+            line for line in (*page.lines, *rect_wall_segments)
+            if line.element_id not in explicit_ids
+            and line.element_id not in (excluded_element_ids or set())
+            and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
+            and wall_fill_paint(line.fill_grays, require_known=True)
+        ))
     (
         poche_legs,
         poche_rejections,
         poche_strip_edge_ids,
         poche_piece_stats,
     ) = _poche_strip_polygons(
-        explicit_wall_lines,
+        poche_source_lines,
         transform,
         options,
         page.page_number,
@@ -8024,6 +8040,10 @@ def import_observations(
                 ambiguities,
                 excluded_element_ids=consumed_vector_line_ids,
                 allow_partial_faces=not legacy_single_loop_partial_guard,
+                allow_bounded_unlayered_poche=(
+                    region.scope == "region" and region.scope_bbox_pt is not None
+                    and _construction_title_and_sheet_mark(page)
+                ),
                 sheet_anchor=_sheet_anchor(page),
                 curved_contexts=curved_walls,
             )

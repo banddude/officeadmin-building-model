@@ -295,3 +295,46 @@ def test_single_scoped_plan_retains_an_unambiguous_page_registration_hint() -> N
     assert region['scope'] == 'region' and region['status'] == 'resolved'
     assert region['frame']['translation_m'] == pytest.approx([2, 3])
     assert not any(item['code'] == 'registration_hint_region_unresolved' for item in model.attributes['pdf_architecture']['ambiguities'])
+
+
+def test_bounded_unlayered_wall_material_survives_nearby_dimension_labels() -> None:
+    page = _plan(excluded=False)
+    dimensions = tuple(
+        PdfTextObservation(
+            element_id=f"dimension:{index}", text="10'-0\"",
+            bbox_pt=((box[0]+box[2])/2-18, (box[1]+box[3])/2-4,
+                     (box[0]+box[2])/2+18, (box[1]+box[3])/2+4),
+        )
+        for index, box in enumerate(FIXTURE["plan_a_strips"])
+    )
+    page = replace(page, lines=tuple(replace(line, source_layers=()) for line in page.lines),
+                   texts=(*page.texts, *dimensions))
+    model = import_observations(_document(page, "unlayered-material"))
+    validate_model(model)
+    assert len(model.walls) == len(FIXTURE["plan_a_strips"])
+    assert all("poche" in wall.attributes["pdf_architecture"]["recognition"] for wall in model.walls)
+    assert model.to_json() == import_observations(_document(page, "unlayered-material")).to_json()
+
+
+@pytest.mark.parametrize("paint", [(), (None,), (1.0,), (0.0, 1.0)])
+def test_unlayered_poche_materialization_requires_unambiguous_nonmasking_paint(paint) -> None:
+    page = _plan(excluded=False)
+    labels = tuple(
+        PdfTextObservation(element_id=f"dimension:{i}", text="10'-0\"",
+                           bbox_pt=((b[0]+b[2])/2-18, (b[1]+b[3])/2-4,
+                                    (b[0]+b[2])/2+18, (b[1]+b[3])/2+4))
+        for i, b in enumerate(FIXTURE["plan_a_strips"])
+    )
+    page = replace(page, lines=tuple(replace(line, source_layers=(), fill_grays=paint)
+                                    for line in page.lines), texts=(*page.texts, *labels))
+    model = import_observations(_document(page, "unsupported-unlayered-fill"))
+    assert not model.walls
+
+
+def test_bounded_fallback_preserves_explicit_wall_layer_unknown_paint_authority() -> None:
+    page = _plan(excluded=False)
+    page = replace(page, lines=tuple(replace(line, fill_grays=()) for line in page.lines))
+    model = import_observations(_document(page, "explicit-layer-unknown-paint"))
+    validate_model(model)
+    assert len(model.walls) == len(FIXTURE["plan_a_strips"])
+    assert all("poche" in wall.attributes["pdf_architecture"]["recognition"] for wall in model.walls)

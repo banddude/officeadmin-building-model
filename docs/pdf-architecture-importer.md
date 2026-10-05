@@ -76,6 +76,14 @@ This compares canonical geometry, not ids. Wall ids include the sheet anchor, so
 
 If the registration is refused, the sheet keeps exactly its previous behavior. An additional CAD-vector page on an unsplit sheet may then use a lower-confidence sheet-geometry fallback: the importer prefers the largest proven closed wall-loop bounding box and otherwise uses non-title-block drawing extents, anchoring that geometry's lower-left at the project-local origin. Title-block vector geometry identified around explicit sheet/drawing/project metadata is excluded. The fallback method, confidence, source bounding box, and anchor are retained in page metadata and model provenance. Pages without enough vector geometry remain `registration_unresolved`.
 
+On recognized construction plans, native filled rectangles with known nonwhite
+paint and no source layer are
+expanded into deterministic boundary evidence before the existing strip checks.
+An equivalent closed path and native rectangle therefore receive the same shape,
+scale, and drawing-role validation. Repeated boundaries are not counted twice;
+white, unknown/conflicting paint, unfilled rectangles, and explicit nonwall
+layers are not promoted by this normalization. Original observations stay intact.
+
 ### Adjacent construction drawings
 
 Separately bounded construction drawings may be adjoining pieces rather than

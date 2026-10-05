@@ -4041,7 +4041,7 @@ def _geometric_wall_face_pairs(
 ) -> tuple[_WallFacePair, ...]:
     """Pair wall faces from joined CAD runs, independent of PDF-native IDs."""
 
-    page = wall_geometry_page(page)
+    page = wall_geometry_page(page, expand_native_fills=_construction_title_and_sheet_mark(page))
 
     diagnostics = diagnostics if diagnostics is not None else {}
     excluded_element_ids = excluded_element_ids or set()
@@ -7022,7 +7022,7 @@ def sheet_wall_evidence(
     so a layered sheet can be compared with a flattened one on equal terms.
     """
 
-    page = wall_geometry_page(page)
+    page = wall_geometry_page(page, expand_native_fills=_construction_title_and_sheet_mark(page))
 
     options = options or ImportOptions()
     if meters_per_point is None:
@@ -7075,7 +7075,7 @@ def region_wall_evidence(
 ) -> tuple[str, tuple[RegionEvidence, ...]]:
     """Wall evidence lying inside one resolved drawing region's source extents."""
 
-    page = wall_geometry_page(page)
+    page = wall_geometry_page(page, expand_native_fills=_construction_title_and_sheet_mark(page))
 
     options = options or ImportOptions()
     _, title_line_ids = _title_block_exclusion(page)
@@ -7700,7 +7700,7 @@ def import_observations(
     page_metadata: list[dict[str, object]] = []
     level_info_by_anchor: dict[str, _LevelInfo] = {}
     ordered_pages = tuple(
-        wall_geometry_page(page)
+        wall_geometry_page(page, expand_native_fills=_construction_title_and_sheet_mark(page))
         for page in sorted(document.pages, key=lambda item: item.page_number)
     )
     pages_by_number = {page.page_number: page for page in ordered_pages}

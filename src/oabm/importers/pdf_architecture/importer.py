@@ -39,6 +39,7 @@ from oabm.model import (
 )
 
 from .fill_paint import wall_fill_paint, wall_geometry_page
+from .adjacent_grids import adjacent_grid_proposal
 from .curved_walls import arc_pairs
 from .section_datums import section_floor_datums
 from .drawing_regions import (
@@ -6632,6 +6633,7 @@ class _DrawingRegionState:
     frame_roots: frozenset[str] | None = None
     frame_registration: dict[str, object] | None = None
     frame_registration_attempt: dict[str, object] | None = None
+    adjacent_grid_registration_attempt: dict[str, object] | None = None
     status: str = "unresolved"
     entity_counts: dict[str, int] = field(default_factory=dict)
     repeated_wall_count: int = 0
@@ -7322,6 +7324,8 @@ def _region_record(
         record["repeated_wall_count"] = region.repeated_wall_count
     if region.frame_registration_attempt is not None:
         record["shared_wall_registration"] = dict(region.frame_registration_attempt)
+    if region.adjacent_grid_registration_attempt is not None:
+        record["adjacent_grid_registration"] = dict(region.adjacent_grid_registration_attempt)
     return record
 
 
@@ -7699,6 +7703,7 @@ def import_observations(
         wall_geometry_page(page)
         for page in sorted(document.pages, key=lambda item: item.page_number)
     )
+    pages_by_number = {page.page_number: page for page in ordered_pages}
     classifications = {page.page_number: classify_page(page) for page in ordered_pages}
     section_elevations, section_blocked = _section_level_elevations(
         ordered_pages, ambiguities
@@ -7813,7 +7818,88 @@ def import_observations(
                 region.page, scale, targets, shared_wall_evidence,
             )
             region.frame_registration_attempt = record
-            return registered
+            original = pages_by_number[region.page_number]
+            if (region.scope != "region" or region.bbox_pt is None
+                    or region.level_anchor in (None, _anchor(_UNLABELED_LEVEL_NAME))
+                    or not _construction_title_and_sheet_mark(original)):
+                return registered
+            proposed = []
+            for other in resolved_regions:
+                if (other is region or other.level_anchor != region.level_anchor
+                        or other.scope != "region" or other.bbox_pt is None or other.transform is None):
+                    continue
+                target_page = pages_by_number[other.page_number]
+                if not _construction_title_and_sheet_mark(target_page):
+                    continue
+                proposal = adjacent_grid_proposal(
+                    original, region.bbox_pt, scale.meters_per_point, region.level_anchor,
+                    target_page, other.bbox_pt, other.transform.meters_per_point, other.level_anchor,
+                )
+                if not proposal["applicable"]:
+                    continue
+                row = {**proposal, "target_region_id": other.region_id, "target_page": other.page_number}
+                if proposal["accepted"]:
+                    row["_target"] = other
+                    row["_placement"] = composed_frame(
+                        other.transform.meters_per_point, other.transform.rotation_radians,
+                        (other.transform.tx_m, other.transform.ty_m),
+                        proposal["scale_ratio"], tuple(proposal["translation_pt"]),
+                    )
+                proposed.append(row)
+            if not proposed:
+                return registered
+            adjacent_attempt = {
+                "method": "reciprocal_continuation_grid_axes", "status": "refused",
+                "reason_codes": sorted({code for item in proposed for code in item["reason_codes"]}),
+                "candidates": [{key: value for key, value in item.items() if not key.startswith("_")}
+                               for item in sorted(proposed, key=lambda item: item["target_region_id"])],
+            }
+            region.adjacent_grid_registration_attempt = adjacent_attempt
+            accepted = sorted((item for item in proposed if item["accepted"]),
+                              key=lambda item: (-len(item["shared_axes"]), item["target_region_id"]))
+            if not accepted:
+                return registered
+            chosen = accepted[0]
+            conflicts = [item for item in accepted if not placements_agree(
+                item["_placement"], chosen["_placement"], region.bbox_pt,
+                DEFAULT_WALL_MATCH_OPTIONS.tolerance_m,
+            )]
+            if registered is not None:
+                wall_transform = registered[0]
+                wall_placement = (wall_transform.meters_per_point, wall_transform.rotation_radians,
+                                  wall_transform.tx_m, wall_transform.ty_m)
+                if not placements_agree(wall_placement, chosen["_placement"], region.bbox_pt,
+                                        DEFAULT_WALL_MATCH_OPTIONS.tolerance_m):
+                    conflicts.append(chosen)
+            if conflicts:
+                region.reason_codes.add("registration_methods_disagree")
+                adjacent_attempt["reason_codes"] = ["registration_methods_disagree"]
+                ambiguities.append({"page": region.page_number, "code": "registration_methods_disagree",
+                                    "detail": "supported registration methods or adjacency targets disagree; no shared frame was chosen",
+                                    "drawing_region_id": region.region_id})
+                return None
+            if registered is not None:
+                adjacent_attempt.update(status="confirms_shared_walls", reason_codes=[])
+                return registered
+            # This is an additional proof for adjacent pieces that do not
+            # overlap. It never overrides strong wall orientation/scale or
+            # competing-placement refusals.
+            if set(record.get("reason_codes", ())) - {
+                "missing_wall_evidence", "insufficient_matched_evidence", "evidence_clustered",
+            }:
+                adjacent_attempt["reason_codes"] = ["shared_wall_registration_conflict"]
+                return None
+            target = chosen["_target"]
+            confidence = min(.8, scale.confidence, target.transform.confidence)
+            mpp, rotation, tx, ty = chosen["_placement"]
+            method = "reciprocal continuation and orthogonal source grid axes"
+            registration = {key: value for key, value in chosen.items() if not key.startswith("_")}
+            registration.update(method=method, derivation=DERIVATION_INFERRED, confidence=confidence,
+                                target_frame_basis=target.frame_basis,
+                                agreeing_region_ids=sorted(item["target_region_id"] for item in accepted),
+                                evidence_kind="adjacent_grid_axes", rotation_degrees=0)
+            adjacent_attempt.update(status="registered", reason_codes=[])
+            return (_Transform2D(mpp, rotation, tx, ty, method, confidence), registration)
 
         return attempt
 
@@ -7853,6 +7939,8 @@ def import_observations(
             ),
         )
         region.scale = scale
+        if "registration_methods_disagree" in region.reason_codes:
+            transform = None  # An unrelated local fallback cannot resolve this contradiction.
         if transform is None or scale is None:
             _tag_region_ambiguities(ambiguities, start, region)
             region.reason_codes |= _reason_codes_since(ambiguities, start) or {"registration_unresolved"}

@@ -76,6 +76,34 @@ This compares canonical geometry, not ids. Wall ids include the sheet anchor, so
 
 If the registration is refused, the sheet keeps exactly its previous behavior. An additional CAD-vector page on an unsplit sheet may then use a lower-confidence sheet-geometry fallback: the importer prefers the largest proven closed wall-loop bounding box and otherwise uses non-title-block drawing extents, anchoring that geometry's lower-left at the project-local origin. Title-block vector geometry identified around explicit sheet/drawing/project metadata is excluded. The fallback method, confidence, source bounding box, and anchor are retained in page metadata and model provenance. Pages without enough vector geometry remain `registration_unresolved`.
 
+### Adjacent construction drawings
+
+Separately bounded construction drawings may be adjoining pieces rather than
+overlapping copies. A second, source-only registration proof handles that case:
+
+- Both drawings must have the same resolved named level and unique sheet marks.
+- Each must explicitly say `CONTINUED ON` the other sheet, at opposite bounded
+  drawing edges. One-way, interior, ambiguous, or same-side notes are refused.
+- Grid labels must have enclosing source rings and supported straight axes.
+  Bubble centers are not used as point correspondences: their position along
+  the grid can differ between sheets. Duplicate strokes cannot inflate support.
+- One common axis must identify the adjoining boundary, with at least two
+  perpendicular common axes spanning the existing minimum control distance.
+  All shared axes must agree at the printed scale ratio and existing residual
+  tolerance. This proof does not estimate a rotation, reflection, or new scale.
+
+Accepted placement uses the existing `registered_to_region` frame and canonical
+transform composition. Its provenance is `inferred`, with confidence capped at
+0.8 and at both supporting scale/frame confidences. The separate
+`adjacent_grid_registration` record retains source controls, continuation and
+sheet evidence, candidate targets, and explicit refusals.
+
+This proof can supply a frame when shared-wall evidence is missing, insufficient,
+or clustered. It does not override stronger wall-matcher refusals. If two
+accepted methods or adjacency targets disagree, the region stays unresolved;
+a page-local fallback cannot erase that contradiction. Existing shared-wall
+thresholds and electrical registration acceptance remain unchanged.
+
 A two-point registration controls scale, rotation, and translation. If its computed scale disagrees with a printed or overridden scale beyond `scale_registration_tolerance`, the page is skipped and the disagreement is recorded rather than choosing one silently.
 
 `ScaleOverride` is the explicit escape hatch for sheets that are not to scale or have unsupported/missing scale annotations.

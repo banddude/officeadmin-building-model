@@ -49,12 +49,12 @@ def _is_wall_pattern_layer(layer: str) -> bool:
     # A wall-pattern layer carries the poché of drawn walls: it extends the
     # wall layer it belongs to rather than being a separate drawing family.
     name = layer.rsplit("|", 1)[-1].upper().lstrip("_")
-    return name.startswith(("A-WALL-PATT", "AE-WALL-PATT"))
+    return name.startswith(("A-WALL-PATT", "AE-WALL-PATT", "I-WALL-PATT"))
 
 
 def _is_wall_source_layer(layer: str) -> bool:
     name = layer.rsplit("|", 1)[-1].upper().lstrip("_")
-    if name in {"A-WALL", "AE-WALL"}:
+    if name in {"A-WALL", "AE-WALL", "I-WALL"}:
         return True
     return _is_wall_pattern_layer(layer)
 

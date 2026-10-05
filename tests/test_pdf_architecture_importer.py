@@ -258,6 +258,7 @@ def _write_layered_wall_source(
     hidden_wall: bool = False,
     duplicate_visible: bool = False,
     base_off: bool = False,
+    wall_layer: str = "A-WALL",
 ) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=612, height=792)
@@ -268,7 +269,7 @@ def _write_layered_wall_source(
     })
     wall_group = DictionaryObject({
         NameObject("/Type"): NameObject("/OCG"),
-        NameObject("/Name"): TextStringObject("A-WALL"),
+        NameObject("/Name"): TextStringObject(wall_layer),
     })
     annotation_group = DictionaryObject({
         NameObject("/Type"): NameObject("/OCG"),

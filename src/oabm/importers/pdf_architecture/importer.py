@@ -3531,7 +3531,13 @@ def _hatch_evidence_ids(
         <= (2 * math.hypot(page.width_pt, page.height_pt) * transform.meters_per_point
             if long_family_only else max_hatch_length_m)
     ]
-    result = set() if long_family_only else {line.element_id for _, line in candidates if line.filled}
+    # A fill-only short edge may be hatch/annotation material. A separately
+    # observed stroke remains vector evidence even when a coincident filled
+    # path exists; repeated-hatch and filled-region checks below still apply.
+    result = set() if long_family_only else {
+        line.element_id for _, line in candidates
+        if line.filled and line.stroke_present is not True
+    }
 
     page_area = max(page.width_pt * page.height_pt, 1.0)
     filled_rects = [

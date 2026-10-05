@@ -408,7 +408,24 @@ def _construction_title_and_sheet_mark(page: PdfPageObservation) -> bool:
         and item.center_pt[1] <= 0.25 * page.height_pt
         for item in page.texts
     )
-    return titles and sheet_mark
+    if titles and sheet_mark:
+        return True
+    # A combined pricing sheet can carry electrical legends alongside its
+    # architectural construction drawing. Require its explicit title-block
+    # role and construction legend; a pricing note on an E sheet is not enough.
+    title_block_marks = {
+        _clean_text(item.text).upper() for item in page.texts
+        if re.fullmatch(r"[A-Z]{1,3}[-.]?\d+(?:[.-]\d+)*", _clean_text(item.text).upper())
+        and item.center_pt[0] >= 0.75 * page.width_pt
+        and item.center_pt[1] <= 0.25 * page.height_pt
+    }
+    return (
+        _explicit_drawing_title(page) == "PRICING PLAN"
+        and any(_clean_text(item.text).upper() == "CONSTRUCTION LEGEND"
+                for item in page.texts)
+        and len(title_block_marks) == 1
+        and any(re.fullmatch(r"PP[-.]?\d+(?:[.-]\d+)*", mark) for mark in title_block_marks)
+    )
 
 
 def classify_page(page: PdfPageObservation) -> SheetClassification:
@@ -473,7 +490,7 @@ def _explicit_drawing_title(page: PdfPageObservation) -> str | None:
 
     markers = [
         item for item in page.texts
-        if _clean_text(item.text).upper() == "DRAWING TITLE:"
+        if _clean_text(item.text).upper() in {"DRAWING TITLE:", "SHEET TITLE:"}
         and item.center_pt[0] >= 0.70 * page.width_pt
         and item.center_pt[1] <= 0.30 * page.height_pt
     ]
@@ -498,6 +515,14 @@ def _explicit_drawing_title(page: PdfPageObservation) -> str | None:
     ]
     if not title_lines:
         return None
+    # The title compartment can also contain small-print disclaimers. Those
+    # words describe use of the sheet, not its drawing role. Retain the largest
+    # observed type only when the font evidence clearly separates two sizes;
+    # absent font evidence keeps the legacy conservative combined text.
+    sizes = [item.font_size_pt for item in title_lines if item.font_size_pt is not None]
+    if len(sizes) == len(title_lines) and max(sizes) >= 1.5 * min(sizes):
+        title_lines = [item for item in title_lines
+                       if item.font_size_pt >= 0.9 * max(sizes)]
     return " ".join(
         _clean_text(item.text).upper()
         for item in sorted(title_lines, key=lambda value: (-value.center_pt[1], value.center_pt[0]))
@@ -1876,6 +1901,13 @@ def _room_label_candidate_with_reason(
     text = _clean_text(observation.text)
     if not text:
         return None, None
+
+    # CAD blocks can retain microscopic attribute strings in their PDF text
+    # layer. Their presence inside a closed outline is not a readable room
+    # designation. This uses observed paper-space size only, never a lexical
+    # allowlist; unknown font evidence retains the existing behavior.
+    if observation.font_size_pt is not None and observation.font_size_pt < 0.1:
+        return None, "non_display_text"
 
     explicit = _EXPLICIT_ROOM_LABEL_RE.match(text)
     name = _clean_text(explicit.group(1)) if explicit else text
@@ -3460,6 +3492,7 @@ def _hatch_evidence_ids(
     page: PdfPageObservation,
     lines: list[PdfLineObservation],
     transform: _Transform2D,
+    *, long_family_only: bool = False,
 ) -> set[str]:
     if not lines:
         return set()
@@ -3472,11 +3505,12 @@ def _hatch_evidence_ids(
     candidates = [
         (index, line)
         for index, line in enumerate(lines)
-        if min_hatch_length_m
+        if (max_hatch_length_m if long_family_only else min_hatch_length_m)
         <= math.dist(line.start_pt, line.end_pt) * transform.meters_per_point
-        <= max_hatch_length_m
+        <= (2 * math.hypot(page.width_pt, page.height_pt) * transform.meters_per_point
+            if long_family_only else max_hatch_length_m)
     ]
-    result = {line.element_id for _, line in candidates if line.filled}
+    result = set() if long_family_only else {line.element_id for _, line in candidates if line.filled}
 
     page_area = max(page.width_pt * page.height_pt, 1.0)
     filled_rects = [
@@ -3485,7 +3519,7 @@ def _hatch_evidence_ids(
         if rect.filled
         and (rect.width_pt * rect.height_pt) <= page_area * 0.35
     ]
-    for _, line in candidates:
+    for _, line in (() if long_family_only else candidates):
         midpoint = (
             (line.start_pt[0] + line.end_pt[0]) / 2.0,
             (line.start_pt[1] + line.end_pt[1]) / 2.0,
@@ -3567,7 +3601,7 @@ def _hatch_evidence_ids(
             pitch = float(median(gaps))
             if not (min_pitch_pt <= pitch <= max_pitch_pt):
                 continue
-            if any(abs(gap - pitch) > pitch * 0.25 for gap in gaps):
+            if any(abs(gap - pitch) > pitch * (0.10 if long_family_only else 0.25) for gap in gaps):
                 continue
             common_overlap = min(item[2] for item in window) - max(
                 item[1] for item in window
@@ -3735,11 +3769,7 @@ def _collinear_wall_face_runs(
     )
     hatch_evidence_ids = _hatch_evidence_ids(
         page,
-        [
-            line
-            for line in input_lines
-            if line.element_id not in dimension_evidence_ids
-        ],
+        [line for line in input_lines if line.element_id not in dimension_evidence_ids],
         transform,
     )
     eligible = [
@@ -4035,6 +4065,17 @@ def _geometric_wall_face_pairs(
 
     records = [_line_record(run) for run in eligible_runs]
     hatch_family_members = _hatch_family_members(eligible_runs, records)
+    # Preserve original long-field repetition before dimension filtering can
+    # remove its neighbors. These are membership flags, not early exclusions:
+    # a face with a real non-hatch partner must remain eligible for that wall.
+    long_hatch_ids = _hatch_evidence_ids(
+        page, [line for line in page.lines if line.element_id not in excluded_element_ids],
+        transform, long_family_only=True,
+    )
+    hatch_family_members.update(
+        index for index,run in enumerate(eligible_runs)
+        if run.source_element_ids and all(key in long_hatch_ids for key in run.source_element_ids)
+    )
     diagnostics["hatch_family_line_count"] = len(hatch_family_members)
     angle_tolerance = math.radians(2.0)
     orientation_bucket_count = max(1, int(round(math.pi / angle_tolerance)))
@@ -6880,7 +6921,7 @@ def _split_sheet(
     if split.regions:
         titles = [
             item for item in page.texts
-            if re.search(r"\bCONSTRUCTION\s+PLANS?\b", _clean_text(item.text).upper())
+            if re.search(r"\b(?:CONSTRUCTION|PRICING)\s+PLANS?\b", _clean_text(item.text).upper())
             and item.center_pt[1] <= 0.25 * page.height_pt
         ]
         titled_regions = []

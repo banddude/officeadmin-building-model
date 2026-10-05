@@ -338,3 +338,71 @@ def test_bounded_fallback_preserves_explicit_wall_layer_unknown_paint_authority(
     validate_model(model)
     assert len(model.walls) == len(FIXTURE["plan_a_strips"])
     assert all("poche" in wall.attributes["pdf_architecture"]["recognition"] for wall in model.walls)
+
+
+def _pricing_plan(*, sheet="PP-2.0", title="PRICING PLAN", legend=True):
+    page = _plan(excluded=False)
+    texts = tuple(t for t in page.texts if t.element_id != "title")
+    texts += (
+        _text("drawing-title-marker", "SHEET TITLE:", 1040, 130),
+        _text("pricing-drawing-title", title, 1040, 95),
+        _text("sheet-number-marker", "SHEET NO:", 1040, 65),
+        _text("pricing-sheet-number", sheet, 1040, 30),
+        _text("local-pricing-title", title, 180, 50),
+    )
+    if legend:
+        texts += (_text("construction-legend", "CONSTRUCTION LEGEND", 950, 690),)
+    return replace(page, texts=texts)
+
+
+def test_explicit_pricing_plan_with_construction_legend_retains_architectural_geometry():
+    page = _pricing_plan()
+    assert classify_page(page).kind == "architectural_plan"
+    model = import_observations(_document(page, "synthetic-pricing"))
+    validate_model(model)
+    assert model.walls
+    assert model.to_json() == import_observations(_document(page, "synthetic-pricing")).to_json()
+
+
+@pytest.mark.parametrize("sheet,title,legend", [
+    ("E-2.0", "PRICING PLAN", True),
+    ("PPP-2.0", "PRICING PLAN", True),
+    ("PP-2.0", "POWER PLAN", True),
+    ("PP-2.0", "PRICING PLAN", False),
+])
+def test_pricing_recovery_needs_explicit_role_and_construction_legend(sheet,title,legend):
+    assert classify_page(_pricing_plan(sheet=sheet,title=title,legend=legend)).kind == "electrical"
+
+
+def test_pricing_note_without_title_block_marker_does_not_override_discipline():
+    page = _pricing_plan()
+    page = replace(page,texts=tuple(t for t in page.texts if t.element_id != "drawing-title-marker"))
+    assert classify_page(page).kind == "electrical"
+
+
+def test_pricing_role_without_substantial_geometry_is_not_a_target():
+    assert classify_page(replace(_pricing_plan(),lines=())).kind == "electrical"
+
+
+def test_conflicting_pricing_and_electrical_sheet_marks_are_not_recovered():
+    page = _pricing_plan()
+    page = replace(page,texts=(*page.texts,_text("competing-mark","E-2.0",1040,15)))
+    assert classify_page(page).kind == "electrical"
+
+
+def test_small_print_disclaimer_does_not_become_part_of_explicit_pricing_title():
+    page = _pricing_plan()
+    page = replace(page,texts=tuple(replace(t,font_size_pt=20) if t.element_id == "pricing-drawing-title" else t for t in page.texts))
+    page = replace(page,texts=(*page.texts,PdfTextObservation(
+        "small-print", "PRICING INFORMATION ONLY; SEE ELECTRICAL DETAILS", (1040,78,1260,85),font_size_pt=8)))
+    assert architecture_importer._explicit_drawing_title(page) == "PRICING PLAN"
+    assert classify_page(page).kind == "architectural_plan"
+
+
+def test_ambiguous_equal_size_text_is_not_discarded_to_force_pricing_role():
+    page = _pricing_plan()
+    page = replace(page,texts=tuple(replace(t,font_size_pt=20) if t.element_id == "pricing-drawing-title" else t for t in page.texts))
+    page = replace(page,texts=(*page.texts,PdfTextObservation(
+        "competing-title", "POWER PLAN", (1040,78,1260,89),font_size_pt=20)))
+    assert architecture_importer._explicit_drawing_title(page) == "PRICING PLAN POWER PLAN"
+    assert not architecture_importer._construction_title_and_sheet_mark(page)

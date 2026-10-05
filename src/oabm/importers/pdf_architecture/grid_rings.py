@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import math
+import re
 from .types import PdfLineObservation, PdfPageObservation, PdfTextObservation
 
 Point = tuple[float, float]
@@ -114,6 +115,13 @@ def grid_ring_labels(
             for p in (line.start_pt, line.end_pt)
         }:
             near.setdefault(key, []).append(i)
+    # A detail/section callout can have the same circular outline as a grid
+    # bubble. A sheet reference enclosed by that very ring is decisive source
+    # evidence of a callout, even if a flattened divider misses the ring edge.
+    sheet_references = [
+        text for text in page.texts
+        if re.fullmatch(r"[A-Z]{1,3}[-.]?\d+(?:[.-]\d+)*[A-Z]?", text.text.strip().upper())
+    ]
     found: dict[str, list[Point]] = {}
     for text in page.texts:
         label = text.text.strip().upper()
@@ -149,6 +157,13 @@ def grid_ring_labels(
         if len(rings) != 1:
             continue
         ring = rings[0]
+        if any(
+            reference.element_id != text.element_id
+            and math.dist(reference.center_pt, ring) <= 40
+            and ring in _enclosing_ring_centers(reference, lines)
+            for reference in sheet_references
+        ):
+            continue
         if scope is not None and not (
             scope[0] <= ring[0] <= scope[2] and scope[1] <= ring[1] <= scope[3]
         ):

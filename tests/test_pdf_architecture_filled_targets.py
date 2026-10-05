@@ -406,3 +406,23 @@ def test_ambiguous_equal_size_text_is_not_discarded_to_force_pricing_role():
         "competing-title", "POWER PLAN", (1040,78,1260,89),font_size_pt=20)))
     assert architecture_importer._explicit_drawing_title(page) == "PRICING PLAN POWER PLAN"
     assert not architecture_importer._construction_title_and_sheet_mark(page)
+
+
+def test_electrical_sheet_frame_never_masks_its_registration_wall_evidence():
+    from oabm.importers.pdf_architecture.types import PdfRectObservation
+    page = _electrical()
+    base = sheet_wall_evidence(page,meters_per_point=MPP)
+    framed = replace(page,rects=(PdfRectObservation("sheet-frame",(5,5,page.width_pt-5,page.height_pt-5)),),
+                     texts=(*page.texts,_text("drawn-marker","DRAWN BY:",1050,90),_text("checked-marker","CHECKED BY:",1050,65)))
+    assert architecture_importer.classify_page(framed).kind == "electrical"
+    assert not architecture_importer._title_block_exclusion(framed)[0]
+    assert sheet_wall_evidence(framed,meters_per_point=MPP).drawings == base.drawings
+
+
+def test_electrical_sheet_keeps_its_actual_small_title_block_excluded():
+    from oabm.importers.pdf_architecture.types import PdfRectObservation
+    page = _electrical()
+    title = (1030,35,1290,130)
+    page = replace(page,rects=(PdfRectObservation("title-box",title),),
+                   texts=(*page.texts,_text("drawn-marker","DRAWN BY:",1050,90),_text("checked-marker","CHECKED BY:",1050,65)))
+    assert architecture_importer._title_block_exclusion(page)[0] == (title,)

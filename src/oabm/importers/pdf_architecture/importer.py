@@ -661,11 +661,10 @@ def _title_block_exclusion(
     ] + [item.bbox_pt for item in page.rects]
     # A ruled sheet frame can enclose every strong title on a sheet with no
     # separately boxed title block. It must never exclude the whole drawing.
-    if _construction_title_and_sheet_mark(page):
-        candidate_boxes = [
-            bbox for bbox in candidate_boxes
-            if not _is_sheet_frame_enclosure(page, bbox)
-        ]
+    candidate_boxes = [
+        bbox for bbox in candidate_boxes
+        if not _is_sheet_frame_enclosure(page, bbox)
+    ]
     multi_label_boxes = [
         bbox
         for bbox in candidate_boxes

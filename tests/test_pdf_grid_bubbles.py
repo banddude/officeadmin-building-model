@@ -130,3 +130,18 @@ def test_non_outline_geometry_is_not_a_ring(field):
 def test_ambiguous_letters_stay_excluded():
     assert _grid_bubbles(page(texts=(label("I"),))) == {}
     assert _grid_bubbles(page(texts=(label("O"),))) == {}
+
+
+@pytest.mark.parametrize("sheet_ref", ["Q-27", "A204", "S3.2"])
+def test_detail_reference_inside_same_ring_is_not_a_grid_label(sheet_ref):
+    # The divider is just short of the ring endpoints, as can happen after
+    # source flattening. Ring topology alone must not erase the sheet reference.
+    divider = PdfLineObservation("detail-divider",(82.1,100),(117.9,100))
+    number = PdfTextObservation("detail-number","2",(97,102,103,111),font_size_pt=8)
+    reference = PdfTextObservation("detail-sheet",sheet_ref,(89,88,111,97),font_size_pt=8)
+    assert _grid_bubbles(page(lines=ring()+(divider,),texts=(number,reference))) == {}
+
+
+def test_sheet_reference_outside_grid_ring_does_not_remove_grid_label():
+    reference = PdfTextObservation("nearby-sheet","Q-27",(122,92,150,101),font_size_pt=8)
+    assert _grid_bubbles(page(texts=(label("2"),reference)))["2"] == pytest.approx((100,100),abs=.001)

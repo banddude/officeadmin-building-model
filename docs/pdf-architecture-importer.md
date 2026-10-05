@@ -335,3 +335,20 @@ scale/level metadata remain available, and an unambiguous page-scoped hint still
 applies to a sole bounded region. Filled fallback evidence additionally requires
 known, non-masking fill paint. These safeguards do not bypass registration or
 real-project acceptance requirements.
+
+An explicitly titled pricing drawing also qualifies when a unique PP sheet mark,
+construction legend, and substantial plan geometry agree. A pricing mention on
+an E sheet does not change its discipline. Small-print title-compartment text is
+separated only when observed font sizes clearly distinguish it from the title.
+
+For recovered construction and classified electrical inputs, a page-sized border
+is not a title-block exclusion mask; real smaller title blocks remain excluded.
+Other legacy page-role handling is unchanged by this bounded recovery. A circular
+detail number and sheet reference are not grid labels, including a short sheet
+reference that could otherwise resemble a grid name. The reference must be
+inside the same source ring; nearby references outside it do not veto grids.
+
+Microscopic CAD attribute text below 0.1 paper points cannot name a room; unknown
+font size retains existing handling. Dimension-marker checks cache invariant
+source directions and deduplicate neighboring-cell candidates without changing
+marker, corner, arrowhead, distance, or registration thresholds.

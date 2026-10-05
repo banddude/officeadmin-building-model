@@ -122,6 +122,8 @@ def grid_ring_labels(
         text for text in page.texts
         if re.fullmatch(r"[A-Z]{1,3}[-.]?\d+(?:[.-]\d+)*[A-Z]?", text.text.strip().upper())
     ]
+    detail_numbers = [text for text in page.texts
+                      if re.fullmatch(r"\d{1,3}[A-Z]?", text.text.strip().upper())]
     found: dict[str, list[Point]] = {}
     for text in page.texts:
         label = text.text.strip().upper()
@@ -157,12 +159,22 @@ def grid_ring_labels(
         if len(rings) != 1:
             continue
         ring = rings[0]
-        if any(
-            reference.element_id != text.element_id
-            and math.dist(reference.center_pt, ring) <= 40
+        enclosed_references = [
+            reference for reference in sheet_references
+            if math.dist(reference.center_pt, ring) <= 40
             and ring in _enclosing_ring_centers(reference, lines)
-            for reference in sheet_references
+        ]
+        if enclosed_references and (
+            any(reference.element_id != text.element_id for reference in enclosed_references)
+            or any(
+                number.element_id != text.element_id
+                and math.dist(number.center_pt, ring) <= 40
+                and ring in _enclosing_ring_centers(number, lines)
+                for number in detail_numbers
+            )
         ):
+            # Reject both parts of a callout. A short sheet reference such as
+            # Q7 must not survive as a grid label after its detail number drops.
             continue
         if scope is not None and not (
             scope[0] <= ring[0] <= scope[2] and scope[1] <= ring[1] <= scope[3]

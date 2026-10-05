@@ -3147,3 +3147,33 @@ def test_dimension_rejection_cannot_hide_original_long_hatch_family(monkeypatch)
     pairs = module._geometric_wall_face_pairs(page,_Transform2D(.02,0,0,0,"synthetic scale",1),ImportOptions(),diagnostics=diagnostics)
     assert not pairs
     assert diagnostics["hatch_family_line_count"] == 5
+
+
+def test_dimension_marker_directions_are_computed_once_per_source_segment(monkeypatch):
+    from oabm.importers.pdf_architecture import importer as module
+    lines = [
+        _line(f"long-{i}",(100,100+i),(150,100+i)) for i in range(40)
+    ] + [
+        _line(f"marker-{i}",(100+i,95),(100+i,105)) for i in range(40)
+    ]
+    original = module._line_record
+    calls = []
+    def tracked(line):
+        calls.append(line.element_id)
+        return original(line)
+    monkeypatch.setattr(module,"_line_record",tracked)
+    original_distance = module._source_point_to_segment_distance
+    distances = []
+    def tracked_distance(*args):
+        distances.append(args)
+        return original_distance(*args)
+    monkeypatch.setattr(module,"_source_point_to_segment_distance",tracked_distance)
+    transform = _Transform2D(.02,0,0,0,"synthetic",1)
+    result = module._dimension_marker_evidence_ids(lines,transform)
+    assert len(calls) <= len(lines)
+    assert len(distances) <= 40 * 40 * 2
+    calls.clear()
+    distances.clear()
+    assert module._dimension_marker_evidence_ids(list(reversed(lines)),transform) == result
+    assert len(calls) <= len(lines)
+    assert len(distances) <= 40 * 40 * 2

@@ -659,12 +659,15 @@ def _title_block_exclusion(
     candidate_boxes = [
         item.bbox_pt for item in _ordinary_vector_rect_loops(page)
     ] + [item.bbox_pt for item in page.rects]
-    # A ruled sheet frame can enclose every strong title on a sheet with no
-    # separately boxed title block. It must never exclude the whole drawing.
-    candidate_boxes = [
-        bbox for bbox in candidate_boxes
-        if not _is_sheet_frame_enclosure(page, bbox)
-    ]
+    # On the recognized construction/electrical plan inputs, an outer frame
+    # can enclose all title markers without being a title block. Keep this
+    # recovery scoped to those roles; other legacy page-role handling remains
+    # unchanged until its drawing-region evidence is independently resolved.
+    if _construction_title_and_sheet_mark(page) or classify_page(page).kind == "electrical":
+        candidate_boxes = [
+            bbox for bbox in candidate_boxes
+            if not _is_sheet_frame_enclosure(page, bbox)
+        ]
     multi_label_boxes = [
         bbox
         for bbox in candidate_boxes
@@ -3374,6 +3377,9 @@ def _dimension_marker_evidence_ids(
     marker_max_length_pt = marker_max_length_m / transform.meters_per_point
     cell_size = max(marker_max_length_pt, 1.0)
     marker_cells: dict[tuple[int, int], set[int]] = {}
+    # The same marker is visited from many nearby endpoints/cells. Its
+    # direction is invariant; compute it once rather than per candidate pair.
+    line_records = [_line_record(line) for line in lines]
     lengths_m = [
         math.dist(line.start_pt, line.end_pt) * transform.meters_per_point
         for line in lines
@@ -3400,30 +3406,34 @@ def _dimension_marker_evidence_ids(
         max_marker_m = min(marker_max_length_m, line_length_m * 0.45)
         if max_marker_m < 2.0 * _INCH_M:
             continue
-        ux, uy, _, _, _ = _line_record(line)
+        ux, uy, _, _, _ = line_records[index]
         matched_marker_ids: set[str] = set()
         endpoint_hits = 0
         for endpoint in (line.start_pt, line.end_pt):
             cell_x = math.floor(endpoint[0] / cell_size)
             cell_y = math.floor(endpoint[1] / cell_size)
             candidates: dict[int, float] = {}
-            for nearby_x in range(cell_x - 1, cell_x + 2):
-                for nearby_y in range(cell_y - 1, cell_y + 2):
-                    for other_index in marker_cells.get((nearby_x, nearby_y), ()):
-                        if other_index == index or lengths_m[other_index] > max_marker_m:
-                            continue
-                        other = lines[other_index]
-                        oux, ouy, _, _, _ = _line_record(other)
-                        angle_cross = abs(ux * ouy - uy * oux)
-                        if angle_cross < minimum_cross:
-                            continue
-                        distance, _ = _source_point_to_segment_distance(
-                            endpoint,
-                            other.start_pt,
-                            other.end_pt,
-                        )
-                        if distance <= endpoint_tolerance_pt:
-                            candidates[other_index] = angle_cross
+            nearby_indexes = {
+                other_index
+                for nearby_x in range(cell_x - 1, cell_x + 2)
+                for nearby_y in range(cell_y - 1, cell_y + 2)
+                for other_index in marker_cells.get((nearby_x, nearby_y), ())
+            }
+            for other_index in sorted(nearby_indexes):
+                if other_index == index or lengths_m[other_index] > max_marker_m:
+                    continue
+                other = lines[other_index]
+                oux, ouy, _, _, _ = line_records[other_index]
+                angle_cross = abs(ux * ouy - uy * oux)
+                if angle_cross < minimum_cross:
+                    continue
+                distance, _ = _source_point_to_segment_distance(
+                    endpoint,
+                    other.start_pt,
+                    other.end_pt,
+                )
+                if distance <= endpoint_tolerance_pt:
+                    candidates[other_index] = angle_cross
             # Split the candidates into plain hits and L-joint exemptions.
             # An exempt candidate only stays a hit when it is one stroke of a
             # mirrored V (an arrowhead): both strokes meet the line at the

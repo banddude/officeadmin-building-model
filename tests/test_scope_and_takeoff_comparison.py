@@ -217,3 +217,51 @@ def test_types_neither_side_counts_are_not_scored(tmp_path: Path) -> None:
     # while an unsupported one is never scored at all.
     unsupported = compare_with_references(model, {"r": {"exit_sign": 3}}, supported_types=supported)
     assert "exit_sign" not in unsupported["comparable_types"]["r"]
+
+
+@pytest.mark.parametrize("meaning", [
+    b"DENOTES NEW LIGHT FIXTURES.",
+    b"INDICATES NEW ELECTRICAL OUTLETS.",
+    b"NEW OUTLETS",
+])
+def test_descriptive_new_scope_legend_keeps_source_evidence(tmp_path, meaning):
+    path = _variant(
+        tmp_path, "descriptive-new",
+        (b"1 0 0 1 608 124 Tm (NEW) Tj",
+         b"1 0 0 1 608 124 Tm (" + meaning + b") Tj"),
+    )
+    model = _model(path)
+    assert device_scope_counts(model)["in_scope_total"] == 8
+    for item in model.electrical_devices:
+        lane = item.attributes["pdf_electrical"]
+        if lane.get("scope_marker") == "N":
+            assert lane["scope_status"] == "new"
+            assert lane["scope_legend_text"] == meaning.decode()
+            assert len(lane["scope_legend_source_element_ids"]) == 2
+
+
+def test_descriptive_existing_scope_legend(tmp_path):
+    path = _variant(
+        tmp_path, "descriptive-existing",
+        (b"1 0 0 1 608 133 Tm (EXISTING TO REMAIN) Tj",
+         b"1 0 0 1 608 133 Tm (DENOTES EXISTING ELECTRICAL OUTLETS TO REMAIN.) Tj"),
+    )
+    counts = device_scope_counts(_model(path))
+    assert counts["totals"]["existing_to_remain"] == 8
+    assert counts["in_scope_total"] == 8
+
+
+@pytest.mark.parametrize("meaning", [
+    b"DENOTES NEW OR EXISTING OUTLETS",
+    b"NEW LIGHT FIXTURES IF REQUIRED",
+    b"DENOTES NEW CEILINGS",
+])
+def test_uncertain_or_nonelectrical_scope_legend_stays_unresolved(tmp_path, meaning):
+    path = _variant(
+        tmp_path, "uncertain-scope",
+        (b"1 0 0 1 608 124 Tm (NEW) Tj",
+         b"1 0 0 1 608 124 Tm (" + meaning + b") Tj"),
+    )
+    counts = device_scope_counts(_model(path))
+    assert counts["totals"]["new"] == 0
+    assert counts["unresolved_reasons"] == {"scope_marker_undefined": 8}

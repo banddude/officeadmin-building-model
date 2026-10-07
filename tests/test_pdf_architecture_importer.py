@@ -258,6 +258,7 @@ def _write_layered_wall_source(
     hidden_wall: bool = False,
     duplicate_visible: bool = False,
     base_off: bool = False,
+    wall_layer: str = "A-WALL",
 ) -> None:
     writer = PdfWriter()
     page = writer.add_blank_page(width=612, height=792)
@@ -268,7 +269,7 @@ def _write_layered_wall_source(
     })
     wall_group = DictionaryObject({
         NameObject("/Type"): NameObject("/OCG"),
-        NameObject("/Name"): TextStringObject("A-WALL"),
+        NameObject("/Name"): TextStringObject(wall_layer),
     })
     annotation_group = DictionaryObject({
         NameObject("/Type"): NameObject("/OCG"),
@@ -3092,3 +3093,88 @@ def test_wall_face_inside_hatch_family_keeps_real_partner(tmp_path: Path) -> Non
     assert len(model.walls) == 1
     assert _wall_is_horizontal(model.walls[0])
     assert model.walls[0].thickness_m == pytest.approx(0.15, rel=1e-3)
+
+
+@pytest.mark.parametrize("font_size", [0.001, 0.05])
+def test_non_display_cad_text_cannot_name_a_canonical_room(font_size):
+    page = _plan_page(room_name="STORAGE")
+    page = replace(page,texts=tuple(
+        replace(t,font_size_pt=font_size) if t.element_id == "p1:room" else t
+        for t in page.texts
+    ))
+    model = import_observations(_document(page))
+    validate_model(model)
+    assert not model.spaces
+    rejections = [a for a in model.attributes["pdf_architecture"]["ambiguities"]
+                  if a["code"] == "room_label_candidates_rejected"]
+    assert any(a["rejected_counts"].get("non_display_text") == 1 for a in rejections)
+    assert model.to_json() == import_observations(_document(page)).to_json()
+
+
+@pytest.mark.parametrize("font_size", [None, 2.0, 8.0])
+def test_visible_or_unknown_size_room_label_keeps_existing_behavior(font_size):
+    page = _plan_page(room_name="STORAGE")
+    page = replace(page,texts=tuple(
+        replace(t,font_size_pt=font_size) if t.element_id == "p1:room" else t
+        for t in page.texts
+    ))
+    model = import_observations(_document(page))
+    validate_model(model)
+    assert [s.name for s in model.spaces] == ["STORAGE"]
+
+
+def test_long_regular_hatch_strokes_are_not_candidate_wall_faces():
+    from oabm.importers.pdf_architecture.importer import _hatch_evidence_ids
+    lines = [_line(f"long-hatch-{i}",(40,40+i*4),(640,640+i*4)) for i in range(7)]
+    page = PdfPageObservation(1,800,800,lines=tuple(lines))
+    transform = _Transform2D(.02,0,0,0,"synthetic scale",1)
+    assert _hatch_evidence_ids(page,lines,transform,long_family_only=True) == {line.element_id for line in lines}
+
+
+def test_long_irregular_parallel_strokes_do_not_satisfy_hatch_family_proof():
+    from oabm.importers.pdf_architecture.importer import _hatch_evidence_ids
+    lines = [_line(f"irregular-{i}",(40,40+y),(640,640+y)) for i,y in enumerate((0,5,19,42,83))]
+    page = PdfPageObservation(1,800,800,lines=tuple(lines))
+    transform = _Transform2D(.02,0,0,0,"synthetic scale",1)
+    assert not _hatch_evidence_ids(page,lines,transform,long_family_only=True)
+
+
+def test_dimension_rejection_cannot_hide_original_long_hatch_family(monkeypatch):
+    from oabm.importers.pdf_architecture import importer as module
+    lines = tuple(_line(f"field-{i}",(40,40+i*6),(640,640+i*6)) for i in range(8))
+    page = PdfPageObservation(1,800,800,lines=lines)
+    monkeypatch.setattr(module,"_dimension_evidence_ids",lambda *args: ({"field-2","field-4","field-6"},0))
+    diagnostics = {}
+    pairs = module._geometric_wall_face_pairs(page,_Transform2D(.02,0,0,0,"synthetic scale",1),ImportOptions(),diagnostics=diagnostics)
+    assert not pairs
+    assert diagnostics["hatch_family_line_count"] == 5
+
+
+def test_dimension_marker_directions_are_computed_once_per_source_segment(monkeypatch):
+    from oabm.importers.pdf_architecture import importer as module
+    lines = [
+        _line(f"long-{i}",(100,100+i),(150,100+i)) for i in range(40)
+    ] + [
+        _line(f"marker-{i}",(100+i,95),(100+i,105)) for i in range(40)
+    ]
+    original = module._line_record
+    calls = []
+    def tracked(line):
+        calls.append(line.element_id)
+        return original(line)
+    monkeypatch.setattr(module,"_line_record",tracked)
+    original_distance = module._source_point_to_segment_distance
+    distances = []
+    def tracked_distance(*args):
+        distances.append(args)
+        return original_distance(*args)
+    monkeypatch.setattr(module,"_source_point_to_segment_distance",tracked_distance)
+    transform = _Transform2D(.02,0,0,0,"synthetic",1)
+    result = module._dimension_marker_evidence_ids(lines,transform)
+    assert len(calls) <= len(lines)
+    assert len(distances) <= 40 * 40 * 2
+    calls.clear()
+    distances.clear()
+    assert module._dimension_marker_evidence_ids(list(reversed(lines)),transform) == result
+    assert len(calls) <= len(lines)
+    assert len(distances) <= 40 * 40 * 2

@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 import math
+import re
 from .types import PdfLineObservation, PdfPageObservation, PdfTextObservation
 
 Point = tuple[float, float]
 
 
-def _enclosing_ring_centers(
-    text: PdfTextObservation, lines: list[PdfLineObservation]
-) -> tuple[Point, ...]:
+@dataclass(frozen=True, order=True)
+class _SourceRing:
+    center: Point
+    radius_pt: float
+
+
+def _enclosing_rings(
+    text: PdfTextObservation, lines: list[PdfLineObservation], *, center_only: bool = False
+) -> tuple[_SourceRing, ...]:
     # Quantization joins PDF endpoint roundoff only, not visible gaps. Drop
     # dangling leaders before examining closed, non-branching components.
     graph: dict[Point, set[Point]] = {}
@@ -35,7 +43,7 @@ def _enclosing_ring_centers(
             if len(graph[neighbor]) < 2:
                 leaves.append(neighbor)
     unseen = set(graph)
-    result: list[Point] = []
+    result: list[_SourceRing] = []
     while unseen:
         start = min(unseen)
         component = set()
@@ -93,13 +101,17 @@ def _enclosing_ring_centers(
         if abs(abs(sum(turns)) - math.tau) > 1e-5:
             continue
         x0, y0, x1, y1 = text.bbox_pt
-        if any(
-            math.dist(p, center) > radius + 0.1
-            for p in ((x0, y0), (x0, y1), (x1, y0), (x1, y1))
-        ):
+        text_points = (text.center_pt,) if center_only else ((x0,y0),(x0,y1),(x1,y0),(x1,y1))
+        if any(math.dist(p, center) > radius + 0.1 for p in text_points):
             continue
-        result.append(tuple(round(v, 6) for v in center))
+        result.append(_SourceRing(tuple(round(v,6) for v in center),radius))
     return tuple(sorted(result))
+
+
+def _enclosing_ring_centers(
+    text: PdfTextObservation, lines: list[PdfLineObservation], *, center_only: bool = False
+) -> tuple[Point, ...]:
+    return tuple(r.center for r in _enclosing_rings(text,lines,center_only=center_only))
 
 
 def grid_ring_labels(
@@ -114,6 +126,19 @@ def grid_ring_labels(
             for p in (line.start_pt, line.end_pt)
         }:
             near.setdefault(key, []).append(i)
+    # A detail/section callout can have the same circular outline as a grid
+    # bubble. A sheet reference enclosed by that very ring is decisive source
+    # evidence of a callout, even if a flattened divider misses the ring edge.
+    sheet_references = [
+        text for text in page.texts
+        if re.fullmatch(r"[A-Z]{1,3}[-.]?\d+(?:[.-]\d+)*[A-Z]?", text.text.strip().upper())
+    ]
+    detail_numbers = [text for text in page.texts
+                      if re.fullmatch(r"\d{1,3}[A-Z]?", text.text.strip().upper())]
+    plan_captions = [text for text in page.texts if re.match(
+        r"^(?:CONSTRUCTION|FLOOR|POWER|LIGHTING|ROOF|SITE|REFLECTED CEILING)\s+PLAN\b",
+        text.text.strip().upper(),
+    )]
     found: dict[str, list[Point]] = {}
     for text in page.texts:
         label = text.text.strip().upper()
@@ -145,10 +170,34 @@ def grid_ring_labels(
                 for p in (page.lines[i].start_pt, page.lines[i].end_pt)
             )
         ]
-        rings = _enclosing_ring_centers(text, lines)
+        rings = _enclosing_rings(text, lines)
         if len(rings) != 1:
             continue
-        ring = rings[0]
+        ring = rings[0].center
+        if label.isdigit() and any(
+            0 < caption.bbox_pt[0] - ring[0] <= 3 * rings[0].radius_pt
+            and caption.bbox_pt[1] - .25 * (caption.bbox_pt[3]-caption.bbox_pt[1]) <= ring[1]
+                <= caption.bbox_pt[3] + .25 * (caption.bbox_pt[3]-caption.bbox_pt[1])
+            for caption in plan_captions
+        ):
+            continue
+        enclosed_references = [
+            reference for reference in sheet_references
+            if math.dist(reference.center_pt, ring) <= 40
+            and ring in _enclosing_ring_centers(reference, lines, center_only=True)
+        ]
+        if enclosed_references and (
+            any(reference.element_id != text.element_id for reference in enclosed_references)
+            or any(
+                number.element_id != text.element_id
+                and math.dist(number.center_pt, ring) <= 40
+                and ring in _enclosing_ring_centers(number, lines, center_only=True)
+                for number in detail_numbers
+            )
+        ):
+            # Reject both parts of a callout. A short sheet reference such as
+            # Q7 must not survive as a grid label after its detail number drops.
+            continue
         if scope is not None and not (
             scope[0] <= ring[0] <= scope[2] and scope[1] <= ring[1] <= scope[3]
         ):

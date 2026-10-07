@@ -34,7 +34,7 @@ The current deterministic lane reads vector/text PDF primitives and can promote:
 - room labels assigned by text position inside a closed wall loop: dimensions, explicit keynote/note strings, detected leader tags, and recognized title-block strings are excluded first; sheet numbers (`C4.7`), bare scale strings, numbered note entries, sentence-like notes, and single characters are also not eligible, and a two-digit bare number stays eligible only when a plausible name label sits close enough to pair with it, so a stray digit never becomes a room on its own; only after candidates are scoped to one closed enclosure are adjacent room-number/name lines paired, so labels cannot pair across neighboring enclosures; remaining candidates are ranked by enclosure centrality, font size relative to the page median, and room-number pattern; runner-ups are retained in provenance and a `multiple_room_labels_in_enclosure` ambiguity is emitted only when the top two scores are within the small ranking margin; numeric labels and project-specific abbreviations remain supported without ROOM:/SPACE: prefixes; each region records one deterministic `room_label_candidates_rejected` entry counting the candidate texts it did not use, by reason;
 - labelled rectangular spaces and walls from untagged ordinary vector lines when two closed axis-aligned wall-face loops prove one enclosure around a unique eligible text label;
 - walls from untagged parallel wall faces paired by geometry rather than PDF native IDs: dimension-line evidence and hatch/fill fields are excluded before collinear joining and pairing; remaining line/polyline/curve-derived segments and dashed runs stay eligible, and the source-space gap gate is derived from the resolved sheet scale for a 2 in to 18 in real-world wall-face spacing; unambiguous pairs in a closed loop keep the existing wall/Space behavior, while a uniquely paired face that does not close an enclosure may emit a lower-confidence partial wall only when its scale-derived face span is at least 24 in and an endpoint has a nonparallel corner/junction with another candidate face;
-- optional PDF CAD layer names and the default optional-content visibility state are retained on vector source observations. Hidden objects are excluded before text, line, and rectangle extraction; this also prevents an off-layer wall name from contaminating identical visible geometry. When an explicit visible `A-WALL` or `AE-WALL` layer has enough line evidence, geometric wall-face pairing uses that layer first, while preserving the existing length, junction, thickness, scale, and height checks. If it produces no pairs, ordinary vector evidence remains the fallback unless a hidden wall layer makes that fallback ambiguous. Duplicate visible source geometry retains every layer name. Layer evidence can support partial walls; it does not by itself prove a closed room, an inter-sheet registration, or an observed wall height;
+- optional PDF CAD layer names and the default optional-content visibility state are retained on vector source observations. Hidden objects are excluded before text, line, and rectangle extraction; this also prevents an off-layer wall name from contaminating identical visible geometry. When an explicit visible `A-WALL`, `AE-WALL`, or `I-WALL` layer has enough line evidence, geometric wall-face pairing uses that layer first, while preserving the existing length, junction, thickness, scale, and height checks. If it produces no pairs, ordinary vector evidence remains the fallback unless a hidden wall layer makes that fallback ambiguous. Duplicate visible source geometry retains every layer name. Layer evidence can support partial walls; it does not by itself prove a closed room, an inter-sheet registration, or an observed wall height;
 - AutoCAD SHX-font text reaches the lane as text observations. SHX strings are drawn as vector strokes, and AutoCAD's PDF export adds one invisible `/Square` annotation per string carrying the string and its outline; `extract_pdf` reads those annotations into displayed, bottom-origin `PdfTextObservation`s with the page `/Rotate` applied, so SHX-drawn drawing titles, room names, and notes classify sheets and name levels like real text. Only annotations authored by CAD SHX text are accepted: reviewer markups, hidden annotations, and annotations whose optional-content group defaults to OFF are ignored, and the annotation author string is never copied into an observation or the model;
 - a lower-confidence 2D `Space` when visible `A-WALL`/`AE-WALL` vectors bound exactly one room label and a visible door/window layer supports both ends of each needed opening closure. The sheet-local interior is rasterized at one PDF point per pixel and traced into a source polygon; closure widths are scale-gated. Exterior-connected, multiply labelled, holed, oversized, and near-page-frame regions are rejected. The polygon is marked inferred from observed vectors with wall and opening source-element provenance. Wall thickness, room height, 3D walls, and ceilings remain unresolved;
 - a conservative 2D-only space from one unique closed ordinary-vector boundary around a unique room label when no partial paired wall-face evidence is present; wall thickness and walls remain unresolved rather than being invented;
@@ -75,6 +75,57 @@ Merging never crosses frames that rest on different evidence. Each resolved regi
 This compares canonical geometry, not ids. Wall ids include the sheet anchor, so the same wall drawn on two sheets gets a different id on each; when two sheets print the same sheet number, the ids are identical instead.
 
 If the registration is refused, the sheet keeps exactly its previous behavior. An additional CAD-vector page on an unsplit sheet may then use a lower-confidence sheet-geometry fallback: the importer prefers the largest proven closed wall-loop bounding box and otherwise uses non-title-block drawing extents, anchoring that geometry's lower-left at the project-local origin. Title-block vector geometry identified around explicit sheet/drawing/project metadata is excluded. The fallback method, confidence, source bounding box, and anchor are retained in page metadata and model provenance. Pages without enough vector geometry remain `registration_unresolved`.
+
+On recognized construction plans, native filled rectangles with known nonwhite
+paint and no source layer are
+expanded into deterministic boundary evidence before the existing strip checks.
+An equivalent closed path and native rectangle therefore receive the same shape,
+scale, and drawing-role validation. Repeated boundaries are not counted twice;
+white, unknown/conflicting paint, unfilled rectangles, and explicit nonwall
+layers are not promoted by this normalization. Original observations stay intact.
+
+Coincident filled paths and outlines retain both paint and stroke evidence;
+encountering the outline first no longer clears the fill flag or replaces a
+filled path's primitive family. White/unknown paint conflicts remain unresolved.
+Native line extraction uses source endpoints instead of bounding-box corners,
+so crossing diagonals retain their slope and distinct identities across page
+rotations and MediaBox offsets. A diagonal without usable endpoint evidence is
+not reconstructed from its box.
+
+The same explicit wall-layer authority applies to `I-WALL` and its `PATT`
+family, including xref-qualified names. `I` is the Interiors discipline in the
+[National CAD Standard layer naming format](https://www.nationalcadstandard.org/ncs6/pdfs/ncs6_clg_lnf.pdf).
+Hidden-layer refusal and provenance are unchanged. Names such as `I-FURN`,
+`ID-WALL`, and `I-WALL-DEMO` remain outside the recognized set; this layer
+recognition does not itself assign new/existing/demolition scope.
+
+### Adjacent construction drawings
+
+Separately bounded construction drawings may be adjoining pieces rather than
+overlapping copies. A second, source-only registration proof handles that case:
+
+- Both drawings must have the same resolved named level and unique sheet marks.
+- Each must explicitly say `CONTINUED ON` the other sheet, at opposite bounded
+  drawing edges. One-way, interior, ambiguous, or same-side notes are refused.
+- Grid labels must have enclosing source rings and supported straight axes.
+  Bubble centers are not used as point correspondences: their position along
+  the grid can differ between sheets. Duplicate strokes cannot inflate support.
+- One common axis must identify the adjoining boundary, with at least two
+  perpendicular common axes spanning the existing minimum control distance.
+  All shared axes must agree at the printed scale ratio and existing residual
+  tolerance. This proof does not estimate a rotation, reflection, or new scale.
+
+Accepted placement uses the existing `registered_to_region` frame and canonical
+transform composition. Its provenance is `inferred`, with confidence capped at
+0.8 and at both supporting scale/frame confidences. The separate
+`adjacent_grid_registration` record retains source controls, continuation and
+sheet evidence, candidate targets, and explicit refusals.
+
+This proof can supply a frame when shared-wall evidence is missing, insufficient,
+or clustered. It does not override stronger wall-matcher refusals. If two
+accepted methods or adjacency targets disagree, the region stays unresolved;
+a page-local fallback cannot erase that contradiction. Existing shared-wall
+thresholds and electrical registration acceptance remain unchanged.
 
 A two-point registration controls scale, rotation, and translation. If its computed scale disagrees with a printed or overridden scale beyond `scale_registration_tolerance`, the page is skipped and the disagreement is recorded rather than choosing one silently.
 
@@ -325,3 +376,30 @@ positive evidence for a new unlayered filled-wall inference: callers using that
 path must require known paint. The strip recognizer exposes
 `require_known_paint=True` for that purpose. Shape, scale, topology and layer
 rules still apply; known dark paint alone is not a wall classification.
+
+### Recovered construction drawing scope (#224)
+
+Recovered construction plans retain a bounded drawing scope even when only one
+plan cluster qualifies. Geometry outside that scope, such as legend/table boxes,
+never becomes canonical rooms or walls. Local construction titles and valid
+scale/level metadata remain available, and an unambiguous page-scoped hint still
+applies to a sole bounded region. Filled fallback evidence additionally requires
+known, non-masking fill paint. These safeguards do not bypass registration or
+real-project acceptance requirements.
+
+An explicitly titled pricing drawing also qualifies when a unique PP sheet mark,
+construction legend, and substantial plan geometry agree. A pricing mention on
+an E sheet does not change its discipline. Small-print title-compartment text is
+separated only when observed font sizes clearly distinguish it from the title.
+
+For recovered construction and classified electrical inputs, a page-sized border
+is not a title-block exclusion mask; real smaller title blocks remain excluded.
+Other legacy page-role handling is unchanged by this bounded recovery. A circular
+detail number and sheet reference are not grid labels, including a short sheet
+reference that could otherwise resemble a grid name. The reference must be
+inside the same source ring; nearby references outside it do not veto grids.
+
+Microscopic CAD attribute text below 0.1 paper points cannot name a room; unknown
+font size retains existing handling. Dimension-marker checks cache invariant
+source directions and deduplicate neighboring-cell candidates without changing
+marker, corner, arrowhead, distance, or registration thresholds.

@@ -244,7 +244,7 @@ def test_descriptive_existing_scope_legend(tmp_path):
     path = _variant(
         tmp_path, "descriptive-existing",
         (b"1 0 0 1 608 133 Tm (EXISTING TO REMAIN) Tj",
-         b"1 0 0 1 608 133 Tm (DENOTES EXISTING ELECTRICAL OUTLETS TO REMAIN.) Tj"),
+         b"1 0 0 1 608 133 Tm (DENOTES EXISTING OUTLETS.) Tj"),
     )
     counts = device_scope_counts(_model(path))
     assert counts["totals"]["existing_to_remain"] == 8

@@ -2251,10 +2251,10 @@ _SCOPE_LEGEND_MAX_MEANING_CHARS = 64
 def _scope_meaning(text: str) -> str | None:
     """Map one legend meaning phrase to a scope-of-work status."""
 
-    upper = " ".join(text.upper().split()).rstrip(".")
-    upper = re.sub(r"^(?:INDICATES|DENOTES)\s+", "", upper)
+    upper = " ".join(text.upper().split())
     if len(upper) > _SCOPE_LEGEND_MAX_MEANING_CHARS:
         return None
+    upper = re.sub(r"^(?:INDICATES|DENOTES)\s+", "", upper.rstrip("."))
     if "RELOCAT" in upper:
         return SCOPE_RELOCATED
     if re.search(r"\b(?:REMOV|DEMOLISH|DEMO\b)", upper):

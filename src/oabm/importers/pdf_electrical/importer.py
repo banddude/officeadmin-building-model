@@ -2254,13 +2254,14 @@ def _scope_meaning(text: str) -> str | None:
     upper = " ".join(text.upper().split())
     if len(upper) > _SCOPE_LEGEND_MAX_MEANING_CHARS:
         return None
+    upper = re.sub(r"^(?:INDICATES|DENOTES)\s+", "", upper.rstrip("."))
     if "RELOCAT" in upper:
         return SCOPE_RELOCATED
     if re.search(r"\b(?:REMOV|DEMOLISH|DEMO\b)", upper):
         return SCOPE_REMOVED
-    if re.fullmatch(r"EXISTING(?:\s+(?:DEVICE|DEVICES|FIXTURE|FIXTURES))?(?:\s+TO\s+REMAIN)?", upper):
+    if re.fullmatch(r"EXISTING(?:\s+(?:DEVICES?|(?:LIGHT\s+)?FIXTURES?|(?:ELECTRICAL\s+)?OUTLETS?))?(?:\s+TO\s+REMAIN)?", upper):
         return SCOPE_EXISTING
-    if re.fullmatch(r"NEW(?:\s+(?:DEVICE|DEVICES|FIXTURE|FIXTURES|WORK|CONSTRUCTION))?", upper):
+    if re.fullmatch(r"NEW(?:\s+(?:DEVICES?|(?:LIGHT\s+)?FIXTURES?|(?:ELECTRICAL\s+)?OUTLETS?|WORK|CONSTRUCTION))?", upper):
         return SCOPE_NEW
     return None
 

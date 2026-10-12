@@ -45,11 +45,14 @@ and reach are never consulted: the discriminator is the source evidence
 alone, so a lawful multi-tap branch with the same tree topology as an open
 wall chain resolves when it touches no classified geometry.
 
-When no handoff is supplied, behaviour is unchanged, and the model's
-`pdf_electrical` attributes carry an explicit report: `branch_wall_evidence`
-is `applied` (with chain counts and rejected-run counts) or `absent`, with a
-note that without source classification open architectural chains stay
-indistinguishable from wiring.
+The model's `pdf_electrical` attributes always carry an explicit
+`branch_wall_evidence` report: `applied` (with chain counts and rejected-run
+counts) when a handoff was supplied, or `absent` with a note that running
+without source classification leaves open architectural chains
+indistinguishable from wiring (#76), so the limitation is stated in every
+import instead of silently implying the gate is covered. The four embedded
+import-byte baselines in `tests/test_pdf_electrical_importer_performance.py`
+were updated deliberately for exactly this attribute and nothing else.
 
 Generated test PDFs go through `extract_pdf` on both lanes; there are no
 pre-extracted answer fixtures.

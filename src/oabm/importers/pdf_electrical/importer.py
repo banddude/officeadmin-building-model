@@ -12703,11 +12703,13 @@ class ElectricalPdfImporter:
                             "rejected_runs": sum(
                                 1
                                 for item in unresolved_circuits
-                                if item.get("reason_code") == "enters_classified_wall_chain"
+                                if item.get("reason_code")
+                                == "enters_classified_wall_chain"
                             ) + sum(
                                 1
                                 for item in unresolved_topology
-                                if item.get("reason") == "enters_classified_wall_chain"
+                                if item.get("reason")
+                                == "enters_classified_wall_chain"
                             ),
                         }
                         if wall_evidence is not None

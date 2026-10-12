@@ -300,18 +300,18 @@ def test_lawful_multitap_branch_with_matching_topology_resolves(tmp_path: Path) 
     assert report["rejected_runs"] == 0
 
 
-def test_branches_resolve_when_no_wall_evidence_is_supplied(tmp_path: Path) -> None:
+def test_no_handoff_reports_the_limitation(tmp_path: Path) -> None:
     source = tmp_path / "sheet.pdf"
     _write_combined_sheet(
         source, branch=BRANCH_INTO_OPEN_CHAIN, walls=OPEN_CHAIN_LINES,
     )
-    model = ElectricalPdfImporter().import_pdf(source)
-    # Without the handoff the guard is absent: the limitation is reported,
-    # never silently claimed as covered.
-    report = model.attributes["pdf_electrical"]["branch_wall_evidence"]
+    plain = ElectricalPdfImporter().import_pdf(source)
+    # Without the handoff the guard is absent, and the model says so instead
+    # of silently implying the hard gate is covered (#276).
+    report = plain.attributes["pdf_electrical"]["branch_wall_evidence"]
     assert report["status"] == "absent"
     assert "#76" in report["note"]
-    assert not _unresolved_reasons(model, "enters_classified_wall_chain")
+    assert not _unresolved_reasons(plain, "enters_classified_wall_chain")
 
 
 def test_stale_source_evidence_refuses(tmp_path: Path) -> None:

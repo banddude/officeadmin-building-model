@@ -1,0 +1,725 @@
+{
+  "$defs": {
+    "CircuitFactRow": {
+      "additionalProperties": false,
+      "properties": {
+        "assignment_status": {
+          "enum": [
+            "panel",
+            "unsupported_source_owner"
+          ]
+        },
+        "circuit": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
+        "missing_fields": {
+          "items": {
+            "enum": [
+              "circuit_number",
+              "poles",
+              "phase",
+              "voltage_v",
+              "load_va"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "source_owner": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
+        "source_port": {
+          "$ref": "#/$defs/SourceSnapshot"
+        }
+      },
+      "required": [
+        "circuit",
+        "source_port",
+        "source_owner",
+        "missing_fields",
+        "assignment_status"
+      ],
+      "type": "object"
+    },
+    "LabelConflict": {
+      "additionalProperties": false,
+      "properties": {
+        "circuit_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "minItems": 2,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "label": {
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "circuit_ids"
+      ],
+      "type": "object"
+    },
+    "ModelSourceContext": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "content_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "coordinate_system": {
+          "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/CoordinateSystem"
+        },
+        "model_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": ["string", "null"]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "enum": [
+            "1.0.0",
+            "1.1.0",
+            "1.2.0",
+            "1.3.0"
+          ]
+        }
+      },
+      "required": [
+        "model_id",
+        "schema_version",
+        "name",
+        "coordinate_system",
+        "provenance",
+        "attributes",
+        "content_fingerprint"
+      ],
+      "type": "object"
+    },
+    "PanelFactGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "all_listed_loads_known": {
+          "type": "boolean"
+        },
+        "circuits": {
+          "items": {
+            "$ref": "#/$defs/CircuitFactRow"
+          },
+          "type": "array"
+        },
+        "diagnostic_codes": {
+          "items": {
+            "enum": [
+              "no_listed_circuits",
+              "unknown_connected_loads",
+              "duplicate_circuit_number"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "known_connected_va": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "label_conflicts": {
+          "items": {
+            "$ref": "#/$defs/LabelConflict"
+          },
+          "type": "array"
+        },
+        "panel": {
+          "$ref": "#/$defs/SourceSnapshot"
+        },
+        "subtotal_derivation": {
+          "const": "inferred"
+        },
+        "subtotal_source_circuit_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "unknown_load_circuit_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "panel",
+        "circuits",
+        "known_connected_va",
+        "unknown_load_circuit_ids",
+        "all_listed_loads_known",
+        "label_conflicts",
+        "subtotal_derivation",
+        "subtotal_source_circuit_ids",
+        "diagnostic_codes"
+      ],
+      "type": "object"
+    },
+    "SourceSnapshot": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "levels"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Level"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "spaces"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Space"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "walls"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Wall"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "slabs"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Slab"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "ceilings"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Ceiling"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "openings"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Opening"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "electrical_equipment"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/ElectricalEquipment"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "electrical_devices"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/ElectricalDevice"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "ports"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Port"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "obstacles"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Obstacle"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "route_constraints"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/RouteConstraint"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "routes"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Route"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "route_fittings"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/RouteFitting"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "circuits"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Circuit"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "conductors"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Conductor"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "electrical_boxes"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/ElectricalBox"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "box_selection_outcomes"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/BoxSelectionOutcome"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "raceway_selections"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/RacewaySelection"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "raceway_selection_outcomes"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/RacewaySelectionOutcome"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "support_assemblies"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/SupportAssembly"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "support_components"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/SupportComponent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "support_interfaces"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/SupportInterface"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "collection": {
+                "const": "support_selection_outcomes"
+              }
+            },
+            "required": [
+              "collection"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/SupportSelectionOutcome"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "collection": {
+          "enum": [
+            "box_selection_outcomes",
+            "ceilings",
+            "circuits",
+            "conductors",
+            "electrical_boxes",
+            "electrical_devices",
+            "electrical_equipment",
+            "levels",
+            "obstacles",
+            "openings",
+            "ports",
+            "raceway_selection_outcomes",
+            "raceway_selections",
+            "route_constraints",
+            "route_fittings",
+            "routes",
+            "slabs",
+            "spaces",
+            "support_assemblies",
+            "support_components",
+            "support_interfaces",
+            "support_selection_outcomes",
+            "walls"
+          ]
+        },
+        "content_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "entity": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "collection",
+        "entity",
+        "content_fingerprint"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/banddude/officeadmin-building-model/contracts/panel-schedule-report-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "binding_algorithm": {
+      "const": "canonical-entity-order-and-scope-sets-v1"
+    },
+    "code_verification_performed": {
+      "const": false
+    },
+    "model_source_context": {
+      "$ref": "#/$defs/ModelSourceContext"
+    },
+    "panels": {
+      "items": {
+        "$ref": "#/$defs/PanelFactGroup"
+      },
+      "type": "array"
+    },
+    "source_model_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "source_model_id": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+      "type": "string"
+    },
+    "source_model_version": {
+      "enum": [
+        "1.0.0",
+        "1.1.0",
+        "1.2.0",
+        "1.3.0"
+      ]
+    },
+    "unassigned_circuits": {
+      "items": {
+        "$ref": "#/$defs/CircuitFactRow"
+      },
+      "type": "array"
+    },
+    "version": {
+      "const": "1.0.0"
+    }
+  },
+  "required": [
+    "version",
+    "source_model_id",
+    "source_model_version",
+    "binding_algorithm",
+    "source_model_fingerprint",
+    "panels",
+    "unassigned_circuits",
+    "code_verification_performed",
+    "model_source_context"
+  ],
+  "title": "Supplied panel circuit facts and connected-load completeness",
+  "type": "object"
+}

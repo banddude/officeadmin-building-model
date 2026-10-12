@@ -158,6 +158,7 @@ Do not combine competing implementations unless the issue genuinely requires use
 Keep these responsibilities separated:
 
 - `src/oabm/model`: canonical semantic model and validation
+- `src/oabm/electrical`: deterministic explicit-intent/catalog physical-object producers; preserve field-qualified provenance and stable IDs, expose unresolved inputs without invented geometry or code-compliance claims, and prove consumers with public synthetic tests. Box selection runs after spatial convergence; raceway and shared-support work remains separately scoped.
 - `src/oabm/ifc`: IFC / IfcOpenShell / Bonsai interoperability and round trip
 - `src/oabm/routing`: deterministic 3D electrical routing
 - `src/oabm/importers/roomplan`: RoomPlan / LiDAR ingestion

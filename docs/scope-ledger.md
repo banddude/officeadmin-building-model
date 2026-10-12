@@ -41,7 +41,9 @@ qualifiers are never remapped to qualify the effective decision.
 Effective confidence is bounded by source entity confidence and applicable
 source scope evidence, model-wide electrical collection evidence and (for a
 fallback) applicable policy mode/actor/rule evidence. Unrelated pose or coordinate
-records retain their original meaning and do not qualify scope. A missing
+records retain their original meaning and do not qualify scope. If no policy
+record covers its consumed decision fields, fallback confidence is zero rather
+than invented certainty. A missing
 classification remains unknown even when the canonical entity confidence is 1.
 
 Groups are deterministic by collection/type and the five existing statuses:

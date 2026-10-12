@@ -143,10 +143,10 @@ def _scope_facts(source):
     return status, reason or 'unresolved', False
 
 
-def _evidence_confidence(records, paths):
+def _evidence_confidence(records, paths, *, default=1.0):
     applicable = [record.confidence for record in records
                   if provenance_applies_to(record, paths)]
-    return min(applicable, default=1.0)
+    return min(applicable, default=default)
 
 
 def _effective(source, policy, context):
@@ -161,7 +161,7 @@ def _effective(source, policy, context):
     fallback = eligible and policy.mode == 'new_when_confirmed_unmarked'
     if fallback:
         status = 'new'
-        confidence = min(confidence, _evidence_confidence(policy.provenance, ('mode', 'basis', 'actor')))
+        confidence = min(confidence, _evidence_confidence(policy.provenance, ('mode', 'basis', 'actor'), default=0.0))
     return status, reason, confidence, ('inferred_caller_policy' if fallback else 'source_metadata')
 
 

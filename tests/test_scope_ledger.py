@@ -314,3 +314,14 @@ def test_resolved_malformed_legend_fields_fail_closed(imported,status,key,value)
     assert row.diagnostic_reason=='malformed_scope_evidence'
     assert row.derivation=='source_metadata'
     assert row.source.entity['attributes']['pdf_electrical']==lane
+
+
+def test_unqualified_policy_cannot_inflate_fallback_confidence(imported):
+    model=changed_lane(imported,{'scope_status':'unresolved','scope_reason':'no_scope_marker'})
+    rule=replace(policy('new_when_confirmed_unmarked'),provenance=(
+        Provenance(source_kind='user',source_id='fixture:format-only',confidence=.9,scope_paths=('version',)),))
+    report=generate_scope_ledger(model,policy=rule)
+    row=next(r for r in report.rows if r.source.id==model.electrical_devices[0].id)
+    assert row.effective_status=='new' and row.derivation=='inferred_caller_policy'
+    assert row.effective_confidence==0
+    assert report.policy.provenance[0].scope_paths==('version',)

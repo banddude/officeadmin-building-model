@@ -14,15 +14,20 @@ The manifest is a derived view, exactly like a takeoff or a drawing:
 - Entities are collected by reflecting over the model's actual entity
   collections, so collections merged later (support hardware, and any other
   typed physical object) are reviewed without a change here.
-- Item identifiers are stable under iteration permutations, and identical
-  inputs produce byte-identical JSON.
-- Crop/evidence references are supplied explicitly by the caller and are
-  validated against the model's entity ids. Missing crops stay missing:
-  the manifest never invents evidence. Dangling (unknown entity), stale
-  (no longer current) and duplicate references fail closed.
+- Item identifiers are stable under input permutations, unordered
+  provenance, unordered evidence and warning order; identical inputs
+  produce byte-identical JSON. Distinct warnings over the same code and
+  sources never collide: the message digest is part of the identity.
+- Crop/evidence references are typed bindings to an actual provenance
+  record of a current entity: source, page and a content fingerprint of
+  the bound record. Unknown sources, wrong pages and stale fingerprints
+  (the record changed after the reference was made) fail closed. Missing
+  evidence stays missing: the manifest never invents a reference, and no
+  external service is contacted.
 - The manifest is strict and portable: ``from_dict`` rejects unknown keys,
-  wrong versions and invalid values, so a manifest written by one process
-  decodes exactly in another.
+  wrong versions, malformed provenance, out-of-range values and duplicate
+  identities, so a manifest written by one process decodes exactly in
+  another. Constructor and decoder enforce the same invariants.
 
 This child does not implement importer self-checks, crop extraction, bid
 pricing, or a production viewer, and it does not claim that all uncertainty
@@ -32,13 +37,15 @@ actually support today.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
-from dataclasses import dataclass, fields
-from typing import Any, Iterable, Mapping, get_args, get_origin, get_type_hints
+import re
+from dataclasses import dataclass, fields, is_dataclass
+from typing import Any, Iterable, Mapping, Sequence, get_args, get_origin, get_type_hints
 
 from oabm.model import BuildingModel, Entity, Provenance
-from oabm.quantities import extract_quantities
+from oabm.quantities import QuantityWarning, extract_quantities
 
 #: Version of the portable config and manifest documents. Bump on any
 #: breaking change to their key sets or semantics; strict decoding rejects
@@ -56,6 +63,16 @@ _REASON_MISSING_PROVENANCE = "missing_provenance"
 _REASON_UNRESOLVED_SELECTION = "unresolved_selection"
 _QUANTITY_WARNING_PREFIX = "quantity_warning_"
 
+_REASON_TOKEN_RE = re.compile(r"[a-z][a-z0-9_]*")
+_DERIVATIONS = frozenset({"observed", "user", "inferred"})
+
+#: Provenance fields the canonical contract defines, and the ones a payload
+#: entry must carry. Anything else in a decoded entry is rejected.
+_PROVENANCE_REQUIRED_KEYS = frozenset({"source_kind", "source_id", "confidence"})
+_PROVENANCE_OPTIONAL_KEYS = frozenset({
+    "source_element_id", "page", "method", "derivation", "scope_paths",
+})
+
 
 def _validated_threshold(value: Any) -> float:
     """Validate an explicit confidence threshold and return it as a float.
@@ -68,7 +85,7 @@ def _validated_threshold(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(
             "confidence_threshold must be a finite number in [0, 1] "
-            f"(not bool), got {value!r}"
+            "(not bool), got {value!r}".format(value=value)
         )
     threshold = float(value)
     if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
@@ -78,12 +95,100 @@ def _validated_threshold(value: Any) -> float:
     return threshold
 
 
+def _validated_confidence(value: Any, label: str) -> float:
+    """A confidence value in [0, 1]; booleans and non-numbers fail."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} must be a number in [0, 1] (not bool), got {value!r}")
+    confidence = float(value)
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        raise ValueError(f"{label} must be a finite number in [0, 1], got {value!r}")
+    return confidence
+
+
+def _validated_page(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{label} must be a positive integer, got {value!r}")
+    return value
+
+
+def _validated_token(value: Any, label: str) -> str:
+    if not isinstance(value, str) or _REASON_TOKEN_RE.fullmatch(value) is None:
+        raise ValueError(f"{label} must be a lowercase reason token, got {value!r}")
+    return value
+
+
+def fingerprint_provenance(record: Provenance) -> str:
+    """Content fingerprint of one provenance record, for evidence binding.
+
+    The digest covers every identifying field of the record exactly as the
+    canonical model holds it. A reference made against a record breaks
+    loudly when the record is edited or replaced, which is what makes
+    stale evidence detectable without contacting any external store.
+    """
+
+    payload = {
+        "source_kind": record.source_kind,
+        "source_id": record.source_id,
+        "source_element_id": record.source_element_id,
+        "page": record.page,
+        "method": record.method,
+        "confidence": record.confidence,
+        "derivation": record.derivation,
+        "scope_paths": list(record.scope_paths) if record.scope_paths is not None else None,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceReference:
+    """A typed crop/evidence binding to one current provenance record.
+
+    ``ref_id`` is the caller's stable name for the artifact (a page crop, a
+    scan excerpt). ``source_kind``/``source_id``/``page`` name the exact
+    provenance record the artifact illustrates, and ``fingerprint`` is that
+    record's :func:`fingerprint_provenance` digest at the time the reference
+    was made — the builder rejects the reference when the record has since
+    changed. Nothing here fetches anything.
+    """
+
+    ref_id: str
+    entity_id: str
+    source_kind: str
+    source_id: str
+    fingerprint: str
+    page: int | None = None
+
+    def __post_init__(self) -> None:
+        for label in ("ref_id", "entity_id", "source_kind", "source_id"):
+            value = getattr(self, label)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"EvidenceReference.{label} must be a non-empty string")
+        if not isinstance(self.fingerprint, str) or not self.fingerprint:
+            raise ValueError("EvidenceReference.fingerprint must be a non-empty string")
+        if self.page is not None:
+            object.__setattr__(self, "page", _validated_page(self.page, "EvidenceReference.page"))
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ref_id": self.ref_id,
+            "source_kind": self.source_kind,
+            "source_id": self.source_id,
+            "fingerprint": self.fingerprint,
+        }
+        if self.page is not None:
+            payload["page"] = self.page
+        return payload
+
+
 def _provenance_payload(records: Iterable[Provenance]) -> tuple[dict[str, Any], ...]:
-    """Provenance exactly as the model holds it, never relabeled.
+    """Provenance exactly as the model holds it, in a canonical order.
 
     Source kind/ID/element/page references, field scopes, confidences and
-    derivation classes all travel verbatim so a reviewer can audit the
-    original claim rather than this module's opinion of it.
+    derivation classes all travel verbatim — never relabeled — while the
+    order is normalized so callers that iterate provenance in any order get
+    identical manifest bytes.
     """
 
     payload: list[dict[str, Any]] = []
@@ -104,7 +209,89 @@ def _provenance_payload(records: Iterable[Provenance]) -> tuple[dict[str, Any], 
         if record.scope_paths is not None:
             entry["scope_paths"] = list(record.scope_paths)
         payload.append(entry)
+
+    def sort_key(entry: dict[str, Any]) -> tuple:
+        return (
+            entry["source_kind"],
+            entry["source_id"],
+            entry.get("source_element_id") or "",
+            entry.get("page") if entry.get("page") is not None else -1,
+            entry.get("method") or "",
+            entry["confidence"],
+            entry.get("derivation") or "",
+            json.dumps(entry.get("scope_paths"), sort_keys=True) if entry.get("scope_paths") is not None else "",
+        )
+
+    payload.sort(key=sort_key)
     return tuple(payload)
+
+
+def _validated_provenance_entry(value: Any) -> dict[str, Any]:
+    """Strict decode of one provenance payload entry."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("provenance entry must be a JSON object")
+    unknown = set(value) - _PROVENANCE_REQUIRED_KEYS - _PROVENANCE_OPTIONAL_KEYS
+    if unknown:
+        raise ValueError(f"unknown provenance keys: {sorted(unknown)}")
+    missing = _PROVENANCE_REQUIRED_KEYS - set(value)
+    if missing:
+        raise ValueError(f"provenance entry is missing keys: {sorted(missing)}")
+    entry: dict[str, Any] = {}
+    for key in ("source_kind", "source_id"):
+        if not isinstance(value[key], str) or not value[key]:
+            raise ValueError(f"provenance {key} must be a non-empty string")
+        entry[key] = value[key]
+    entry["confidence"] = _validated_confidence(value["confidence"], "provenance confidence")
+    for key in ("source_element_id", "method"):
+        if key in value and value[key] is not None:
+            if not isinstance(value[key], str) or not value[key]:
+                raise ValueError(f"provenance {key} must be a non-empty string")
+            entry[key] = value[key]
+    if value.get("page") is not None:
+        entry["page"] = _validated_page(value["page"], "provenance page")
+    if value.get("derivation") is not None:
+        derivation = value["derivation"]
+        if derivation not in _DERIVATIONS:
+            raise ValueError(
+                f"provenance derivation must be one of {sorted(_DERIVATIONS)}, "
+                f"got {derivation!r}"
+            )
+        entry["derivation"] = derivation
+    if value.get("scope_paths") is not None:
+        scopes = value["scope_paths"]
+        if (
+            not isinstance(scopes, list)
+            or any(not isinstance(path, str) or not path for path in scopes)
+            or len(set(scopes)) != len(scopes)
+        ):
+            raise ValueError("provenance scope_paths must be unique non-empty strings")
+        entry["scope_paths"] = list(scopes)
+    return entry
+
+
+_CROP_REQUIRED_KEYS = frozenset({"ref_id", "source_kind", "source_id", "fingerprint"})
+
+
+def _validated_crop(value: Any) -> dict[str, Any]:
+    """Strict decode of one bound evidence reference payload."""
+
+    if not isinstance(value, Mapping):
+        raise ValueError("crop reference must be a JSON object")
+    unknown = set(value) - _CROP_REQUIRED_KEYS - {"page"}
+    if unknown:
+        raise ValueError(f"unknown crop reference keys: {sorted(unknown)}")
+    missing = _CROP_REQUIRED_KEYS - set(value)
+    if missing:
+        raise ValueError(f"crop reference is missing keys: {sorted(missing)}")
+    payload: dict[str, Any] = {}
+    for key in sorted(_CROP_REQUIRED_KEYS):
+        if not isinstance(value[key], str) or not value[key]:
+            raise ValueError(f"crop reference {key} must be a non-empty string")
+        payload[key] = value[key]
+    if value.get("page") is not None:
+        payload["page"] = _validated_page(value["page"], "crop reference page")
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,8 +351,8 @@ class ReviewItem:
     entity item; every source of a quantity warning for a warning item).
     ``reasons`` lists why it is unsure. ``confidence`` and ``provenance``
     retain the model's actual values — the reviewer, not this module,
-    decides what they are worth. ``crops`` carries only caller-supplied
-    evidence references for these entities.
+    decides what they are worth. ``crops`` carries only caller-supplied,
+    bound evidence references for these entities.
     """
 
     item_id: str
@@ -175,7 +362,50 @@ class ReviewItem:
     detail: str
     confidence: float | None
     provenance: tuple[dict[str, Any], ...]
-    crops: tuple[str, ...]
+    crops: tuple[dict[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.item_id, str) or not self.item_id:
+            raise ValueError("review item_id must be a non-empty string")
+        if not isinstance(self.entity_kind, str) or not self.entity_kind:
+            raise ValueError("review entity_kind must be a non-empty string")
+        if (
+            not self.entity_ids
+            or any(not isinstance(value, str) or not value for value in self.entity_ids)
+            or len(set(self.entity_ids)) != len(self.entity_ids)
+        ):
+            raise ValueError("review entity_ids must be non-empty unique strings")
+        if (
+            not self.reasons
+            or any(not isinstance(value, str) for value in self.reasons)
+            or len(set(self.reasons)) != len(self.reasons)
+        ):
+            raise ValueError("review reasons must be non-empty unique strings")
+        for reason in self.reasons:
+            _validated_token(reason, "review reason")
+        if not isinstance(self.detail, str) or not self.detail:
+            raise ValueError("review detail must be a non-empty string")
+        if self.confidence is not None:
+            object.__setattr__(
+                self,
+                "confidence",
+                _validated_confidence(self.confidence, "review item confidence"),
+            )
+        # Constructor and decoder share these invariants: provenance entries
+        # are normalized to their strict shape, crop references carry their
+        # binding, and no value is silently altered.
+        object.__setattr__(
+            self,
+            "provenance",
+            tuple(_validated_provenance_entry(entry) for entry in self.provenance),
+        )
+        validated_crops = tuple(_validated_crop(entry) for entry in self.crops)
+        ref_ids = [entry["ref_id"] for entry in validated_crops]
+        if len(set(ref_ids)) != len(ref_ids):
+            raise ValueError("review crops must carry unique ref_id values")
+        object.__setattr__(self, "crops", tuple(
+            sorted(validated_crops, key=lambda entry: entry["ref_id"])
+        ))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -186,7 +416,7 @@ class ReviewItem:
             "detail": self.detail,
             "confidence": self.confidence,
             "provenance": [dict(entry) for entry in self.provenance],
-            "crops": list(self.crops),
+            "crops": [dict(entry) for entry in self.crops],
         }
 
     @classmethod
@@ -209,33 +439,18 @@ class ReviewItem:
             if not isinstance(document[key], str) or not document[key]:
                 raise ValueError(f"review item {key} must be a non-empty string")
         for key in ("entity_ids", "reasons", "crops"):
-            if (
-                not isinstance(document[key], list)
-                or any(not isinstance(entry, str) for entry in document[key])
-            ):
-                raise ValueError(f"review item {key} must be a list of strings")
-        if document["confidence"] is not None and (
-            isinstance(document["confidence"], bool)
-            or not isinstance(document["confidence"], (int, float))
-            or not math.isfinite(float(document["confidence"]))
-        ):
-            raise ValueError("review item confidence must be null or a finite number")
-        provenance = document["provenance"]
-        if not isinstance(provenance, list) or any(
-            not isinstance(entry, Mapping) for entry in provenance
-        ):
-            raise ValueError("review item provenance must be a list of objects")
+            if not isinstance(document[key], list):
+                raise ValueError(f"review item {key} must be a list")
+        if document["provenance"] is not None and not isinstance(document["provenance"], list):
+            raise ValueError("review item provenance must be a list")
         return cls(
             item_id=document["item_id"],
             entity_kind=document["entity_kind"],
             entity_ids=tuple(document["entity_ids"]),
             reasons=tuple(document["reasons"]),
             detail=document["detail"],
-            confidence=(
-                None if document["confidence"] is None
-                else float(document["confidence"])
-            ),
-            provenance=tuple(dict(entry) for entry in provenance),
+            confidence=document["confidence"],
+            provenance=tuple(document["provenance"]),
             crops=tuple(document["crops"]),
         )
 
@@ -249,6 +464,25 @@ class ConfidenceReviewManifest:
     items: tuple[ReviewItem, ...]
     #: Entity collections that were actually scanned, sorted by name.
     collections: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_id, str) or not self.model_id:
+            raise ValueError("manifest model_id must be a non-empty string")
+        object.__setattr__(
+            self,
+            "confidence_threshold",
+            _validated_threshold(self.confidence_threshold),
+        )
+        if (
+            not self.collections
+            or any(not isinstance(name, str) or not name for name in self.collections)
+            or len(set(self.collections)) != len(self.collections)
+        ):
+            raise ValueError("manifest collections must be unique non-empty strings")
+        item_ids = [item.item_id for item in self.items]
+        if len(set(item_ids)) != len(item_ids):
+            duplicates = sorted({i for i in item_ids if item_ids.count(i) > 1})
+            raise ValueError(f"manifest contains duplicate item ids: {duplicates}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -289,6 +523,8 @@ class ConfidenceReviewManifest:
             not isinstance(name, str) for name in document["collections"]
         ):
             raise ValueError("manifest collections must be a list of strings")
+        if len(set(document["collections"])) != len(document["collections"]):
+            raise ValueError("manifest collections contains duplicate names")
         if not isinstance(document.get("items"), list):
             raise ValueError("manifest items must be a list")
         items = tuple(ReviewItem.from_dict(entry) for entry in document["items"])
@@ -310,6 +546,8 @@ def _entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:
     tuple, not an Entity tuple, and is rightly excluded.
     """
 
+    if not is_dataclass(model):
+        raise TypeError("model must be a BuildingModel dataclass")
     hints = get_type_hints(type(model))
     result: dict[str, tuple[Entity, ...]] = {}
     for field_info in fields(model):
@@ -327,57 +565,157 @@ def _entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:
     return result
 
 
-def _validate_evidence(
+def _validated_evidence(
     model: BuildingModel,
-    evidence: Mapping[str, Iterable[str]] | None,
-) -> dict[str, tuple[str, ...]]:
-    """Validate caller-supplied crop/evidence references; fail closed.
+    evidence: Sequence[EvidenceReference] | None,
+) -> dict[str, tuple[dict[str, Any], ...]]:
+    """Validate typed evidence bindings against the current model; fail closed.
 
-    References attach to known entity ids of *this* model. An id the model
-    does not know is dangling (or stale after an edit) and is rejected, the
-    same reference id may not be supplied twice, and references within one
-    entity must be unique. Nothing here invents a reference for an entity
+    Every reference must name a known entity and bind to one of that
+    entity's *actual current* provenance records: source kind and id must
+    match, the page must match, and the record's content fingerprint must
+    still equal the one the reference carries. A record that was edited or
+    replaced after the reference was made fails as stale. Reference ids
+    must be unique. Nothing is fetched and nothing is invented for entities
     the caller did not name.
     """
 
     if evidence is None:
         return {}
-    known_ids = {
-        entity.id
-        for collection in _entity_collections(model).values()
+    collections = _entity_collections(model)
+    entity_records: dict[str, tuple[Provenance, ...]] = {
+        entity.id: entity.provenance
+        for collection in collections.values()
         for entity in collection
     }
-    validated: dict[str, tuple[str, ...]] = {}
+    validated: dict[str, list[dict[str, Any]]] = {}
     seen_refs: dict[str, str] = {}
-    for entity_id in evidence:
-        if entity_id not in known_ids:
+    for reference in evidence:
+        if not isinstance(reference, EvidenceReference):
+            raise ValueError("evidence entries must be EvidenceReference bindings")
+        previous = seen_refs.get(reference.ref_id)
+        if previous is not None:
             raise ValueError(
-                f"evidence references unknown or stale entity id {entity_id!r}"
+                f"duplicate evidence reference id {reference.ref_id!r} for entities "
+                f"{previous!r} and {reference.entity_id!r}"
             )
-        refs = tuple(evidence[entity_id])
-        for ref in refs:
-            if not isinstance(ref, str) or not ref:
-                raise ValueError(
-                    f"evidence references for {entity_id!r} must be non-empty strings"
-                )
-            previous = seen_refs.get(ref)
-            if previous is not None:
-                raise ValueError(
-                    f"duplicate evidence reference {ref!r} for entities "
-                    f"{previous!r} and {entity_id!r}"
-                )
-            seen_refs[ref] = entity_id
-        if len(set(refs)) != len(refs):
-            raise ValueError(f"duplicate evidence references for entity {entity_id!r}")
-        validated[entity_id] = refs
-    return validated
+        seen_refs[reference.ref_id] = reference.entity_id
+        records = entity_records.get(reference.entity_id)
+        if records is None:
+            raise ValueError(
+                f"evidence references unknown or stale entity id "
+                f"{reference.entity_id!r}"
+            )
+        same_source = [
+            record for record in records
+            if record.source_kind == reference.source_kind
+            and record.source_id == reference.source_id
+        ]
+        if not same_source:
+            raise ValueError(
+                f"evidence reference {reference.ref_id!r} binds to source "
+                f"{reference.source_kind}:{reference.source_id}, which entity "
+                f"{reference.entity_id!r} does not currently carry"
+            )
+        same_page = [
+            record for record in same_source
+            if record.page == reference.page
+        ]
+        if not same_page:
+            raise ValueError(
+                f"evidence reference {reference.ref_id!r} names page "
+                f"{reference.page!r}, but source "
+                f"{reference.source_kind}:{reference.source_id} currently "
+                f"carries pages {sorted({record.page for record in same_source})}"
+            )
+        bound = next(
+            (record for record in same_page
+             if fingerprint_provenance(record) == reference.fingerprint),
+            None,
+        )
+        if bound is None:
+            raise ValueError(
+                f"evidence reference {reference.ref_id!r} is stale: record "
+                f"{reference.source_kind}:{reference.source_id} on entity "
+                f"{reference.entity_id!r} changed after the reference was made"
+            )
+        validated.setdefault(reference.entity_id, []).append(reference.to_dict())
+    return {
+        entity_id: tuple(sorted(refs, key=lambda entry: entry["ref_id"]))
+        for entity_id, refs in validated.items()
+    }
+
+
+def _warning_item_id(warning: QuantityWarning) -> str:
+    """Deterministic, collision-free identity for one warning item.
+
+    Source ids are normalized (sorted) before the id is built, and the
+    message digest is part of the identity, so two distinct warnings that
+    share a code and sources never collapse onto one id while the same
+    warning always yields the same id.
+    """
+
+    source_ids = "|".join(sorted(warning.source_entity_ids))
+    digest = hashlib.sha256(warning.message.encode("utf-8")).hexdigest()[:12]
+    return f"review:warning:{warning.code}:{source_ids}:{digest}"
+
+
+def _warning_items(
+    warnings: Iterable[QuantityWarning],
+    crops_by_entity: Mapping[str, tuple[dict[str, Any], ...]],
+    collections: Mapping[str, tuple[Entity, ...]],
+) -> list[ReviewItem]:
+    """Deterministic items for actual quantity warnings.
+
+    Normalizes source ids before deduplication, keys the dedup on the full
+    (code, message, sources) identity so distinct warnings never collide,
+    and sorts by the resulting item id so input order cannot change the
+    output.
+    """
+
+    items: list[ReviewItem] = []
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    for warning in warnings:
+        source_ids = tuple(sorted(warning.source_entity_ids))
+        key = (warning.code, warning.message, source_ids)
+        if key in seen:
+            continue
+        seen.add(key)
+        named_kinds = sorted({
+            name
+            for name in sorted(collections)
+            for entity in collections[name]
+            if entity.id in source_ids
+        })
+        kind = named_kinds[0] if len(named_kinds) == 1 else (
+            "mixed" if named_kinds else "model"
+        )
+        attached_crops = tuple(
+            sorted({
+                json.dumps(entry, sort_keys=True)
+                for entity_id in source_ids
+                for entry in crops_by_entity.get(entity_id, ())
+            })
+        )
+        items.append(ReviewItem(
+            item_id=_warning_item_id(warning),
+            entity_kind=kind,
+            entity_ids=source_ids,
+            reasons=(f"{_QUANTITY_WARNING_PREFIX}{warning.code}",),
+            detail=f"quantity warning {warning.code}: {warning.message}",
+            confidence=None,
+            provenance=(),
+            crops=tuple(json.loads(payload) for payload in attached_crops),
+        ))
+    items.sort(key=lambda item: item.item_id)
+    return items
 
 
 def build_confidence_review(
     model: BuildingModel,
     config: ReviewConfig,
     *,
-    evidence: Mapping[str, Iterable[str]] | None = None,
+    evidence: Sequence[EvidenceReference] | None = None,
 ) -> ConfidenceReviewManifest:
     """Build the deterministic review manifest for ``model``.
 
@@ -398,8 +736,8 @@ def build_confidence_review(
       (``quantity_warning_<code>``), attached to each source entity named
       by the warning.
 
-    Supplied ``evidence`` references ride along on the items of the entity
-    they name; entities the caller did not name keep no crop references.
+    Supplied ``evidence`` bindings ride along on the items of the entity
+    they are bound to; entities nobody named carry no crop references.
     """
 
     if not isinstance(model, BuildingModel):
@@ -407,7 +745,7 @@ def build_confidence_review(
     if not isinstance(config, ReviewConfig):
         raise TypeError("config must be a ReviewConfig")
     threshold = config.confidence_threshold
-    crops_by_entity = _validate_evidence(model, evidence)
+    crops_by_entity = _validated_evidence(model, evidence)
 
     collections = _entity_collections(model)
     items: list[ReviewItem] = []
@@ -432,7 +770,12 @@ def build_confidence_review(
                 ]
                 if low_records:
                     reasons.append(_REASON_LOW_SUPPORT)
-                    for record in low_records:
+                    for record in sorted(
+                        low_records,
+                        key=lambda record: (
+                            record.source_kind, record.source_id, record.confidence,
+                        ),
+                    ):
                         facts.append(
                             f"supporting provenance {record.source_kind}:"
                             f"{record.source_id} has confidence "
@@ -449,7 +792,6 @@ def build_confidence_review(
                 )
             if not reasons:
                 continue
-            crops = crops_by_entity.get(entity.id, ())
             items.append(ReviewItem(
                 item_id=f"review:entity:{entity.id}",
                 entity_kind=kind,
@@ -458,45 +800,12 @@ def build_confidence_review(
                 detail="; ".join(facts),
                 confidence=entity.confidence,
                 provenance=_provenance_payload(entity.provenance),
-                crops=crops,
+                crops=crops_by_entity.get(entity.id, ()),
             ))
 
-    takeoff = extract_quantities(model)
-    seen_warnings: set[tuple[str, str, tuple[str, ...]]] = set()
-    for warning in takeoff.warnings:
-        key = (warning.code, warning.message, warning.source_entity_ids)
-        if key in seen_warnings:
-            continue
-        seen_warnings.add(key)
-        source_ids = tuple(sorted(warning.source_entity_ids))
-        named_kinds = sorted({
-            name
-            for name in sorted(collections)
-            for entity in collections[name]
-            if entity.id in source_ids
-        })
-        kind = named_kinds[0] if len(named_kinds) == 1 else (
-            "mixed" if named_kinds else "model"
-        )
-        reason = f"{_QUANTITY_WARNING_PREFIX}{warning.code}"
-        attached_crops = tuple(
-            sorted({
-                ref
-                for entity_id in source_ids
-                for ref in crops_by_entity.get(entity_id, ())
-            })
-        )
-        items.append(ReviewItem(
-            item_id=f"review:warning:{warning.code}:{'|'.join(source_ids)}",
-            entity_kind=kind,
-            entity_ids=source_ids,
-            reasons=(reason,),
-            detail=f"quantity warning {warning.code}: {warning.message}",
-            confidence=None,
-            provenance=(),
-            crops=attached_crops,
-        ))
-
+    items.extend(_warning_items(
+        extract_quantities(model).warnings, crops_by_entity, collections,
+    ))
     items.sort(key=lambda item: item.item_id)
     return ConfidenceReviewManifest(
         model_id=model.model_id,

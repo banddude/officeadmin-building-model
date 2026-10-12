@@ -9,17 +9,20 @@ from typing import Any, Mapping, TypeVar, Union, get_args, get_origin, get_type_
 from .common import (
     SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, SUPPORT_SCHEMA_VERSION,
     PHYSICAL_SCHEMA_VERSIONS, RACEWAY_SCHEMA_VERSIONS, SUPPORTED_SCHEMA_VERSIONS,
+    SUPPORT_SCHEMA_VERSIONS, STRUCTURAL_SCHEMA_VERSION,
     ContractError, CoordinateSystem, Entity, Point3, Provenance,
     UnsupportedSchemaVersion, _distance, _finite, _validate_id, _validate_json_value,
 )
 from .physical import ElectricalBox, BoxSelectionOutcome, box_contains_point
 from .raceway import RacewaySelection, RacewaySelectionOutcome, wiring_method_for_route_type
+from .structural import StructuralMember
 from .supports import (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome,
                        component_contains_point, component_envelope_key, supported_levels)
 
 _PHYSICAL_FIELDS = frozenset({"electrical_boxes", "box_selection_outcomes"})
 _RACEWAY_FIELDS = frozenset({"raceway_selections", "raceway_selection_outcomes"})
 _SUPPORT_FIELDS = frozenset({"support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes"})
+_STRUCTURAL_FIELDS = frozenset({"structural_members"})
 from .entities import (
     Ceiling, Circuit, Conductor, ElectricalDevice, ElectricalEquipment, Level,
     Obstacle, Opening, Port, Route, RouteConstraint, RouteFitting, Slab, Space, Wall,
@@ -54,6 +57,7 @@ class BuildingModel:
     support_components: tuple[SupportComponent, ...] = ()
     support_interfaces: tuple[SupportInterface, ...] = ()
     support_selection_outcomes: tuple[SupportSelectionOutcome, ...] = ()
+    structural_members: tuple[StructuralMember, ...] = ()
     provenance: tuple[Provenance, ...] = ()
     attributes: dict[str, Any] = field(default_factory=dict)
 
@@ -67,8 +71,10 @@ class BuildingModel:
             raise ContractError("physical electrical objects require explicit schema_version 1.1.0")
         if self.schema_version not in RACEWAY_SCHEMA_VERSIONS and (self.raceway_selections or self.raceway_selection_outcomes):
             raise ContractError("raceway selections require explicit schema_version 1.2.0")
-        if self.schema_version != SUPPORT_SCHEMA_VERSION and any(getattr(self,name) for name in _SUPPORT_FIELDS):
+        if self.schema_version not in SUPPORT_SCHEMA_VERSIONS and any(getattr(self,name) for name in _SUPPORT_FIELDS):
             raise ContractError("support inventory requires explicit schema_version 1.3.0")
+        if self.schema_version != STRUCTURAL_SCHEMA_VERSION and any(getattr(self, name) for name in _STRUCTURAL_FIELDS):
+            raise ContractError("structural members require explicit schema_version 1.4.0")
         _validate_json_value(self.attributes)
         validate_model(self)
 
@@ -93,10 +99,14 @@ class BuildingModel:
             raise ContractError(f"{version} has unknown raceway-selection fields; explicitly migrate to 1.2.0")
         if version in RACEWAY_SCHEMA_VERSIONS and not _RACEWAY_FIELDS.issubset(document):
             raise ContractError(f"{version} requires raceway_selections and raceway_selection_outcomes arrays")
-        if version != SUPPORT_SCHEMA_VERSION and _SUPPORT_FIELDS.intersection(document):
+        if version not in SUPPORT_SCHEMA_VERSIONS and _SUPPORT_FIELDS.intersection(document):
             raise ContractError(f"{version} has unknown support fields; explicitly migrate to 1.3.0")
-        if version == SUPPORT_SCHEMA_VERSION and not _SUPPORT_FIELDS.issubset(document):
-            raise ContractError("1.3.0 requires all four support inventory/outcome arrays")
+        if version in SUPPORT_SCHEMA_VERSIONS and not _SUPPORT_FIELDS.issubset(document):
+            raise ContractError(f"{version} requires all four support inventory/outcome arrays")
+        if version != STRUCTURAL_SCHEMA_VERSION and _STRUCTURAL_FIELDS.intersection(document):
+            raise ContractError(f"{version} has unknown structural fields; explicitly migrate to 1.4.0")
+        if version == STRUCTURAL_SCHEMA_VERSION and not _STRUCTURAL_FIELDS.issubset(document):
+            raise ContractError("1.4.0 requires the structural_members array")
         return _decode_dataclass(cls, document)
 
     @classmethod
@@ -142,6 +152,7 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Entity, ...], ...]:
         model.support_components,
         model.support_interfaces,
         model.support_selection_outcomes,
+        model.structural_members,
     )
 
 
@@ -224,6 +235,8 @@ def validate_model(model: BuildingModel) -> None:
 
     for entity in (*model.spaces, *model.walls, *model.slabs, *model.ceilings):
         require(entity.level_id, levels, f"{entity.id}.level_id")
+    for member in model.structural_members:
+        require(member.level_id, levels, f"{member.id}.level_id")
 
     hostable = {item.id: item for item in (*model.walls, *model.slabs, *model.ceilings)}
     # Legacy and explicitly empty 1.3 models need no support-only work.
@@ -425,8 +438,11 @@ def _encode(value: Any) -> Any:
         if isinstance(value, BuildingModel) and value.schema_version not in RACEWAY_SCHEMA_VERSIONS:
             for name in _RACEWAY_FIELDS:
                 encoded.pop(name)
-        if isinstance(value, BuildingModel) and value.schema_version != SUPPORT_SCHEMA_VERSION:
+        if isinstance(value, BuildingModel) and value.schema_version not in SUPPORT_SCHEMA_VERSIONS:
             for name in _SUPPORT_FIELDS:
+                encoded.pop(name)
+        if isinstance(value, BuildingModel) and value.schema_version != STRUCTURAL_SCHEMA_VERSION:
+            for name in _STRUCTURAL_FIELDS:
                 encoded.pop(name)
         if isinstance(value, Provenance) and value.derivation is None:
             # An unset derivation states nothing, so omit it rather than
@@ -474,6 +490,12 @@ def upgrade_to_v1_3(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to shared supports; preserve previous inventory."""
     from dataclasses import replace
     return replace(model, schema_version=SUPPORT_SCHEMA_VERSION)
+
+
+def upgrade_to_v1_4(model: BuildingModel) -> BuildingModel:
+    """Explicit lossless opt-in to structural members; preserve prior inventory."""
+    from dataclasses import replace
+    return replace(model, schema_version=STRUCTURAL_SCHEMA_VERSION)
 
 
 T = TypeVar("T")

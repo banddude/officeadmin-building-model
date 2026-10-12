@@ -202,4 +202,11 @@ must agree with known host and supported-object levels. Components have unique
 ownership and count once independently of supported-object membership. Unknown
 substrates/levels remain unresolved, never inferred hardware. The 1.0, 1.1, and
 1.2 schemas, portable semantics, and consumer bytes remain unchanged; explicit
+Version 1.4.0 adds caller-confirmed rectangular structural members; see
+[Explicit structural members](structural-members.md). The member is an explicit
+confirmed input with a known level, kind, pose, and size, routed around as
+conservative hard no-go geometry, exported once with its canonical identity,
+and counted with its rectangular solid volume. Nothing recognizes framing or
+permits penetrations. All earlier schemas, portable semantics, and consumer
+bytes remain unchanged; explicit version rules and refusals continue to apply.
 `upgrade_to_v1_3` preserves their existing data. Default remains 1.0.

@@ -83,6 +83,9 @@ _COLOURS = {
     # style instead.
     "low_voltage": (0.10, 0.65, 0.70),
     "wall": (0.72, 0.72, 0.70),
+    # Timber/steel neutral for confirmed structural members: a display
+    # colour class only, like every other class here.
+    "structural_member": (0.66, 0.52, 0.38),
     "slab": (0.55, 0.55, 0.55),
     "space": (0.45, 0.50, 0.55),
     "route": (0.60, 0.60, 0.62),
@@ -607,6 +610,24 @@ def _build_document(
         _add_name(extras, component)
         add({"name": component.id, "vertices": _local_box_vertices(component.size.x, component.size.y, component.size.z),
              "material_key": ("other", not is_observed(component.provenance)), "extras": extras, "pose": component.pose})
+    for entity in model.structural_members:
+        # One node per confirmed member, drawn once from its canonical pose
+        # and size; the canonical id stays the node name and the kind and
+        # material travel in extras, so no second structural object exists.
+        extras = _extras(entity, "structural_member", entity.level_id)
+        _add_name(extras, entity)
+        extras["kind"] = entity.kind
+        if entity.material is not None:
+            extras["material"] = entity.material
+        add({
+            "name": entity.id,
+            "vertices": _local_box_vertices(entity.size.x, entity.size.y, entity.size.z),
+            "material_key": (
+                "structural_member", _is_derived(entity.provenance, entity.attributes),
+            ),
+            "extras": extras,
+            "pose": entity.pose,
+        })
     for entity in model.routes:
         extras = _route_extras(model, entity)
         _add_name(extras, entity)
@@ -835,6 +856,8 @@ def _build_document(
         counts["thickened_walls"] = thickened_wall_count
     if dimmed_wire_count:
         counts["dimmed_conductor_wires"] = dimmed_wire_count
+    if model.structural_members:
+        counts["structural_members"] = len(model.structural_members)
     return document, bytes(buffer), counts
 
 

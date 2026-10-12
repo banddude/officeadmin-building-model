@@ -26,6 +26,12 @@ from .importer import (
     import_document,
     import_pdf,
 )
+from ..pdf_wall_evidence import (
+    SourceWallEvidence,
+    WallChainEvidence,
+    WallChainSegment,
+    WallEvidenceHandoffError,
+)
 
 __all__ = [
     "DEFAULT_SYMBOL_RULES",
@@ -43,8 +49,12 @@ __all__ = [
     "PdfSymbolObservation",
     "PdfTextObservation",
     "PdfVectorPathObservation",
+    "SourceWallEvidence",
     "SymbolRule",
     "TriangleMeshDiagnostic",
+    "WallChainEvidence",
+    "WallChainSegment",
+    "WallEvidenceHandoffError",
     "extract_pdf",
     "symbol_shape_classes",
     "triangle_mesh_diagnostic",

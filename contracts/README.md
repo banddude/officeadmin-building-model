@@ -32,3 +32,9 @@ Any contract change requires tests and migration notes. Version 1.0 remains the 
 caller scope decisions and source-bound object-count reports. They reference
 existing canonical and panel-report snapshot definitions; canonical versions
 and default exports remain unchanged. See [Scope ledger](../docs/scope-ledger.md).
+
+`bounded-proposal-v1.schema.json` defines standalone request, result, configured
+alias routing and measured benchmark records for the opt-in placement-ranking
+boundary. It reuses canonical primitives and existing source snapshots; no
+canonical migration or default behavior changes. See
+[Bounded proposals](../docs/bounded-proposals.md).

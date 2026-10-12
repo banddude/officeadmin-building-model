@@ -1176,6 +1176,19 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         canonical_items[canonical_id] = (item, data, meta["ordinal"], kind)
 
     route_segments = _route_segments(ifc)
+    if header["schema_version"] == RACEWAY_SCHEMA_VERSION:
+        selected_routes = {data["route_id"] for _, data, _, kind in canonical_items.values()
+                           if kind == "raceway_selection"}
+        outcome_routes = {data["route_id"] for _, data, _, kind in canonical_items.values()
+                          if kind == "raceway_selection_outcome"}
+        for native, data, _, kind in canonical_items.values():
+            if kind != "route":
+                continue
+            for route_native in (native, *(segment for _, segment in route_segments.get(data["id"], []))):
+                if data["id"] not in selected_routes and _property_set(route_native, "OABM_RacewaySelection") is not None:
+                    raise IfcAdapterError("native selected-product claims have no typed raceway selection")
+                if data["id"] not in outcome_routes and _property_set(route_native, "OABM_RacewayOutcome") is not None:
+                    raise IfcAdapterError("native uncertainty claims have no typed raceway outcome")
     for annotation, selection_data, _, kind in canonical_items.values():
         if kind == "raceway_selection":
             _validate_native_raceway_selection(selection_data, canonical_items, route_segments, annotation)
@@ -2862,9 +2875,17 @@ def _validate_native_raceway_outcome(data,canonical_items,route_segments,annotat
         raise IfcAdapterError('raceway outcome references missing native route')
     expected=_raceway_outcome_properties(data)
     visible=_property_set(annotation,CANONICAL_PSET)
-    if visible is None or any(visible.get(k)!=v for k,v in expected.items()):
+    if not _raceway_outcome_projection_matches(visible, expected):
         raise IfcAdapterError('native outcome annotation contradicts canonical uncertainty')
     for native in (record[0],*(segment for _,segment in route_segments.get(data['route_id'],[]))):
         actual=_property_set(native,'OABM_RacewayOutcome')
-        if actual is None or any(actual.get(k)!=v for k,v in expected.items()):
+        if not _raceway_outcome_projection_matches(actual, expected):
             raise IfcAdapterError('native raceway uncertainty contradicts canonical outcome')
+
+
+def _raceway_outcome_projection_matches(actual, expected):
+    optional = {'RequestedCatalogId', 'RequestedCatalogRevision', 'RequestedProductId',
+                'RequestedRuleAuthority', 'RequestedRuleRevision', 'RequestedRuleId'}
+    if actual is None or any(k not in actual or actual[k] != v for k, v in expected.items()):
+        return False
+    return not any(k in actual and k not in expected for k in optional)

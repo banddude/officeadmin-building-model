@@ -74,6 +74,10 @@ Native route-axis edits read back with product/decision identity intact; this
 retains an explicit whole-route choice, not a claim that edited lengths were
 recalculated to code. Native method, source-diameter Body, product/reference or
 uncertainty contradictions fail closed rather than hiding behind the JSON shadow.
+Managed optional product/reference properties must be absent when the typed
+outcome omits them. A plain 1.2 upgrade with empty decision arrays must not carry
+native selection/outcome property sets; adding those claims without typed
+records is refused. Unrelated custom viewer notes remain allowed.
 
 GLB keeps the same number of physical meshes and exposes selected product/basis
 and outcomes on route extras, with outcomes also in asset metadata. Drawings

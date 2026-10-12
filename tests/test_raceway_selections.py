@@ -389,3 +389,50 @@ def test_annotation_only_product_basis_and_uncertainty_edits_refuse(base,inputs,
     assert ifcopenshell.util.element.get_psets(annotation)['OABM_Canonical']['CanonicalJson']==shadow
     with pytest.raises(IfcAdapterError,match='annotation contradicts'):
         from_ifc(ifc)
+
+@pytest.mark.parametrize('target',['annotation','system','segment'])
+@pytest.mark.parametrize('field',['RequestedProductId','RequestedRuleId'])
+def test_absent_optional_managed_claims_cannot_be_added_to_unresolved_native_outcome(base,target,field):
+    import ifcopenshell.api.pset
+    import ifcopenshell.util.element
+    from oabm.ifc import canonical_id_to_ifc_guid
+    m=select_raceways(upgrade_to_v1_2(base),intents=(),catalog=(),rules=());ifc=to_ifc(m)
+    outcome=m.raceway_selection_outcomes[0]
+    native_id=outcome.id if target=='annotation' else outcome.route_id if target=='system' else f'{outcome.route_id}#segment:0'
+    native=ifc.by_guid(canonical_id_to_ifc_guid(native_id))
+    pset_name='OABM_Canonical' if target=='annotation' else 'OABM_RacewayOutcome'
+    properties=ifcopenshell.util.element.get_psets(native)[pset_name]
+    ifcopenshell.api.pset.edit_pset(ifc,pset=ifc.by_id(properties['id']),properties={field:'unrecorded-native-claim'})
+    with pytest.raises(IfcAdapterError,match='contradicts'):
+        from_ifc(ifc)
+
+@pytest.mark.parametrize('target',['system','segment'])
+@pytest.mark.parametrize('producer,pset_name',[(False,'OABM_RacewaySelection'),
+    (False,'OABM_RacewayOutcome'),(True,'OABM_RacewaySelection')])
+def test_unrecorded_managed_native_selection_or_outcome_psets_refuse(base,producer,target,pset_name):
+    import ifcopenshell.api.pset
+    from oabm.ifc import canonical_id_to_ifc_guid
+    m=upgrade_to_v1_2(base)
+    if producer:
+        m=select_raceways(m,intents=(),catalog=(),rules=())
+    ifc=to_ifc(m);route_id=m.routes[0].id
+    native=ifc.by_guid(canonical_id_to_ifc_guid(route_id if target=='system' else f'{route_id}#segment:0'))
+    pset=ifcopenshell.api.pset.add_pset(ifc,product=native,name=pset_name)
+    ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties={'ProductId':'unrecorded-product',
+        'RuleId':'unrecorded-rule','SelectionStatus':'selected'})
+    with pytest.raises(IfcAdapterError,match='no typed raceway'):
+        from_ifc(ifc)
+
+@pytest.mark.parametrize('target',['annotation','system','segment'])
+def test_unrelated_native_custom_notes_do_not_conflict_with_managed_uncertainty(base,target):
+    import ifcopenshell.api.pset
+    import ifcopenshell.util.element
+    from oabm.ifc import canonical_id_to_ifc_guid
+    m=select_raceways(upgrade_to_v1_2(base),intents=(),catalog=(),rules=());ifc=to_ifc(m)
+    outcome=m.raceway_selection_outcomes[0]
+    native_id=outcome.id if target=='annotation' else outcome.route_id if target=='system' else f'{outcome.route_id}#segment:0'
+    native=ifc.by_guid(canonical_id_to_ifc_guid(native_id))
+    pset_name='OABM_Canonical' if target=='annotation' else 'OABM_RacewayOutcome'
+    pset=ifc.by_id(ifcopenshell.util.element.get_psets(native)[pset_name]['id'])
+    ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties={'CustomReviewNote':'synthetic unrelated note'})
+    assert round_trip_differences(m,from_ifc(ifc))==()

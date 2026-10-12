@@ -6,7 +6,7 @@ The caller supplies a stable source identity. Canonical IDs derive from that ide
 
 ## Supported geometry
 
-The reader supports IFC4 with one explicit SI length unit (metres or millimetres), one unambiguous three-dimensional model context, and storeys connected to the project. It composes context, local-placement, solid and profile transforms, then converts translations and dimensions to metres once. Storey elevation comes from composed placement; the descriptive native Elevation field remains an observation. Missing level heights and construction remain unknown.
+The reader supports IFC4 with one explicit SI length unit (metres or millimetres), one unambiguous three-dimensional model context with an identity WorldCoordinateSystem, and storeys connected to the project. It validates the context and composes local-placement, solid and profile transforms, then converts translations and dimensions to metres once. Storey elevation comes from composed placement; the descriptive native Elevation field remains an observation. Missing level heights and construction remain unknown.
 
 A wall needs one straight Axis and one Body containing exactly `IfcExtrudedAreaSolid`, with an exact rectangular `IfcRectangleProfileDef` or rectangular closed five-point `IfcArbitraryClosedProfileDef` polyline. Tapered, hollow, rounded and voided subclasses refuse. The composed extrusion must be vertical. Axis endpoints must agree with the Body's longitudinal extent; a genuine edge or reversed Axis is accepted. The canonical centerline is the Body midplane, and this conversion is explicitly inferred.
 
@@ -16,9 +16,9 @@ Native observations, original unit/placement/profile/Axis values and source GUID
 
 ## Refusals and limitations
 
-Global ambiguity raises a reason-only `NativeIfcImportError`; paths and IFC entity text are not included. Unsupported physical products produce GUID/type/reason diagnostics. Status is `complete`, `partial`, or `no_supported_geometry`; the last has no model. Callers must inspect status and diagnostics. Georeferencing, conflicting containment, placement cycles, tilted world/storey frames, absent required placement fields and unsupported units refuse rather than guess.
+Global ambiguity raises a reason-only `NativeIfcImportError`; paths and IFC entity text are not included. Unsupported products and semantic objects produce GUID/type/reason diagnostics. Status is `complete`, `partial`, or `no_supported_geometry`; the last has no model. Callers must inspect status and diagnostics. Nonidentity context WorldCoordinateSystem translation or rotation is explicitly unsupported: it is not applied as an extra product transform. Ordinary nested site/building/storey/product translations and yaw remain supported. Georeferencing, conflicting containment, placement cycles, tilted world/storey frames, absent required placement fields and unsupported units refuse rather than guess.
 
-Input budgets are 2,000,000 bytes, 10,000 entities, 256 physical products, placement depth 32 and 2,048 aggregate polyline points. Normal extraction does not tessellate or invoke external models. Independent tests use IfcOpenShell native geometry as an oracle.
+Input budgets are 2,000,000 bytes, 10,000 entities, 256 IfcProduct objects (including unsupported spaces/grids and administrative containers), placement depth 32 and 2,048 aggregate polyline points. Normal extraction does not tessellate or invoke external models. Independent tests use IfcOpenShell native geometry as an oracle.
 
 Existing quantities report gross wall volume; opening deductions remain explicitly unresolved. A 3 × 0.3 × 2 metre fixture therefore reports 1.8 m³ gross while native subtraction yields 1.5 m³. Existing GLB output does not cut opening voids. Neither quantity nor rendering behavior is changed by this reader. The existing IFC exporter requires a project name; unnamed intake remains unnamed and export refuses until the caller explicitly supplies one.
 

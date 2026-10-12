@@ -122,6 +122,11 @@ class _Reader:
         self.project,self.context,self.scale,self.units=self._global_context()
         if self.context.WorldCoordinateSystem is None:raise NativeIfcImportError('missing_world_coordinate_system')
         self.world=_axis(self.context.WorldCoordinateSystem,horizontal=True)
+        # Context WCS is not a second product-placement transform. Until
+        # nonidentity context semantics are supported, refuse rather than
+        # disagree with native IFC geometry evaluation.
+        if not np.allclose(self.world,np.eye(4),atol=1e-12,rtol=0):
+            raise NativeIfcImportError('unsupported_nonidentity_context_world_coordinate_system')
         for placement in file.by_type('IfcLocalPlacement'):
             self.placement(placement)  # cycles/depth/tilt/finite context fail globally
         self.parents={}

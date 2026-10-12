@@ -270,3 +270,16 @@ def test_committed_anonymous_native_sources(name):
     assert result.supported_walls==result.supported_openings==1
     same_vertices(canonical_wall_vertices(result.model.walls[0]),native_world_vertices(file.by_guid(WALL_GUID)))
     same_vertices(canonical_opening_vertices(result.model.openings[0]),native_world_vertices(file.by_guid(OPENING_GUID)))
+
+
+@pytest.mark.parametrize('kind',['translation','yaw'])
+def test_nonidentity_context_refuses_instead_of_transforming_native_geometry(kind):
+    file=author_fixture(nested=True)
+    before=native_world_vertices(file.by_guid(WALL_GUID))
+    context=file.by_type('IfcGeometricRepresentationContext')[0]
+    if kind=='translation':context.WorldCoordinateSystem.Location.Coordinates=(10.,20.,3.)
+    else:context.WorldCoordinateSystem.RefDirection=file.create_entity('IfcDirection',DirectionRatios=(0.,1.,0.))
+    # Native product geometry stays in its composed local-placement frame.
+    same_vertices(before,native_world_vertices(file.by_guid(WALL_GUID)))
+    with pytest.raises(NativeIfcImportError,match='unsupported_nonidentity_context_world_coordinate_system'):
+        intake(file)

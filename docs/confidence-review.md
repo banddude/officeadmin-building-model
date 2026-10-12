@@ -32,11 +32,11 @@ ConfidenceReviewManifest.from_dict(document)             # strict decode
 | `low_entity_confidence` | the entity's own `confidence` is below the threshold |
 | `low_supporting_provenance_confidence` | a supporting provenance record's confidence is below the threshold, even when the entity's own confidence is high — a confident record never hides a weak source |
 | `missing_provenance` | the entity carries no provenance records at all |
-| `unresolved_selection` | a box/raceway (and, once merged, support) selection outcome whose `status` is `unresolved`; the outcome's own `reason_codes` appear in the detail |
+| `unresolved_selection` | a box/raceway (and support) selection outcome whose `status` is `unresolved`; the outcome's own `reason_codes` appear in the detail |
 | `quantity_warning_<code>` | an actual warning from the real `extract_quantities` run, attached to each source entity the warning names. Warning identity normalizes source ids and includes the message digest, so distinct warnings over the same code and sources never collide, and input order cannot change the output |
 
 Item ids are stable (`review:entity:<id>`,
-`review:warning:<code>:<source ids>`), and items are sorted by id, so the
+`review:warning:<code>:<source ids>:<message digest>`), and items are sorted by id, so the
 same model always yields byte-identical JSON regardless of input order.
 The manifest retains the model's actual confidence and provenance values
 verbatim — source kind/ID/element/page, field scopes and derivation
@@ -59,7 +59,7 @@ reference = EvidenceReference(
     source_kind=record.source_kind,
     source_id=record.source_id,
     page=record.page,
-    fingerprint=fingerprint_provenance(record),
+    fingerprint=fingerprint_provenance(record, entity_id=model.walls[0].id),
 )
 manifest = build_confidence_review(model, config, evidence=[reference])
 ```
@@ -75,9 +75,22 @@ crop references: missing evidence stays missing, never invented. No
 private plan is read and no external service is called.
 
 The fingerprint covers every identifying field of the bound record
-(kind, id, element, page, method, confidence, derivation, scopes), so
-bindings are exact, and the bound values travel on the item where a
-reviewer can audit them.
+(kind, id, element, page, method, confidence, derivation, scopes and complete attributes) plus the canonical owner entity ID, so
+bindings are exact, and the bound values and owner travel on the item where a
+reviewer can audit them. Construction and portable decoding recompute each digest
+from the retained original facts; a valid-length wrong digest still refuses.
+Warning evidence selects the exact fingerprint-matching record, including when
+several records share source and page. Scope qualifier order is normalized as a
+set; arbitrary attribute arrays keep their order. Confidence normalizes to a
+finite float without rounding, consistently before hashing and decoding.
+
+This is logical content/owner binding, not authentication of crop bytes or a
+remote source. No crop is fetched or decoded. An entirely fabricated document
+with all matching hashes cannot be authenticated by this offline API. Manifest
+facts are detached and nested values are immutable; exported dictionaries are
+independent copies. Repeating a reference ID across entity/warning items is
+allowed only with exactly the same owner and binding. Entity items always name
+exactly their own canonical ID; genuine model-level warnings keep empty IDs.
 
 ## Determinism and purity
 

@@ -45,7 +45,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Iterable, Mapping, Sequence, get_args, get_origin, get_type_hints
 
 from oabm.model import BuildingModel, Entity, Provenance
-from oabm.model.common import _SCOPE_PATH_RE
+from oabm.model.common import _SCOPE_PATH_RE, _validate_id
 from oabm.quantities import QuantityWarning, extract_quantities
 
 #: Version of the portable config and manifest documents. Bump on any
@@ -71,8 +71,59 @@ _DERIVATIONS = frozenset({"observed", "user", "inferred"})
 #: entry must carry. Anything else in a decoded entry is rejected.
 _PROVENANCE_REQUIRED_KEYS = frozenset({"source_kind", "source_id", "confidence"})
 _PROVENANCE_OPTIONAL_KEYS = frozenset({
-    "source_element_id", "page", "method", "derivation", "scope_paths",
+    "source_element_id", "page", "method", "derivation", "scope_paths", "attributes", "entity_id",
 })
+
+
+class _FrozenDict(dict):
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("review facts are immutable")
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = __ior__ = _refuse
+
+
+class _FrozenList(list):
+    def _refuse(self, *args, **kwargs):
+        raise TypeError("review facts are immutable")
+    __setitem__ = __delitem__ = append = extend = insert = pop = remove = clear = sort = reverse = __iadd__ = __imul__ = _refuse
+
+
+def _detach(value):
+    if isinstance(value, Mapping):
+        if any(not isinstance(key,str) for key in value):
+            raise ValueError("review JSON object keys must be strings")
+        return {key:_detach(item) for key,item in value.items()}
+    if isinstance(value,list):return [_detach(item) for item in value]
+    if value is None or isinstance(value,(str,bool,int)):return value
+    if isinstance(value,float) and math.isfinite(value):return value
+    raise ValueError("review facts must contain portable finite JSON values")
+
+
+def _freeze(value):
+    if isinstance(value,dict):return _FrozenDict({key:_freeze(item) for key,item in value.items()})
+    if isinstance(value,list):return _FrozenList(_freeze(item) for item in value)
+    return value
+
+
+def _record_payload(record):
+    return _validated_provenance_entry({
+        "source_kind":record.source_kind,"source_id":record.source_id,
+        "source_element_id":record.source_element_id,"page":record.page,
+        "method":record.method,"confidence":record.confidence,
+        "derivation":record.derivation,"scope_paths":list(record.scope_paths) if record.scope_paths is not None else None,
+        "attributes":record.attributes,
+    })
+
+
+def _provenance_sort_key(entry):
+    return (entry["source_kind"],entry["source_id"],entry.get("source_element_id") or "",
+            entry.get("page") or 0,entry.get("method") or "",entry["confidence"],
+            json.dumps(entry,sort_keys=True,separators=(",",":")))
+
+
+def _record_fingerprint(payload):
+    # Owner identity participates in the digest, even for identical records.
+    record=_detach(payload)
+    return hashlib.sha256(json.dumps(record,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
 
 
 def _validated_threshold(value: Any) -> float:
@@ -88,7 +139,8 @@ def _validated_threshold(value: Any) -> float:
             "confidence_threshold must be a finite number in [0, 1] "
             "(not bool), got {value!r}".format(value=value)
         )
-    threshold = float(value)
+    try:threshold = float(value)
+    except (OverflowError,ValueError):raise ValueError("confidence_threshold must be finite in [0, 1]") from None
     if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
         raise ValueError(
             f"confidence_threshold must be a finite number in [0, 1], got {value!r}"
@@ -101,7 +153,8 @@ def _validated_confidence(value: Any, label: str) -> float:
 
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{label} must be a number in [0, 1] (not bool), got {value!r}")
-    confidence = float(value)
+    try:confidence = float(value)
+    except (OverflowError,ValueError):raise ValueError(f"{label} must be finite in [0, 1]") from None
     if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
         raise ValueError(f"{label} must be a finite number in [0, 1], got {value!r}")
     return confidence
@@ -133,7 +186,7 @@ def _validated_fingerprint(value: Any, label: str) -> str:
     return value
 
 
-def fingerprint_provenance(record: Provenance) -> str:
+def fingerprint_provenance(record: Provenance, *, entity_id: str) -> str:
     """Content fingerprint of one provenance record, for evidence binding.
 
     The digest covers every identifying field of the record exactly as the
@@ -142,23 +195,8 @@ def fingerprint_provenance(record: Provenance) -> str:
     stale evidence detectable without contacting any external store.
     """
 
-    payload = {
-        "source_kind": record.source_kind,
-        "source_id": record.source_id,
-        "source_element_id": record.source_element_id,
-        "page": record.page,
-        "method": record.method,
-        "confidence": record.confidence,
-        "derivation": record.derivation,
-        "scope_paths": list(record.scope_paths) if record.scope_paths is not None else None,
-        # Attributes are part of the record's identity: a source-content or
-        # region edit under unchanged ids and page (a new source_sha256, a
-        # moved bounding box) must break bindings made against the old
-        # record. Normalized deterministically, exactly like serialization.
-        "attributes": record.attributes,
-    }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if not isinstance(entity_id,str) or not entity_id:raise ValueError("fingerprint requires entity_id")
+    return _record_fingerprint({**_record_payload(record),"entity_id":entity_id})
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,12 +228,14 @@ class EvidenceReference:
             "fingerprint",
             _validated_fingerprint(self.fingerprint, "EvidenceReference.fingerprint"),
         )
+        _validate_id(self.entity_id,"EvidenceReference.entity_id")
         if self.page is not None:
             object.__setattr__(self, "page", _validated_page(self.page, "EvidenceReference.page"))
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "ref_id": self.ref_id,
+            "entity_id": self.entity_id,
             "source_kind": self.source_kind,
             "source_id": self.source_id,
             "fingerprint": self.fingerprint,
@@ -205,48 +245,9 @@ class EvidenceReference:
         return payload
 
 
-def _provenance_payload(records: Iterable[Provenance]) -> tuple[dict[str, Any], ...]:
-    """Provenance exactly as the model holds it, in a canonical order.
-
-    Source kind/ID/element/page references, field scopes, confidences and
-    derivation classes all travel verbatim — never relabeled — while the
-    order is normalized so callers that iterate provenance in any order get
-    identical manifest bytes.
-    """
-
-    payload: list[dict[str, Any]] = []
-    for record in records:
-        entry: dict[str, Any] = {
-            "source_kind": record.source_kind,
-            "source_id": record.source_id,
-            "confidence": record.confidence,
-        }
-        if record.source_element_id is not None:
-            entry["source_element_id"] = record.source_element_id
-        if record.page is not None:
-            entry["page"] = record.page
-        if record.method is not None:
-            entry["method"] = record.method
-        if record.derivation is not None:
-            entry["derivation"] = record.derivation
-        if record.scope_paths is not None:
-            entry["scope_paths"] = list(record.scope_paths)
-        payload.append(entry)
-
-    def sort_key(entry: dict[str, Any]) -> tuple:
-        return (
-            entry["source_kind"],
-            entry["source_id"],
-            entry.get("source_element_id") or "",
-            entry.get("page") if entry.get("page") is not None else -1,
-            entry.get("method") or "",
-            entry["confidence"],
-            entry.get("derivation") or "",
-            json.dumps(entry.get("scope_paths"), sort_keys=True) if entry.get("scope_paths") is not None else "",
-        )
-
-    payload.sort(key=sort_key)
-    return tuple(payload)
+def _provenance_payload(records: Iterable[Provenance], entity_id: str) -> tuple[dict[str, Any], ...]:
+    payload=[{**_record_payload(record),"entity_id":entity_id} for record in records]
+    return tuple(sorted(payload,key=_provenance_sort_key))
 
 
 def _validated_provenance_entry(value: Any) -> dict[str, Any]:
@@ -266,11 +267,12 @@ def _validated_provenance_entry(value: Any) -> dict[str, Any]:
             raise ValueError(f"provenance {key} must be a non-empty string")
         entry[key] = value[key]
     entry["confidence"] = _validated_confidence(value["confidence"], "provenance confidence")
-    for key in ("source_element_id", "method"):
+    for key in ("source_element_id", "method", "entity_id"):
         if key in value and value[key] is not None:
             if not isinstance(value[key], str) or not value[key]:
                 raise ValueError(f"provenance {key} must be a non-empty string")
             entry[key] = value[key]
+    if "entity_id" in entry:_validate_id(entry["entity_id"],"provenance entity_id")
     if value.get("page") is not None:
         entry["page"] = _validated_page(value["page"], "provenance page")
     if value.get("derivation") is not None:
@@ -301,11 +303,14 @@ def _validated_provenance_entry(value: Any) -> dict[str, Any]:
             raise ValueError(
                 "provenance scope_paths must be unique canonical field paths"
             )
-        entry["scope_paths"] = list(scopes)
+        entry["scope_paths"] = sorted(scopes)
+    attributes=value.get("attributes",{})
+    if not isinstance(attributes,Mapping):raise ValueError("provenance attributes must be a JSON object")
+    entry["attributes"]=_detach(attributes)
     return entry
 
 
-_CROP_REQUIRED_KEYS = frozenset({"ref_id", "source_kind", "source_id", "fingerprint"})
+_CROP_REQUIRED_KEYS = frozenset({"ref_id", "entity_id", "source_kind", "source_id", "fingerprint"})
 
 
 def _validated_crop(value: Any) -> dict[str, Any]:
@@ -324,6 +329,7 @@ def _validated_crop(value: Any) -> dict[str, Any]:
         if not isinstance(value[key], str) or not value[key]:
             raise ValueError(f"crop reference {key} must be a non-empty string")
         payload[key] = value[key]
+    _validate_id(payload["entity_id"],"crop entity_id")
     payload["fingerprint"] = _validated_fingerprint(
         payload["fingerprint"], "crop reference fingerprint"
     )
@@ -407,6 +413,14 @@ class ReviewItem:
             raise ValueError("review item_id must be a non-empty string")
         if not isinstance(self.entity_kind, str) or not self.entity_kind:
             raise ValueError("review entity_kind must be a non-empty string")
+        for label in ("entity_ids","reasons","provenance","crops"):
+            if not isinstance(getattr(self,label),tuple):raise ValueError(f"review {label} must be a tuple")
+        for identity in self.entity_ids:_validate_id(identity,"review entity_id")
+        if self.item_id.startswith("review:entity:"):
+            expected=self.item_id[len("review:entity:"):]
+            if self.entity_ids!=(expected,):raise ValueError("entity item must name exactly its own entity")
+        elif not self.item_id.startswith("review:warning:"):
+            raise ValueError("review item_id must name an entity or warning")
         # Entity items name exactly one entity. Warning items may name many
         # (one per source) or none at all: a model-level warning from the
         # takeoff has no source entities, and inventing one would be a lie.
@@ -437,7 +451,7 @@ class ReviewItem:
         object.__setattr__(
             self,
             "provenance",
-            tuple(_validated_provenance_entry(entry) for entry in self.provenance),
+            tuple(sorted((_validated_provenance_entry(entry) for entry in self.provenance),key=_provenance_sort_key)),
         )
         validated_crops = tuple(_validated_crop(entry) for entry in self.crops)
         ref_ids = [entry["ref_id"] for entry in validated_crops]
@@ -448,28 +462,19 @@ class ReviewItem:
         # with the same page, so the portable document stays self-verifying
         # (a crop bound to unrelated provenance is rejected here too, not
         # only at build time).
-        provenance_sources = {
-            (
-                entry.get("source_kind"),
-                entry.get("source_id"),
-                entry.get("page"),
-            )
-            for entry in self.provenance
-        }
-        for entry in validated_crops:
-            if (
-                entry["source_kind"],
-                entry["source_id"],
-                entry.get("page"),
-            ) not in provenance_sources:
-                raise ValueError(
-                    f"crop reference {entry['ref_id']!r} binds to source "
-                    f"{entry['source_kind']}:{entry['source_id']}, which this "
-                    "item's provenance does not carry"
-                )
-        object.__setattr__(self, "crops", tuple(
-            sorted(validated_crops, key=lambda entry: entry["ref_id"])
-        ))
+        for record in self.provenance:
+            if record.get("entity_id") not in self.entity_ids:
+                raise ValueError("provenance must retain its item entity association")
+        for crop in validated_crops:
+            if crop["entity_id"] not in self.entity_ids:
+                raise ValueError("crop entity association does not belong to item")
+            if not any(record.get("entity_id")==crop["entity_id"] and
+                       record["source_kind"]==crop["source_kind"] and record["source_id"]==crop["source_id"] and
+                       record.get("page")==crop.get("page") and _record_fingerprint(record)==crop["fingerprint"]
+                       for record in self.provenance):
+                raise ValueError("crop reference source/page/fingerprint binding is stale or unrelated; item does not carry matching record")
+        object.__setattr__(self,"provenance",tuple(_freeze(entry) for entry in self.provenance))
+        object.__setattr__(self,"crops",tuple(_freeze(entry) for entry in sorted(validated_crops,key=lambda entry:entry["ref_id"])))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -479,8 +484,8 @@ class ReviewItem:
             "reasons": list(self.reasons),
             "detail": self.detail,
             "confidence": self.confidence,
-            "provenance": [dict(entry) for entry in self.provenance],
-            "crops": [dict(entry) for entry in self.crops],
+            "provenance": [_detach(entry) for entry in self.provenance],
+            "crops": [_detach(entry) for entry in self.crops],
         }
 
     @classmethod
@@ -543,6 +548,15 @@ class ConfidenceReviewManifest:
             or len(set(self.collections)) != len(self.collections)
         ):
             raise ValueError("manifest collections must be unique non-empty strings")
+        if not isinstance(self.items,tuple) or any(not isinstance(item,ReviewItem) for item in self.items):raise ValueError("manifest items must be a tuple of ReviewItems")
+        if not isinstance(self.collections,tuple):raise ValueError("manifest collections must be a tuple")
+        object.__setattr__(self,"collections",tuple(sorted(self.collections)))
+        object.__setattr__(self,"items",tuple(sorted(self.items,key=lambda item:item.item_id)))
+        references={}
+        for item in self.items:
+            for crop in item.crops:
+                previous=references.setdefault(crop["ref_id"],crop)
+                if previous!=crop:raise ValueError("manifest evidence ref_id has conflicting owner or binding")
         item_ids = [item.item_id for item in self.items]
         if len(set(item_ids)) != len(item_ids):
             duplicates = sorted({i for i in item_ids if item_ids.count(i) > 1})
@@ -690,11 +704,11 @@ def _validated_evidence(
                 f"evidence reference {reference.ref_id!r} names page "
                 f"{reference.page!r}, but source "
                 f"{reference.source_kind}:{reference.source_id} currently "
-                f"carries pages {sorted({record.page for record in same_source})}"
+                f"carries pages {sorted({record.page for record in same_source},key=lambda page:(page is not None,page or 0))}"
             )
         bound = next(
             (record for record in same_page
-             if fingerprint_provenance(record) == reference.fingerprint),
+             if fingerprint_provenance(record,entity_id=reference.entity_id) == reference.fingerprint),
             None,
         )
         if bound is None:
@@ -765,7 +779,7 @@ def _warning_items(
             "mixed" if named_kinds else "model"
         )
         attached: dict[str, dict[str, Any]] = {}
-        bound_records: list[Provenance] = []
+        bound_records: list[dict[str,Any]] = []
         for entity_id in source_ids:
             for entry in crops_by_entity.get(entity_id, ()):
                 attached[entry["ref_id"]] = entry
@@ -775,12 +789,13 @@ def _warning_items(
                         if record.source_kind == entry["source_kind"]
                         and record.source_id == entry["source_id"]
                         and record.page == entry.get("page")
+                        and fingerprint_provenance(record,entity_id=entity_id)==entry["fingerprint"]
                     ),
                     None,
                 )
                 if record is not None:
-                    bound_records.append(record)
-        provenance = _provenance_payload(bound_records)
+                    bound_records.extend(_provenance_payload((record,),entity_id))
+        provenance = tuple(bound_records)
         items.append(ReviewItem(
             item_id=_warning_item_id(warning),
             entity_kind=kind,
@@ -883,7 +898,7 @@ def build_confidence_review(
                 reasons=tuple(reasons),
                 detail="; ".join(facts),
                 confidence=entity.confidence,
-                provenance=_provenance_payload(entity.provenance),
+                provenance=_provenance_payload(entity.provenance,entity.id),
                 crops=crops_by_entity.get(entity.id, ()),
             ))
 

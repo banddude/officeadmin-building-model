@@ -438,7 +438,7 @@ def _bound_reference(model: BuildingModel, **changes) -> EvidenceReference:
         "source_kind": record.source_kind,
         "source_id": record.source_id,
         "page": record.page,
-        "fingerprint": fingerprint_provenance(record),
+        "fingerprint": fingerprint_provenance(record, entity_id=model.walls[0].id),
     }
     values.update(changes)
     return EvidenceReference(**values)
@@ -454,7 +454,7 @@ def test_bound_crops_ride_along_and_missing_crops_stay_missing() -> None:
     item = next(item for item in manifest.items if item.entity_ids == ("wall:review-south",))
     assert item.crops[0]["ref_id"] == "crop:page-2-a"
     assert item.crops[0]["fingerprint"] == fingerprint_provenance(
-        model.walls[0].provenance[0]
+        model.walls[0].provenance[0], entity_id=model.walls[0].id
     )
     # An entity nobody supplied evidence for carries none: unavailable,
     # never invented.
@@ -608,7 +608,7 @@ def test_strict_manifest_roundtrip() -> None:
             source_kind=record.source_kind,
             source_id=record.source_id,
             page=record.page,
-            fingerprint=fingerprint_provenance(record),
+            fingerprint=fingerprint_provenance(record, entity_id=route.id),
         )],
     )
     document = manifest.to_dict()
@@ -794,8 +794,8 @@ def test_source_attribute_edit_invalidates_stale_bindings() -> None:
     model = _review_model(_wall(confidence=0.4, provenance=(record,)))
     reference = _bound_reference(model)
     # Equal inputs keep equal fingerprints.
-    assert fingerprint_provenance(record) == fingerprint_provenance(
-        model.walls[0].provenance[0]
+    assert fingerprint_provenance(record, entity_id=model.walls[0].id) == fingerprint_provenance(
+        model.walls[0].provenance[0], entity_id=model.walls[0].id
     )
     edited = replace(
         model,
@@ -809,7 +809,7 @@ def test_source_attribute_edit_invalidates_stale_bindings() -> None:
         ),
     )
     # Same source kind/id/page, different content: the old reference is stale.
-    assert fingerprint_provenance(edited.walls[0].provenance[0]) != reference.fingerprint
+    assert fingerprint_provenance(edited.walls[0].provenance[0],entity_id=edited.walls[0].id) != reference.fingerprint
     with pytest.raises(ValueError, match="stale"):
         build_confidence_review(
             edited, ReviewConfig(confidence_threshold=0.5), evidence=[reference],
@@ -839,6 +839,7 @@ def test_portable_boundary_rejects_unbound_or_malformed_crops() -> None:
     # Unrelated source on an item whose provenance is different.
     foreign = {
         "ref_id": "crop:foreign",
+        "entity_id": "wall:review-south",
         "source_kind": "foreign",
         "source_id": "source:foreign",
         "fingerprint": "a" * 64,
@@ -888,7 +889,7 @@ def test_warning_items_carry_provenance_their_crops_bind_to() -> None:
             source_kind=record.source_kind,
             source_id=record.source_id,
             page=record.page,
-            fingerprint=fingerprint_provenance(record),
+            fingerprint=fingerprint_provenance(record, entity_id=wall.id),
         )],
     )
     crop_items = [item for item in manifest.items if item.crops]
@@ -947,3 +948,91 @@ def test_v1_3_support_collections_and_unresolved_support_selection() -> None:
     assert item.reasons == ("unresolved_selection",)
     assert item.entity_kind == "support_selection_outcomes"
     assert outcome.reason_codes[0] in item.detail
+
+
+def test_exact_portable_crop_owner_record_and_digest_binding():
+    record=Provenance(source_kind='drawing',source_id='source:shared',page=2,confidence=1,
+        derivation='observed',scope_paths=('height_m','thickness_m'),attributes={'region':[1,2,3],'source_sha256':'original'})
+    first=_wall(confidence=.4,provenance=(record,))
+    second=replace(first,id='wall:other')
+    model=_review_model(first,second)
+    manifest=build_confidence_review(model,ReviewConfig(.9),evidence=[_bound_reference(model)])
+    doc=manifest.to_dict();item=next(i for i in doc['items'] if i['item_id']=='review:entity:'+first.id)
+    assert ConfidenceReviewManifest.from_dict(doc).to_json()==manifest.to_json()
+    assert item['crops'][0]['entity_id']==first.id
+    for mutation in ('digest','attributes','empty','two','wrong-owner'):
+        import copy
+        broken=copy.deepcopy(doc);row=next(i for i in broken['items'] if i['item_id']==item['item_id'])
+        if mutation=='digest':row['crops'][0]['fingerprint']='0'*64
+        elif mutation=='attributes':row['provenance'][0]['attributes']['region'][0]=99
+        elif mutation=='empty':row['entity_ids']=[]
+        elif mutation=='two':row['entity_ids']=[first.id,second.id]
+        else:
+            row['item_id']='review:warning:synthetic';row['entity_ids']=[first.id,second.id]
+            row['provenance'].append({**row['provenance'][0],'entity_id':second.id})
+            row['crops'][0]['entity_id']=second.id
+        with pytest.raises(ValueError):ConfidenceReviewManifest.from_dict(broken)
+
+
+def test_warning_uses_exact_bound_record_and_scope_set_determinism():
+    from oabm.qa.confidence_review import _warning_items,_entity_collections
+    from oabm.quantities import QuantityWarning
+    first=Provenance(source_kind='drawing',source_id='source:shared',page=2,method='first',confidence=.2,attributes={'region':[0]})
+    bound=replace(first,method='bound',confidence=.8,scope_paths=('thickness_m','height_m'),attributes={'region':[1]})
+    model=_review_model(_wall(confidence=.4,provenance=(first,bound)))
+    ref=EvidenceReference(ref_id='crop:exact',entity_id=model.walls[0].id,source_kind=bound.source_kind,
+        source_id=bound.source_id,page=bound.page,fingerprint=fingerprint_provenance(bound,entity_id=model.walls[0].id))
+    warning=QuantityWarning(code='synthetic',message='Needs review',source_entity_ids=(model.walls[0].id,))
+    rows=_warning_items([warning],{ref.entity_id:(ref.to_dict(),)},_entity_collections(model))
+    assert rows[0].provenance[0]['method']=='bound' and rows[0].provenance[0]['attributes']=={'region':[1]}
+    reversed_model=replace(model,walls=(replace(model.walls[0],provenance=(replace(bound,scope_paths=tuple(reversed(bound.scope_paths))),first)),))
+    other=_warning_items([warning],{ref.entity_id:(ref.to_dict(),)},_entity_collections(reversed_model))
+    assert rows[0].to_dict()==other[0].to_dict()
+    assert build_confidence_review(model,ReviewConfig(.9),evidence=[ref]).to_json()==build_confidence_review(reversed_model,ReviewConfig(.9),evidence=[ref]).to_json()
+
+
+def test_stored_review_facts_are_detached_and_immutable():
+    attrs={'nested':{'region':[1,2]}}
+    record=Provenance(source_kind='drawing',source_id='source:immutable',attributes=attrs)
+    model=_review_model(_wall(confidence=.4,provenance=(record,)))
+    manifest=build_confidence_review(model,ReviewConfig(.9),evidence=[_bound_reference(model)])
+    before=manifest.to_json();attrs['nested']['region'][0]=99
+    assert manifest.to_json()==before
+    exported=manifest.to_dict();row=next(i for i in exported['items'] if i['crops'])
+    row['provenance'][0]['attributes']['nested']['region'].append(88)
+    assert manifest.to_json()==before
+    item=next(i for i in manifest.items if i.crops)
+    with pytest.raises(TypeError):item.provenance[0]['attributes']['nested']['region'].append(9)
+    with pytest.raises(TypeError):item.crops[0]['entity_id']='changed'
+
+
+@pytest.mark.parametrize('value',[True,'0.9',10**400,float('nan'),float('inf')])
+def test_numeric_boundary_fails_as_validation_error(value):
+    with pytest.raises(ValueError):ReviewConfig(value)
+    from oabm.qa.confidence_review import ReviewItem
+    with pytest.raises(ValueError):ReviewItem(item_id='review:entity:x',entity_kind='walls',entity_ids=('x',),
+        reasons=('low_entity_confidence',),detail='synthetic',confidence=value,provenance=(),crops=())
+
+
+def test_scalar_sequences_cannot_be_portable_constructor_arrays():
+    from oabm.qa.confidence_review import ReviewItem
+    with pytest.raises(ValueError):ReviewItem(item_id='review:entity:x',entity_kind='walls',entity_ids='x',
+        reasons=('missing_provenance',),detail='synthetic',confidence=.4,provenance=(),crops=())
+    with pytest.raises(ValueError):ConfidenceReviewManifest(model_id='model:synthetic',confidence_threshold=.9,items=(),collections='walls')
+
+
+def test_mixed_optional_pages_fail_cleanly():
+    record=Provenance(source_kind='drawing',source_id='source:pages',page=None)
+    model=_review_model(_wall(confidence=.4,provenance=(record,replace(record,page=2))))
+    ref=EvidenceReference(ref_id='crop:wrong',entity_id=model.walls[0].id,source_kind=record.source_kind,
+        source_id=record.source_id,page=3,fingerprint=fingerprint_provenance(record,entity_id=model.walls[0].id))
+    with pytest.raises(ValueError,match='page'):build_confidence_review(model,ReviewConfig(.9),evidence=[ref])
+
+
+@pytest.mark.parametrize('identity',['has spaces','!invalid','x'*129])
+def test_impossible_canonical_entity_ids_refuse(identity):
+    model=_review_model(_wall(confidence=.4))
+    with pytest.raises(ValueError):_bound_reference(model,entity_id=identity)
+    doc=build_confidence_review(model,ReviewConfig(.9)).to_dict()
+    doc['items'][0]['entity_ids']=[identity]
+    with pytest.raises(ValueError):ConfidenceReviewManifest.from_dict(doc)

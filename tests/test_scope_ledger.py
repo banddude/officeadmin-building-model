@@ -280,3 +280,18 @@ def test_legend_evidence_confidence_and_policy_reference(imported):
         Provenance(source_kind='user',source_id='fixture:rule',confidence=.09,scope_paths=('basis.revision',))))
     report=generate_scope_ledger(model,policy=rule)
     assert next(r for r in report.rows if r.source.id==model.electrical_devices[0].id).effective_confidence==.09
+
+
+def test_schema_rejects_non_electrical_snapshot():
+    model=BuildingModel.load(ROOT/'fixtures/model/v1/garage-route.json')
+    from oabm.reports import SourceSnapshot
+    row=generate_scope_ledger(model,policy=policy()).to_dict()['rows'][0]
+    row['source']={
+        'collection':'circuits', 'entity':model.to_dict()['circuits'][0],
+        'content_fingerprint':SourceSnapshot.capture('circuits',model.circuits[0]).content_fingerprint}
+    documents=[json.loads((ROOT/'contracts'/name).read_text()) for name in (
+        'oabm-model-v1.3.schema.json','panel-schedule-report-v1.schema.json','scope-ledger-v1.schema.json')]
+    registry=Registry().with_resources((d['$id'],Resource.from_contents(d)) for d in documents)
+    from jsonschema import ValidationError
+    schema={'$ref':documents[-1]['$id']+'#/$defs/ScopeLedgerRow'}
+    with pytest.raises(ValidationError):Draft202012Validator(schema,registry=registry).validate(row)

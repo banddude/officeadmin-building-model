@@ -85,7 +85,21 @@
           "type": "string"
         },
         "source": {
-          "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/panel-schedule-report-v1.schema.json#/$defs/SourceSnapshot"
+          "allOf": [
+            {
+              "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/panel-schedule-report-v1.schema.json#/$defs/SourceSnapshot"
+            },
+            {
+              "properties": {
+                "collection": {
+                  "enum": [
+                    "electrical_devices",
+                    "electrical_equipment"
+                  ]
+                }
+              }
+            }
+          ]
         }
       },
       "required": [

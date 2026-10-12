@@ -205,6 +205,7 @@ def extract_quantities(
         *(conductor.id for conductor in model.conductors),
         *(device.id for device in model.electrical_devices),
         *(equipment.id for equipment in model.electrical_equipment),
+        *(box.id for box in model.electrical_boxes),
         *(entity.id for name in _ARCHITECTURAL for entity in collections[name]),
     }
     unmatched_group_ids = sum(
@@ -304,6 +305,24 @@ def extract_quantities(
                 "equipment", equipment, assembly_resolver, group_owner.get(equipment.id)
             )
         )
+
+    for box in sorted(model.electrical_boxes, key=lambda item: item.id):
+        contributions.append(_contribution(
+            category="electrical_box", item_type=box.box_type, quantity=1.0, unit=COUNT_UNIT,
+            variant=(("catalog_id", box.product.catalog_id),
+                     ("catalog_revision", box.product.catalog_revision),
+                     ("product_id", box.product.product_id), ("mounting", box.mounting)),
+            entities=(box,), assembly_resolver=assembly_resolver, group=group_owner.get(box.id),
+            consumed_paths=("id", "product", "box_type", "mounting"),
+        ))
+        warnings.append(QuantityWarning("box_fill_unverified",
+            "Explicit box product selection is not a code-verified box-fill calculation; listed interior capacity is not exterior volume.",
+            (box.id,)))
+    for outcome in model.box_selection_outcomes:
+        if outcome.status == "unresolved":
+            warnings.append(QuantityWarning("unresolved_box_selection",
+                f"{outcome.intent_id}: {', '.join(outcome.reason_codes)}; no physical box quantity was invented.",
+                (outcome.id,)))
 
     from .architecture import architectural_claims
     for claim in architectural_claims(model):
@@ -608,6 +627,7 @@ _ARCHITECTURAL = frozenset({"walls", "slabs", "ceilings", "spaces", "openings"})
 _CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | frozenset({
     "levels", "electrical_equipment", "electrical_devices", "ports", "obstacles",
     "route_constraints", "routes", "route_fittings", "circuits", "conductors",
+    "electrical_boxes", "box_selection_outcomes",
 })
 
 def _canonical_entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:

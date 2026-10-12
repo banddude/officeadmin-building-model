@@ -13,6 +13,7 @@ The model is the source of truth. A floor plan is a derived view of that model.
 ## Workstreams
 
 - `src/oabm/model`: canonical model and contracts
+- `src/oabm/electrical`: explicit physical-product intent/catalog producers
 - `src/oabm/ifc`: IFC / IfcOpenShell adapters and round trip
 - `src/oabm/routing`: deterministic 3D electrical routing
 - `src/oabm/importers/roomplan`: RoomPlan / scan ingestion
@@ -24,6 +25,9 @@ The model is the source of truth. A floor plan is a derived view of that model.
 - `fixtures`: known-answer synthetic buildings and routes
 
 See `docs/responsibility-relay.md` for the dependency graph.
+
+See [Physical electrical boxes](docs/electrical-boxes.md) for the explicit
+contract 1.1 migration, selection boundary, and unresolved quantity limitations.
 
 See [Open-source reuse audit](docs/open-source-reuse-audit.md) for component
 decisions and the reproducible, public-safe calculation prototype from #93.

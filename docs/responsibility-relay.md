@@ -57,6 +57,12 @@ Gate B plus at least one real input lane, RoomPlan or PDF, yields input -> model
 
 PDF architecture and PDF electrical converge so electrical objects are spatially hosted on the building model with provenance and confidence.
 
+The [physical box producer](electrical-boxes.md) is a downstream explicit
+intent/catalog lane after convergence. Gate D pure importer inputs refuse boxes
+and selection outcomes rather than dropping or relocating unregistered poses.
+Missing automatic box host/size selection remains unresolved; #266 raceways
+and #267 shared supports are separate contract work.
+
 ## Final convergence
 
 Run the pipeline on a private real project outside the public fixture set. Compare it with the existing manual workflow and convert discrepancies into rules and synthetic regression fixtures.

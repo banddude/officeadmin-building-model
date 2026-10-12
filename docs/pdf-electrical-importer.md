@@ -139,11 +139,116 @@ The shortest unambiguous frame owns the rows. A single-column heading or notes
 box remains present but has status `structure_not_confirmed`, validates no
 circuits, and emits `schedule found, structure not confirmed` in diagnostics.
 This conservative rule reduces automatic recall for minimally ruled or
-single-column schedules; a later human-confirmed-region workflow can recover
-those sources without making unsupported circuit claims. A direct device
+single-column schedules. The opt-in human review below can confirm explicit
+source cells without changing this automatic rule. A direct device
 circuit tag has no leader to follow, so it uses the lane's
 configured annotation association radius and requires one unambiguous recognized
 device in range.
+
+### Human-confirmed schedule cells (#94)
+
+`ElectricalPdfImporter(schedule_reviews=...)`, `import_pdf(...,
+schedule_reviews=...)` and `import_document(..., schedule_reviews=...)` accept
+`PanelScheduleReview` objects or their JSON-compatible `to_dict()` records.
+The versioned record is importer review input, not another canonical model.
+No reviews (including an empty sequence) preserve the default canonical bytes.
+This workflow does not create equipment, place a panel, assign devices by
+proximity or infer a circuit annotation. Existing supported circuit evidence
+must still establish the panel/device association.
+
+The review step is explicit:
+
+1. Extract the current PDF with `extract_pdf`. Inspect the source PDF in its
+   displayed orientation and the extracted text element IDs/positions. Use
+   `schedule_source_fingerprint(document)` to bind the exact extraction evidence.
+2. A reviewer selects a region containing the real schedule heading, two
+   **disjoint** number/load column intervals, and disjoint vertical row bands.
+   These are displayed bottom-origin PDF **points**, before canonical page or
+   drawing registration. A source-drawn divider is not required for a reviewed
+   mapping, but separate readable number and load source observations are.
+3. The reviewer explicitly confirms each supported row, its visible circuit
+   number, and every number/load source element in those cells. Omit unreviewed
+   rows or set `confirmed: false`; neither validates a circuit. A mixed string
+   such as `99 KEYNOTE` cannot serve as an isolated number cell or supply an
+   invented separate load observation.
+4. Save the selected review with its reviewer, timezone-qualified timestamp
+   and unique review ID, then supply it to the importer. Keep private source
+   content and review records outside this public repository. Retain old reviews
+   as history, but explicitly select the active mapping; the importer never
+   chooses a winner by timestamp or silently merges conflicting mappings.
+
+The portable version `1.0` record has these fields:
+
+| Field | Meaning |
+|---|---|
+| `version`, `coordinate_space` | `"1.0"`, `"displayed-bottom-origin-pt"`; unsupported versions/frames reject |
+| `review_id`, `reviewer`, `reviewed_at` | Nonempty stable review identity and actor; ISO timestamp with timezone |
+| `source_id`, `source_fingerprint` | Current document ID and lowercase 64-character SHA-256 of extracted observations plus page display provenance |
+| `page`, `page_provenance` | 1-based reviewed page and exact copy of `document.page_provenance[page]` |
+| `panel_tag`, `heading_element_id` | Already recognized panel tag and its schedule heading on that page, inside the selected region |
+| `region_bbox_pt` | `[left, bottom, right, top]`, contained in the displayed page |
+| `number_column_pt`, `load_column_pt` | Separate `[left, right]` intervals contained in the region |
+| `rows` | Explicit row records described below; empty means no confirmed membership |
+
+Each `ConfirmedScheduleRow` / row dictionary contains `circuit_number` (positive
+integer), `row_bounds_pt` (`[bottom, top]`), `number_element_id`,
+`load_element_ids`, and `confirmed` (boolean, default true). Exactly one source
+text observation must occupy the number cell, be a bare integer and agree with
+the declared number. The nonempty load cell must contain **exactly** the listed
+load observations. Extra cell text, stale IDs, wrong-page IDs or missing load
+evidence leave that row unresolved with `schedule_row_source_mismatch`; valid
+other rows remain usable. Bounds use strict interior ownership, so text on a
+cell boundary does not silently belong to a guessed neighboring cell.
+
+For example, after the reviewer selects the actual source IDs and bounds:
+
+```python
+review = PanelScheduleReview(
+    review_id="review:synthetic-schedule-1",
+    source_id=document.source_id,
+    source_fingerprint=schedule_source_fingerprint(document),
+    page=1, page_provenance=dict(document.page_provenance[1]),
+    reviewer="synthetic-reviewer", reviewed_at="2026-10-11T12:00:00-07:00",
+    panel_tag="LP", heading_element_id=selected_heading_id,
+    region_bbox_pt=(590, 480, 760, 560),
+    number_column_pt=(590, 620), load_column_pt=(630, 760),
+    rows=(ConfirmedScheduleRow(1, (520, 530), selected_number_id,
+                               (selected_load_id,)),),
+)
+model = ElectricalPdfImporter(schedule_reviews=[review]).import_document(document)
+```
+
+The fingerprint includes all extracted text/symbol/vector observations and all
+page display provenance, not just an alias or heading. It hashes extraction
+evidence rather than raw PDF bytes; changed text/IDs/positions/display frames
+require renewed review. `page_provenance` also binds the selected page's rotation
+and displayed dimensions. No source region is inferred from a heading, nearest
+numbers or a matching label on another page.
+
+A supplied mapping controls that panel's membership even when the automatic
+parser could validate additional rows. Differing mappings or row sets/statuses,
+or a reused review ID describing different confirmations, reject all affected
+panels with `schedule_confirmation_conflict`. Equivalent independent reviews
+may coexist and every review survives in provenance. Source/frame/heading or
+page-bound mismatches reject the affected mapping with explicit
+`schedule_confirmation_*` reason codes. Failed reviews consume no source IDs.
+
+`attributes.pdf_electrical.panel_schedules[panel].human_reviews` retains the
+portable review, per-row status and reason. Circuit records preserve the source
+page/element IDs, original number/load cell text and positions, and an additional
+canonical `Provenance` with `derivation="user"` and method
+`pdf-panel-schedule-human-confirmation`. They cannot be classified as purely
+source-observed. Semantic endpoint ports remain **inferred**; their provenance
+retains the review evidence. The same gate covers direct tags, homeruns, legacy
+explicit text links and vector topology. Circuit/port IDs still derive from the
+same source/panel/circuit identities, not reviewer or review order.
+
+The tests generate real source PDFs and call `extract_pdf`, covering confirmed,
+partial/omitted/empty, contradictory and cross-panel reused-ID reviews, a
+misleading single-column notes block, all quarter-turn rotations, stale source
+aliases/frames, source IDs from another page and legacy bypass attempts. No
+pre-extracted JSON or paired expected-output fixture is used. This is a bounded
+public workflow proof, not the broader #72 private real-plan acceptance.
 
 A source glyph or named symbol is materialized only when recognition yields one
 clear classification and a stable identity anchor. For drawn vector glyphs, that

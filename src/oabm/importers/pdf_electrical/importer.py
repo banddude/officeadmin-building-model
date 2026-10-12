@@ -40,6 +40,12 @@ from oabm.importers.pdf_display import (
 # DeviceGray direct, DeviceRGB mixed 0.299/0.587/0.114, DeviceCMYK converted to
 # RGB first, patterns and anything unparseable unknown.
 from oabm.importers.pdf_architecture.extract import _stroke_gray
+from .schedule_review import (
+    ConfirmedScheduleRow,
+    PanelScheduleReview,
+    reviewed_schedule_rows,
+    schedule_source_fingerprint,
+)
 
 POINT_TO_M = 0.0254 / 72.0
 
@@ -1617,6 +1623,7 @@ def _parse_explicit_circuit_tag(
     recognized_panels: set[str],
     schedule_circuits: Mapping[str, set[int]],
     confirmed_schedules: set[str],
+    schedule_failures: Mapping[str, str] | None = None,
 ) -> tuple[str | None, tuple[int, ...], str | None]:
     match = _HOMERUN_TAG_RE.search(text)
     if match is None:
@@ -1636,6 +1643,8 @@ def _parse_explicit_circuit_tag(
         return panel_tag, (), "unparseable_circuit_list"
     if panel_tag not in recognized_panels:
         return panel_tag, numbers, "panel_id_not_recognized"
+    if schedule_failures and panel_tag in schedule_failures:
+        return panel_tag, numbers, schedule_failures[panel_tag]
     scheduled = schedule_circuits.get(panel_tag)
     if scheduled is not None and panel_tag not in confirmed_schedules:
         return panel_tag, numbers, "schedule_structure_not_confirmed"
@@ -9397,6 +9406,7 @@ class ElectricalPdfImporter:
         *,
         symbol_rules: Sequence[SymbolRule] = DEFAULT_SYMBOL_RULES,
         instance_hints: Sequence[ElectricalInstanceHint] = (),
+        schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
         symbol_label_radius_pt: float = 96.0,
         annotation_radius_pt: float = 144.0,
         instance_hint_source_radius_pt: float = 18.0,
@@ -9408,6 +9418,10 @@ class ElectricalPdfImporter:
     ) -> None:
         self.symbol_rules = tuple(symbol_rules)
         self.instance_hints = tuple(instance_hints)
+        self.schedule_reviews = tuple(
+            review if isinstance(review, PanelScheduleReview) else PanelScheduleReview.from_dict(review)
+            for review in schedule_reviews
+        )
         seen_hint_ids: set[str] = set()
         for hint in self.instance_hints:
             if hint.identity_key in seen_hint_ids:
@@ -10758,6 +10772,29 @@ class ElectricalPdfImporter:
             vectors,
             recognized_panels=set(recognized_panels),
         )
+        schedule_review_diagnostics: dict[str, list[dict]] = {}
+        schedule_review_evidence: dict[tuple[str, int], list[dict]] = {}
+        schedule_failures: dict[str, str] = {}
+        reviewed_membership: dict[str, set[int]] = {}
+        if self.schedule_reviews:
+            heading_tags = {}
+            for text in texts:
+                match = _PANEL_SCHEDULE_HEADING_RE.search(text.text)
+                if match:
+                    heading_tags[(text.page, text.element_id)] = _normalize_tag(match.group("panel"))
+            (reviewed_membership, reviewed_text_ids, schedule_review_diagnostics,
+             schedule_review_evidence, schedule_failures) = reviewed_schedule_rows(
+                document, self.schedule_reviews, recognized_panels=set(recognized_panels),
+                heading_tags=heading_tags,
+            )
+            # A supplied review controls its panel's membership, including an
+            # empty/partial/rejected review. Automatic rows cannot bypass it.
+            for panel, numbers in reviewed_membership.items():
+                schedule_circuits[panel] = numbers
+                confirmed_schedules.discard(panel)
+                if numbers and panel not in schedule_failures:
+                    confirmed_schedules.add(panel)
+            schedule_text_ids.update(reviewed_text_ids)
 
         def record_explicit_circuit(
             *,
@@ -11344,6 +11381,7 @@ class ElectricalPdfImporter:
                         recognized_panels=set(recognized_panels),
                         schedule_circuits=schedule_circuits,
                         confirmed_schedules=confirmed_schedules,
+                        schedule_failures=schedule_failures,
                     ),
                 )
                 for observation in nearby_annotations
@@ -11489,6 +11527,7 @@ class ElectricalPdfImporter:
                 recognized_panels=set(recognized_panels),
                 schedule_circuits=schedule_circuits,
                 confirmed_schedules=confirmed_schedules,
+                schedule_failures=schedule_failures,
             )
             # A direct tag has no leader to trace. Use the same configurable
             # local annotation association radius as the homerun pass, rather
@@ -12042,6 +12081,44 @@ class ElectricalPdfImporter:
                 if item["source_element_id"] not in effectively_resolved_callout_ids
             ]
 
+        if self.schedule_reviews:
+            ports_by_id = {port.id: port for port in ports_by_owner_role.values()}
+            equipment_by_id = {entity.id: entity for entity in equipment}
+            for circuit_id, bucket in tuple(circuit_evidence.items()):
+                source_owner = equipment_by_id.get(ports_by_id[bucket["source_port_id"]].owner_id)
+                panel = source_owner.name if source_owner else None
+                if panel not in reviewed_membership:
+                    continue
+                number_text = bucket["circuit_number"] or ""
+                number = int(number_text) if number_text.isdecimal() else None
+                if number not in reviewed_membership[panel] or panel in schedule_failures:
+                    # Legacy text-link and vector-topology paths also obey
+                    # supplied reviews. Remove their ports during the rebuild.
+                    for evidence in bucket["evidence"]:
+                        unresolved_circuits.append({
+                            **evidence, "status": "unresolved",
+                            "reason_code": schedule_failures.get(panel, "schedule_row_not_confirmed"),
+                            "reason": "circuit is not supported by the supplied schedule review",
+                        })
+                    circuit_evidence.pop(circuit_id)
+                    continue
+                for record in schedule_review_evidence[(panel, number)]:
+                    review = record["review"]
+                    human_record = Provenance(
+                        source_kind="human-schedule-review",
+                        source_id=f"{document.source_id}:review:{review['review_id']}",
+                        source_element_id=record["source_row"]["number_element_id"],
+                        page=review["page"],
+                        method="pdf-panel-schedule-human-confirmation",
+                        confidence=1.0,
+                        derivation=DERIVATION_USER,
+                        attributes=record,
+                    )
+                    bucket["provenance"].append(human_record)
+                    bucket["evidence_methods"].add(human_record.method)
+                    record_port_provenance(bucket,
+                        (bucket["source_port_id"], *sorted(bucket["load_port_ids"])), (human_record,))
+
         surviving_port_provenance: dict[str, list[Provenance]] = {}
         for bucket in circuit_evidence.values():
             for port_id, provenances in bucket["port_provenance"].items():
@@ -12321,6 +12398,9 @@ class ElectricalPdfImporter:
                                 if panel in confirmed_schedules
                                 else {"reason": "schedule found, structure not confirmed"}
                             ),
+                            **({"human_reviews": schedule_review_diagnostics[panel],
+                                **({"reason_code": schedule_failures[panel]} if panel in schedule_failures else {})}
+                               if panel in schedule_review_diagnostics else {}),
                         }
                         for panel in sorted(schedule_circuits)
                     },
@@ -12371,8 +12451,9 @@ def import_pdf(
     source_id: str | None = None,
     page_transforms: Mapping[int, PageTransformInput] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
+    schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
 ) -> BuildingModel:
-    return ElectricalPdfImporter(instance_hints=instance_hints).import_pdf(
+    return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_pdf(
         path,
         source_id=source_id,
         page_transforms=page_transforms,
@@ -12384,8 +12465,9 @@ def import_document(
     *,
     page_transforms: Mapping[int, PageTransformInput] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
+    schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
 ) -> BuildingModel:
-    return ElectricalPdfImporter(instance_hints=instance_hints).import_document(
+    return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_document(
         document,
         page_transforms=page_transforms,
     )
@@ -12396,6 +12478,9 @@ __all__ = [
     "CROSS_DISCIPLINE_MAX_CONFIDENCE",
     "DEFAULT_SYMBOL_RULES",
     "POINT_TO_M",
+    "ConfirmedScheduleRow",
+    "PanelScheduleReview",
+    "schedule_source_fingerprint",
     "DrawingRegionTransform",
     "ElectricalPdfError",
     "ElectricalPdfImporter",

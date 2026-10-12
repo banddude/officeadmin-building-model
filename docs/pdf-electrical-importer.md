@@ -582,6 +582,11 @@ string (`R = EXISTING TO BE RELOCATED`). Every device records `scope_status`:
   - `scope_legend_conflict`: the page's legend gives the letter more than one
     meaning.
 
+Scope meanings may start with `INDICATES` or `DENOTES` and end with a period.
+New or existing meanings may name devices, light fixtures, or electrical
+outlets. Conditional meanings and unrelated construction categories remain
+unresolved. The original wording and source IDs are retained.
+
 Legends are page-local, like symbol legends; a legend on another sheet is not
 inherited.
 

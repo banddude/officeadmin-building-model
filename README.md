@@ -25,6 +25,9 @@ The model is the source of truth. A floor plan is a derived view of that model.
 
 See `docs/responsibility-relay.md` for the dependency graph.
 
+See [Open-source reuse audit](docs/open-source-reuse-audit.md) for component
+decisions and the reproducible, public-safe calculation prototype from #93.
+
 ## Agent entrypoint
 
 Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.
@@ -36,3 +39,6 @@ CI is intentionally small and isolated from OfficeAdmin. It runs on standard Git
 ## License
 
 No open-source license has been selected yet. Public visibility alone does not grant reuse rights.
+
+The two upstream files in `spikes/graph_studio/upstream/` retain their separate
+Apache-2.0 license and NOTICE; see the spike README for attribution and hashes.

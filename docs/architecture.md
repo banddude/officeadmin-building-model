@@ -13,6 +13,9 @@ OfficeAdmin needs an application-neutral semantic building and electrical model.
 5. Derived products: takeoff, estimating inputs, plans, elevations, sections, schedules.
 6. OfficeAdmin adapter: future thin integration boundary back into the main app.
 
+External component choices and their canonical integration boundaries are
+recorded in [the open-source reuse audit](open-source-reuse-audit.md).
+
 ## First proof
 
 Synthetic garage -> canonical model -> deterministic route -> IFC conduit/fittings/ports -> edit in Bonsai -> read back -> quantities.

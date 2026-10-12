@@ -11,6 +11,7 @@ import ifcopenshell.api.aggregate
 import ifcopenshell.api.context
 import ifcopenshell.api.feature
 import ifcopenshell.api.geometry
+import ifcopenshell.api.group
 import ifcopenshell.api.project
 import ifcopenshell.api.pset
 import ifcopenshell.api.root
@@ -32,6 +33,9 @@ from oabm.model import (
     SCHEMA_VERSION,
     PHYSICAL_SCHEMA_VERSION,
     RACEWAY_SCHEMA_VERSION,
+    SUPPORT_SCHEMA_VERSION,
+    PHYSICAL_SCHEMA_VERSIONS,
+    RACEWAY_SCHEMA_VERSIONS,
     SUPPORTED_SCHEMA_VERSIONS,
     Box3D,
     BuildingModel,
@@ -132,6 +136,10 @@ _COLLECTION_BY_KIND = {
     "box_selection_outcome": "box_selection_outcomes",
     "raceway_selection": "raceway_selections",
     "raceway_selection_outcome": "raceway_selection_outcomes",
+    "support_assembly": "support_assemblies",
+    "support_component": "support_components",
+    "support_interface": "support_interfaces",
+    "support_outcome": "support_selection_outcomes",
 }
 
 
@@ -504,6 +512,30 @@ def to_ifc(
         for ordinal, entity in enumerate(entities):
             item = add_product(entity, kind, ordinal, "IfcAnnotation", assign_container=False)
             _mark_adapter(ifc, item, Body="no", BodyReason="route product decision; existing route owns the physical run")
+    for ordinal, assembly in enumerate(model.support_assemblies):
+        item=add_product(assembly,"support_assembly",ordinal,"IfcGroup",assign_container=False)
+        item.ObjectType=assembly.assembly_type
+        _add_support_projection(ifc,item,"support_assembly",model_document["support_assemblies"][ordinal])
+        _mark_adapter(ifc,item,Body="no",BodyReason="support assembly groups unique physical components")
+    for ordinal, component in enumerate(model.support_components):
+        ifc_class="IfcMechanicalFastener" if component.category=="fastener" else "IfcDiscreteAccessory"
+        item=add_product(component,"support_component",ordinal,ifc_class,predefined_type="USERDEFINED",pose=component.pose)
+        item.ObjectType=component.component_type
+        _mark_body(ifc,item,_assign_box_body(ifc,item,body_context,component.size))
+        _add_support_projection(ifc,item,"support_component",model_document["support_components"][ordinal])
+    for ordinal, interface in enumerate(model.support_interfaces):
+        item=add_product(interface,"support_interface",ordinal,"IfcAnnotation",pose=interface.pose)
+        _add_support_projection(ifc,item,"support_interface",model_document["support_interfaces"][ordinal])
+        _mark_adapter(ifc,item,Body="no",BodyReason="explicit attachment interface, not another material component")
+        ifc.create_entity("IfcRelAssignsToProduct",GlobalId=canonical_id_to_ifc_guid(f"{interface.id}#host"),
+            Name="OABM support host interface",RelatedObjects=[item],RelatingProduct=entity_ifc[interface.host_id])
+    for ordinal, outcome in enumerate(model.support_selection_outcomes):
+        item=add_product(outcome,"support_outcome",ordinal,"IfcAnnotation",assign_container=False)
+        _add_support_projection(ifc,item,"support_outcome",model_document["support_selection_outcomes"][ordinal])
+        _mark_adapter(ifc,item,Body="no",BodyReason="support selection outcome is not physical hardware")
+    for assembly in model.support_assemblies:
+        ifcopenshell.api.group.assign_group(ifc,group=entity_ifc[assembly.id],
+            products=[entity_ifc[i] for i in (*assembly.component_ids,*assembly.interface_ids)])
 
     # Fittings are canonical distribution elements and may own junction ports.
     # Materialize them before their canonical ports.
@@ -1145,10 +1177,12 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         "provenance": header.get("provenance", []),
         "attributes": header.get("attributes", {}),
     }
-    if header["schema_version"] in {PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION}:
+    if header["schema_version"] in PHYSICAL_SCHEMA_VERSIONS:
         document.update(electrical_boxes=[], box_selection_outcomes=[])
-    if header["schema_version"] == RACEWAY_SCHEMA_VERSION:
+    if header["schema_version"] in RACEWAY_SCHEMA_VERSIONS:
         document.update(raceway_selections=[], raceway_selection_outcomes=[])
+    if header["schema_version"] == SUPPORT_SCHEMA_VERSION:
+        document.update(support_assemblies=[],support_components=[],support_interfaces=[],support_selection_outcomes=[])
 
     canonical_items: dict[str, tuple[Any, dict[str, Any], int, str]] = {}
     for item in ifc.by_type("IfcRoot"):
@@ -1176,7 +1210,9 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         canonical_items[canonical_id] = (item, data, meta["ordinal"], kind)
 
     route_segments = _route_segments(ifc)
-    if header["schema_version"] == RACEWAY_SCHEMA_VERSION:
+    if header["schema_version"] == SUPPORT_SCHEMA_VERSION:
+        _validate_native_support_inventory(ifc,canonical_items)
+    if header["schema_version"] in RACEWAY_SCHEMA_VERSIONS:
         selected_routes = {data["route_id"] for _, data, _, kind in canonical_items.values()
                            if kind == "raceway_selection"}
         outcome_routes = {data["route_id"] for _, data, _, kind in canonical_items.values()
@@ -1590,6 +1626,8 @@ def _add_canonical_pset(
         visible_properties.update(_raceway_outcome_properties(payload))
     if kind == "raceway_selection":
         visible_properties.update(_raceway_visible_properties(payload))
+    if kind in _SUPPORT_PSETS:
+        visible_properties.update(_support_properties(kind,payload))
     attributes = payload.get("attributes", {})
     if kind == "electrical_equipment" and isinstance(attributes, Mapping):
         placement = attributes.get("placement")
@@ -2181,7 +2219,7 @@ def _assign_box_body(
     return None
 
 
-def _validate_native_box_envelope(product: Any, data: Mapping[str, Any]) -> None:
+def _validate_native_box_envelope(product: Any, data: Mapping[str, Any], *, label: str = "electrical box") -> None:
     """Do not certify a changed native Body against an unchanged catalog claim.
 
     The Body is an exterior visualization envelope, not listed interior
@@ -2189,7 +2227,7 @@ def _validate_native_box_envelope(product: Any, data: Mapping[str, Any]) -> None
     or missing/altered solids instead of silently restoring a catalog shadow.
     """
     if _body_representation(product) is None:
-        raise IfcAdapterError("native electrical box Body is missing; catalog envelope is not verified")
+        raise IfcAdapterError(f"native {label} Body is missing; catalog envelope is not verified")
     try:
         settings = ifcopenshell.geom.settings()
         settings.set("use-world-coords", False)
@@ -2205,7 +2243,7 @@ def _validate_native_box_envelope(product: Any, data: Mapping[str, Any]) -> None
         if not math.isclose(volume, float(np.prod(size)), rel_tol=1e-6, abs_tol=1e-12):
             raise ValueError("exterior envelope solid changed")
     except Exception as exc:
-        raise IfcAdapterError("native electrical box Body contradicts its catalog envelope; selection is not verified") from exc
+        raise IfcAdapterError(f"native {label} Body contradicts its catalog envelope; selection is not verified") from exc
 
 
 def _assign_obstacle_body(
@@ -2659,6 +2697,12 @@ def _apply_ifc_overrides(
             data["elevation_m"] = float(item.Elevation)
         return
 
+    if kind in {"support_component", "support_interface"}:
+        if kind == "support_component":
+            _validate_native_box_envelope(item,data,label="support component")
+        _read_support_native_pose(item,data,kind)
+        return
+
     if kind == "electrical_box":
         _validate_native_box_envelope(item, data)
         pose = _pose_from_product(item)
@@ -2889,3 +2933,100 @@ def _raceway_outcome_projection_matches(actual, expected):
     if actual is None or any(k not in actual or actual[k] != v for k, v in expected.items()):
         return False
     return not any(k in actual and k not in expected for k in optional)
+
+_SUPPORT_PSETS={'support_assembly':'OABM_SupportAssembly','support_component':'OABM_SupportComponent',
+                'support_interface':'OABM_SupportInterface','support_outcome':'OABM_SupportOutcome'}
+_SUPPORT_OUTCOME_OPTIONAL={'SelectedAssemblyId','RequestedLevelId','RequestedRuleAuthority','RequestedRuleRevision','RequestedRuleId'}
+
+
+def _support_properties(kind,data):
+    result={'CodeVerificationPerformed':False}
+    if kind=='support_assembly':
+        result.update(IntentId=data['intent_id'],AssemblyType=data['assembly_type'],LevelId=data['level_id'],
+            SupportedObjectIds=json.dumps(sorted(data['supported_object_ids'])),
+            ComponentIds=json.dumps(sorted(data['component_ids'])),InterfaceIds=json.dumps(sorted(data['interface_ids'])))
+        b=data['basis'];result.update(RuleAuthority=b['authority'],RuleRevision=b['revision'],RuleId=b['rule_id'])
+    elif kind=='support_component':
+        p=data['product'];size=data['size']
+        result.update(AssemblyId=data['assembly_id'],PartKey=data['part_key'],LevelId=data['level_id'],
+            Category=data['category'],ComponentType=data['component_type'],CatalogId=p['catalog_id'],
+            CatalogRevision=p['catalog_revision'],ProductId=p['product_id'],GeometryBasis=data['geometry_basis'],
+            EnvelopeWidthM=size['x'],EnvelopeDepthM=size['y'],EnvelopeHeightM=size['z'],ExactProfileOrMaterialVolumeVerified=False)
+    elif kind=='support_interface':
+        result.update(AssemblyId=data['assembly_id'],InterfaceKey=data['interface_key'],LevelId=data['level_id'],
+            HostId=data['host_id'],ActualSubstrate=data['substrate'],ComponentIds=json.dumps(sorted(data['component_ids'])))
+    elif kind=='support_outcome':
+        result.update(IntentId=data['intent_id'],SupportedObjectIds=json.dumps(sorted(data['supported_object_ids'])),
+            SelectionStatus=data['status'],UnresolvedReasons=', '.join(data['reason_codes']))
+        if data['selected_assembly_id'] is not None: result['SelectedAssemblyId']=data['selected_assembly_id']
+        if data['requested_level_id'] is not None: result['RequestedLevelId']=data['requested_level_id']
+        if data['requested_basis'] is not None:
+            b=data['requested_basis'];result.update(RequestedRuleAuthority=b['authority'],RequestedRuleRevision=b['revision'],RequestedRuleId=b['rule_id'])
+    return result
+
+
+def _add_support_projection(ifc,native,kind,data):
+    pset=ifcopenshell.api.pset.add_pset(ifc,product=native,name=_SUPPORT_PSETS[kind])
+    ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties=_support_properties(kind,data))
+
+
+def _support_projection_matches(actual,expected,kind):
+    if actual is None or any(k not in actual or actual[k]!=v for k,v in expected.items()): return False
+    if kind=='support_outcome' and any(k in actual and k not in expected for k in _SUPPORT_OUTCOME_OPTIONAL): return False
+    return True
+
+
+def _validate_native_support_inventory(ifc,canonical_items):
+    by_native={item.id():(item,data,kind) for item,data,_,kind in canonical_items.values()}
+    for item in ifc.by_type('IfcObject'):
+        record=by_native.get(item.id())
+        for kind,name in _SUPPORT_PSETS.items():
+            actual=_property_set(item,name)
+            if actual is not None and (record is None or record[2]!=kind):
+                raise IfcAdapterError('native managed support claims have no matching typed support record')
+    for item,data,_,kind in canonical_items.values():
+        if kind not in _SUPPORT_PSETS: continue
+        expected=_support_properties(kind,data)
+        for name in (CANONICAL_PSET,_SUPPORT_PSETS[kind]):
+            if not _support_projection_matches(_property_set(item,name),expected,kind):
+                raise IfcAdapterError('native support semantic projection contradicts its typed record')
+        if kind in {'support_component','support_interface'}:
+            containment=list(getattr(item,'ContainedInStructure',()))
+            if (len(containment)!=1 or containment[0].RelatingStructure.GlobalId!=canonical_id_to_ifc_guid(data['level_id'])
+                or not containment[0].RelatingStructure.is_a('IfcBuildingStorey')):
+                raise IfcAdapterError('native support spatial containment contradicts its typed level')
+        if kind=='support_component':
+            expected_class='IfcMechanicalFastener' if data['category']=='fastener' else 'IfcDiscreteAccessory'
+            if not item.is_a(expected_class) or item.PredefinedType!='USERDEFINED' or item.ObjectType!=data['component_type']:
+                raise IfcAdapterError('native support component category/type contradicts catalog claim')
+            if data['category']=='fastener' and (item.NominalDiameter is not None or item.NominalLength is not None):
+                raise IfcAdapterError('native fastener dimensions claim an unrepresented exact profile')
+        elif kind=='support_assembly':
+            if item.is_a() != 'IfcGroup' or item.ObjectType!=data['assembly_type']:
+                raise IfcAdapterError('support assembly must be a non-solid group')
+            ids=[obj.GlobalId for rel in getattr(item,'IsGroupedBy',()) for obj in rel.RelatedObjects]
+            expected_ids={canonical_id_to_ifc_guid(i) for i in (*data['component_ids'],*data['interface_ids'])}
+            if len(ids)!=len(set(ids)) or set(ids)!=expected_ids:
+                raise IfcAdapterError('native support grouping contradicts unique component/interface membership')
+        elif kind=='support_interface':
+            if not item.is_a('IfcAnnotation') or _body_representation(item) is not None:
+                raise IfcAdapterError('support interface must be a posed non-solid annotation')
+            hosts=[rel.RelatingProduct.GlobalId for rel in getattr(item,'HasAssignments',()) if rel.is_a('IfcRelAssignsToProduct')]
+            if hosts!=[canonical_id_to_ifc_guid(data['host_id'])]:
+                raise IfcAdapterError('native support host relationship contradicts explicit host')
+        elif kind=='support_outcome':
+            if not item.is_a('IfcAnnotation') or _body_representation(item) is not None or getattr(item,'ObjectPlacement',None) is not None:
+                raise IfcAdapterError('support outcome must be a nonphysical unplaced annotation')
+
+
+def _read_support_native_pose(item,data,kind):
+    pose=_pose_from_product(item)
+    if pose is None: raise IfcAdapterError('native support component/interface placement is missing')
+    old=data['pose']
+    same_position=all(abs(old['position'][k]-pose['position'][k])<=1e-9 for k in ('x','y','z'))
+    same_rotation=any(all(abs(old['rotation'][k]-sign*pose['rotation'][k])<=1e-12 for k in ('x','y','z','w')) for sign in (1,-1))
+    if not (same_position and same_rotation):
+        data.setdefault('provenance',[]).append({'source_kind':'ifc','source_id':data['id'],'source_element_id':item.GlobalId,
+            'page':None,'method':f'native-{kind}-placement-edit','confidence':1.0,'derivation':DERIVATION_USER,
+            'scope_paths':['pose'],'attributes':{'previous_pose':old,'native_pose':pose}})
+    data['pose']=pose

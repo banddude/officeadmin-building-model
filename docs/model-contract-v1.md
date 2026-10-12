@@ -194,3 +194,12 @@ semantics documented in [Physical electrical boxes](electrical-boxes.md).
 Version 1.2 adds typed whole-route product/reference decisions and unresolved
 outcomes; see [Raceway and cable selections](raceway-selections.md). Versions
 1.0 and 1.1 keep their existing field semantics and serialized behavior.
+
+Version 1.3 adds installed shared support assemblies, separately posed catalog
+exterior-envelope components, explicit actual-substrate interfaces, and selection
+outcomes; see [Shared supports](shared-supports.md). One explicit assembly level
+must agree with known host and supported-object levels. Components have unique
+ownership and count once independently of supported-object membership. Unknown
+substrates/levels remain unresolved, never inferred hardware. The 1.0, 1.1, and
+1.2 schemas, portable semantics, and consumer bytes remain unchanged; explicit
+`upgrade_to_v1_3` preserves their existing data. Default remains 1.0.

@@ -3,7 +3,8 @@
 Issue #266 gives route product decisions a typed canonical home. This is an
 explicit caller-input boundary, not an automatic wiring-method, fill, derating,
 voltage-drop, jurisdiction, or listed-product verification engine. Those remain
-#228/#229. Shared supports and substrate interfaces remain #267.
+#228/#229. [Shared supports and substrate interfaces](shared-supports.md) use
+the explicit 1.3 contract boundary; inherited native raceway checks remain active.
 
 ## Version and ownership
 

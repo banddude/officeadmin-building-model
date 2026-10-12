@@ -16,6 +16,8 @@ from oabm.model import (
     ElectricalDevice,
     ElectricalEquipment,
     ElectricalBox,
+    SupportComponent,
+    SupportInterface,
     Entity,
     Level,
     Obstacle,
@@ -579,10 +581,13 @@ def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
         _device_schedule(model),
         _circuit_schedule(model),
     )
-    if model.schema_version in {"1.1.0", "1.2.0"}:
+    if model.schema_version in {"1.1.0", "1.2.0", "1.3.0"}:
         schedules += (_box_schedule(model), _box_selection_schedule(model))
-    if model.schema_version == "1.2.0":
+    if model.schema_version in {"1.2.0", "1.3.0"}:
         schedules += (_raceway_schedule(model), _raceway_outcome_schedule(model))
+    if model.schema_version == "1.3.0":
+        schedules += (_support_assembly_schedule(model), _support_component_schedule(model),
+                      _support_interface_schedule(model), _support_outcome_schedule(model))
     return tuple(schedule for schedule in schedules if schedule.rows)
 
 
@@ -818,6 +823,14 @@ def _entity_primitives(
         symbol = symbol_provider(entity, view_type)
         if symbol is not None:
             result.extend(_symbol_primitive(entity, frame, bounds, symbol, "symbols:openings"))
+    elif isinstance(entity, SupportInterface):
+        result.extend(_symbol_primitive(entity, frame, bounds,
+                      Symbol("support_attachment", "attachment"), "electrical:support-interfaces"))
+    elif isinstance(entity, SupportComponent):
+        result.extend(_box_entity_primitives(entity.id, entity.pose, entity.size, frame, bounds,
+                      layer="electrical:supports", style=LineStyle(stroke="electrical", pattern="dash")))
+        if view_type == "section" and _box_intersects_section(entity.pose, entity.size, frame):
+            result.extend(_box_section_cut(entity.id, entity.pose, entity.size, frame, bounds, layer="electrical:supports"))
     elif isinstance(entity, ElectricalBox):
         result.extend(_box_entity_primitives(entity.id, entity.pose, entity.size, frame, bounds,
                       layer="electrical:boxes", style=LineStyle(stroke="electrical", pattern="dash")))
@@ -1077,7 +1090,7 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
     if visibility.electrical:
         result.extend(
             item
-            for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes)
+            for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes, *model.support_components, *model.support_interfaces)
             if (item.level_id in {None, level_id}) and _entity_z_overlap(item, min_z, max_z)
         )
     if visibility.routes:
@@ -1102,7 +1115,7 @@ def _spatial_entities(model: BuildingModel, level_ids: tuple[str, ...], visibili
     if visibility.spaces:
         result.extend(item for item in model.spaces if level_ok(item))
     if visibility.electrical:
-        result.extend(item for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes) if level_ok(item))
+        result.extend(item for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes, *model.support_components, *model.support_interfaces) if level_ok(item))
     if visibility.routes:
         result.extend(model.routes)
         result.extend(model.route_fittings)
@@ -1151,7 +1164,8 @@ def _entity_points(entity: Entity) -> tuple[Point3, ...]:
         return _vertical_prism_points(entity.footprint.points, entity.height_m) if entity.height_m is not None else entity.footprint.points
     if isinstance(entity, (Slab, Ceiling)): return entity.footprint.points
     if isinstance(entity, Opening): return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
-    if isinstance(entity, (ElectricalEquipment, ElectricalDevice, ElectricalBox)):
+    if isinstance(entity, SupportInterface): return (entity.pose.position,)
+    if isinstance(entity, (ElectricalEquipment, ElectricalDevice, ElectricalBox, SupportComponent)):
         if entity.size is None: return (entity.pose.position,)
         return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
     if isinstance(entity, Route): return entity.centerline.points
@@ -1407,6 +1421,7 @@ def _entities(model: BuildingModel) -> tuple[Entity, ...]:
         *model.route_fittings, *model.circuits, *model.conductors,
         *model.electrical_boxes, *model.box_selection_outcomes,
         *model.raceway_selections, *model.raceway_selection_outcomes,
+        *model.support_assemblies, *model.support_components, *model.support_interfaces, *model.support_selection_outcomes,
     )
 
 
@@ -1487,3 +1502,35 @@ def _raceway_outcome_schedule(model: BuildingModel) -> DrawingSchedule:
     rows=tuple(ScheduleRow(source_id=o.id,cells=(o.route_id,o.status,o.scope,', '.join(o.reason_codes)))
         for o in sorted(model.raceway_selection_outcomes,key=lambda o:o.id))
     return DrawingSchedule(id='schedule:raceway-outcomes',title='Raceway Selection Outcomes',columns=columns,rows=rows)
+
+
+def _support_assembly_schedule(model):
+    columns=tuple(ScheduleColumn(k,t) for k,t in (('type','Assembly'),('level','Level'),('supported','Supported objects'),
+        ('components','Unique components'),('interfaces','Interfaces'),('basis','Caller rule reference'),('verification','Verification')))
+    rows=tuple(ScheduleRow(source_id=a.id,cells=(a.assembly_type,a.level_id,', '.join(a.supported_object_ids),
+        ', '.join(a.component_ids),', '.join(a.interface_ids),f'{a.basis.authority}/{a.basis.revision}/{a.basis.rule_id}',
+        'spacing/loading/suitability not verified')) for a in sorted(model.support_assemblies,key=lambda a:a.id))
+    return DrawingSchedule(id='schedule:support-assemblies',title='Shared Support Assemblies',columns=columns,rows=rows)
+
+
+def _support_component_schedule(model):
+    columns=tuple(ScheduleColumn(k,t) for k,t in (('assembly','Assembly'),('type','Component'),('category','Category'),
+        ('product','Catalog product'),('basis','Geometry basis')))
+    rows=tuple(ScheduleRow(source_id=c.id,cells=(c.assembly_id,c.component_type,c.category,
+        f'{c.product.catalog_id}/{c.product.catalog_revision}/{c.product.product_id}',c.geometry_basis))
+        for c in sorted(model.support_components,key=lambda c:c.id))
+    return DrawingSchedule(id='schedule:support-components',title='Unique Support Components',columns=columns,rows=rows)
+
+
+def _support_interface_schedule(model):
+    columns=tuple(ScheduleColumn(k,t) for k,t in (('assembly','Assembly'),('host','Host'),('substrate','Actual substrate'),('components','Attached components')))
+    rows=tuple(ScheduleRow(source_id=i.id,cells=(i.assembly_id,i.host_id,i.substrate,', '.join(i.component_ids)))
+        for i in sorted(model.support_interfaces,key=lambda i:i.id))
+    return DrawingSchedule(id='schedule:support-interfaces',title='Support Attachment Interfaces',columns=columns,rows=rows)
+
+
+def _support_outcome_schedule(model):
+    columns=tuple(ScheduleColumn(k,t) for k,t in (('intent','Intent'),('status','Status'),('assembly','Installed assembly'),('reasons','Unresolved reasons')))
+    rows=tuple(ScheduleRow(source_id=o.id,cells=(o.intent_id,o.status,o.selected_assembly_id or 'not selected',', '.join(o.reason_codes)))
+        for o in sorted(model.support_selection_outcomes,key=lambda o:o.id))
+    return DrawingSchedule(id='schedule:support-outcomes',title='Support Selection Outcomes',columns=columns,rows=rows)

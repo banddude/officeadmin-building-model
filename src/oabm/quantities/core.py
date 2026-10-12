@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Callable, Iterable, Mapping, get_args, get_origin, get_type_hints
 
 from oabm.model import (
@@ -206,6 +206,8 @@ def extract_quantities(
         *(device.id for device in model.electrical_devices),
         *(equipment.id for equipment in model.electrical_equipment),
         *(box.id for box in model.electrical_boxes),
+        *(c.id for c in model.support_components),
+        *(a.id for a in model.support_assemblies),
         *(entity.id for name in _ARCHITECTURAL for entity in collections[name]),
     }
     unmatched_group_ids = sum(
@@ -243,7 +245,7 @@ def extract_quantities(
                 entities=evidence_entities,
                 assembly_resolver=assembly_resolver,
                 group=group_owner.get(route.id),
-                consumed_paths=("centerline",) if model.schema_version == "1.2.0" else None,
+                consumed_paths=("centerline",) if model.schema_version in {"1.2.0", "1.3.0"} else None,
             )
         )
 
@@ -346,6 +348,33 @@ def extract_quantities(
             warnings.append(QuantityWarning("unresolved_box_selection",
                 f"{outcome.intent_id}: {', '.join(outcome.reason_codes)}; no physical box quantity was invented.",
                 (outcome.id,)))
+
+    support_by_id = {a.id:a for a in model.support_assemblies}
+    for component in sorted(model.support_components,key=lambda c:c.id):
+        assembly=support_by_id[component.assembly_id]
+        contribution=_contribution(category="support_component",item_type=component.component_type,
+            quantity=1.0,unit=COUNT_UNIT,variant=(("catalog_id",component.product.catalog_id),
+                ("catalog_revision",component.product.catalog_revision),("product_id",component.product.product_id),
+                ("component_category",component.category),("geometry_basis",component.geometry_basis),
+                ("rule_authority",assembly.basis.authority),("rule_revision",assembly.basis.revision),
+                ("rule_id",assembly.basis.rule_id)),entities=(component,),assembly_resolver=assembly_resolver,
+            group=group_owner.get(component.id) or group_owner.get(component.assembly_id),
+            consumed_paths=("part_key","product","category","component_type"))
+        contributions.append(replace(contribution,
+            provenance=_merge_provenance(component.provenance,assembly.provenance),
+            confidence=min(component.confidence,assembly.confidence)))
+    for assembly in model.support_assemblies:
+        warnings.append(QuantityWarning("support_rules_unverified",
+            "Explicit component inventory does not verify spacing, loading or fastener suitability; catalog envelopes are not exact profiles or material volumes.",
+            (assembly.id,)))
+    for outcome in model.support_selection_outcomes:
+        if outcome.status=="unresolved":
+            warnings.append(QuantityWarning("unresolved_support_selection",
+                f"{outcome.intent_id}: {', '.join(outcome.reason_codes)}; no support hardware was invented.",(outcome.id,)))
+    if model.schema_version=="1.3.0" and model.routes and not model.support_selection_outcomes:
+        warnings.append(QuantityWarning("support_design_unrequested",
+            "No explicit support assembly intents were supplied; route length does not establish support or fastener quantities.",
+            tuple(sorted(r.id for r in model.routes))))
 
     from .architecture import architectural_claims
     for claim in architectural_claims(model):
@@ -652,6 +681,7 @@ _CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | frozenset({
     "route_constraints", "routes", "route_fittings", "circuits", "conductors",
     "electrical_boxes", "box_selection_outcomes",
     "raceway_selections", "raceway_selection_outcomes",
+    "support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes",
 })
 
 def _canonical_entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:

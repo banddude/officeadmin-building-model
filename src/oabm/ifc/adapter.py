@@ -1176,11 +1176,11 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         canonical_items[canonical_id] = (item, data, meta["ordinal"], kind)
 
     route_segments = _route_segments(ifc)
-    for _, selection_data, _, kind in canonical_items.values():
+    for annotation, selection_data, _, kind in canonical_items.values():
         if kind == "raceway_selection":
-            _validate_native_raceway_selection(selection_data, canonical_items, route_segments)
+            _validate_native_raceway_selection(selection_data, canonical_items, route_segments, annotation)
         elif kind == "raceway_selection_outcome":
-            _validate_native_raceway_outcome(selection_data, canonical_items, route_segments)
+            _validate_native_raceway_outcome(selection_data, canonical_items, route_segments, annotation)
     native_connections = _native_canonical_port_connections(ifc, canonical_items)
 
     buckets: dict[str, list[tuple[int, dict[str, Any]]]] = {
@@ -2807,13 +2807,16 @@ def _add_raceway_product_pset(ifc: ifcopenshell.file, product: Any, selection: A
     ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties=_raceway_visible_properties(asdict(selection)))
 
 
-def _validate_native_raceway_selection(data, canonical_items, route_segments):
+def _validate_native_raceway_selection(data, canonical_items, route_segments, annotation):
     route_id=data['route_id']
     route_record=canonical_items.get(route_id)
     if route_record is None or route_record[3]!='route':
         raise IfcAdapterError('raceway selection references missing native route')
     system,route_data,_,_=route_record
     expected=_raceway_visible_properties(data)
+    visible=_property_set(annotation,CANONICAL_PSET)
+    if visible is None or any(visible.get(k)!=v for k,v in expected.items()):
+        raise IfcAdapterError('native selection annotation contradicts canonical product/basis')
     segments=route_segments.get(route_id,[])
     for native in (system,*(segment for _,segment in segments)):
         properties=_property_set(native,'OABM_RacewaySelection')
@@ -2853,11 +2856,14 @@ def _add_raceway_outcome_pset(ifc,product,outcome):
     ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties=_raceway_outcome_properties(asdict(outcome)))
 
 
-def _validate_native_raceway_outcome(data,canonical_items,route_segments):
+def _validate_native_raceway_outcome(data,canonical_items,route_segments,annotation):
     record=canonical_items.get(data['route_id'])
     if record is None or record[3]!='route':
         raise IfcAdapterError('raceway outcome references missing native route')
     expected=_raceway_outcome_properties(data)
+    visible=_property_set(annotation,CANONICAL_PSET)
+    if visible is None or any(visible.get(k)!=v for k,v in expected.items()):
+        raise IfcAdapterError('native outcome annotation contradicts canonical uncertainty')
     for native in (record[0],*(segment for _,segment in route_segments.get(data['route_id'],[]))):
         actual=_property_set(native,'OABM_RacewayOutcome')
         if actual is None or any(actual.get(k)!=v for k,v in expected.items()):

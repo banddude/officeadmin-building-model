@@ -358,3 +358,34 @@ def test_unknown_route_method_and_conflicting_rule_product_are_unresolved(base,i
     conflict=selected(base,(i,e,wrong))
     assert not conflict.raceway_selections
     assert 'caller_rule_conflict' in conflict.raceway_selection_outcomes[0].reason_codes
+
+@pytest.mark.parametrize('kind,field,value',[
+    ('selection','ProductId','other-native-product'),
+    ('selection','RuleId','other-native-rule'),
+    ('selection','Designation','other-native-trade-size'),
+    ('outcome','SelectionStatus','selected'),
+    ('outcome','Scope','mixed_run'),
+    ('outcome','UnresolvedReasons',''),
+    ('requested-outcome','RequestedProductId','other-native-request'),
+    ('requested-outcome','RequestedRuleId','other-native-rule')])
+def test_annotation_only_product_basis_and_uncertainty_edits_refuse(base,inputs,kind,field,value):
+    import ifcopenshell.api.pset
+    import ifcopenshell.util.element
+    from oabm.ifc import canonical_id_to_ifc_guid
+    if kind=='outcome':
+        m=select_raceways(upgrade_to_v1_2(base),intents=(),catalog=(),rules=())
+    else:
+        m=selected(base,inputs)
+    entity=m.raceway_selections[0] if kind=='selection' else m.raceway_selection_outcomes[0]
+    ifc=to_ifc(m)
+    annotation=ifc.by_guid(canonical_id_to_ifc_guid(entity.id))
+    properties=ifcopenshell.util.element.get_psets(annotation)['OABM_Canonical']
+    shadow=properties['CanonicalJson']
+    pset=ifc.by_id(properties['id'])
+    edits={field:value}
+    if field=='SelectionStatus':
+        edits['UnresolvedReasons']=''
+    ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties=edits)
+    assert ifcopenshell.util.element.get_psets(annotation)['OABM_Canonical']['CanonicalJson']==shadow
+    with pytest.raises(IfcAdapterError,match='annotation contradicts'):
+        from_ifc(ifc)

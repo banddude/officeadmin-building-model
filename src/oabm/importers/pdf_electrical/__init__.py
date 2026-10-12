@@ -9,6 +9,9 @@ from .shape_classes import (
 from .importer import (
     DEFAULT_SYMBOL_RULES,
     POINT_TO_M,
+    ConfirmedScheduleRow,
+    PanelScheduleReview,
+    schedule_source_fingerprint,
     DrawingRegionTransform,
     ElectricalPdfError,
     ElectricalInstanceHint,
@@ -27,6 +30,9 @@ from .importer import (
 __all__ = [
     "DEFAULT_SYMBOL_RULES",
     "POINT_TO_M",
+    "ConfirmedScheduleRow",
+    "PanelScheduleReview",
+    "schedule_source_fingerprint",
     "DrawingRegionTransform",
     "ElectricalPdfError",
     "ElectricalInstanceHint",

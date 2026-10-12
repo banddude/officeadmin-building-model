@@ -539,8 +539,8 @@ def _scale_candidates(page: PdfPageObservation) -> list[tuple[float, str, str]]:
 
     result: list[tuple[float, str, str]] = []
     imperial = re.compile(
-        rf"(?:SCALE\s*[:=]?\s*)?(?P<paper>{_NUM})\s*[\"″]\s*=\s*"
-        rf"(?P<feet>{_NUM})\s*['′]\s*(?:-\s*(?P<inches>{_NUM})\s*[\"″])?",
+        rf"(?:SCALE\s*[:=]?\s*)?(?P<paper>{_NUM})\s*[\"″”]\s*=\s*"
+        rf"(?P<feet>{_NUM})\s*['′’]\s*(?:-\s*(?P<inches>{_NUM})\s*[\"″”])?",
         re.IGNORECASE,
     )
     metric = re.compile(r"\bSCALE\s*[:=]?\s*1\s*:\s*(?P<ratio>\d+(?:\.\d+)?)\b", re.IGNORECASE)

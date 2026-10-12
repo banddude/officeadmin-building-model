@@ -34,6 +34,8 @@ from oabm.model import (
     PHYSICAL_SCHEMA_VERSION,
     RACEWAY_SCHEMA_VERSION,
     SUPPORT_SCHEMA_VERSION,
+    SUPPORT_SCHEMA_VERSIONS,
+    STRUCTURAL_SCHEMA_VERSION,
     PHYSICAL_SCHEMA_VERSIONS,
     RACEWAY_SCHEMA_VERSIONS,
     SUPPORTED_SCHEMA_VERSIONS,
@@ -140,6 +142,7 @@ _COLLECTION_BY_KIND = {
     "support_component": "support_components",
     "support_interface": "support_interfaces",
     "support_outcome": "support_selection_outcomes",
+    "structural_member": "structural_members",
 }
 
 
@@ -503,6 +506,13 @@ def to_ifc(
                            predefined_type="USERDEFINED", pose=box.pose)
         item.ObjectType = box.box_type
         _mark_body(ifc, item, _assign_box_body(ifc, item, body_context, box.size))
+    for ordinal, member in enumerate(model.structural_members):
+        # One confirmed member exports once, as a real framed element carrying
+        # its canonical identity and kind; no second structural object exists.
+        item = add_product(member, "structural_member", ordinal, "IfcBeam",
+                           predefined_type="USERDEFINED", pose=member.pose)
+        item.ObjectType = member.kind
+        _mark_body(ifc, item, _assign_box_body(ifc, item, body_context, member.size))
     for ordinal, outcome in enumerate(model.box_selection_outcomes):
         item = add_product(outcome, "box_selection_outcome", ordinal, "IfcAnnotation",
                            assign_container=False)
@@ -1181,8 +1191,10 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         document.update(electrical_boxes=[], box_selection_outcomes=[])
     if header["schema_version"] in RACEWAY_SCHEMA_VERSIONS:
         document.update(raceway_selections=[], raceway_selection_outcomes=[])
-    if header["schema_version"] == SUPPORT_SCHEMA_VERSION:
+    if header["schema_version"] in SUPPORT_SCHEMA_VERSIONS:
         document.update(support_assemblies=[],support_components=[],support_interfaces=[],support_selection_outcomes=[])
+    if header["schema_version"] == STRUCTURAL_SCHEMA_VERSION:
+        document.update(structural_members=[])
 
     canonical_items: dict[str, tuple[Any, dict[str, Any], int, str]] = {}
     for item in ifc.by_type("IfcRoot"):

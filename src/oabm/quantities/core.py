@@ -206,6 +206,7 @@ def extract_quantities(
         *(device.id for device in model.electrical_devices),
         *(equipment.id for equipment in model.electrical_equipment),
         *(box.id for box in model.electrical_boxes),
+        *(member.id for member in model.structural_members),
         *(c.id for c in model.support_components),
         *(a.id for a in model.support_assemblies),
         *(entity.id for name in _ARCHITECTURAL for entity in collections[name]),
@@ -330,6 +331,32 @@ def extract_quantities(
                 "equipment", equipment, assembly_resolver, group_owner.get(equipment.id)
             )
         )
+
+    for member in sorted(model.structural_members, key=lambda item: item.id):
+        # Confirmed framing members report their known count and their
+        # rectangular solid volume. Nothing here designs, prices, or assumes
+        # drilling: an unconfirmed member is simply absent.
+        material_variant = (("material", member.material),)
+        contributions.append(_contribution(
+            category="structural_member",
+            item_type=member.kind,
+            quantity=1.0,
+            unit=COUNT_UNIT,
+            variant=material_variant,
+            entities=(member,),
+            assembly_resolver=assembly_resolver,
+            group=group_owner.get(member.id),
+        ))
+        contributions.append(_contribution(
+            category="structural_member_volume",
+            item_type=member.kind,
+            quantity=member.size.x * member.size.y * member.size.z,
+            unit="m3",
+            variant=material_variant,
+            entities=(member,),
+            assembly_resolver=assembly_resolver,
+            group=group_owner.get(member.id),
+        ))
 
     for box in sorted(model.electrical_boxes, key=lambda item: item.id):
         contributions.append(_contribution(
@@ -682,6 +709,7 @@ _CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | frozenset({
     "electrical_boxes", "box_selection_outcomes",
     "raceway_selections", "raceway_selection_outcomes",
     "support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes",
+    "structural_members",
 })
 
 def _canonical_entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:

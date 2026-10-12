@@ -600,6 +600,18 @@ def _collect_routing_geometry(
         else:
             hard.append(rule)
 
+    for member in sorted(model.structural_members, key=lambda item: item.id):
+        # A confirmed framing member is conservative hard no-go geometry
+        # around its canonical identity. A rotated member's axis-aligned
+        # bounds cover more volume than the member itself; that deliberate
+        # overexclusion never penetrates a rotated flange, and no
+        # penetration/boring/notching permission is implied.
+        bounds = member.axis_aligned_bounds()
+        hard.append(_Rule(
+            member.id,
+            _Bounds(*bounds).expanded(options.clearance_m + route_radius),
+        ))
+
     for constraint in sorted(model.route_constraints, key=lambda item: item.id):
         if not _applies(constraint, route_type):
             continue

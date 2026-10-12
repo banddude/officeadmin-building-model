@@ -778,6 +778,7 @@ def _default_options() -> dict:
         "dimmed_color": (0.62, 0.62, 0.62),
         "emphasized_ids": (),
         "glazed_outline": False,
+        "min_display_wall_thickness_m": None,
     }
 
 
@@ -898,6 +899,7 @@ def test_all_options_on_export_is_deterministic_and_valid(tmp_path: Path) -> Non
         "dimmed_ids": ("device:ref-0", "device:ref-1", "device:missing"),
         "dimmed_alpha": 0.2,
         "dimmed_color": (0.5, 0.5, 0.55),
+        "min_display_wall_thickness_m": 0.25,
     }
     first = tmp_path / "first.glb"
     second = tmp_path / "second.glb"
@@ -908,6 +910,7 @@ def test_all_options_on_export_is_deterministic_and_valid(tmp_path: Path) -> Non
     parsed = _parse_glb(first)
     assert summary["reference_planes"] == 4
     assert summary["dimmed"] == 2  # the unknown id matches nothing
+    assert summary["thickened_walls"] == 2
     assert len(parsed["gltf"]["nodes"]) == summary["nodes"]
 
 
@@ -2239,3 +2242,196 @@ def test_keyhole_with_hole_footprint_falls_back_instead_of_filling(
     to_glb(model, first)
     to_glb(model, second)
     assert first.read_bytes() == second.read_bytes()
+
+
+# --- Issue #88: display thickness is a rendering choice, not a model claim.
+# --- A wall recorded thinner than the caller's minimum draws at that minimum
+# --- so a scanned wall is visible at building scale, with the recorded and
+# --- drawn values disclosed side by side in the node's extras.
+
+
+def _thin_wall_model(*, thickness_m: float, construction: str | None = None) -> BuildingModel:
+    """One straight 4 m wall of the given thickness on one level."""
+
+    level = Level(id="level:main", elevation_m=0.0, height_m=2.7)
+    wall = Wall(
+        id="wall:south-run",
+        level_id=level.id,
+        centerline=Polyline3D(points=(
+            Point3(x=0.0, y=0.0, z=0.0),
+            Point3(x=4.0, y=0.0, z=0.0),
+        )),
+        thickness_m=thickness_m,
+        height_m=2.7,
+        construction=construction,
+    )
+    return BuildingModel(model_id="model:glb-thin-wall-synth", levels=(level,), walls=(wall,))
+
+
+def test_display_thickness_default_gives_plain_bytes_and_no_report_key(
+    tmp_path: Path,
+) -> None:
+    model = _thin_wall_model(thickness_m=0.001)
+    plain_summary = to_glb(model, tmp_path / "plain.glb")
+    default_summary = to_glb(
+        model, tmp_path / "default.glb", min_display_wall_thickness_m=None,
+    )
+    assert (tmp_path / "plain.glb").read_bytes() == (tmp_path / "default.glb").read_bytes()
+    assert "thickened_walls" not in plain_summary
+    assert "thickened_walls" not in default_summary
+
+
+def test_thin_wall_draws_at_the_display_thickness(tmp_path: Path) -> None:
+    model = _thin_wall_model(thickness_m=0.001)
+    summary = to_glb(
+        model, tmp_path / "thick.glb", min_display_wall_thickness_m=0.1,
+    )
+    parsed = _parse_glb(tmp_path / "thick.glb")
+
+    assert summary["thickened_walls"] == 1
+    spans, info = _wall_vertex_ranges(parsed)
+    # Plan footprint: 4 m along canonical x, drawn 0.1 m across it — not
+    # the recorded 0.001 m.
+    assert spans[0] == pytest.approx(4.0, abs=1e-6)
+    assert spans[2] == pytest.approx(0.1, abs=1e-6)
+    extras = info["extras"]
+    assert extras["canonical_thickness_m"] == pytest.approx(0.001, abs=1e-9)
+    assert extras["drawn_thickness_m"] == pytest.approx(0.1, abs=1e-9)
+    assert extras["thickness_source"] == (
+        "min_display_wall_thickness_m (drawing aid, not a measurement)"
+    )
+
+
+def test_display_thickness_leaves_the_canonical_model_alone(tmp_path: Path) -> None:
+    model = _thin_wall_model(thickness_m=0.001)
+    to_glb(model, tmp_path / "thick.glb", min_display_wall_thickness_m=0.1)
+    # The export is a derived view: the wall keeps the thickness the model
+    # honestly knows, so the takeoff keeps computing from 0.001 m.
+    assert model.walls[0].thickness_m == 0.001
+
+
+def test_wall_at_or_above_the_minimum_is_drawn_unchanged(tmp_path: Path) -> None:
+    model = _thin_wall_model(thickness_m=0.1)
+    plain_summary = to_glb(model, tmp_path / "plain.glb")
+    summary = to_glb(
+        model, tmp_path / "same.glb", min_display_wall_thickness_m=0.1,
+    )
+    # A wall exactly at the minimum already displays legibly: identical
+    # bytes and no disclosure extras.
+    assert summary["thickened_walls"] == 0
+    assert (tmp_path / "plain.glb").read_bytes() == (tmp_path / "same.glb").read_bytes()
+    parsed = _parse_glb(tmp_path / "same.glb")
+    _spans, info = _wall_vertex_ranges(parsed)
+    assert "canonical_thickness_m" not in info["extras"]
+    assert "drawn_thickness_m" not in info["extras"]
+    assert "thickness_source" not in info["extras"]
+    assert plain_summary["walls"] == summary["walls"]
+
+
+def test_thick_walls_draw_unchanged_while_thin_walls_thicken(tmp_path: Path) -> None:
+    level = Level(id="level:main", elevation_m=0.0, height_m=2.7)
+
+    def wall(wall_id: str, y: float, thickness_m: float) -> Wall:
+        return Wall(
+            id=wall_id,
+            level_id=level.id,
+            centerline=Polyline3D(points=(
+                Point3(x=0.0, y=y, z=0.0),
+                Point3(x=4.0, y=y, z=0.0),
+            )),
+            thickness_m=thickness_m,
+            height_m=2.7,
+        )
+
+    model = BuildingModel(
+        model_id="model:glb-mixed-walls-synth",
+        levels=(level,),
+        walls=(
+            wall("wall:scan", 0.0, 0.001),
+            wall("wall:measured", 3.0, 0.2),
+        ),
+    )
+    summary = to_glb(
+        model, tmp_path / "mixed.glb", min_display_wall_thickness_m=0.1,
+    )
+    parsed = _parse_glb(tmp_path / "mixed.glb")
+    assert summary["thickened_walls"] == 1
+
+    scan_vertices = _node_positions(parsed, _by_name(parsed)["wall:scan"])
+    scan_span_z = max(v[2] for v in scan_vertices) - min(v[2] for v in scan_vertices)
+    assert scan_span_z == pytest.approx(0.1, abs=1e-6)
+    scan_node = parsed["gltf"]["nodes"][_by_name(parsed)["wall:scan"]]
+    assert scan_node["extras"]["canonical_thickness_m"] == pytest.approx(0.001, abs=1e-9)
+
+    # The measured wall draws exactly as before and gains nothing.
+    measured_vertices = _node_positions(parsed, _by_name(parsed)["wall:measured"])
+    measured_span_z = max(v[2] for v in measured_vertices) - min(v[2] for v in measured_vertices)
+    assert measured_span_z == pytest.approx(0.2, abs=1e-6)
+    measured_node = parsed["gltf"]["nodes"][_by_name(parsed)["wall:measured"]]
+    assert "drawn_thickness_m" not in measured_node["extras"]
+
+
+def test_glazed_outline_follows_the_drawn_thickness(tmp_path: Path) -> None:
+    model = _thin_wall_model(thickness_m=0.001, construction="glazed")
+    to_glb(
+        model,
+        tmp_path / "outline.glb",
+        glazed_outline=True,
+        min_display_wall_thickness_m=0.1,
+    )
+    parsed = _parse_glb(tmp_path / "outline.glb")
+
+    def rounded(point: tuple[float, ...]) -> tuple[float, ...]:
+        return tuple(round(component, 6) for component in point)
+
+    lines = _node_positions(parsed, _by_name(parsed)["outline:wall:south-run"])
+    # The outline traces the *drawn* prism: corners at plan-y ±0.05 (glTF
+    # z = -plan-y), not the recorded ±0.0005, so the line never detaches
+    # from the mesh it makes readable.
+    plan_edges = {rounded((v[0], abs(v[2]))) for v in lines}
+    assert {edge[1] for edge in plan_edges} == {0.05}
+    wall_vertices = _node_positions(parsed, _by_name(parsed)["wall:south-run"])
+    wall_edges = {rounded((v[0], abs(v[2]))) for v in wall_vertices}
+    assert wall_edges == plan_edges
+
+
+def test_display_thickness_export_is_deterministic(tmp_path: Path) -> None:
+    model = _thin_wall_model(thickness_m=0.001)
+    options: dict = {"min_display_wall_thickness_m": 0.1, "glazed_outline": True}
+    first = tmp_path / "first.glb"
+    second = tmp_path / "second.glb"
+    to_glb(model, first, **options)
+    to_glb(model, second, **options)
+    assert first.read_bytes() == second.read_bytes()
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.1, float("nan"), float("inf")])
+def test_invalid_display_thickness_is_rejected(tmp_path: Path, bad: float) -> None:
+    model = _thin_wall_model(thickness_m=0.001)
+    with pytest.raises(ValueError, match="min_display_wall_thickness_m"):
+        to_glb(model, tmp_path / "bad.glb", min_display_wall_thickness_m=bad)
+
+
+@pytest.mark.parametrize("bad", [True, False, "0.1", b"0.1", object()])
+def test_bool_and_nonnumeric_display_thickness_are_rejected(
+    tmp_path: Path, bad: object,
+) -> None:
+    # True must never masquerade as a 1 metre wall: bools are rejected
+    # before any numeric test, as are strings, bytes and other non-numbers.
+    model = _thin_wall_model(thickness_m=0.001)
+    with pytest.raises(ValueError, match="min_display_wall_thickness_m"):
+        to_glb(model, tmp_path / "bad.glb", min_display_wall_thickness_m=bad)
+
+
+def test_disclosure_extras_carry_the_unrounded_values(tmp_path: Path) -> None:
+    # A sub-micrometre recorded wall: rounding the disclosure to 6 decimals
+    # would display 0 while the GLB geometry differs from both 0 and the
+    # drawn value. The extras carry the actual finite inputs.
+    sub_micrometre = 5e-07
+    model = _thin_wall_model(thickness_m=sub_micrometre)
+    to_glb(model, tmp_path / "thin.glb", min_display_wall_thickness_m=0.1)
+    parsed = _parse_glb(tmp_path / "thin.glb")
+    _spans, info = _wall_vertex_ranges(parsed)
+    assert info["extras"]["canonical_thickness_m"] == sub_micrometre
+    assert info["extras"]["drawn_thickness_m"] == 0.1
+    assert info["extras"]["canonical_thickness_m"] != 0.0

@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from oabm.model import BuildingModel, ContractError, Provenance, stable_id
-from oabm.model.common import _finite, _validate_id, _validate_json_value, provenance_applies_to
-from oabm.model.model import _decode_dataclass
+from oabm.model.common import _finite as _canonical_finite, _validate_id, _validate_json_value, provenance_applies_to
+from oabm.model.model import _decode_dataclass as _canonical_decode_dataclass
 from oabm.reports.panel_schedules import (
     ModelSourceContext, SourceSnapshot, ENTITY_TYPES, _source_document,
     _portable, _json, _array, _ids,
@@ -28,6 +28,18 @@ MAX_TEXT = 4096
 MAX_PIXELS = 262144
 MAX_PRODUCER_WORK = 100000
 MAX_GEOMETRY_VERTICES = 4096
+
+
+def _finite(value,label):
+    try:return _canonical_finite(value,label)
+    except OverflowError as exc:
+        raise ContractError(f'{label} exceeds supported finite numeric range') from exc
+
+
+def _decode_dataclass(cls,data):
+    try:return _canonical_decode_dataclass(cls,data)
+    except OverflowError as exc:
+        raise ContractError('proposal numeric value exceeds supported finite range') from exc
 
 
 def digest(value):

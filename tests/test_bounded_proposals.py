@@ -457,3 +457,32 @@ def test_candidate_reason_bound():
     from oabm.proposals import CandidateReference
     candidate=request().context.candidates[0].candidate
     with pytest.raises(ContractError,match='reasons exceed'):CandidateReference.capture(replace(candidate,reasons=('bounded',)*513))
+
+
+def test_huge_integer_numeric_contracts(bound):
+    huge=10**400
+    from oabm.proposals import CandidateReference
+    with pytest.raises(ContractError):replace(options(),working_depth_m=huge)
+    with pytest.raises(ContractError):RankedCandidate(candidate_id=bound.context.candidates[0].id,
+        confidence=huge,reasons=('bounded',),evidence_ids=())
+    candidate=bound.context.candidates[0].candidate
+    for key in ('score','confidence'):
+        with pytest.raises(ContractError):CandidateReference.capture(replace(candidate,**{key:huge}))
+    data=bound.to_dict();data['context']['options']['working_depth_m']=huge
+    with pytest.raises(ContractError):RankingRequest.from_dict(data)
+    data=response(bound.to_dict());data['ranking'][0]['confidence']=huge
+    with pytest.raises(ContractError):RankingOutput.from_dict(data)
+
+
+def test_huge_integer_output_no_fallback_and_failed_measured_trial(bound):
+    huge=10**400;log=[]
+    def invalid(data,**kwargs):
+        output=response(data);output['ranking'][0]['confidence']=huge;return output
+    with pytest.raises(ContractError):dispatch_ranking(bound,config(),adapters=adapters(log,text_glm=invalid))
+    assert not log
+    req=request(vision=True)
+    case=BenchmarkCase(id='case:huge',request=req,expected_candidate_id=response(req.to_dict())['ranking'][0]['candidate_id'])
+    benchmark=measure_luna_benchmark((case,),config(),adapters=adapters(vision_luna=invalid),required_success_count=1)
+    assert benchmark.success_count==0
+    assert benchmark.trials[0].response['ranking'][0]['confidence']==huge
+    assert VisionBenchmark.from_json(benchmark.to_json()).success_count==0

@@ -751,3 +751,157 @@ def test_manifest_json_is_deterministic_bytes() -> None:
     # Sorted keys, no timestamp: the only variable content is the review.
     assert '"confidence_threshold"' in first.to_json()
     assert first.to_json() == first.to_json()
+
+
+def test_model_level_warning_and_empty_model_do_not_crash() -> None:
+    """A model-level warning has no sources; inventing one would be a lie."""
+
+    empty = BuildingModel(model_id="model:synthetic-empty")
+    manifest = build_confidence_review(empty, ReviewConfig(confidence_threshold=0.8))
+    report = extract_quantities(empty)
+    model_level = [
+        warning for warning in report.warnings if not warning.source_entity_ids
+    ]
+    assert model_level, "empty takeoff must still warn"
+    warning_items = [
+        item for item in manifest.items if item.item_id.startswith("review:warning:")
+    ]
+    assert any(item.entity_ids == () for item in warning_items)
+    # Model-level items survive the portable boundary unchanged.
+    decoded = ConfidenceReviewManifest.from_dict(manifest.to_dict())
+    assert decoded.to_json() == manifest.to_json()
+    assert any(item.entity_ids == () for item in decoded.items)
+
+    # A nonempty model with quantities also builds without crashing, and
+    # every warning item keeps its real sources.
+    populated = build_confidence_review(
+        _review_model(_wall(confidence=0.4)), ReviewConfig(confidence_threshold=0.8),
+    )
+    assert populated.items
+
+
+def test_source_attribute_edit_invalidates_stale_bindings() -> None:
+    """A source-content edit under unchanged ids and page breaks bindings."""
+
+    record = Provenance(
+        source_kind="drawing",
+        source_id="plan:synthetic",
+        method="scaled-drawing",
+        confidence=0.9,
+        derivation="observed",
+        attributes={"source_sha256": "original-content-hash"},
+    )
+    model = _review_model(_wall(confidence=0.4, provenance=(record,)))
+    reference = _bound_reference(model)
+    # Equal inputs keep equal fingerprints.
+    assert fingerprint_provenance(record) == fingerprint_provenance(
+        model.walls[0].provenance[0]
+    )
+    edited = replace(
+        model,
+        walls=(
+            replace(
+                model.walls[0],
+                provenance=(
+                    replace(record, attributes={"source_sha256": "revised-content"}),
+                ),
+            ),
+        ),
+    )
+    # Same source kind/id/page, different content: the old reference is stale.
+    assert fingerprint_provenance(edited.walls[0].provenance[0]) != reference.fingerprint
+    with pytest.raises(ValueError, match="stale"):
+        build_confidence_review(
+            edited, ReviewConfig(confidence_threshold=0.5), evidence=[reference],
+        )
+
+
+def test_portable_boundary_rejects_unbound_or_malformed_crops() -> None:
+    """The portable decoder enforces the binding, not just the builder."""
+
+    model = _review_model(_wall(confidence=0.4))
+    manifest = build_confidence_review(
+        model,
+        ReviewConfig(confidence_threshold=0.5),
+        evidence=[_bound_reference(model)],
+    )
+    document = manifest.to_dict()
+    item = next(
+        entry for entry in document["items"] if entry["entity_ids"] == ["wall:review-south"]
+    )
+
+    def decode_with_crop(crop: dict) -> ConfidenceReviewManifest:
+        return ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{**item, "crops": [crop]}],
+        })
+
+    # Unrelated source on an item whose provenance is different.
+    foreign = {
+        "ref_id": "crop:foreign",
+        "source_kind": "foreign",
+        "source_id": "source:foreign",
+        "fingerprint": "a" * 64,
+    }
+    with pytest.raises(ValueError, match="does not carry"):
+        decode_with_crop(foreign)
+    # Garbage digest shape.
+    with pytest.raises(ValueError, match="sha-256 digest"):
+        decode_with_crop({**item["crops"][0], "fingerprint": "garbage"})
+    # Wrong page against the same source.
+    with pytest.raises(ValueError, match="does not carry"):
+        decode_with_crop({**item["crops"][0], "page": 3})
+    # A well-bound crop still decodes, and the full manifest round-trips.
+    assert ConfidenceReviewManifest.from_dict(document).to_json() == manifest.to_json()
+
+    # Provenance scope rules hold at this boundary too: empty and malformed
+    # scopes are rejected, exactly as the canonical contract rejects them.
+    base_provenance = item["provenance"][0]
+    for bad_scopes in ([], ["not a path"], ["ok", "ok"]):
+        with pytest.raises(ValueError, match="scope_paths"):
+            ConfidenceReviewManifest.from_dict({
+                **document,
+                "items": [{
+                    **item,
+                    "provenance": [{**base_provenance, "scope_paths": bad_scopes}],
+                }],
+            })
+
+
+def test_warning_items_carry_provenance_their_crops_bind_to() -> None:
+    """Evidence on a warning item travels with the records it illustrates."""
+
+    model = _routed_garage()
+    wall = next(
+        entity
+        for warning in extract_quantities(model).warnings
+        for entity in model.walls
+        if entity.id in warning.source_entity_ids
+    )
+    record = wall.provenance[0]
+    manifest = build_confidence_review(
+        model,
+        ReviewConfig(confidence_threshold=0.99),
+        evidence=[EvidenceReference(
+            ref_id="crop:wall-evidence",
+            entity_id=wall.id,
+            source_kind=record.source_kind,
+            source_id=record.source_id,
+            page=record.page,
+            fingerprint=fingerprint_provenance(record),
+        )],
+    )
+    crop_items = [item for item in manifest.items if item.crops]
+    assert crop_items
+    for item in crop_items:
+        bound_sources = {
+            (entry["source_kind"], entry["source_id"], entry.get("page"))
+            for entry in item.provenance
+        }
+        for crop in item.crops:
+            assert (
+                crop["source_kind"], crop["source_id"], crop.get("page")
+            ) in bound_sources
+    # The whole manifest still round-trips strictly.
+    decoded = ConfidenceReviewManifest.from_dict(manifest.to_dict())
+    assert decoded.to_json() == manifest.to_json()

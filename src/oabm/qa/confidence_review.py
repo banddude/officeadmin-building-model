@@ -45,6 +45,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Iterable, Mapping, Sequence, get_args, get_origin, get_type_hints
 
 from oabm.model import BuildingModel, Entity, Provenance
+from oabm.model.common import _SCOPE_PATH_RE
 from oabm.quantities import QuantityWarning, extract_quantities
 
 #: Version of the portable config and manifest documents. Bump on any
@@ -118,6 +119,20 @@ def _validated_token(value: Any, label: str) -> str:
     return value
 
 
+_FINGERPRINT_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _validated_fingerprint(value: Any, label: str) -> str:
+    """A content fingerprint is a lowercase SHA-256 hex digest."""
+
+    if not isinstance(value, str) or _FINGERPRINT_RE.fullmatch(value) is None:
+        raise ValueError(
+            f"{label} must be a 64-character lowercase hex sha-256 digest, "
+            f"got {value!r}"
+        )
+    return value
+
+
 def fingerprint_provenance(record: Provenance) -> str:
     """Content fingerprint of one provenance record, for evidence binding.
 
@@ -136,6 +151,11 @@ def fingerprint_provenance(record: Provenance) -> str:
         "confidence": record.confidence,
         "derivation": record.derivation,
         "scope_paths": list(record.scope_paths) if record.scope_paths is not None else None,
+        # Attributes are part of the record's identity: a source-content or
+        # region edit under unchanged ids and page (a new source_sha256, a
+        # moved bounding box) must break bindings made against the old
+        # record. Normalized deterministically, exactly like serialization.
+        "attributes": record.attributes,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -165,8 +185,11 @@ class EvidenceReference:
             value = getattr(self, label)
             if not isinstance(value, str) or not value:
                 raise ValueError(f"EvidenceReference.{label} must be a non-empty string")
-        if not isinstance(self.fingerprint, str) or not self.fingerprint:
-            raise ValueError("EvidenceReference.fingerprint must be a non-empty string")
+        object.__setattr__(
+            self,
+            "fingerprint",
+            _validated_fingerprint(self.fingerprint, "EvidenceReference.fingerprint"),
+        )
         if self.page is not None:
             object.__setattr__(self, "page", _validated_page(self.page, "EvidenceReference.page"))
 
@@ -260,12 +283,24 @@ def _validated_provenance_entry(value: Any) -> dict[str, Any]:
         entry["derivation"] = derivation
     if value.get("scope_paths") is not None:
         scopes = value["scope_paths"]
+        # The canonical contract rejects empty and malformed scopes at
+        # construction, and this decoder is held to the same rule: an empty
+        # list is not "unscoped", it is invalid, and every path must be a
+        # canonical field path.
+        if not isinstance(scopes, list) or not scopes:
+            raise ValueError(
+                "provenance scope_paths must be a non-empty list of field paths"
+            )
         if (
-            not isinstance(scopes, list)
-            or any(not isinstance(path, str) or not path for path in scopes)
+            any(
+                not isinstance(path, str) or _SCOPE_PATH_RE.fullmatch(path) is None
+                for path in scopes
+            )
             or len(set(scopes)) != len(scopes)
         ):
-            raise ValueError("provenance scope_paths must be unique non-empty strings")
+            raise ValueError(
+                "provenance scope_paths must be unique canonical field paths"
+            )
         entry["scope_paths"] = list(scopes)
     return entry
 
@@ -289,6 +324,9 @@ def _validated_crop(value: Any) -> dict[str, Any]:
         if not isinstance(value[key], str) or not value[key]:
             raise ValueError(f"crop reference {key} must be a non-empty string")
         payload[key] = value[key]
+    payload["fingerprint"] = _validated_fingerprint(
+        payload["fingerprint"], "crop reference fingerprint"
+    )
     if value.get("page") is not None:
         payload["page"] = _validated_page(value["page"], "crop reference page")
     return payload
@@ -369,12 +407,14 @@ class ReviewItem:
             raise ValueError("review item_id must be a non-empty string")
         if not isinstance(self.entity_kind, str) or not self.entity_kind:
             raise ValueError("review entity_kind must be a non-empty string")
+        # Entity items name exactly one entity. Warning items may name many
+        # (one per source) or none at all: a model-level warning from the
+        # takeoff has no source entities, and inventing one would be a lie.
         if (
-            not self.entity_ids
-            or any(not isinstance(value, str) or not value for value in self.entity_ids)
+            any(not isinstance(value, str) or not value for value in self.entity_ids)
             or len(set(self.entity_ids)) != len(self.entity_ids)
         ):
-            raise ValueError("review entity_ids must be non-empty unique strings")
+            raise ValueError("review entity_ids must be unique non-empty strings")
         if (
             not self.reasons
             or any(not isinstance(value, str) for value in self.reasons)
@@ -403,6 +443,30 @@ class ReviewItem:
         ref_ids = [entry["ref_id"] for entry in validated_crops]
         if len(set(ref_ids)) != len(ref_ids):
             raise ValueError("review crops must carry unique ref_id values")
+        # Binding is a property of the item, not just of the builder: every
+        # crop must name a source that this item's own provenance carries,
+        # with the same page, so the portable document stays self-verifying
+        # (a crop bound to unrelated provenance is rejected here too, not
+        # only at build time).
+        provenance_sources = {
+            (
+                entry.get("source_kind"),
+                entry.get("source_id"),
+                entry.get("page"),
+            )
+            for entry in self.provenance
+        }
+        for entry in validated_crops:
+            if (
+                entry["source_kind"],
+                entry["source_id"],
+                entry.get("page"),
+            ) not in provenance_sources:
+                raise ValueError(
+                    f"crop reference {entry['ref_id']!r} binds to source "
+                    f"{entry['source_kind']}:{entry['source_id']}, which this "
+                    "item's provenance does not carry"
+                )
         object.__setattr__(self, "crops", tuple(
             sorted(validated_crops, key=lambda entry: entry["ref_id"])
         ))
@@ -671,8 +735,18 @@ def _warning_items(
     (code, message, sources) identity so distinct warnings never collide,
     and sorts by the resulting item id so input order cannot change the
     output.
+
+    A model-level warning (no source entities) keeps empty ``entity_ids``:
+    inventing an entity would be a lie. When evidence is attached, the
+    warning item also carries the provenance records that evidence binds
+    to, so the item stays self-verifying under the portable binding rule.
     """
 
+    records_by_entity: dict[str, tuple[Provenance, ...]] = {
+        entity.id: entity.provenance
+        for collection in collections.values()
+        for entity in collection
+    }
     items: list[ReviewItem] = []
     seen: set[tuple[str, str, tuple[str, ...]]] = set()
     for warning in warnings:
@@ -690,13 +764,23 @@ def _warning_items(
         kind = named_kinds[0] if len(named_kinds) == 1 else (
             "mixed" if named_kinds else "model"
         )
-        attached_crops = tuple(
-            sorted({
-                json.dumps(entry, sort_keys=True)
-                for entity_id in source_ids
-                for entry in crops_by_entity.get(entity_id, ())
-            })
-        )
+        attached: dict[str, dict[str, Any]] = {}
+        bound_records: list[Provenance] = []
+        for entity_id in source_ids:
+            for entry in crops_by_entity.get(entity_id, ()):
+                attached[entry["ref_id"]] = entry
+                record = next(
+                    (
+                        record for record in records_by_entity.get(entity_id, ())
+                        if record.source_kind == entry["source_kind"]
+                        and record.source_id == entry["source_id"]
+                        and record.page == entry.get("page")
+                    ),
+                    None,
+                )
+                if record is not None:
+                    bound_records.append(record)
+        provenance = _provenance_payload(bound_records)
         items.append(ReviewItem(
             item_id=_warning_item_id(warning),
             entity_kind=kind,
@@ -704,8 +788,8 @@ def _warning_items(
             reasons=(f"{_QUANTITY_WARNING_PREFIX}{warning.code}",),
             detail=f"quantity warning {warning.code}: {warning.message}",
             confidence=None,
-            provenance=(),
-            crops=tuple(json.loads(payload) for payload in attached_crops),
+            provenance=provenance,
+            crops=tuple(sorted(attached.values(), key=lambda entry: entry["ref_id"])),
         ))
     items.sort(key=lambda item: item.item_id)
     return items

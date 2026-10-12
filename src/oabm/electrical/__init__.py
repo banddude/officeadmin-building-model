@@ -6,3 +6,8 @@ __all__ = ["BoxCatalogEntry", "BoxIntent", "select_electrical_boxes"]
 
 from .raceways import RacewayCatalogEntry, RacewayIntent, RacewayRule, select_raceways
 __all__ += ['RacewayCatalogEntry','RacewayIntent','RacewayRule','select_raceways']
+
+from .supports import (SupportCatalogEntry, SupportRule, SupportIntent,
+                       SupportPartIntent, SupportInterfaceIntent, select_supports)
+__all__ += ['SupportCatalogEntry','SupportRule','SupportIntent','SupportPartIntent',
+            'SupportInterfaceIntent','select_supports']

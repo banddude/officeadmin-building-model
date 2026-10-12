@@ -7,15 +7,19 @@ from pathlib import Path
 from typing import Any, Mapping, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from .common import (
-    SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS,
+    SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, SUPPORT_SCHEMA_VERSION,
+    PHYSICAL_SCHEMA_VERSIONS, RACEWAY_SCHEMA_VERSIONS, SUPPORTED_SCHEMA_VERSIONS,
     ContractError, CoordinateSystem, Entity, Point3, Provenance,
     UnsupportedSchemaVersion, _distance, _finite, _validate_id, _validate_json_value,
 )
 from .physical import ElectricalBox, BoxSelectionOutcome, box_contains_point
 from .raceway import RacewaySelection, RacewaySelectionOutcome, wiring_method_for_route_type
+from .supports import (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome,
+                       component_contains_point, component_envelope_key, supported_levels)
 
 _PHYSICAL_FIELDS = frozenset({"electrical_boxes", "box_selection_outcomes"})
 _RACEWAY_FIELDS = frozenset({"raceway_selections", "raceway_selection_outcomes"})
+_SUPPORT_FIELDS = frozenset({"support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes"})
 from .entities import (
     Ceiling, Circuit, Conductor, ElectricalDevice, ElectricalEquipment, Level,
     Obstacle, Opening, Port, Route, RouteConstraint, RouteFitting, Slab, Space, Wall,
@@ -46,6 +50,10 @@ class BuildingModel:
     box_selection_outcomes: tuple[BoxSelectionOutcome, ...] = ()
     raceway_selections: tuple[RacewaySelection, ...] = ()
     raceway_selection_outcomes: tuple[RacewaySelectionOutcome, ...] = ()
+    support_assemblies: tuple[SupportAssembly, ...] = ()
+    support_components: tuple[SupportComponent, ...] = ()
+    support_interfaces: tuple[SupportInterface, ...] = ()
+    support_selection_outcomes: tuple[SupportSelectionOutcome, ...] = ()
     provenance: tuple[Provenance, ...] = ()
     attributes: dict[str, Any] = field(default_factory=dict)
 
@@ -57,8 +65,10 @@ class BuildingModel:
             )
         if self.schema_version == SCHEMA_VERSION and (self.electrical_boxes or self.box_selection_outcomes):
             raise ContractError("physical electrical objects require explicit schema_version 1.1.0")
-        if self.schema_version != RACEWAY_SCHEMA_VERSION and (self.raceway_selections or self.raceway_selection_outcomes):
+        if self.schema_version not in RACEWAY_SCHEMA_VERSIONS and (self.raceway_selections or self.raceway_selection_outcomes):
             raise ContractError("raceway selections require explicit schema_version 1.2.0")
+        if self.schema_version != SUPPORT_SCHEMA_VERSION and any(getattr(self,name) for name in _SUPPORT_FIELDS):
+            raise ContractError("support inventory requires explicit schema_version 1.3.0")
         _validate_json_value(self.attributes)
         validate_model(self)
 
@@ -79,10 +89,14 @@ class BuildingModel:
             raise ContractError("1.0.0 has unknown physical-object fields; explicitly migrate to 1.1.0")
         if version != SCHEMA_VERSION and not _PHYSICAL_FIELDS.issubset(document):
             raise ContractError(f"{version} requires electrical_boxes and box_selection_outcomes arrays")
-        if version != RACEWAY_SCHEMA_VERSION and _RACEWAY_FIELDS.intersection(document):
+        if version not in RACEWAY_SCHEMA_VERSIONS and _RACEWAY_FIELDS.intersection(document):
             raise ContractError(f"{version} has unknown raceway-selection fields; explicitly migrate to 1.2.0")
-        if version == RACEWAY_SCHEMA_VERSION and not _RACEWAY_FIELDS.issubset(document):
-            raise ContractError("1.2.0 requires raceway_selections and raceway_selection_outcomes arrays")
+        if version in RACEWAY_SCHEMA_VERSIONS and not _RACEWAY_FIELDS.issubset(document):
+            raise ContractError(f"{version} requires raceway_selections and raceway_selection_outcomes arrays")
+        if version != SUPPORT_SCHEMA_VERSION and _SUPPORT_FIELDS.intersection(document):
+            raise ContractError(f"{version} has unknown support fields; explicitly migrate to 1.3.0")
+        if version == SUPPORT_SCHEMA_VERSION and not _SUPPORT_FIELDS.issubset(document):
+            raise ContractError("1.3.0 requires all four support inventory/outcome arrays")
         return _decode_dataclass(cls, document)
 
     @classmethod
@@ -124,6 +138,10 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Entity, ...], ...]:
         model.box_selection_outcomes,
         model.raceway_selections,
         model.raceway_selection_outcomes,
+        model.support_assemblies,
+        model.support_components,
+        model.support_interfaces,
+        model.support_selection_outcomes,
     )
 
 
@@ -208,6 +226,84 @@ def validate_model(model: BuildingModel) -> None:
         require(entity.level_id, levels, f"{entity.id}.level_id")
 
     hostable = {item.id: item for item in (*model.walls, *model.slabs, *model.ceilings)}
+    # Legacy and explicitly empty 1.3 models need no support-only work.
+    if (model.support_assemblies or model.support_components or
+            model.support_interfaces or model.support_selection_outcomes):
+        assemblies = {item.id: item for item in model.support_assemblies}
+        components = {item.id: item for item in model.support_components}
+        interfaces = {item.id: item for item in model.support_interfaces}
+        supportable = {item.id: item for item in (*model.routes, *model.electrical_boxes,
+                       *model.electrical_devices, *model.electrical_equipment)}
+        physical_keys = set()
+        part_keys = set()
+        for component in model.support_components:
+            require(component.assembly_id, assemblies, f"{component.id}.assembly_id")
+            require(component.level_id, levels, f"{component.id}.level_id")
+            assembly = assemblies[component.assembly_id]
+            if component.id not in assembly.component_ids or component.level_id != assembly.level_id:
+                raise ContractError("support component ownership/level contradicts its assembly")
+            part_key = (component.assembly_id, component.part_key)
+            if part_key in part_keys:
+                raise ContractError("duplicate support part key within an assembly")
+            part_keys.add(part_key)
+            physical_key=component_envelope_key(component)
+            if physical_key in physical_keys:
+                raise ContractError("coincident duplicate same-product support components")
+            physical_keys.add(physical_key)
+        interface_keys = set()
+        for interface in model.support_interfaces:
+            require(interface.assembly_id, assemblies, f"{interface.id}.assembly_id")
+            require(interface.host_id, hostable, f"{interface.id}.host_id")
+            require(interface.level_id, levels, f"{interface.id}.level_id")
+            assembly=assemblies[interface.assembly_id]
+            if (interface.id not in assembly.interface_ids or interface.level_id != assembly.level_id or
+                hostable[interface.host_id].level_id != interface.level_id):
+                raise ContractError("support interface ownership/host level contradicts its assembly")
+            interface_key=(interface.assembly_id,interface.interface_key)
+            if interface_key in interface_keys:
+                raise ContractError("duplicate support interface key")
+            interface_keys.add(interface_key)
+            for component_id in interface.component_ids:
+                require(component_id,components,f"{interface.id}.component_ids")
+                component=components[component_id]
+                if component.assembly_id != assembly.id:
+                    raise ContractError("support interface cannot attach another assembly's component")
+                if not component_contains_point(component,interface.pose.position):
+                    raise ContractError("support attachment lies outside its named component envelope")
+        for assembly in model.support_assemblies:
+            require(assembly.level_id,levels,f"{assembly.id}.level_id")
+            for component_id in assembly.component_ids:
+                require(component_id,components,f"{assembly.id}.component_ids")
+                if components[component_id].assembly_id != assembly.id:
+                    raise ContractError("component belongs to a different support assembly")
+            for interface_id in assembly.interface_ids:
+                require(interface_id,interfaces,f"{assembly.id}.interface_ids")
+                if interfaces[interface_id].assembly_id != assembly.id:
+                    raise ContractError("interface belongs to a different support assembly")
+            for object_id in assembly.supported_object_ids:
+                require(object_id,supportable,f"{assembly.id}.supported_object_ids")
+                object_levels=supported_levels(model,object_id)
+                if None in object_levels:
+                    raise ContractError("support assembly requires known supported-object/endpoint levels")
+                if any(level != assembly.level_id for level in object_levels):
+                    raise ContractError("multi-level support is unsupported; known supported-object levels conflict")
+        support_intents=set(); selected_assemblies=set()
+        for outcome in model.support_selection_outcomes:
+            if outcome.intent_id in support_intents:
+                raise ContractError("duplicate active support intent")
+            support_intents.add(outcome.intent_id)
+            require(outcome.requested_level_id,levels,f"{outcome.id}.requested_level_id")
+            for object_id in outcome.supported_object_ids:
+                require(object_id,supportable,f"{outcome.id}.supported_object_ids")
+            if outcome.selected_assembly_id is not None:
+                require(outcome.selected_assembly_id,assemblies,f"{outcome.id}.selected_assembly_id")
+                assembly=assemblies[outcome.selected_assembly_id]
+                if (assembly.intent_id != outcome.intent_id or assembly.level_id != outcome.requested_level_id or
+                    assembly.basis != outcome.requested_basis or set(assembly.supported_object_ids)!=set(outcome.supported_object_ids)):
+                    raise ContractError("support outcome contradicts its installed assembly")
+                selected_assemblies.add(assembly.id)
+        if selected_assemblies != set(assemblies):
+            raise ContractError("every support assembly requires exactly one active selected outcome")
     for opening in model.openings:
         require(opening.host_id, hostable, f"{opening.id}.host_id")
 
@@ -264,6 +360,9 @@ def validate_model(model: BuildingModel) -> None:
 
     for port in model.ports:
         require(port.owner_id, by_id, f"{port.id}.owner_id")
+        if isinstance(by_id.get(port.owner_id),
+                      (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome)):
+            raise ContractError("non-electrical support entities cannot own electrical ports")
         if port.owner_id in {outcome.id for outcome in (*model.box_selection_outcomes, *model.raceway_selection_outcomes, *model.raceway_selections)}:
             raise ContractError(f"{port.id} cannot be owned by a nonphysical selection outcome")
         if port.owner_id in boxes and not box_contains_point(boxes[port.owner_id], port.pose.position):
@@ -323,8 +422,11 @@ def _encode(value: Any) -> Any:
         if isinstance(value, BuildingModel) and value.schema_version == SCHEMA_VERSION:
             for name in _PHYSICAL_FIELDS:
                 encoded.pop(name)
-        if isinstance(value, BuildingModel) and value.schema_version != RACEWAY_SCHEMA_VERSION:
+        if isinstance(value, BuildingModel) and value.schema_version not in RACEWAY_SCHEMA_VERSIONS:
             for name in _RACEWAY_FIELDS:
+                encoded.pop(name)
+        if isinstance(value, BuildingModel) and value.schema_version != SUPPORT_SCHEMA_VERSION:
+            for name in _SUPPORT_FIELDS:
                 encoded.pop(name)
         if isinstance(value, Provenance) and value.derivation is None:
             # An unset derivation states nothing, so omit it rather than
@@ -355,7 +457,7 @@ def _encode(value: Any) -> Any:
 def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
     """Explicit, lossless opt-in to the physical-object contract; never downgrade."""
     from dataclasses import replace
-    if model.schema_version == RACEWAY_SCHEMA_VERSION:
+    if model.schema_version in RACEWAY_SCHEMA_VERSIONS:
         raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.2")
     return replace(model, schema_version=PHYSICAL_SCHEMA_VERSION)
 
@@ -363,7 +465,15 @@ def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in; preserve prior physical box inventory."""
     from dataclasses import replace
+    if model.schema_version == SUPPORT_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_2 cannot downgrade version 1.3")
     return replace(model, schema_version=RACEWAY_SCHEMA_VERSION)
+
+
+def upgrade_to_v1_3(model: BuildingModel) -> BuildingModel:
+    """Explicit lossless opt-in to shared supports; preserve previous inventory."""
+    from dataclasses import replace
+    return replace(model, schema_version=SUPPORT_SCHEMA_VERSION)
 
 
 T = TypeVar("T")

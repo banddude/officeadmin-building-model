@@ -594,6 +594,15 @@ def _build_document(
         add({"name": box.id, "vertices": _local_box_vertices(box.size.x, box.size.y, box.size.z),
              "material_key": ("other", not is_observed(box.provenance)),
              "extras": extras, "pose": box.pose})
+    for component in model.support_components:
+        extras = _extras(component, "support_component", component.level_id)
+        extras.update(assembly_id=component.assembly_id, category=component.category,
+            component_type=component.component_type, geometry_basis=component.geometry_basis,
+            product={"catalog_id": component.product.catalog_id, "catalog_revision": component.product.catalog_revision,
+                     "product_id": component.product.product_id}, exact_profile_or_material_volume_verified=False)
+        _add_name(extras, component)
+        add({"name": component.id, "vertices": _local_box_vertices(component.size.x, component.size.y, component.size.z),
+             "material_key": ("other", not is_observed(component.provenance)), "extras": extras, "pose": component.pose})
     for entity in model.routes:
         extras = _route_extras(model, entity)
         _add_name(extras, entity)
@@ -682,6 +691,23 @@ def _build_document(
     # sorted by group name. Purely a scene-graph change — member nodes keep
     # their order, geometry, materials and extras.
     scene_root: list[int] = list(range(len(nodes)))
+    for interface in model.support_interfaces:
+        extras=_extras(interface,"support_interface",interface.level_id)
+        extras.update(assembly_id=interface.assembly_id,host_id=interface.host_id,
+                      actual_substrate=interface.substrate,component_ids=list(interface.component_ids))
+        node={"name":interface.id,"translation":_yup_point(interface.pose.position),"extras":extras}
+        rotation=_gltf_rotation(interface.pose.rotation)
+        if rotation is not None: node["rotation"]=rotation
+        scene_root.append(len(nodes));nodes.append(node)
+    for assembly in model.support_assemblies:
+        members=set((*assembly.component_ids,*assembly.interface_ids))
+        children=[i for i,node in enumerate(nodes) if node.get("name") in members]
+        extras=_extras(assembly,"support_assembly",assembly.level_id)
+        extras.update(supported_object_ids=list(assembly.supported_object_ids),component_ids=list(assembly.component_ids),
+                      interface_ids=list(assembly.interface_ids),basis={"authority":assembly.basis.authority,
+                      "revision":assembly.basis.revision,"rule_id":assembly.basis.rule_id},code_verification_performed=False)
+        scene_root=[i for i in scene_root if i not in children]
+        scene_root.append(len(nodes));nodes.append({"name":assembly.id,"children":children,"extras":extras})
     group_nodes: list[dict[str, Any]] = []
     group_counts: dict[str, int] = {}
     unmatched_group_ids = 0
@@ -696,6 +722,12 @@ def _build_document(
                 else:
                     unmatched_group_ids += 1
             children = [index for index in sorted(set(indices)) if index not in moved]
+            # Moving a member under a caller group must keep the scene a tree.
+            # Logical assembly membership remains explicit in canonical extras.
+            if model.schema_version == "1.3.0":
+                for existing in nodes:
+                    if "children" in existing:
+                        existing["children"]=[i for i in existing["children"] if i not in children]
             moved.update(children)
             group_extras: dict[str, Any] = {
                 "group": group_name,
@@ -752,13 +784,17 @@ def _build_document(
         # Optional extension: never in extensionsRequired, so a viewer
         # without it still loads the file and simply shows the group.
         document["extensionsUsed"] = [_NODE_VISIBILITY_EXTENSION]
-    if model.schema_version in {"1.1.0", "1.2.0"}:
+    if model.schema_version in {"1.1.0", "1.2.0", "1.3.0"}:
         document["asset"]["extras"].update(
             canonical_schema_version=model.schema_version,
             box_selection_outcomes=model.to_dict()["box_selection_outcomes"],
         )
-    if model.schema_version == "1.2.0":
+    if model.schema_version in {"1.2.0", "1.3.0"}:
         document["asset"]["extras"]["raceway_selection_outcomes"] = model.to_dict()["raceway_selection_outcomes"]
+    if model.schema_version == "1.3.0":
+        support_document=model.to_dict()
+        document["asset"]["extras"].update({name:support_document[name] for name in
+            ("support_assemblies", "support_interfaces", "support_selection_outcomes")})
     if buffer:
         document["bufferViews"] = buffer_views
         document["accessors"] = accessors
@@ -779,9 +815,13 @@ def _build_document(
     if options.groups:
         counts["groups"] = group_counts
         counts["unmatched_group_ids"] = unmatched_group_ids
-    if model.schema_version in {"1.1.0", "1.2.0"}:
+    if model.schema_version in {"1.1.0", "1.2.0", "1.3.0"}:
         counts["electrical_boxes"] = len(model.electrical_boxes)
         counts["unresolved_box_selections"] = sum(o.status == "unresolved" for o in model.box_selection_outcomes)
+    if model.schema_version == "1.3.0":
+        counts["support_components"] = len(model.support_components)
+        counts["support_assemblies"] = len(model.support_assemblies)
+        counts["unresolved_support_selections"] = sum(o.status == "unresolved" for o in model.support_selection_outcomes)
     if options.glazed_outline:
         counts["glazed_outlines"] = glazed_outline_count
     if options.min_display_wall_thickness_m is not None:
@@ -1034,7 +1074,7 @@ def _route_extras(model: BuildingModel, route: Route) -> dict[str, Any]:
     ]
     if conductors:
         extras["conductors"] = conductors
-    if model.schema_version == "1.2.0":
+    if model.schema_version in {"1.2.0", "1.3.0"}:
         extras["raceway_selections"] = [s for s in model.to_dict()["raceway_selections"] if s["route_id"] == route.id]
         extras["raceway_selection_outcomes"] = [o for o in model.to_dict()["raceway_selection_outcomes"] if o["route_id"] == route.id]
     return extras
@@ -1102,7 +1142,7 @@ def _level_plan_bbox(
     for entity in (*model.electrical_devices, *model.electrical_equipment):
         if entity.level_id == level_id:
             take(entity.pose.position.x, entity.pose.position.y)
-    for box in model.electrical_boxes:
+    for box in (*model.electrical_boxes, *model.support_components):
         if box.level_id != level_id:
             continue
         q = box.pose.rotation

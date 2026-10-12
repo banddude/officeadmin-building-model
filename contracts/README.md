@@ -7,6 +7,7 @@ Canonical serialized contracts live here. Do not create competing workstream-loc
 - `oabm-model-v1.schema.json`: JSON Schema Draft 2020-12 for canonical model version `1.0.0`
 - `oabm-model-v1.1.schema.json`: explicit version `1.1.0`, adding physical electrical boxes and selection outcomes
 - `oabm-model-v1.2.schema.json`: explicit version `1.2.0`, adding whole-route raceway/cable product selections and unresolved outcomes
+- `oabm-model-v1.3.schema.json`: explicit version `1.3.0`, adding shared support assemblies, posed components/interfaces, and selection outcomes; see [migration and limits](../docs/shared-supports.md)
 - Python types and reference-integrity validation: `src/oabm/model/`
 - Semantics and invariants: `docs/model-contract-v1.md`
 - Contract fixtures: `fixtures/model/v1/`

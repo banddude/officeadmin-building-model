@@ -10,6 +10,7 @@ from oabm.model import (
     DERIVATION_INFERRED,
     PHYSICAL_SCHEMA_VERSION,
     RACEWAY_SCHEMA_VERSION,
+    SUPPORT_SCHEMA_VERSION,
     BuildingModel,
     Ceiling,
     ElectricalDevice,
@@ -668,6 +669,8 @@ def _validate_lane_models(
             architecture.box_selection_outcomes,
             architecture.raceway_selections,
             architecture.raceway_selection_outcomes,
+            architecture.support_assemblies, architecture.support_components,
+            architecture.support_interfaces, architecture.support_selection_outcomes,
             architecture.routes,
             architecture.route_fittings,
         )
@@ -691,6 +694,8 @@ def _validate_lane_models(
             electrical.box_selection_outcomes,
             electrical.raceway_selections,
             electrical.raceway_selection_outcomes,
+            electrical.support_assemblies, electrical.support_components,
+            electrical.support_interfaces, electrical.support_selection_outcomes,
         )
     ):
         raise PdfConvergenceError(
@@ -876,7 +881,9 @@ def converge_pdf_models(
     )
 
     return BuildingModel(
-        schema_version=(RACEWAY_SCHEMA_VERSION if RACEWAY_SCHEMA_VERSION in
+        schema_version=(SUPPORT_SCHEMA_VERSION if SUPPORT_SCHEMA_VERSION in
+                        {architecture.schema_version, electrical.schema_version} else
+                        RACEWAY_SCHEMA_VERSION if RACEWAY_SCHEMA_VERSION in
                         {architecture.schema_version, electrical.schema_version} else
                         PHYSICAL_SCHEMA_VERSION if PHYSICAL_SCHEMA_VERSION in
                         {architecture.schema_version, electrical.schema_version} else architecture.schema_version),

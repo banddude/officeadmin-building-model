@@ -60,7 +60,7 @@ def test_explicit_version_migration_legacy_readers_and_schema(base,inputs):
         with pytest.raises(ContractError):
             BuildingModel.from_dict(bad)
     with pytest.raises(ContractError):
-        BuildingModel.from_dict({**doc,'schema_version':'1.3.0'})
+        BuildingModel.from_dict({**doc,'schema_version':'1.4.0'})
     with pytest.raises(ContractError):
         BuildingModel.from_dict({**doc,'raceway_products':[]})
     # All prior portable definition semantics are unchanged in the new schema.
@@ -256,7 +256,7 @@ def test_cable_selection_is_native_cable_and_separate_nominal_claim(base,inputs)
 
 
 def test_migration_preserves_shipped_box_inventory(base,inputs):
-    from oabm.model import Pose,Point3,Size3
+    from oabm.model import Pose,Point3,Size3,upgrade_to_v1_3
     from oabm.electrical import BoxIntent,BoxCatalogEntry,select_electrical_boxes
     product=inputs[1].product
     entry=BoxCatalogEntry(product=product,box_type='synthetic-device-box',size=Size3(x=.3,y=.12,z=.5),
@@ -270,6 +270,13 @@ def test_migration_preserves_shipped_box_inventory(base,inputs):
     assert migrated.box_selection_outcomes==old.box_selection_outcomes
     assert selected(migrated,inputs).electrical_boxes==old.electrical_boxes
     assert round_trip_differences(migrated,from_ifc(to_ifc(migrated)))==()
+    with_raceways=selected(migrated,inputs)
+    latest=upgrade_to_v1_3(with_raceways)
+    assert latest.electrical_boxes==old.electrical_boxes
+    assert latest.box_selection_outcomes==old.box_selection_outcomes
+    assert latest.raceway_selections==with_raceways.raceway_selections
+    assert latest.raceway_selection_outcomes==with_raceways.raceway_selection_outcomes
+    assert round_trip_differences(latest,from_ifc(to_ifc(latest)))==()
 
 @pytest.mark.parametrize('scope',['whole_route','mixed_run','partial_route'])
 def test_unresolved_ifc_has_readable_uncertainty_on_annotations_and_native_runs(base,inputs,scope):

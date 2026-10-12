@@ -13,7 +13,7 @@ from oabm.model import BuildingModel
 IFC_LINEAR_TOLERANCE_M = 1e-9
 IFC_QUATERNION_TOLERANCE = 1e-12
 _POSE_COLLECTIONS = frozenset({
-    "electrical_equipment", "electrical_devices", "electrical_boxes", "openings", "ports", "route_fittings",
+    "electrical_equipment", "electrical_devices", "electrical_boxes", "support_components", "support_interfaces", "openings", "ports", "route_fittings",
 })
 
 

@@ -2,8 +2,8 @@
 
 Issue #265 adds physical boxes and their selection outcomes to the canonical
 model. [Whole-route raceway/cable selections](raceway-selections.md) use the
-explicit 1.2 boundary; mixed segment selection and shared supports (#267) remain
-separate work. Automatic PDF box selection, box-fill compliance, listed-product
+explicit 1.2 boundary; [shared supports](shared-supports.md) use the explicit 1.3
+boundary. Mixed segment selection remains separate work. Automatic PDF box selection, box-fill compliance, listed-product
 verification, prices, and complete installation quantities are not delivered by
 this boundary.
 

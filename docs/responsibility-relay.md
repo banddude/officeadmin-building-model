@@ -62,8 +62,11 @@ intent/catalog lane after convergence. Gate D pure importer inputs refuse boxes
 and selection outcomes rather than dropping or relocating unregistered poses.
 Missing automatic box host/size selection remains unresolved; #266 raceways
 are now carried by the [explicit whole-route product lane](raceway-selections.md)
-after routing; unsupported partial/mixed requests stay unresolved. #267 shared
-supports remain separate contract work.
+after routing; unsupported partial/mixed requests stay unresolved. The
+[shared-support producer](shared-supports.md) adds explicit downstream inventory
+after routing; pure convergence inputs refuse support assemblies, components,
+interfaces, and outcomes. Empty 1.3 inputs preserve their version. Unknown actual
+substrates or supported-object levels produce no guessed hardware.
 
 ## Final convergence
 

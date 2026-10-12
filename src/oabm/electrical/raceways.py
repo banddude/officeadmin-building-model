@@ -3,7 +3,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from typing import Sequence
 from oabm.model import (BuildingModel,CatalogProduct,ContractError,Provenance,RuleReference,
-    RacewaySelection,RacewaySelectionOutcome,RACEWAY_SCHEMA_VERSION,stable_id)
+    RacewaySelection,RacewaySelectionOutcome,RACEWAY_SCHEMA_VERSION,RACEWAY_SCHEMA_VERSIONS,stable_id)
 from oabm.model.common import _positive,_validate_id
 from oabm.model.raceway import wiring_method_for_route_type
 
@@ -84,7 +84,7 @@ class RacewayIntent:
 
 def select_raceways(model: BuildingModel,*,intents: Sequence[RacewayIntent],
                     catalog: Sequence[RacewayCatalogEntry],rules: Sequence[RacewayRule]) -> BuildingModel:
-    if model.schema_version!=RACEWAY_SCHEMA_VERSION:
+    if model.schema_version not in RACEWAY_SCHEMA_VERSIONS:
         raise ContractError('explicit upgrade_to_v1_2 is required for raceway selection')
     for entity in (*model.raceway_selections,*model.raceway_selection_outcomes):
         if not any(p.source_kind==_KIND and p.method==_METHOD for p in entity.provenance):

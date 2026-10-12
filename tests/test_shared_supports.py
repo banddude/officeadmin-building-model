@@ -500,9 +500,8 @@ def test_convergence_preserves_empty_1_3_and_refuses_downstream_supports(case):
     with pytest.raises(PdfConvergenceError,match='downstream'): converge_pdf_models(downstream,electrical)
 
 
-def test_unknown_host_level_is_not_taken_from_requested_assembly_level(case):
-    base,intent,catalog,rule=case
-    base=replace(base,ceilings=(replace(base.ceilings[0],level_id=None),base.ceilings[1]))
-    m=selected((base,intent,catalog,rule))
-    assert not m.support_components and not m.support_assemblies
-    assert 'host_level_unknown' in m.support_selection_outcomes[0].reason_codes
+def test_unknown_host_level_is_rejected_by_canonical_host_contract(case):
+    # Host levels are required by the shipped host contract, unlike optional
+    # device/equipment levels. Do not bypass that invariant to construct a test.
+    with pytest.raises(ContractError,match='level_id'):
+        replace(case[0].ceilings[0],level_id=None)

@@ -182,8 +182,6 @@ def select_supports(model: BuildingModel,*,intents: Sequence[SupportIntent],
                 reasons.add('caller_product_permission_conflict')
         for interface in intent.interfaces:
             if interface.host_id is None: reasons.add('missing_host')
-            elif hosts[interface.host_id].level_id is None:
-                reasons.add('host_level_unknown')
             elif intent.level_id is not None and hosts[interface.host_id].level_id!=intent.level_id:
                 reasons.add('multi_level_support_unsupported')
             if interface.pose is None: reasons.add('missing_attachment_pose')

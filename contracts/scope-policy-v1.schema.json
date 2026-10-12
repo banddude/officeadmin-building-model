@@ -1,0 +1,39 @@
+{
+  "$id": "https://github.com/banddude/officeadmin-building-model/contracts/scope-policy-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actor": {
+      "minLength": 1,
+      "pattern": "\\S",
+      "type": "string"
+    },
+    "basis": {
+      "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/RuleReference"
+    },
+    "mode": {
+      "enum": [
+        "preserve_unresolved",
+        "new_when_confirmed_unmarked"
+      ]
+    },
+    "provenance": {
+      "items": {
+        "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Provenance"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "version": {
+      "const": "1.0.0"
+    }
+  },
+  "required": [
+    "version",
+    "mode",
+    "basis",
+    "actor",
+    "provenance"
+  ],
+  "type": "object"
+}

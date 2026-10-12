@@ -27,3 +27,8 @@ Contract v1 covers coordinate system and units, stable object IDs, levels/storie
 ## Change rule
 
 Any contract change requires tests and migration notes. Version 1.0 remains the default and retains its serialized semantics. See [physical box contract and explicit migration](../docs/electrical-boxes.md) for version 1.1 and [raceway selections](../docs/raceway-selections.md) for version 1.2. A consumer must not silently reinterpret a document whose `schema_version` it does not support.
+
+`scope-policy-v1.schema.json` and `scope-ledger-v1.schema.json` describe opt-in
+caller scope decisions and source-bound object-count reports. They reference
+existing canonical and panel-report snapshot definitions; canonical versions
+and default exports remain unchanged. See [Scope ledger](../docs/scope-ledger.md).

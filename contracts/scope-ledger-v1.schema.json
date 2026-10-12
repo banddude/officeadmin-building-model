@@ -1,0 +1,192 @@
+{
+  "$defs": {
+    "ScopeCountGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "collection": {
+          "enum": [
+            "electrical_devices",
+            "electrical_equipment"
+          ]
+        },
+        "count": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "object_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "new",
+            "relocated",
+            "existing_to_remain",
+            "removed",
+            "unresolved"
+          ]
+        }
+      },
+      "required": [
+        "collection",
+        "canonical_type",
+        "status",
+        "object_ids",
+        "count"
+      ],
+      "type": "object"
+    },
+    "ScopeLedgerRow": {
+      "additionalProperties": false,
+      "properties": {
+        "canonical_type": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "derivation": {
+          "enum": [
+            "source_metadata",
+            "inferred_caller_policy"
+          ]
+        },
+        "diagnostic_reason": {
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effective_confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "effective_status": {
+          "enum": [
+            "new",
+            "relocated",
+            "existing_to_remain",
+            "removed",
+            "unresolved"
+          ]
+        },
+        "policy_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/panel-schedule-report-v1.schema.json#/$defs/SourceSnapshot"
+        }
+      },
+      "required": [
+        "source",
+        "canonical_type",
+        "effective_status",
+        "diagnostic_reason",
+        "effective_confidence",
+        "derivation",
+        "policy_fingerprint"
+      ],
+      "type": "object"
+    },
+    "ScopePolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "basis": {
+          "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/RuleReference"
+        },
+        "mode": {
+          "enum": [
+            "preserve_unresolved",
+            "new_when_confirmed_unmarked"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Provenance"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      },
+      "required": [
+        "version",
+        "mode",
+        "basis",
+        "actor",
+        "provenance"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/banddude/officeadmin-building-model/contracts/scope-ledger-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "binding_algorithm": {
+      "const": "canonical-entity-order-and-scope-sets-v1"
+    },
+    "code_verification_performed": {
+      "const": false
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/ScopeCountGroup"
+      },
+      "type": "array"
+    },
+    "model_source_context": {
+      "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/panel-schedule-report-v1.schema.json#/$defs/ModelSourceContext"
+    },
+    "policy": {
+      "$ref": "#/$defs/ScopePolicy"
+    },
+    "policy_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "rows": {
+      "items": {
+        "$ref": "#/$defs/ScopeLedgerRow"
+      },
+      "type": "array"
+    },
+    "source_model_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "version": {
+      "const": "1.0.0"
+    }
+  },
+  "required": [
+    "version",
+    "binding_algorithm",
+    "source_model_fingerprint",
+    "model_source_context",
+    "policy",
+    "policy_fingerprint",
+    "rows",
+    "groups",
+    "code_verification_performed"
+  ],
+  "type": "object"
+}

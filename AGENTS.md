@@ -161,6 +161,7 @@ Keep these responsibilities separated:
 - `src/oabm/electrical`: deterministic explicit-intent/catalog physical-object producers; preserve field-qualified provenance and stable IDs, expose unresolved inputs without invented geometry or code-compliance claims, and prove consumers with public synthetic tests. Box selection runs after spatial convergence; whole-route raceway/cable selection runs after routing and refuses unsupported partial/mixed requests. Shared-support selection runs after routing with explicit known levels, actual substrates, catalog envelopes, and caller rule references; shared components count once, and unknown attachment facts produce no guessed hardware. Standalone layered raceway policies compile finite caller baseline/company/job permissions after routing; preserve original input scopes separately from inferred basis edges and refuse widening without changing geometry or claiming code verification.
 - `src/oabm/ifc`: IFC / IfcOpenShell / Bonsai interoperability and round trip
 - `src/oabm/routing`: deterministic 3D electrical routing
+- `src/oabm/importers/ifc_native.py`: explicit bounded native IFC4 intake, exact supported geometry, source-bound evidence and visible unsupported diagnostics; independent anonymous fixtures only
 - `src/oabm/importers/roomplan`: RoomPlan / LiDAR ingestion
 - `src/oabm/importers/pdf_architecture`: architectural PDF ingestion
 - `src/oabm/importers/pdf_electrical`: electrical PDF ingestion

@@ -61,3 +61,5 @@ No open-source license has been selected yet. Public visibility alone does not g
 
 The two upstream files in `spikes/graph_studio/upstream/` retain their separate
 Apache-2.0 license and NOTICE; see the spike README for attribution and hashes.
+
+Native IFC4 wall/opening intake has a separate explicit [bounded reader](docs/native-ifc-import.md); strict OABM IFC round-trip behavior remains unchanged.

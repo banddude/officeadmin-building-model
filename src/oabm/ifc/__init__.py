@@ -26,3 +26,8 @@ __all__ = [
     "round_trip",
     "to_ifc",
 ]
+
+# Explicit generic native intake is separate from the strict metadata reader.
+from oabm.importers.ifc_native import (NativeIfcImportError, NativeIfcDiagnostic,
+    NativeIfcImportResult, import_native_ifc)
+__all__ += ['NativeIfcImportError', 'NativeIfcDiagnostic', 'NativeIfcImportResult', 'import_native_ifc']

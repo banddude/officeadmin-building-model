@@ -117,6 +117,8 @@ def _scope_facts(source):
     malformed |= legend_ids is not None and (not isinstance(legend_ids, list) or not legend_ids or
         any(not isinstance(x, str) or not x.strip() for x in legend_ids) or len(set(legend_ids)) != len(legend_ids))
     malformed |= reason is not None and (not isinstance(reason, str) or not reason.strip())
+    malformed |= any(key in lane and (not isinstance(lane[key], str) or not lane[key].strip())
+                     for key in ('scope_legend_text', 'scope_method'))
     if malformed:
         return 'unresolved', 'malformed_scope_evidence', False
     # "status" is the importer's original printed marker, distinct from scope_status.

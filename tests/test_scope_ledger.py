@@ -295,3 +295,22 @@ def test_schema_rejects_non_electrical_snapshot():
     from jsonschema import ValidationError
     schema={'$ref':documents[-1]['$id']+'#/$defs/ScopeLedgerRow'}
     with pytest.raises(ValidationError):Draft202012Validator(schema,registry=registry).validate(row)
+
+
+@pytest.mark.parametrize('status',['new','relocated','existing_to_remain','removed'])
+@pytest.mark.parametrize('key,value',[
+    ('scope_legend_text',True),('scope_legend_text',[]),('scope_legend_text',''),
+    ('scope_legend_text','  '),('scope_legend_text',None),
+    ('scope_method',True),('scope_method',[]),('scope_method',''),
+    ('scope_method','  '),('scope_method',None),
+])
+def test_resolved_malformed_legend_fields_fail_closed(imported,status,key,value):
+    original=copy.deepcopy(imported.electrical_devices[0].attributes['pdf_electrical'])
+    lane={**original,'scope_status':status,key:value}
+    model=changed_lane(imported,lane)
+    report=generate_scope_ledger(model,policy=policy('new_when_confirmed_unmarked'))
+    row=next(r for r in report.rows if r.source.id==model.electrical_devices[0].id)
+    assert row.effective_status=='unresolved'
+    assert row.diagnostic_reason=='malformed_scope_evidence'
+    assert row.derivation=='source_metadata'
+    assert row.source.entity['attributes']['pdf_electrical']==lane

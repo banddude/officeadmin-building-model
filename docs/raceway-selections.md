@@ -98,3 +98,8 @@ Selection belongs after registered convergence and routing in the documented
 requests, migrated boxes, actual router output, native IFC edits, and all derived
 consumer boundaries. These tests are engineering fixtures, not installation
 certification.
+
+The standalone [layered caller-policy compiler](layered-raceway-policy.md) now
+provides finite baseline/company/job permissions as existing `RacewayRule`
+inputs. Explicit product/basis intent and all existing method/diameter/native
+consistency checks remain required; policy does not change model geometry.

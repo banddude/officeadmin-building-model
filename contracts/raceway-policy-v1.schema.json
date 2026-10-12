@@ -1,0 +1,272 @@
+{
+  "$defs": {
+    "CatalogProduct": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "catalog_revision": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "product_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_revision",
+        "product_id"
+      ],
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "derivation": {
+          "description": "How the element came to exist: observed from a source, placed by a user, or synthesized by us. Unset is not a claim of observation.",
+          "enum": [
+            "observed",
+            "user",
+            "inferred",
+            null
+          ]
+        },
+        "method": {
+          "pattern": "\\S",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scope_paths": {
+          "description": "Canonical claim paths qualified by this record. Omitted/null means entity-wide; an explicit empty scope is invalid.",
+          "oneOf": [
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_element_id": {
+          "pattern": "\\S",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_id": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "source_kind": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_kind",
+        "source_id"
+      ],
+      "type": "object"
+    },
+    "RacewayPolicyRule": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "layer": {
+                "const": "baseline"
+              }
+            },
+            "required": [
+              "layer"
+            ]
+          },
+          "then": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "actor_id": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "explanation": {
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "layer": {
+          "enum": [
+            "baseline",
+            "company",
+            "job"
+          ]
+        },
+        "permitted_products": {
+          "items": {
+            "$ref": "#/$defs/CatalogProduct"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "provenance": {
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/Provenance"
+              },
+              {
+                "properties": {
+                  "derivation": {
+                    "enum": [
+                      "observed",
+                      "user",
+                      "inferred"
+                    ]
+                  }
+                },
+                "required": [
+                  "derivation"
+                ]
+              }
+            ]
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "reference": {
+          "$ref": "#/$defs/RuleReference"
+        },
+        "route_type": {
+          "enum": [
+            "emt",
+            "pvc",
+            "rmc",
+            "imc",
+            "ent",
+            "fmc",
+            "lfmc",
+            "lfnc",
+            "rigid",
+            "tray",
+            "cabletray",
+            "cable-tray",
+            "trunking",
+            "wireway",
+            "cable"
+          ]
+        }
+      },
+      "required": [
+        "reference",
+        "layer",
+        "enabled",
+        "explanation",
+        "actor_id",
+        "route_type",
+        "permitted_products",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "RuleReference": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "revision": {
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "rule_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authority",
+        "revision",
+        "rule_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/banddude/officeadmin-building-model/contracts/raceway-policy-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalog_products": {
+      "items": {
+        "$ref": "#/$defs/CatalogProduct"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "policy_id": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+      "type": "string"
+    },
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/RacewayPolicyRule"
+      },
+      "type": "array"
+    },
+    "version": {
+      "const": "1.0.0"
+    }
+  },
+  "required": [
+    "policy_id",
+    "version",
+    "catalog_products",
+    "rules"
+  ],
+  "title": "Caller-authored finite layered raceway policy 1.0",
+  "type": "object"
+}

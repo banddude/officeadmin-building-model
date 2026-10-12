@@ -11,3 +11,9 @@ from .supports import (SupportCatalogEntry, SupportRule, SupportIntent,
                        SupportPartIntent, SupportInterfaceIntent, select_supports)
 __all__ += ['SupportCatalogEntry','SupportRule','SupportIntent','SupportPartIntent',
             'SupportInterfaceIntent','select_supports']
+
+from .policy import (RacewayPolicy, RacewayPolicyRule, PolicyCompilation,
+                     PolicyDiagnostic, PolicyEvaluation, ProductBlock,
+                     compile_raceway_policy)
+__all__ += ['RacewayPolicy','RacewayPolicyRule','PolicyCompilation','PolicyDiagnostic',
+            'PolicyEvaluation','ProductBlock','compile_raceway_policy']

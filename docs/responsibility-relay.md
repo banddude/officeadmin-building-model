@@ -71,3 +71,8 @@ substrates or supported-object levels produce no guessed hardware.
 ## Final convergence
 
 Run the pipeline on a private real project outside the public fixture set. Compare it with the existing manual workflow and convert discrepancies into rules and synthetic regression fixtures.
+
+[Layered raceway policy](layered-raceway-policy.md) is an explicit caller-data
+compiler after routing, feeding the existing raceway selector. It neither
+changes importer/convergence purity nor unlocks verified automatic code design;
+#229/#228/#227 retain those broader requirements.

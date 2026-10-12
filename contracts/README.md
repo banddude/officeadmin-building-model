@@ -12,6 +12,11 @@ Canonical serialized contracts live here. Do not create competing workstream-loc
 - Semantics and invariants: `docs/model-contract-v1.md`
 - Contract fixtures: `fixtures/model/v1/`
 
+Standalone input contract `raceway-policy-v1.schema.json` describes finite caller
+baseline/company/job product permissions. Its strict reader/compiler lives in
+`src/oabm/electrical/policy.py`; [semantics and integration](../docs/layered-raceway-policy.md)
+preserve all canonical model versions and make no code-verification claim.
+
 Contract v1 covers coordinate system and units, stable object IDs, levels/stories, walls/slabs/ceilings/spaces, openings, electrical devices and equipment, ports/connectivity, obstacles and route constraints, 3D route centerlines and fittings, circuit/conductor hooks, provenance/confidence, serialization, and schema versioning.
 
 ## Change rule

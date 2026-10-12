@@ -13,6 +13,12 @@ from .golden import (
     validate_lane_model,
     validate_public_fixture_provenance,
 )
+from .revision_diff import (
+    REVISION_DIFF_VERSION,
+    QuantityDelta,
+    RevisionDiff,
+    build_revision_diff,
+)
 from .confidence_review import (
     ConfidenceReviewManifest,
     ReviewConfig,
@@ -41,9 +47,12 @@ __all__ = [
     "load_golden_cases",
     "load_golden_model",
     "REVIEW_VERSION",
+    "REVISION_DIFF_VERSION",
+    "RevisionDiff",
     "ReviewConfig",
     "ReviewItem",
     "build_confidence_review",
+    "build_revision_diff",
     "reference_disagreements",
     "scored_types",
     "validate_golden_case",

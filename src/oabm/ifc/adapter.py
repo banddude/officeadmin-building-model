@@ -19,8 +19,10 @@ import ifcopenshell.api.style
 import ifcopenshell.api.system
 import ifcopenshell.api.unit
 import ifcopenshell.guid
+import ifcopenshell.geom
 import ifcopenshell.util.placement
 import ifcopenshell.util.pset
+import ifcopenshell.util.shape
 import numpy as np
 
 from oabm.model import (
@@ -28,6 +30,8 @@ from oabm.model import (
     DERIVATION_OBSERVED,
     DERIVATION_USER,
     SCHEMA_VERSION,
+    PHYSICAL_SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
     Box3D,
     BuildingModel,
     Point3,
@@ -123,6 +127,8 @@ _COLLECTION_BY_KIND = {
     "route_fitting": "route_fittings",
     "circuit": "circuits",
     "conductor": "conductors",
+    "electrical_box": "electrical_boxes",
+    "box_selection_outcome": "box_selection_outcomes",
 }
 
 
@@ -480,6 +486,16 @@ def to_ifc(
         if hasattr(item, "ObjectType"):
             item.ObjectType = device.device_type
         _mark_body(ifc, item, _assign_box_body(ifc, item, body_context, device.size))
+
+    for ordinal, box in enumerate(model.electrical_boxes):
+        item = add_product(box, "electrical_box", ordinal, "IfcJunctionBox",
+                           predefined_type="USERDEFINED", pose=box.pose)
+        item.ObjectType = box.box_type
+        _mark_body(ifc, item, _assign_box_body(ifc, item, body_context, box.size))
+    for ordinal, outcome in enumerate(model.box_selection_outcomes):
+        item = add_product(outcome, "box_selection_outcome", ordinal, "IfcAnnotation",
+                           assign_container=False)
+        _mark_adapter(ifc, item, Body="no", BodyReason="selection outcome is a decision, not a physical solid")
 
     # Fittings are canonical distribution elements and may own junction ports.
     # Materialize them before their canonical ports.
@@ -1057,11 +1073,14 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
     freely edit and save an OABM IFC as long as canonical entities and their
     stable GlobalIds / metadata are retained.
 
-    Only ``Axis`` shape representations are read back as geometry (wall
+    ``Axis`` shape representations are read back as geometry (wall
     centerlines, footprints, route spans). ``Body`` solids are a derived export
     view authored from canonical dimension fields; they are never read back as
     canonical geometry, so a Bonsai edit of the axis stays authoritative and
-    the derived solid can never contradict the contract.
+    the derived solid can never contradict the contract. Physical boxes in
+    version 1.1 additionally validate the native exterior Body against their
+    catalog envelope; incompatible Body edits are refused rather than retaining
+    catalog sizing claims. Their native placements remain editable.
     """
 
     ifc = ifcopenshell.open(str(source)) if isinstance(source, (str, Path)) else source
@@ -1073,10 +1092,12 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
     if model_meta is None or model_meta["kind"] != "model":
         raise IfcAdapterError("IFC is missing OABM_Canonical model metadata")
     header = model_meta["json"]
-    if header.get("schema_version") != SCHEMA_VERSION:
+    if header.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
         raise IfcAdapterError(
             f"unsupported OABM schema version {header.get('schema_version')!r}"
         )
+    if model_meta["schema_version"] != header["schema_version"]:
+        raise IfcAdapterError("IFC model property-set version contradicts its canonical header")
     expected_project_guid = canonical_id_to_ifc_guid(header["model_id"])
     if project.GlobalId != expected_project_guid:
         raise IfcAdapterError(
@@ -1106,6 +1127,8 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         "provenance": header.get("provenance", []),
         "attributes": header.get("attributes", {}),
     }
+    if header["schema_version"] == PHYSICAL_SCHEMA_VERSION:
+        document.update(electrical_boxes=[], box_selection_outcomes=[])
 
     canonical_items: dict[str, tuple[Any, dict[str, Any], int, str]] = {}
     for item in ifc.by_type("IfcRoot"):
@@ -1115,6 +1138,8 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         if meta is None or meta["kind"] == "model":
             continue
         kind = meta["kind"]
+        if meta["schema_version"] != header["schema_version"]:
+            raise IfcAdapterError("IFC entity property-set version contradicts its model version")
         if kind not in _COLLECTION_BY_KIND:
             raise IfcAdapterError(f"unknown OABM canonical kind {kind!r}")
         data = dict(meta["json"])
@@ -1149,6 +1174,10 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         buckets[_COLLECTION_BY_KIND[kind]].append((ordinal, data))
 
     for collection, items in buckets.items():
+        if collection not in document:
+            if items:
+                raise IfcAdapterError("1.0.0 IFC cannot contain physical-object collections")
+            continue
         items.sort(key=lambda value: value[0])
         document[collection] = [data for _, data in items]
 
@@ -1502,6 +1531,23 @@ def _add_canonical_pset(
 ) -> None:
     pset = ifcopenshell.api.pset.add_pset(ifc, product=product, name=CANONICAL_PSET)
     visible_properties: dict[str, Any] = {}
+    # Version follows the model header, including every child property set.
+    version = payload.get("schema_version")
+    if version is None:
+        projects = ifc.by_type("IfcProject")
+        header_properties = _property_set(projects[0], CANONICAL_PSET) if projects else None
+        version = header_properties.get("SchemaVersion", SCHEMA_VERSION) if header_properties else SCHEMA_VERSION
+    if kind == "electrical_box":
+        visible_properties.update(
+            CatalogId=payload["product"]["catalog_id"], CatalogRevision=payload["product"]["catalog_revision"],
+            ProductId=payload["product"]["product_id"], Mounting=payload["mounting"],
+            HostId=payload["host_id"], OccupantIds=", ".join(payload["occupant_ids"]),
+            ListedVolumeStatus="unknown" if payload["listed_volume_m3"] is None else "explicitly supplied",
+        )
+        if payload["listed_volume_m3"] is not None:
+            visible_properties["ListedVolumeM3"] = payload["listed_volume_m3"]
+    if kind == "box_selection_outcome":
+        visible_properties.update(SelectionStatus=payload["status"], UnresolvedReasons=", ".join(payload["reason_codes"]))
     attributes = payload.get("attributes", {})
     if kind == "electrical_equipment" and isinstance(attributes, Mapping):
         placement = attributes.get("placement")
@@ -1517,7 +1563,7 @@ def _add_canonical_pset(
         ifc,
         pset=pset,
         properties={
-            "SchemaVersion": SCHEMA_VERSION,
+            "SchemaVersion": version,
             "CanonicalKind": kind,
             "CanonicalOrdinal": int(ordinal),
             "CanonicalJson": ifc.createIfcText(
@@ -1661,6 +1707,7 @@ def _canonical_metadata(item: Any) -> dict[str, Any] | None:
     try:
         payload = json.loads(str(props["CanonicalJson"]))
         return {
+            "schema_version": str(props["SchemaVersion"]),
             "kind": str(props["CanonicalKind"]),
             "ordinal": int(props["CanonicalOrdinal"]),
             "json": payload,
@@ -2092,6 +2139,33 @@ def _assign_box_body(
     return None
 
 
+def _validate_native_box_envelope(product: Any, data: Mapping[str, Any]) -> None:
+    """Do not certify a changed native Body against an unchanged catalog claim.
+
+    The Body is an exterior visualization envelope, not listed interior
+    capacity. We read native placement but refuse edited envelope dimensions
+    or missing/altered solids instead of silently restoring a catalog shadow.
+    """
+    if _body_representation(product) is None:
+        raise IfcAdapterError("native electrical box Body is missing; catalog envelope is not verified")
+    try:
+        settings = ifcopenshell.geom.settings()
+        settings.set("use-world-coords", False)
+        shape = ifcopenshell.geom.create_shape(settings, product)
+        vertices = np.asarray(shape.geometry.verts, dtype=float).reshape(-1, 3)
+        size = np.array([data["size"][key] for key in ("x", "y", "z")])
+        if not len(vertices) or not np.all(np.isfinite(vertices)):
+            raise ValueError("no finite box vertices")
+        if not (np.allclose(vertices.min(axis=0), -size/2, atol=1e-6, rtol=0)
+                and np.allclose(vertices.max(axis=0), size/2, atol=1e-6, rtol=0)):
+            raise ValueError("exterior dimensions changed")
+        volume = ifcopenshell.util.shape.get_volume(shape.geometry)
+        if not math.isclose(volume, float(np.prod(size)), rel_tol=1e-6, abs_tol=1e-12):
+            raise ValueError("exterior envelope solid changed")
+    except Exception as exc:
+        raise IfcAdapterError("native electrical box Body contradicts its catalog envelope; selection is not verified") from exc
+
+
 def _assign_obstacle_body(
     ifc: ifcopenshell.file,
     product: Any,
@@ -2456,7 +2530,7 @@ def _route_level_id(model: BuildingModel, route: Any) -> str | None:
     owner = next(
         (
             item
-            for item in (*model.electrical_equipment, *model.electrical_devices)
+            for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes)
             if item.id == port.owner_id
         ),
         None,
@@ -2541,6 +2615,28 @@ def _apply_ifc_overrides(
     if kind == "level":
         if getattr(item, "Elevation", None) is not None:
             data["elevation_m"] = float(item.Elevation)
+        return
+
+    if kind == "electrical_box":
+        _validate_native_box_envelope(item, data)
+        pose = _pose_from_product(item)
+        if pose is None:
+            raise IfcAdapterError("native electrical box is missing its placement")
+        old = data["pose"]
+        same_position = all(abs(old["position"][key] - pose["position"][key]) <= 1e-9 for key in ("x", "y", "z"))
+        same_rotation = any(all(abs(old["rotation"][key] - sign*pose["rotation"][key]) <= 1e-12
+                                    for key in ("x", "y", "z", "w")) for sign in (1, -1))
+        if not (same_position and same_rotation):
+            # The catalog envelope stays exact; the native placement becomes
+            # an explicit user edit, with prior intent retained as history.
+            data.setdefault("provenance", []).append({
+                "source_kind": "ifc", "source_id": data["id"],
+                "source_element_id": item.GlobalId, "page": None,
+                "method": "native-electrical-box-placement-edit", "confidence": 1.0,
+                "derivation": DERIVATION_USER, "scope_paths": ["pose"],
+                "attributes": {"previous_pose": old, "native_pose": pose},
+            })
+        data["pose"] = pose
         return
 
     if kind in {"electrical_equipment", "electrical_device", "opening", "route_fitting"}:

@@ -37,6 +37,7 @@ from typing import Any, Iterable, Mapping, NamedTuple
 
 from oabm.model import (
     BuildingModel,
+    is_observed,
     ElectricalDevice,
     ElectricalEquipment,
     Point3,
@@ -514,6 +515,16 @@ def _build_document(
             "extras": extras,
             "pose": entity.pose,
         })
+    # Independent box extents never use a device display fallback.
+    for box in model.electrical_boxes:
+        extras = _extras(box, "electrical_box", box.level_id)
+        extras.update(occupant_ids=list(box.occupant_ids), host_id=box.host_id,
+                      mounting=box.mounting, product={"catalog_id": box.product.catalog_id,
+                      "catalog_revision": box.product.catalog_revision, "product_id": box.product.product_id},
+                      listed_volume_m3=box.listed_volume_m3)
+        add({"name": box.id, "vertices": _local_box_vertices(box.size.x, box.size.y, box.size.z),
+             "material_key": ("other", not is_observed(box.provenance)),
+             "extras": extras, "pose": box.pose})
     for entity in model.routes:
         extras = _route_extras(model, entity)
         _add_name(extras, entity)
@@ -672,6 +683,11 @@ def _build_document(
         # Optional extension: never in extensionsRequired, so a viewer
         # without it still loads the file and simply shows the group.
         document["extensionsUsed"] = [_NODE_VISIBILITY_EXTENSION]
+    if model.schema_version == "1.1.0":
+        document["asset"]["extras"].update(
+            canonical_schema_version=model.schema_version,
+            box_selection_outcomes=model.to_dict()["box_selection_outcomes"],
+        )
     if buffer:
         document["bufferViews"] = buffer_views
         document["accessors"] = accessors
@@ -692,6 +708,9 @@ def _build_document(
     if options.groups:
         counts["groups"] = group_counts
         counts["unmatched_group_ids"] = unmatched_group_ids
+    if model.schema_version == "1.1.0":
+        counts["electrical_boxes"] = len(model.electrical_boxes)
+        counts["unresolved_box_selections"] = sum(o.status == "unresolved" for o in model.box_selection_outcomes)
     if options.glazed_outline:
         counts["glazed_outlines"] = glazed_outline_count
     return document, bytes(buffer), counts
@@ -952,7 +971,7 @@ def _route_level_id(model: BuildingModel, route: Route) -> str | None:
     owner = next(
         (
             item
-            for item in (*model.electrical_equipment, *model.electrical_devices)
+            for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes)
             if item.id == port.owner_id
         ),
         None,
@@ -1007,6 +1026,17 @@ def _level_plan_bbox(
     for entity in (*model.electrical_devices, *model.electrical_equipment):
         if entity.level_id == level_id:
             take(entity.pose.position.x, entity.pose.position.y)
+    for box in model.electrical_boxes:
+        if box.level_id != level_id:
+            continue
+        q = box.pose.rotation
+        for vx, vy, vz in _local_box_vertices(box.size.x, box.size.y, box.size.z):
+            # Rotate all envelope corners in canonical space before framing.
+            tx = 2 * (q.y * vz - q.z * vy)
+            ty = 2 * (q.z * vx - q.x * vz)
+            tz = 2 * (q.x * vy - q.y * vx)
+            take(box.pose.position.x + vx + q.w * tx + q.y * tz - q.z * ty,
+                 box.pose.position.y + vy + q.w * ty + q.z * tx - q.x * tz)
     for route in model.routes:
         if _route_level_id(model, route) == level_id:
             for point in route.centerline.points:

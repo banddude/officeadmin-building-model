@@ -2,7 +2,8 @@
 
 from .common import (
     DERIVATION_CLASSES, DERIVATION_INFERRED, DERIVATION_OBSERVED, DERIVATION_USER,
-    SCHEMA_VERSION, Box3D, ContractError, CoordinateSystem, Entity, Geometry3D,
+    SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS,
+    Box3D, ContractError, CoordinateSystem, Entity, Geometry3D,
     Point3, Polygon3D, Polyline3D, Pose, Provenance, Quaternion, Size3,
     UnsupportedSchemaVersion, Vector3, is_observed, provenance_applies_to, stable_id,
 )
@@ -11,6 +12,7 @@ from .entities import (
     ElectricalEquipment, Level, Obstacle, Opening, Port, Route, RouteConstraint,
     RouteFitting, Slab, Space, Wall,
 )
-from .model import BuildingModel, validate_model
+from .model import BuildingModel, upgrade_to_v1_1, validate_model
+from .physical import BOX_MOUNTINGS, CatalogProduct, ElectricalBox, BoxSelectionOutcome
 
 __all__ = [name for name in globals() if not name.startswith("_")]

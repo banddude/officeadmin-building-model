@@ -7,9 +7,13 @@ from pathlib import Path
 from typing import Any, Mapping, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from .common import (
-    SCHEMA_VERSION, ContractError, CoordinateSystem, Entity, Point3, Provenance,
+    SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS,
+    ContractError, CoordinateSystem, Entity, Point3, Provenance,
     UnsupportedSchemaVersion, _distance, _finite, _validate_id, _validate_json_value,
 )
+from .physical import ElectricalBox, BoxSelectionOutcome, box_contains_point
+
+_PHYSICAL_FIELDS = frozenset({"electrical_boxes", "box_selection_outcomes"})
 from .entities import (
     Ceiling, Circuit, Conductor, ElectricalDevice, ElectricalEquipment, Level,
     Obstacle, Opening, Port, Route, RouteConstraint, RouteFitting, Slab, Space, Wall,
@@ -36,15 +40,19 @@ class BuildingModel:
     route_fittings: tuple[RouteFitting, ...] = ()
     circuits: tuple[Circuit, ...] = ()
     conductors: tuple[Conductor, ...] = ()
+    electrical_boxes: tuple[ElectricalBox, ...] = ()
+    box_selection_outcomes: tuple[BoxSelectionOutcome, ...] = ()
     provenance: tuple[Provenance, ...] = ()
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_id(self.model_id, "model_id")
-        if self.schema_version != SCHEMA_VERSION:
+        if self.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             raise UnsupportedSchemaVersion(
-                f"expected schema_version {SCHEMA_VERSION!r}, got {self.schema_version!r}"
+                f"unsupported schema_version {self.schema_version!r}"
             )
+        if self.schema_version == SCHEMA_VERSION and (self.electrical_boxes or self.box_selection_outcomes):
+            raise ContractError("physical electrical objects require explicit schema_version 1.1.0")
         _validate_json_value(self.attributes)
         validate_model(self)
 
@@ -57,10 +65,14 @@ class BuildingModel:
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> BuildingModel:
         version = document.get("schema_version") if isinstance(document, Mapping) else None
-        if version != SCHEMA_VERSION:
+        if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise UnsupportedSchemaVersion(
-                f"expected schema_version {SCHEMA_VERSION!r}, got {version!r}"
+                f"unsupported schema_version {version!r}"
             )
+        if version == SCHEMA_VERSION and _PHYSICAL_FIELDS.intersection(document):
+            raise ContractError("1.0.0 has unknown physical-object fields; explicitly migrate to 1.1.0")
+        if version == PHYSICAL_SCHEMA_VERSION and not _PHYSICAL_FIELDS.issubset(document):
+            raise ContractError("1.1.0 requires electrical_boxes and box_selection_outcomes arrays")
         return _decode_dataclass(cls, document)
 
     @classmethod
@@ -98,6 +110,8 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Entity, ...], ...]:
         model.route_fittings,
         model.circuits,
         model.conductors,
+        model.electrical_boxes,
+        model.box_selection_outcomes,
     )
 
 
@@ -151,6 +165,49 @@ def validate_model(model: BuildingModel) -> None:
     for opening in model.openings:
         require(opening.host_id, hostable, f"{opening.id}.host_id")
 
+    boxes = {item.id: item for item in model.electrical_boxes}
+    devices = {item.id: item for item in model.electrical_devices}
+    assigned: set[str] = set()
+    for box in model.electrical_boxes:
+        require(box.level_id, levels, f"{box.id}.level_id")
+        require(box.host_id, hostable, f"{box.id}.host_id")
+        if hostable[box.host_id].level_id != box.level_id:
+            raise ContractError(f"{box.id}.level_id contradicts its host level")
+        for occupant_id in box.occupant_ids:
+            require(occupant_id, devices, f"{box.id}.occupant_ids")
+            if occupant_id in assigned:
+                raise ContractError(f"occupant {occupant_id} belongs to more than one physical box")
+            assigned.add(occupant_id)
+            occupant = devices[occupant_id]
+            if occupant.host_id is not None and occupant.host_id != box.host_id:
+                raise ContractError(f"{box.id} contradicts occupant {occupant_id}'s known host")
+            if occupant.level_id is not None and occupant.level_id != box.level_id:
+                raise ContractError(f"{box.id} contradicts occupant {occupant_id}'s known level")
+    intents: set[str] = set()
+    selected_boxes: set[str] = set()
+    outcome_occupants: set[str] = set()
+    for outcome in model.box_selection_outcomes:
+        if outcome.intent_id in intents:
+            raise ContractError(f"duplicate active box intent {outcome.intent_id}")
+        intents.add(outcome.intent_id)
+        for occupant_id in outcome.occupant_ids:
+            require(occupant_id, devices, f"{outcome.id}.occupant_ids")
+            if occupant_id in outcome_occupants:
+                raise ContractError(f"occupant {occupant_id} has contradictory box selection outcomes")
+            outcome_occupants.add(occupant_id)
+        if outcome.selected_box_id is not None:
+            require(outcome.selected_box_id, boxes, f"{outcome.id}.selected_box_id")
+            box = boxes[outcome.selected_box_id]
+            if box.intent_id != outcome.intent_id or set(box.occupant_ids) != set(outcome.occupant_ids):
+                raise ContractError(f"{outcome.id} contradicts its selected box intent/occupants")
+            if outcome.requested_product != box.product:
+                raise ContractError(f"{outcome.id} contradicts its selected catalog product")
+            selected_boxes.add(box.id)
+        elif set(outcome.occupant_ids).intersection(assigned):
+            raise ContractError(f"{outcome.id} is unresolved but its occupants already have a box")
+    if selected_boxes != set(boxes):
+        raise ContractError("every physical box requires exactly one active selected outcome")
+
     for item in (*model.electrical_equipment, *model.electrical_devices):
         require(item.level_id, levels, f"{item.id}.level_id")
         require(item.space_id, spaces, f"{item.id}.space_id")
@@ -161,6 +218,10 @@ def validate_model(model: BuildingModel) -> None:
 
     for port in model.ports:
         require(port.owner_id, by_id, f"{port.id}.owner_id")
+        if port.owner_id in {outcome.id for outcome in model.box_selection_outcomes}:
+            raise ContractError(f"{port.id} cannot be owned by a nonphysical selection outcome")
+        if port.owner_id in boxes and not box_contains_point(boxes[port.owner_id], port.pose.position):
+            raise ContractError(f"{port.id} lies outside its physical box envelope")
         if port.owner_id == port.id:
             raise ContractError(f"{port.id} cannot own itself")
         for connected_id in port.connected_port_ids:
@@ -213,6 +274,9 @@ def validate_model(model: BuildingModel) -> None:
 def _encode(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
         encoded = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, BuildingModel) and value.schema_version == SCHEMA_VERSION:
+            for name in _PHYSICAL_FIELDS:
+                encoded.pop(name)
         if isinstance(value, Provenance) and value.derivation is None:
             # An unset derivation states nothing, so omit it rather than
             # writing an explicit null. Adding the field then leaves the
@@ -237,6 +301,12 @@ def _encode(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _encode(item) for key, item in value.items()}
     return value
+
+
+def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
+    """Explicit, lossless opt-in to the physical-object contract; never downgrade."""
+    from dataclasses import replace
+    return replace(model, schema_version=PHYSICAL_SCHEMA_VERSION)
 
 
 T = TypeVar("T")

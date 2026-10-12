@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from oabm.model import BuildingModel, ContractError, validate_model
+from oabm.model import BuildingModel, ContractError, SUPPORTED_SCHEMA_VERSIONS, SCHEMA_VERSION, validate_model
 
 _COLLECTION_FIELDS = (
     "levels",
@@ -24,6 +24,8 @@ _COLLECTION_FIELDS = (
     "route_fittings",
     "circuits",
     "conductors",
+    "electrical_boxes",
+    "box_selection_outcomes",
 )
 
 _DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "fixtures" / "golden" / "v1"
@@ -41,6 +43,7 @@ class GoldenCase:
     sha256: str | None = None
     error_contains: str | None = None
     expectations: Mapping[str, Any] | None = None
+    schema_version: str = SCHEMA_VERSION
 
 
 def canonical_json(model: BuildingModel) -> str:
@@ -124,8 +127,8 @@ def load_golden_cases(root: str | Path | None = None) -> tuple[GoldenCase, ...]:
 
     if manifest.get("suite") != "oabm-golden-v1":
         raise GoldenFixtureError("unexpected golden fixture suite")
-    if manifest.get("canonical_schema_version") != "1.0.0":
-        raise GoldenFixtureError("golden suite must target canonical schema 1.0.0")
+    if manifest.get("canonical_schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
+        raise GoldenFixtureError("golden suite must target a supported canonical schema version")
 
     cases: list[GoldenCase] = []
     seen: set[str] = set()
@@ -161,6 +164,7 @@ def load_golden_cases(root: str | Path | None = None) -> tuple[GoldenCase, ...]:
                 sha256=sha256,
                 error_contains=error_contains,
                 expectations=item.get("expectations", {}),
+                schema_version=manifest["canonical_schema_version"],
             )
         )
     if not cases:
@@ -171,11 +175,15 @@ def load_golden_cases(root: str | Path | None = None) -> tuple[GoldenCase, ...]:
 def load_golden_model(case: GoldenCase) -> BuildingModel:
     if not case.valid:
         raise GoldenFixtureError(f"{case.name} is intentionally invalid")
-    return BuildingModel.from_json(case.path.read_text(encoding="utf-8"))
+    model = BuildingModel.from_json(case.path.read_text(encoding="utf-8"))
+    if model.schema_version != case.schema_version:
+        raise GoldenFixtureError(f"{case.name}: model version does not match golden manifest")
+    return model
 
 
 def _entity_counts(model: BuildingModel) -> dict[str, int]:
-    return {field_name: len(getattr(model, field_name)) for field_name in _COLLECTION_FIELDS}
+    return {field_name: len(getattr(model, field_name)) for field_name in _COLLECTION_FIELDS
+            if model.schema_version != SCHEMA_VERSION or field_name not in {"electrical_boxes", "box_selection_outcomes"}}
 
 
 def _validate_expectations(case: GoldenCase, model: BuildingModel) -> None:
@@ -248,6 +256,8 @@ def validate_golden_case(case: GoldenCase) -> str | None:
         raise GoldenFixtureError(f"{case.name}: intentionally invalid fixture was accepted")
 
     model = BuildingModel.from_json(payload)
+    if model.schema_version != case.schema_version:
+        raise GoldenFixtureError(f"{case.name}: model version does not match golden manifest")
     digest = validate_lane_model(model)
     validate_public_fixture_provenance(model)
     _validate_expectations(case, model)

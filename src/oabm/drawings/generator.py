@@ -15,6 +15,7 @@ from oabm.model import (
     Conductor,
     ElectricalDevice,
     ElectricalEquipment,
+    ElectricalBox,
     Entity,
     Level,
     Obstacle,
@@ -578,7 +579,30 @@ def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
         _device_schedule(model),
         _circuit_schedule(model),
     )
+    if model.schema_version == "1.1.0":
+        schedules += (_box_schedule(model), _box_selection_schedule(model))
     return tuple(schedule for schedule in schedules if schedule.rows)
+
+
+def _box_schedule(model: BuildingModel) -> DrawingSchedule:
+    columns = tuple(ScheduleColumn(key, title) for key, title in (
+        ("id", "Box ID"), ("product", "Catalog product"), ("host", "Host"),
+        ("mounting", "Mounting"), ("occupants", "Occupants"), ("listed_volume", "Listed interior m3")))
+    rows = tuple(ScheduleRow(source_id=box.id, cells=(box.id,
+        f"{box.product.catalog_id}/{box.product.catalog_revision}/{box.product.product_id}",
+        box.host_id, box.mounting, ", ".join(box.occupant_ids),
+        "unknown" if box.listed_volume_m3 is None else _fmt_number(box.listed_volume_m3)))
+        for box in sorted(model.electrical_boxes, key=lambda b: b.id))
+    return DrawingSchedule(id="schedule:electrical-boxes", title="Electrical Box Schedule", columns=columns, rows=rows)
+
+
+def _box_selection_schedule(model: BuildingModel) -> DrawingSchedule:
+    columns = tuple(ScheduleColumn(key, title) for key, title in (
+        ("intent", "Intent"), ("status", "Status"), ("box", "Selected box"), ("reasons", "Unresolved reasons")))
+    rows = tuple(ScheduleRow(source_id=outcome.id, cells=(outcome.intent_id, outcome.status,
+        outcome.selected_box_id or "not selected", ", ".join(outcome.reason_codes)))
+        for outcome in sorted(model.box_selection_outcomes, key=lambda o: o.id))
+    return DrawingSchedule(id="schedule:box-selections", title="Box Selection Outcomes", columns=columns, rows=rows)
 
 
 def _room_schedule(model: BuildingModel) -> DrawingSchedule:
@@ -792,6 +816,11 @@ def _entity_primitives(
         symbol = symbol_provider(entity, view_type)
         if symbol is not None:
             result.extend(_symbol_primitive(entity, frame, bounds, symbol, "symbols:openings"))
+    elif isinstance(entity, ElectricalBox):
+        result.extend(_box_entity_primitives(entity.id, entity.pose, entity.size, frame, bounds,
+                      layer="electrical:boxes", style=LineStyle(stroke="electrical", pattern="dash")))
+        if view_type == "section" and _box_intersects_section(entity.pose, entity.size, frame):
+            result.extend(_box_section_cut(entity.id, entity.pose, entity.size, frame, bounds, layer="electrical:boxes"))
     elif isinstance(entity, (ElectricalEquipment, ElectricalDevice)):
         if entity.size is not None:
             layer = "electrical:equipment" if isinstance(entity, ElectricalEquipment) else "electrical:devices"
@@ -1046,7 +1075,7 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
     if visibility.electrical:
         result.extend(
             item
-            for item in (*model.electrical_equipment, *model.electrical_devices)
+            for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes)
             if (item.level_id in {None, level_id}) and _entity_z_overlap(item, min_z, max_z)
         )
     if visibility.routes:
@@ -1071,7 +1100,7 @@ def _spatial_entities(model: BuildingModel, level_ids: tuple[str, ...], visibili
     if visibility.spaces:
         result.extend(item for item in model.spaces if level_ok(item))
     if visibility.electrical:
-        result.extend(item for item in (*model.electrical_equipment, *model.electrical_devices) if level_ok(item))
+        result.extend(item for item in (*model.electrical_equipment, *model.electrical_devices, *model.electrical_boxes) if level_ok(item))
     if visibility.routes:
         result.extend(model.routes)
         result.extend(model.route_fittings)
@@ -1120,7 +1149,7 @@ def _entity_points(entity: Entity) -> tuple[Point3, ...]:
         return _vertical_prism_points(entity.footprint.points, entity.height_m) if entity.height_m is not None else entity.footprint.points
     if isinstance(entity, (Slab, Ceiling)): return entity.footprint.points
     if isinstance(entity, Opening): return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
-    if isinstance(entity, (ElectricalEquipment, ElectricalDevice)):
+    if isinstance(entity, (ElectricalEquipment, ElectricalDevice, ElectricalBox)):
         if entity.size is None: return (entity.pose.position,)
         return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
     if isinstance(entity, Route): return entity.centerline.points
@@ -1374,6 +1403,7 @@ def _entities(model: BuildingModel) -> tuple[Entity, ...]:
         *model.openings, *model.electrical_equipment, *model.electrical_devices,
         *model.ports, *model.obstacles, *model.route_constraints, *model.routes,
         *model.route_fittings, *model.circuits, *model.conductors,
+        *model.electrical_boxes, *model.box_selection_outcomes,
     )
 
 

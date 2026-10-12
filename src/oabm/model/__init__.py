@@ -2,6 +2,13 @@
 
 from .v1 import (
     SCHEMA_VERSION,
+    PHYSICAL_SCHEMA_VERSION,
+    SUPPORTED_SCHEMA_VERSIONS,
+    BOX_MOUNTINGS,
+    CatalogProduct,
+    ElectricalBox,
+    BoxSelectionOutcome,
+    upgrade_to_v1_1,
     Box3D,
     BuildingModel,
     Ceiling,
@@ -44,6 +51,13 @@ from .v1 import (
 
 __all__ = [
     "SCHEMA_VERSION",
+    "PHYSICAL_SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "BOX_MOUNTINGS",
+    "CatalogProduct",
+    "ElectricalBox",
+    "BoxSelectionOutcome",
+    "upgrade_to_v1_1",
     "Box3D",
     "BuildingModel",
     "Ceiling",

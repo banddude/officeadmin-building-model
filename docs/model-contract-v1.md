@@ -7,7 +7,7 @@
 The initial serialized contract is `1.0.0`.
 
 - A document must declare `schema_version: "1.0.0"`.
-- The Python v1 reader rejects other versions rather than guessing.
+- The shared Python reader supports explicitly declared 1.0 and 1.1; it rejects other versions rather than guessing. The 1.0 schema remains specific to 1.0.
 - Incompatible shape or meaning changes require a new version and migration notes.
 - The first version has no migration because there is no predecessor.
 
@@ -185,3 +185,8 @@ stronger regressions, but are not a universal promise for captured orientations.
 ## Public fixtures
 
 `fixtures/model/v1/minimal-room.json` is the smallest building example. `fixtures/model/v1/garage-route.json` exercises the v1 building, electrical, port, obstacle/constraint, route/fitting, circuit/conductor, provenance, and confidence fields. The garage fixture is contract coverage only; the later synthetic-garage convergence gate owns routing/IFC acceptance behavior.
+# Version 1.1 physical-object extension
+
+The original 1.0 contract below remains unchanged. Explicitly versioned 1.1
+adds typed electrical boxes and selection outcomes, with migration and consumer
+semantics documented in [Physical electrical boxes](electrical-boxes.md).

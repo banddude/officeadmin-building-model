@@ -17,7 +17,9 @@ from typing import Any, Mapping, Sequence
 
 
 def _interval(values: tuple[float, float], label: str) -> None:
-    if len(values) != 2 or any(not math.isfinite(v) for v in values) or values[0] >= values[1]:
+    if (len(values) != 2
+        or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in values)
+        or values[0] >= values[1]):
         raise ValueError(f"{label} requires two finite increasing coordinates")
 
 

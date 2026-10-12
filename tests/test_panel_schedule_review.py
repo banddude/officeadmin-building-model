@@ -277,6 +277,15 @@ def test_invalid_review_shape_is_rejected_before_import(tmp_path, changes):
         replace(review(document), **changes)
 
 
+@pytest.mark.parametrize("coordinate", [False, True, "590", None])
+def test_portable_review_rejects_boolean_or_nonnumeric_source_bounds(tmp_path, coordinate):
+    _, document = source_pdf(tmp_path)
+    record = review(document).to_dict()
+    record["region_bbox_pt"][0] = coordinate
+    with pytest.raises(ValueError, match="finite increasing coordinates"):
+        PanelScheduleReview.from_dict(record)
+
+
 def test_no_review_keeps_default_canonical_bytes(tmp_path):
     path, document = source_pdf(tmp_path)
     expected = ElectricalPdfImporter().import_document(document).to_json()

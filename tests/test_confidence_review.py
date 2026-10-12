@@ -905,3 +905,45 @@ def test_warning_items_carry_provenance_their_crops_bind_to() -> None:
     # The whole manifest still round-trips strictly.
     decoded = ConfidenceReviewManifest.from_dict(manifest.to_dict())
     assert decoded.to_json() == manifest.to_json()
+
+
+def test_v1_3_support_collections_and_unresolved_support_selection() -> None:
+    """The 1.3 support collections are scanned, and a real unresolved
+    support outcome (from the actual producer, via the shared-supports
+    fixture recipe) becomes an item."""
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "test_shared_supports_module",
+        ROOT / "tests" / "test_shared_supports.py",
+    )
+    supports_tests = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(supports_tests)
+
+    # ``case`` is a pytest fixture in that module; its wrapped function is
+    # the plain builder.
+    base, intent, catalog, rule = supports_tests.case.__wrapped__()
+    unresolved_model = supports_tests.select_supports(
+        supports_tests.upgrade_to_v1_3(base),
+        intents=(replace(intent, basis=None),),
+        catalog=catalog,
+        rules=(rule,),
+    )
+    assert unresolved_model.schema_version == "1.3.0"
+    outcome = unresolved_model.support_selection_outcomes[0]
+    assert outcome.status == "unresolved"
+
+    manifest = build_confidence_review(
+        unresolved_model, ReviewConfig(confidence_threshold=0.99),
+    )
+    assert {
+        "support_assemblies", "support_components",
+        "support_interfaces", "support_selection_outcomes",
+    } <= set(manifest.collections)
+    item = next(
+        item for item in manifest.items if item.entity_ids == (outcome.id,)
+    )
+    assert item.reasons == ("unresolved_selection",)
+    assert item.entity_kind == "support_selection_outcomes"
+    assert outcome.reason_codes[0] in item.detail

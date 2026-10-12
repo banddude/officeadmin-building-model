@@ -260,3 +260,19 @@ production element panel still needs to surface the three disclosure keys
 on its side; that work is tracked in the follow-up issue linked from #88.
 `spikes/display_thickness_evidence/` renders the evidence image and the
 panel data from a synthetic room.
+
+### Saved layer selections
+
+`oabm.exports.layers.layer_glb_plan(model, resolution)` turns a resolved
+saved layer preset (see [Layer selections](layer-selections.md)) into this
+exporter's existing caller-supplied inputs: one group per nonempty state
+with the hidden state's group in `hidden_groups` (starting hidden through
+`KHR_node_visibility`), ghosted ids passed as `dimmed_ids` so supported
+kinds (devices, equipment, routes, glazed walls alpha-only) render
+translucent, and `unsupported_ghost_ids` naming the ghosted ids whose kind
+has no ghost style (plain walls, slabs, space plates, physical boxes, the
+1.3 support components, interfaces and assemblies), which draw at normal
+appearance until a ghost style exists for them. A dimmed route dims the
+conductor wires drawn inside it, so a ghosted conduit ghosts whole. The
+adapter adds no exporter features: with no plan passed, output bytes are
+unchanged.

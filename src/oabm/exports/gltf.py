@@ -285,8 +285,12 @@ def to_glb(
       translucency. Levels with no drawn content get no plane.
     - ``dimmed_ids`` lists canonical device, equipment or route ids the
       caller wants drawn in a grey translucent style shaped by
-      ``dimmed_color`` and ``dimmed_alpha``. Which ids to dim, and why,
-      is the caller's decision; ids that match nothing are ignored.
+      ``dimmed_color`` and ``dimmed_alpha``. A dimmed route dims its drawn
+      conductor wires with it, so a ghosted conduit never hides fully
+      opaque conductors inside itself; the summary reports how many wires
+      were dimmed as ``dimmed_conductor_wires`` while any are. Which ids to
+      dim, and why, is the caller's decision; ids that match nothing are
+      ignored.
     - ``emphasized_ids`` lists canonical device, equipment or route ids the
       caller wants drawn opaque in their normal class colour, whatever their
       provenance, so new work reads in full colour while ``dimmed_ids`` ids
@@ -622,7 +626,10 @@ def _build_document(
             "material_key": material_key,
             "extras": extras,
         })
-    wire_entries = _wire_entries(model)
+    wire_entries = _wire_entries(model, options.dimmed_ids)
+    dimmed_wire_count = sum(
+        1 for entry in wire_entries if entry["material_key"][0] == "dimmed"
+    )
     for entry in wire_entries:
         add(entry)
     reference_entries: list[dict[str, Any]] = []
@@ -826,6 +833,8 @@ def _build_document(
         counts["glazed_outlines"] = glazed_outline_count
     if options.min_display_wall_thickness_m is not None:
         counts["thickened_walls"] = thickened_wall_count
+    if dimmed_wire_count:
+        counts["dimmed_conductor_wires"] = dimmed_wire_count
     return document, bytes(buffer), counts
 
 
@@ -1273,7 +1282,10 @@ def _wire_node_name(conductor_id: str, route_id: str, index: int) -> str:
     return f"{prefix}{conductor_id}#route:{route_id.removeprefix('route:')}#{index}"
 
 
-def _wire_entries(model: BuildingModel) -> list[dict[str, Any]]:
+def _wire_entries(
+    model: BuildingModel,
+    dimmed_route_ids: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
     """One wire mesh per conductor per route it rides, bundled in the conduit.
 
     Layout is deterministic: the wires of one route are ordered by conductor
@@ -1282,6 +1294,11 @@ def _wire_entries(model: BuildingModel) -> list[dict[str, Any]]:
     conduit bore and no two wires land on the same spot. A route without a
     ``nominal_diameter_m`` still carries its wires, laid out in a fixed 5 mm
     bundle.
+
+    A route the caller dims dims its wires with it: a ghosted conduit whose
+    conductors stayed fully opaque would disclose one state while drawing
+    another. With no dimmed ids every wire keeps its plain material, so the
+    default export stays byte-identical.
     """
 
     route_by_id = {route.id: route for route in model.routes}
@@ -1330,13 +1347,18 @@ def _wire_entries(model: BuildingModel) -> list[dict[str, Any]]:
                 extras["size"] = conductor.size
             if derivation is not None:
                 extras["derivation"] = derivation
+            material_class = material_by_conductor[conductor.id]
+            if route_id in dimmed_route_ids:
+                material_key: tuple[Any, ...] = ("dimmed", material_class)
+            else:
+                material_key = (
+                    material_class,
+                    _is_derived(conductor.provenance, conductor.attributes),
+                )
             entries.append({
                 "name": _wire_node_name(conductor.id, route_id, index),
                 "vertices": _wire_vertices(route, offset, 2.0 * math.pi * position / total),
-                "material_key": (
-                    material_by_conductor[conductor.id],
-                    _is_derived(conductor.provenance, conductor.attributes),
-                ),
+                "material_key": material_key,
                 "extras": extras,
             })
     return entries

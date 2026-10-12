@@ -49,6 +49,20 @@ UNASSIGNED_POLICIES: frozenset[str] = frozenset(
 )
 
 
+def _require_id_tuple(value: Any, label: str) -> None:
+    """An immutable id sequence: a tuple of canonical ids, never a string."""
+
+    if isinstance(value, str) or not isinstance(value, tuple):
+        raise ContractError(
+            f"{label} must be a tuple of canonical id strings, got "
+            f"{type(value).__name__}"
+        )
+    for item in value:
+        if not isinstance(item, str) or isinstance(item, bool):
+            raise ContractError(f"{label} entries must be strings")
+        _validate_id(item, label)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class LayerDefinition:
     """One named layer with explicit canonical entity membership."""
@@ -63,8 +77,7 @@ class LayerDefinition:
     def __post_init__(self) -> None:
         _validate_id(self.id, "layer id")
         _require_label(self.name, f"layer {self.id} name")
-        for member_id in self.member_ids:
-            _validate_id(member_id, f"layer {self.id} member id")
+        _require_id_tuple(self.member_ids, f"layer {self.id} member_ids")
         if len(set(self.member_ids)) != len(self.member_ids):
             raise ContractError(
                 f"layer {self.id} lists a member id more than once"
@@ -94,6 +107,7 @@ class SavedPreset:
             (STATE_HIDDEN, self.hidden_layer_ids),
             (STATE_GHOSTED, self.ghosted_layer_ids),
         ):
+            _require_id_tuple(refs, f"preset {self.id} {state}_layer_ids")
             for layer_id in refs:
                 _validate_id(layer_id, f"preset {self.id} {state} layer id")
                 if layer_id in seen:
@@ -128,6 +142,14 @@ class LayerSelectionConfig:
                 f"{self.schema_version!r}; this reader knows "
                 f"{LAYER_SELECTIONS_SCHEMA_VERSION!r} only"
             )
+        if isinstance(self.layers, (str, dict)) or not isinstance(self.layers, tuple):
+            raise ContractError("layers must be a tuple of LayerDefinition")
+        if any(not isinstance(layer, LayerDefinition) for layer in self.layers):
+            raise ContractError("layers must contain only LayerDefinition records")
+        if isinstance(self.presets, (str, dict)) or not isinstance(self.presets, tuple):
+            raise ContractError("presets must be a tuple of SavedPreset")
+        if any(not isinstance(preset, SavedPreset) for preset in self.presets):
+            raise ContractError("presets must contain only SavedPreset records")
         by_id: dict[str, LayerDefinition] = {}
         by_name: dict[str, LayerDefinition] = {}
         for layer in self.layers:
@@ -288,6 +310,24 @@ class PresetResolution:
     system_coverage: tuple[tuple[str, int], ...]
     out_of_scope_member_ids: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        for field in (
+            "visible_ids", "hidden_ids", "ghosted_ids", "unassigned_ids",
+            "empty_layer_ids", "out_of_scope_member_ids",
+        ):
+            _require_id_tuple(getattr(self, field), field)
+        for field in ("layer_coverage", "system_coverage"):
+            value = getattr(self, field)
+            if isinstance(value, (str, dict)) or not isinstance(value, tuple) or any(
+                not isinstance(item, tuple) or len(item) != 2
+                or not isinstance(item[0], str) or isinstance(item[1], bool)
+                or not isinstance(item[1], int)
+                for item in value
+            ):
+                raise ContractError(
+                    f"{field} must be a tuple of (string, count) pairs"
+                )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "preset_id": self.preset_id,
@@ -310,7 +350,7 @@ def resolve_preset(
     preset: str,
     isolate: Iterable[str] = (),
     level_ids: Iterable[str] = (),
-    unassigned: str = UNASSIGNED_VISIBLE,
+    unassigned: str,
 ) -> PresetResolution:
     """Resolve one saved preset against ``model`` deterministically.
 
@@ -320,13 +360,17 @@ def resolve_preset(
        unknown level references are refused with precise diagnostics.
     2. An entity's state is the strictest state of the layers that contain
        it: ``hidden`` beats ``ghosted`` beats ``visible``.
-    3. An entity in no layer is *unassigned*; the caller's ``unassigned``
-       policy decides where it lands (``visible`` by default, or ``error``
-       to refuse incomplete coverage).
+    3. An entity in no layer of the whole configuration is *unassigned*.
+       Incomplete coverage is a property of the configuration, so it is
+       always reported in ``unassigned_ids``, independent of ``isolate``
+       and of the level filter. The caller's ``unassigned`` policy (a
+       required argument; there is no silent default) decides where
+       unassigned entities land, or ``error`` refuses incomplete coverage
+       outright, also under isolate.
     4. A nonempty ``isolate`` restricts the considered layers to the named
        ones: their members keep the strictest state among those layers only
        (with the preset's state for each), and every other entity is
-       hidden. Coverage is still reported for the whole configuration.
+       hidden. Reporting coverage stays a whole-configuration property.
     5. A nonempty ``level_ids`` filter keeps entities whose canonical level
        is in the filter and hides the rest. Routes resolve their level from
        the start port's owner (the same documented rule the GLB exporter
@@ -344,7 +388,6 @@ def resolve_preset(
             f"got {unassigned!r}"
         )
     saved = config.preset(preset)
-    layer_by_id = {layer.id: layer for layer in config.layers}
 
     model_ids = _model_entity_ids(model)
     for layer in config.layers:
@@ -370,9 +413,22 @@ def resolve_preset(
             raise ContractError(f"isolate references unknown layer {ref!r}") from None
 
     universe = _universe(model)
-    entity_state: dict[str, str] = {}
-    unassigned_ids: list[str] = []
+    # Coverage is a whole-configuration property: an entity in no layer is
+    # unassigned even when isolate hides it or the level filter would hide
+    # it, so incomplete coverage can never disappear behind a display state.
+    assigned_ids: set[str] = {
+        member_id for layer in config.layers for member_id in layer.member_ids
+    }
+    unassigned_ids = sorted(entity_id for entity_id in universe if entity_id not in assigned_ids)
+    if unassigned_ids and unassigned == UNASSIGNED_ERROR:
+        raise ContractError(
+            "configuration does not cover every drawable entity; "
+            f"{len(unassigned_ids)} unassigned, including "
+            + ", ".join(unassigned_ids[:5])
+        )
+
     considered = isolate_layers if isolate_layers else list(config.layers)
+    entity_state: dict[str, str] = {}
     for entity_id in universe:
         states = {
             saved.state_of(layer.id)
@@ -383,18 +439,11 @@ def resolve_preset(
         if states:
             entity_state[entity_id] = _strictest(states)  # type: ignore[arg-type]
         elif not isolate_layers:
-            if unassigned == UNASSIGNED_ERROR:
-                missing = sorted(universe.keys() - set(entity_state))
-                raise ContractError(
-                    "configuration does not cover every drawable entity; "
-                    f"{len(missing)} unassigned, including "
-                    + ", ".join(missing[:5])
-                )
-            unassigned_ids.append(entity_id)
             entity_state[entity_id] = unassigned
         else:
             # Isolate: everything outside the isolated layers is hidden by
-            # definition, whether or not the configuration covers it.
+            # definition, whether or not the configuration covers it. The
+            # coverage report above still names it.
             entity_state[entity_id] = STATE_HIDDEN
 
     if filter_levels:
@@ -439,7 +488,7 @@ def resolve_preset(
         visible_ids=tuple(visible),
         hidden_ids=tuple(hidden),
         ghosted_ids=tuple(ghosted),
-        unassigned_ids=tuple(sorted(unassigned_ids)),
+        unassigned_ids=tuple(unassigned_ids),
         empty_layer_ids=empty_layer_ids,
         layer_coverage=layer_coverage,
         system_coverage=system_coverage,
@@ -461,9 +510,11 @@ def _universe(model: "BuildingModel") -> dict[str, str | None]:
     """Drawable universe: id to canonical level id, sorted by id.
 
     These are exactly the canonical node kinds the current GLB exporter
-    draws (walls, slabs, spaces, devices, equipment, routes and physical
-    electrical boxes). Ceilings and openings are not drawn yet and are
-    outside the universe; conductor wire nodes ride their route.
+    draws (walls, slabs, spaces, devices, equipment, routes, physical
+    electrical boxes, and the 1.3 support components, interfaces and
+    assemblies). Ceilings and openings are not drawn yet and are outside
+    the universe; conductor wire nodes ride their route, and a support
+    assembly node brings its component and interface children with it.
     """
 
     entries: dict[str, str | None] = {}
@@ -481,6 +532,12 @@ def _universe(model: "BuildingModel") -> dict[str, str | None]:
         entries[route.id] = _route_level_id(model, route)
     for box in model.electrical_boxes:
         entries[box.id] = box.level_id
+    for component in model.support_components:
+        entries[component.id] = component.level_id
+    for interface in model.support_interfaces:
+        entries[interface.id] = interface.level_id
+    for assembly in model.support_assemblies:
+        entries[assembly.id] = assembly.level_id
     return dict(sorted(entries.items()))
 
 
@@ -517,6 +574,8 @@ def _model_entity_ids(model: "BuildingModel") -> set[str]:
         model.route_fittings, model.circuits, model.conductors,
         model.electrical_boxes, model.box_selection_outcomes,
         model.raceway_selections, model.raceway_selection_outcomes,
+        model.support_assemblies, model.support_components,
+        model.support_interfaces, model.support_selection_outcomes,
     )
     for collection in collections:
         for entity in collection:
@@ -561,8 +620,9 @@ def _decode_layer(data: Any) -> LayerDefinition:
         {"id", "name", "member_ids", "system", "trade", "phase"},
         "layer",
     )
-    if "id" not in data or "name" not in data:
-        raise ContractError("layer requires id and name")
+    missing = sorted({"id", "name"} - set(data))
+    if missing:
+        raise ContractError(f"layer is missing required field(s): {', '.join(missing)}")
     kwargs: dict[str, Any] = {
         "id": data["id"],
         "name": data["name"],
@@ -571,10 +631,11 @@ def _decode_layer(data: Any) -> LayerDefinition:
         kwargs["member_ids"] = _decode_str_tuple(data["member_ids"], "member_ids")
     for label in ("system", "trade", "phase"):
         if label in data:
-            value = data[label]
-            if value is not None:
-                _require_label(value, f"layer {label}")
-            kwargs[label] = value
+            # The portable contract is "absent or a nonempty string": explicit
+            # null states nothing and is refused, agreeing with the JSON
+            # Schema, which has no null branch for these labels.
+            _require_label(data[label], f"layer {label}")
+            kwargs[label] = data[label]
     return LayerDefinition(**kwargs)
 
 
@@ -585,8 +646,9 @@ def _decode_preset(data: Any) -> SavedPreset:
         {"id", "name", "visible_layer_ids", "hidden_layer_ids", "ghosted_layer_ids"},
         "preset",
     )
-    if "id" not in data or "name" not in data:
-        raise ContractError("preset requires id and name")
+    missing = sorted({"id", "name"} - set(data))
+    if missing:
+        raise ContractError(f"preset is missing required field(s): {', '.join(missing)}")
     kwargs: dict[str, Any] = {"id": data["id"], "name": data["name"]}
     for field in ("visible_layer_ids", "hidden_layer_ids", "ghosted_layer_ids"):
         if field in data:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import struct
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from oabm.model import (
     ContractError,
     ElectricalDevice,
     ElectricalEquipment,
+    LayerDefinition,
     LayerSelectionConfig,
     Level,
     Point3,
@@ -22,11 +24,18 @@ from oabm.model import (
     Polyline3D,
     Port,
     Pose,
+    PresetResolution,
     Provenance,
+    RuleReference,
     Route,
+    SavedPreset,
     Size3,
     Slab,
     Space,
+    SupportAssembly,
+    SupportComponent,
+    SupportInterface,
+    SupportSelectionOutcome,
     UNASSIGNED_ERROR,
     UNASSIGNED_GHOSTED,
     UNASSIGNED_HIDDEN,
@@ -36,6 +45,7 @@ from oabm.model import (
     resolve_preset,
     upgrade_to_v1_1,
     upgrade_to_v1_2,
+    upgrade_to_v1_3,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -272,7 +282,14 @@ def test_round_trip_and_schema(tmp_path: Path) -> None:
     ),
     (lambda d: d["layers"][0].update({"id": "1bad"}), "must match"),
     (lambda d: d["layers"][0].update({"system": 12}), "nonempty string"),
+    (lambda d: d["layers"][0].update({"system": None}), "nonempty string"),
     (lambda d: d["layers"][0].update({"member_ids": [42]}), "must match"),
+    (lambda d: d["layers"][0].update({"member_ids": "abc"}), "must be an array"),
+    (
+        lambda d: d["presets"][0].update({"visible_layer_ids": "layer:power"}),
+        "must be an array",
+    ),
+    (lambda d: d["layers"][0].pop("name"), "missing required field"),
 ])
 def test_strict_config_rejection(mutation, label) -> None:
     document = json.loads(_demo_config().to_json())
@@ -288,12 +305,106 @@ def test_invalid_json_and_non_object_root() -> None:
         LayerSelectionConfig.from_dict([1, 2])
 
 
+def test_missing_field_diagnostics_name_the_fields() -> None:
+    with pytest.raises(ContractError, match=r"layer is missing required field\(s\): id"):
+        LayerSelectionConfig.from_dict({
+            "schema_version": "1.0.0", "layers": [{"name": "No id"}],
+        })
+    with pytest.raises(
+        ContractError, match=r"preset is missing required field\(s\): id, name",
+    ):
+        LayerSelectionConfig.from_dict({
+            "schema_version": "1.0.0", "layers": [], "presets": [{}],
+        })
+
+
+def test_constructors_reject_scalar_and_mutable_id_sequences() -> None:
+    with pytest.raises(ContractError, match="tuple of canonical id strings"):
+        LayerDefinition(id="layer:x", name="X", member_ids="abc")
+    with pytest.raises(ContractError, match="tuple of canonical id strings"):
+        LayerDefinition(id="layer:x", name="X", member_ids=["device:a"])
+    with pytest.raises(ContractError, match="tuple of canonical id strings"):
+        SavedPreset(id="preset:x", name="X", visible_layer_ids="layer:power")
+    with pytest.raises(ContractError, match="layers must be a tuple"):
+        LayerSelectionConfig(
+            layers=[LayerDefinition(id="layer:x", name="X")],
+        )
+    with pytest.raises(ContractError, match="presets must be a tuple"):
+        LayerSelectionConfig(presets=[SavedPreset(id="preset:x", name="X")])
+    with pytest.raises(ContractError, match="tuple of canonical id strings"):
+        replace(
+            PresetResolution(
+                preset_id="preset:x", preset_name="X",
+                visible_ids=(), hidden_ids=(), ghosted_ids=(),
+                unassigned_ids=(), empty_layer_ids=(),
+                layer_coverage=(), system_coverage=(),
+                out_of_scope_member_ids=(),
+            ),
+            visible_ids=["device:a"],
+        )
+
+
+def test_constructor_decoder_and_schema_agree() -> None:
+    schema = json.loads((ROOT / "contracts/oabm-layers-v1.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    cases = [
+        (_demo_config().to_dict(), True),
+        ({"schema_version": "1.0.0", "layers": []}, True),
+        ({"schema_version": "1.0.0", "layers": [], "presets": []}, True),
+        # Explicit null labels: rejected by the decoder and the schema alike.
+        (
+            {
+                "schema_version": "1.0.0",
+                "layers": [{"id": "layer:x", "name": "X", "system": None}],
+            },
+            False,
+        ),
+        ({"schema_version": "1.0.0", "layers": [{"name": "no id"}]}, False),
+        ({"schema_version": "1.0.0", "layers": [{"id": "layer:x"}]}, False),
+        ({"schema_version": "1.0.0", "layers": [{"id": "layer:x", "name": ""}]}, False),
+        ({"schema_version": "2.0.0", "layers": []}, False),
+        ({"schema_version": "1.0.0", "layers": "abc"}, False),
+        (
+            {
+                "schema_version": "1.0.0",
+                "layers": [{"id": "layer:x", "name": "X", "extra": 1}],
+            },
+            False,
+        ),
+        (
+            {
+                "schema_version": "1.0.0",
+                "layers": [{"id": "layer:x", "name": "X", "member_ids": "abc"}],
+            },
+            False,
+        ),
+    ]
+    for document, expected_valid in cases:
+        schema_valid = validator.is_valid(document)
+        decode_error = None
+        try:
+            LayerSelectionConfig.from_dict(document)
+        except ContractError as error:
+            decode_error = str(error)
+        assert schema_valid is expected_valid, (document, schema_valid, decode_error)
+        assert (decode_error is None) is expected_valid, (document, schema_valid, decode_error)
+
+
 # ---------------------------------------------------------------- resolution
+
+
+def test_unassigned_policy_is_a_required_argument() -> None:
+    model = _two_level_model()
+    with pytest.raises(TypeError):
+        resolve_preset(_demo_config(), model, preset="preset:all")
 
 
 def test_preset_resolution_partition_and_overlap_precedence() -> None:
     model = _two_level_model()
-    resolution = resolve_preset(_demo_config(), model, preset="Phase 1 only")
+    resolution = resolve_preset(
+        _demo_config(), model, preset="Phase 1 only", unassigned=UNASSIGNED_VISIBLE,
+    )
     _assert_partition(resolution)
     assert resolution.preset_id == "preset:phase-1"
     assert set(resolution.visible_ids) == {
@@ -313,7 +424,9 @@ def test_preset_resolution_partition_and_overlap_precedence() -> None:
 
 def test_full_coverage_and_missing_system_never_claims_modeled() -> None:
     model = _two_level_model()
-    resolution = resolve_preset(_demo_config(), model, preset="preset:all")
+    resolution = resolve_preset(
+        _demo_config(), model, preset="preset:all", unassigned=UNASSIGNED_VISIBLE,
+    )
     _assert_partition(resolution)
     assert resolution.preset_id == "preset:all"
     assert not resolution.unassigned_ids
@@ -323,7 +436,9 @@ def test_full_coverage_and_missing_system_never_claims_modeled() -> None:
 
 def test_ghost_overlap_hidden_wins() -> None:
     model = _two_level_model()
-    resolution = resolve_preset(_demo_config(), model, preset="preset:ghost-power")
+    resolution = resolve_preset(
+        _demo_config(), model, preset="preset:ghost-power", unassigned=UNASSIGNED_VISIBLE,
+    )
     _assert_partition(resolution)
     # device:one-recp and route:one sit in power (ghosted) and phase-1
     # (hidden): the stricter state wins.
@@ -366,10 +481,38 @@ def test_unassigned_error_refuses_incomplete_coverage() -> None:
         )
 
 
+def test_isolate_reports_whole_configuration_coverage_and_hides_correctly() -> None:
+    model = _two_level_model()
+    # Without isolate the same configuration leaves slab:two unassigned.
+    plain = resolve_preset(
+        _partial_config(), model, preset="preset:all", unassigned=UNASSIGNED_VISIBLE,
+    )
+    assert plain.unassigned_ids == ("slab:two",)
+    # Isolate must not make the coverage gap disappear: it is a property of
+    # the whole configuration, reported identically under isolate.
+    isolated = resolve_preset(
+        _partial_config(), model, preset="preset:all",
+        isolate=("layer:power",), unassigned=UNASSIGNED_VISIBLE,
+    )
+    _assert_partition(isolated)
+    assert isolated.unassigned_ids == plain.unassigned_ids == ("slab:two",)
+    assert "slab:two" in isolated.hidden_ids
+
+
+def test_unassigned_error_fires_under_isolate_too() -> None:
+    model = _two_level_model()
+    with pytest.raises(ContractError, match="slab:two"):
+        resolve_preset(
+            _partial_config(), model, preset="preset:all",
+            isolate=("layer:power",), unassigned=UNASSIGNED_ERROR,
+        )
+
+
 def test_isolate_restricts_states_and_hides_everything_outside() -> None:
     model = _two_level_model()
     resolution = resolve_preset(
-        _demo_config(), model, preset="preset:all", isolate=("layer:power",),
+        _demo_config(), model, preset="preset:all",
+        isolate=("layer:power",), unassigned=UNASSIGNED_VISIBLE,
     )
     _assert_partition(resolution)
     assert set(resolution.visible_ids) == {
@@ -386,7 +529,8 @@ def test_isolate_restricts_states_and_hides_everything_outside() -> None:
 def test_isolate_of_an_empty_layer_renders_nothing() -> None:
     model = _two_level_model()
     resolution = resolve_preset(
-        _demo_config(), model, preset="preset:all", isolate=("layer:fire-alarm",),
+        _demo_config(), model, preset="preset:all",
+        isolate=("layer:fire-alarm",), unassigned=UNASSIGNED_VISIBLE,
     )
     _assert_partition(resolution)
     assert resolution.visible_ids == () and resolution.ghosted_ids == ()
@@ -398,7 +542,8 @@ def test_isolate_by_name_keeps_preset_state_within_isolate() -> None:
     # The phase 1 preset ghosts architecture; isolating it by name keeps
     # that ghosted state and hides everything outside the layer.
     resolution = resolve_preset(
-        _demo_config(), model, preset="preset:phase-1", isolate=("Architecture",),
+        _demo_config(), model, preset="preset:phase-1",
+        isolate=("Architecture",), unassigned=UNASSIGNED_VISIBLE,
     )
     _assert_partition(resolution)
     assert set(resolution.ghosted_ids) == {
@@ -414,7 +559,8 @@ def test_isolate_by_name_keeps_preset_state_within_isolate() -> None:
 def test_level_filter_keeps_filtered_levels_and_resolves_route_levels() -> None:
     model = _two_level_model()
     resolution = resolve_preset(
-        _demo_config(), model, preset="preset:all", level_ids=("level:one",),
+        _demo_config(), model, preset="preset:all",
+        level_ids=("level:one",), unassigned=UNASSIGNED_VISIBLE,
     )
     _assert_partition(resolution)
     assert "wall:two-a" in resolution.hidden_ids
@@ -432,6 +578,7 @@ def test_isolate_and_level_filter_compose() -> None:
     resolution = resolve_preset(
         _demo_config(), model, preset="preset:all",
         isolate=("layer:power",), level_ids=("level:two",),
+        unassigned=UNASSIGNED_VISIBLE,
     )
     _assert_partition(resolution)
     assert set(resolution.visible_ids) == {"device:two-recp"}
@@ -447,11 +594,19 @@ def test_order_independence_and_determinism() -> None:
     document["presets"] = list(reversed(document["presets"]))
     permuted = LayerSelectionConfig.from_dict(document)
     for preset in ("preset:all", "preset:phase-1", "preset:ghost-power"):
-        first = resolve_preset(config, model, preset=preset).to_dict()
-        second = resolve_preset(permuted, model, preset=preset).to_dict()
+        first = resolve_preset(
+            config, model, preset=preset, unassigned=UNASSIGNED_VISIBLE,
+        ).to_dict()
+        second = resolve_preset(
+            permuted, model, preset=preset, unassigned=UNASSIGNED_VISIBLE,
+        ).to_dict()
         assert first == second
-    again = resolve_preset(config, model, preset="preset:phase-1").to_dict()
-    assert again == resolve_preset(config, model, preset="preset:phase-1").to_dict()
+    again = resolve_preset(
+        config, model, preset="preset:phase-1", unassigned=UNASSIGNED_VISIBLE,
+    ).to_dict()
+    assert again == resolve_preset(
+        config, model, preset="preset:phase-1", unassigned=UNASSIGNED_VISIBLE,
+    ).to_dict()
 
 
 def test_dangling_and_unknown_references_refuse_with_diagnostics() -> None:
@@ -460,17 +615,25 @@ def test_dangling_and_unknown_references_refuse_with_diagnostics() -> None:
     document["layers"][0]["member_ids"].append("device:vanishing")
     config = LayerSelectionConfig.from_dict(document)
     with pytest.raises(ContractError, match="layer:power"):
-        resolve_preset(config, model, preset="preset:all")
+        resolve_preset(config, model, preset="preset:all", unassigned=UNASSIGNED_VISIBLE)
     with pytest.raises(ContractError, match="no preset"):
-        resolve_preset(_demo_config(), model, preset="preset:none")
+        resolve_preset(
+            _demo_config(), model, preset="preset:none", unassigned=UNASSIGNED_VISIBLE,
+        )
     with pytest.raises(ContractError, match="missing level"):
         resolve_preset(
-            _demo_config(), model, preset="preset:all", level_ids=("level:attic",),
+            _demo_config(), model, preset="preset:all",
+            level_ids=("level:attic",), unassigned=UNASSIGNED_VISIBLE,
         )
     with pytest.raises(ContractError, match="unknown layer"):
-        resolve_preset(_demo_config(), model, preset="preset:all", isolate=("layer:nope",))
+        resolve_preset(
+            _demo_config(), model, preset="preset:all",
+            isolate=("layer:nope",), unassigned=UNASSIGNED_VISIBLE,
+        )
     with pytest.raises(ContractError, match="unassigned policy"):
-        resolve_preset(_demo_config(), model, preset="preset:all", unassigned="dim")
+        resolve_preset(
+            _demo_config(), model, preset="preset:all", unassigned="dim",
+        )
 
 
 def test_out_of_scope_members_are_reported_not_resolved() -> None:
@@ -478,7 +641,9 @@ def test_out_of_scope_members_are_reported_not_resolved() -> None:
     document = json.loads(_demo_config().to_json())
     document["layers"][0]["member_ids"].append("port:panel-out")
     config = LayerSelectionConfig.from_dict(document)
-    resolution = resolve_preset(config, model, preset="preset:all")
+    resolution = resolve_preset(
+        config, model, preset="preset:all", unassigned=UNASSIGNED_VISIBLE,
+    )
     # The port exists but is not a drawable node, so it is reported as out
     # of scope and never enters the visible/hidden/ghosted partition.
     assert resolution.out_of_scope_member_ids == ("port:panel-out",)
@@ -493,7 +658,7 @@ def test_member_that_does_not_exist_in_the_model_refuses() -> None:
     document["layers"][0]["member_ids"].append("not-in-model")
     config = LayerSelectionConfig.from_dict(document)
     with pytest.raises(ContractError, match="does not exist in the model"):
-        resolve_preset(config, model, preset="preset:all")
+        resolve_preset(config, model, preset="preset:all", unassigned=UNASSIGNED_VISIBLE)
 
 
 # ---------------------------------------------------------------- canonical outputs unchanged
@@ -507,7 +672,9 @@ def test_resolution_never_mutates_the_model_or_its_quantities() -> None:
     model = _two_level_model()
     before_json = model.to_json()
     before_quantities = json.dumps(asdict(extract_quantities(model)), sort_keys=True)
-    resolve_preset(_demo_config(), model, preset="preset:phase-1")
+    resolve_preset(
+        _demo_config(), model, preset="preset:phase-1", unassigned=UNASSIGNED_VISIBLE,
+    )
     assert model.to_json() == before_json
     assert json.dumps(asdict(extract_quantities(model)), sort_keys=True) == before_quantities
 
@@ -517,7 +684,9 @@ def test_default_glb_bytes_unchanged_by_layer_work(tmp_path: Path) -> None:
     plain = tmp_path / "plain.glb"
     to_glb(model, plain)
     plain_bytes = plain.read_bytes()
-    resolve_preset(_demo_config(), model, preset="preset:all")
+    resolve_preset(
+        _demo_config(), model, preset="preset:all", unassigned=UNASSIGNED_VISIBLE,
+    )
     again = tmp_path / "again.glb"
     to_glb(model, again)
     assert again.read_bytes() == plain_bytes
@@ -531,6 +700,7 @@ def _physical_model() -> BuildingModel:
         BoxCatalogEntry, BoxIntent, RacewayCatalogEntry, RacewayIntent, RacewayRule,
         select_electrical_boxes, select_raceways,
     )
+    from oabm.model import RuleReference
 
     base = BuildingModel.load(ROOT / "fixtures/model/v1/garage-route.json")
     product = CatalogProduct(
@@ -552,7 +722,6 @@ def _physical_model() -> BuildingModel:
         upgrade_to_v1_1(base), intents=(box_intent,), catalog=(box_entry,),
     )
     route = with_box.routes[0]
-    from oabm.model import RuleReference
     basis = RuleReference(authority="synthetic-company", revision="1", rule_id="explicit-product-a")
     raceway_entry = RacewayCatalogEntry(
         product=product, route_type=route.route_type, wiring_method="raceway",
@@ -574,8 +743,6 @@ def _physical_model() -> BuildingModel:
 
 
 def test_physical_collections_counted_once() -> None:
-    from oabm.model import RuleReference
-
     model = _physical_model()
     assert model.schema_version == "1.2.0"
     box_id = model.electrical_boxes[0].id
@@ -589,6 +756,7 @@ def test_physical_collections_counted_once() -> None:
                 "member_ids": [
                     box_id,
                     model.electrical_devices[0].id,
+                    model.electrical_equipment[0].id,
                     model.routes[0].id,
                     selection_id,  # a selection is not a drawable node
                 ],
@@ -596,7 +764,8 @@ def test_physical_collections_counted_once() -> None:
             {
                 "id": "layer:rest",
                 "name": "Rest",
-                "member_ids": [wall.id for wall in model.walls] + [model.spaces[0].id],
+                "member_ids": [wall.id for wall in model.walls]
+                + [model.spaces[0].id, model.slabs[0].id],
             },
         ],
         "presets": [
@@ -608,7 +777,7 @@ def test_physical_collections_counted_once() -> None:
         ],
     }
     config = LayerSelectionConfig.from_dict(document)
-    resolution = resolve_preset(config, model, preset="preset:demo")
+    resolution = resolve_preset(config, model, preset="preset:demo", unassigned="hidden")
     drawable = (
         len(model.walls) + len(model.slabs) + len(model.spaces)
         + len(model.electrical_devices) + len(model.electrical_equipment)
@@ -619,10 +788,269 @@ def test_physical_collections_counted_once() -> None:
         *resolution.visible_ids, *resolution.hidden_ids, *resolution.ghosted_ids,
     }) == drawable
     assert set(resolution.out_of_scope_member_ids) == {selection_id}
-    assert dict(resolution.layer_coverage)["layer:demo"] == 3
+    assert dict(resolution.layer_coverage)["layer:demo"] == 4
+
+
+# ---------------------------------------------------------------- 1.3 shared supports
+
+
+def _supports_model() -> BuildingModel:
+    base = upgrade_to_v1_3(BuildingModel.load(ROOT / "fixtures/model/v1/garage-route.json"))
+    basis = RuleReference(authority="synthetic-company", revision="1", rule_id="strut-a")
+    assembly_id = "support-assembly:strut"
+    return replace(
+        base,
+        support_assemblies=(
+            SupportAssembly(
+                id=assembly_id, intent_id="intent:strut", assembly_type="strut",
+                level_id="level:ground", supported_object_ids=("device:evse",),
+                component_ids=("support-component:strut",),
+                interface_ids=("support-interface:base",), basis=basis,
+            ),
+        ),
+        support_components=(
+            SupportComponent(
+                id="support-component:strut", assembly_id=assembly_id,
+                part_key="part:strut", level_id="level:ground", category="support",
+                component_type="strut",
+                product=CatalogProduct(
+                    catalog_id="synthetic", catalog_revision="1", product_id="strut",
+                ),
+                pose=Pose(position=Point3(x=5.2, y=0.0, z=2.0)),
+                size=Size3(x=0.1, y=0.1, z=0.6),
+            ),
+        ),
+        support_interfaces=(
+            SupportInterface(
+                id="support-interface:base", assembly_id=assembly_id,
+                interface_key="interface:base", level_id="level:ground",
+                host_id="wall:south", substrate="steel",
+                pose=Pose(position=Point3(x=5.2, y=0.0, z=2.0)),
+                component_ids=("support-component:strut",),
+            ),
+        ),
+        support_selection_outcomes=(
+            SupportSelectionOutcome(
+                id="support-outcome:strut", intent_id="intent:strut",
+                supported_object_ids=("device:evse",), status="selected",
+                selected_assembly_id=assembly_id, requested_level_id="level:ground",
+                requested_basis=basis,
+            ),
+        ),
+    )
+
+
+def _supports_config() -> LayerSelectionConfig:
+    return LayerSelectionConfig.from_dict({
+        "schema_version": "1.0.0",
+        "layers": [
+            {
+                "id": "layer:electrical",
+                "name": "Electrical",
+                "member_ids": ["device:evse", "equip:panel", "route:panel-evse"],
+            },
+            {
+                "id": "layer:supports",
+                "name": "Supports",
+                "member_ids": [
+                    "support-assembly:strut",
+                    "support-component:strut",
+                    "support-interface:base",
+                ],
+            },
+            {
+                "id": "layer:arch",
+                "name": "Architecture",
+                "member_ids": [f"wall:{name}" for name in ("south", "east", "north", "west")]
+                + ["space:garage", "slab:garage"],
+            },
+        ],
+        "presets": [
+            {
+                "id": "preset:all",
+                "name": "All",
+                "visible_layer_ids": ["layer:electrical", "layer:supports", "layer:arch"],
+            },
+            {
+                "id": "preset:no-supports",
+                "name": "No supports",
+                "visible_layer_ids": ["layer:electrical", "layer:arch"],
+                "hidden_layer_ids": ["layer:supports"],
+            },
+            {
+                "id": "preset:ghost-supports",
+                "name": "Ghost supports",
+                "visible_layer_ids": ["layer:electrical", "layer:arch"],
+                "ghosted_layer_ids": ["layer:supports"],
+            },
+        ],
+    })
+
+
+def test_support_records_join_the_universe_once_and_group_as_a_tree(tmp_path: Path) -> None:
+    model = _supports_model()
+    resolution = resolve_preset(
+        _supports_config(), model, preset="preset:all", unassigned="hidden",
+    )
+    drawable = (
+        len(model.walls) + len(model.slabs) + len(model.spaces)
+        + len(model.electrical_devices) + len(model.electrical_equipment)
+        + len(model.routes) + len(model.electrical_boxes)
+        + len(model.support_components) + len(model.support_interfaces)
+        + len(model.support_assemblies)
+    )
+    assert len(resolution.visible_ids) == drawable
+    assert {
+        "support-assembly:strut", "support-component:strut", "support-interface:base",
+    } <= set(resolution.visible_ids)
+
+    plan = layer_glb_plan(model, resolution)
+    target = tmp_path / "supports.glb"
+    summary = to_glb(
+        model, target, groups=plan.groups, hidden_groups=plan.hidden_groups,
+    )
+    gltf = _parse_glb(target)["gltf"]
+    names = [node["name"] for node in gltf["nodes"]]
+    # Each support record is exported exactly once.
+    for support_id in ("support-assembly:strut", "support-component:strut",
+                       "support-interface:base"):
+        assert names.count(support_id) == 1
+    # The scene is a tree: no node index is a child of two parents. When the
+    # caller group takes the assembly and its members, the exporter keeps the
+    # scene a tree by moving every node under the group exactly once; the
+    # assembly's logical membership stays in its canonical extras.
+    parent_of: dict[int, int] = {}
+    for index, node in enumerate(gltf["nodes"]):
+        for child in node.get("children", ()):
+            assert child not in parent_of, f"node {child} has two parents"
+            parent_of[child] = index
+    group_index = names.index("group:layer:preset:all:visible")
+    grouped = {names[i] for i in gltf["nodes"][group_index]["children"]}
+    assert {
+        "support-assembly:strut", "support-component:strut", "support-interface:base",
+    } <= grouped
+    assembly_extras = gltf["nodes"][names.index("support-assembly:strut")]["extras"]
+    assert assembly_extras["component_ids"] == ["support-component:strut"]
+    assert assembly_extras["interface_ids"] == ["support-interface:base"]
+    assert summary["unmatched_group_ids"] == 0
+
+
+def test_hidden_support_group_hides_the_whole_assembly_subtree(tmp_path: Path) -> None:
+    model = _supports_model()
+    resolution = resolve_preset(
+        _supports_config(), model, preset="preset:no-supports", unassigned="hidden",
+    )
+    assert set(resolution.hidden_ids) == {
+        "support-assembly:strut", "support-component:strut", "support-interface:base",
+    }
+    plan = layer_glb_plan(model, resolution)
+    target = tmp_path / "no-supports.glb"
+    to_glb(model, target, groups=plan.groups, hidden_groups=plan.hidden_groups)
+    gltf = _parse_glb(target)["gltf"]
+    names = [node["name"] for node in gltf["nodes"]]
+    hidden_index = names.index("group:layer:preset:no-supports:hidden")
+    hidden_children = {
+        names[i] for i in gltf["nodes"][hidden_index].get("children", ())
+    }
+    assert hidden_children == {
+        "support-assembly:strut", "support-component:strut", "support-interface:base",
+    }
+    assert gltf["extensionsUsed"] == ["KHR_node_visibility"]
+    assert "extensionsRequired" not in gltf
+
+
+def test_support_ghosts_are_reported_unsupported(tmp_path: Path) -> None:
+    model = _supports_model()
+    resolution = resolve_preset(
+        _supports_config(), model, preset="preset:ghost-supports", unassigned="hidden",
+    )
+    plan = layer_glb_plan(model, resolution)
+    assert set(plan.unsupported_ghost_ids) == {
+        "support-assembly:strut", "support-component:strut", "support-interface:base",
+    }
+
+
+def test_support_selection_outcomes_are_out_of_scope_members() -> None:
+    model = _supports_model()
+    document = json.loads(_supports_config().to_json())
+    document["layers"][0]["member_ids"].append("support-outcome:strut")
+    config = LayerSelectionConfig.from_dict(document)
+    resolution = resolve_preset(
+        config, model, preset="preset:all", unassigned="hidden",
+    )
+    assert "support-outcome:strut" in resolution.out_of_scope_member_ids
+
+
+# ---------------------------------------------------------------- dimmed route wires
+
+
+def _glb_materials(path: Path) -> dict[str, tuple[str, float]]:
+    data = path.read_bytes()
+    json_length, _ = struct.unpack_from("<II", data, 12)
+    gltf = json.loads(data[20:20 + json_length])
+    by_name: dict[str, tuple[str, float]] = {}
+    for node in gltf["nodes"]:
+        if "mesh" not in node:
+            continue
+        primitive = gltf["meshes"][node["mesh"]]["primitives"][0]
+        material = gltf["materials"][primitive["material"]]
+        by_name[node["name"]] = (
+            material["name"],
+            material["pbrMetallicRoughness"]["baseColorFactor"][3],
+        )
+    return by_name
+
+
+def test_dimmed_route_ghosts_its_conductor_wires(tmp_path: Path) -> None:
+    """The supervisor's reproduced defect: ghosting a route must ghost the
+    three conductor wires drawn inside it, not leave them at alpha 1.0."""
+
+    model = BuildingModel.load(ROOT / "fixtures/model/v1/garage-route.json")
+    wire_names = (
+        "conductor:l1#route:panel-evse#0",
+        "conductor:l2#route:panel-evse#0",
+        "conductor:egc#route:panel-evse#0",
+    )
+    plain = tmp_path / "plain.glb"
+    plain_summary = to_glb(model, plain)
+    materials = _glb_materials(plain)
+    assert materials["route:panel-evse"] == ("route", 1.0)
+    assert "dimmed_conductor_wires" not in plain_summary
+    for name in wire_names:
+        assert materials[name][1] == 1.0
+
+    dimmed = tmp_path / "dimmed.glb"
+    summary = to_glb(model, dimmed, dimmed_ids=("route:panel-evse",))
+    materials = _glb_materials(dimmed)
+    assert materials["route:panel-evse"] == ("route-dimmed", 0.3)
+    for name, material_name in (
+        (wire_names[0], "wire-phase-1-dimmed"),
+        (wire_names[1], "wire-phase-2-dimmed"),
+        (wire_names[2], "wire-ground-dimmed"),
+    ):
+        assert materials[name] == (material_name, 0.3)
+    assert summary["dimmed"] == 1
+    assert summary["dimmed_conductor_wires"] == 3
+
+
+def test_undimmed_route_wires_stay_opaque_next_to_a_dimmed_route(tmp_path: Path) -> None:
+    model = _two_level_model()
+    plain = tmp_path / "plain.glb"
+    to_glb(model, plain)
+    dimmed = tmp_path / "dimmed.glb"
+    to_glb(model, dimmed, dimmed_ids=("route:one",))
+    plain_materials = _glb_materials(plain)
+    dimmed_materials = _glb_materials(dimmed)
+    assert dimmed_materials["route:one"][1] == 0.3
+    assert dimmed_materials["route:two"] == plain_materials["route:two"]
+    assert dimmed_materials["route:two"][1] == 1.0
 
 
 # ---------------------------------------------------------------- GLB adapter
+
+
+def _by_name(parsed: dict) -> dict[str, int]:
+    return {node["name"]: index for index, node in enumerate(parsed["gltf"]["nodes"])}
 
 
 def _parse_glb(path: Path) -> dict:
@@ -632,10 +1060,6 @@ def _parse_glb(path: Path) -> dict:
     json_length, json_type = struct.unpack_from("<II", data, 12)
     assert json_type == _CHUNK_JSON
     return {"gltf": json.loads(data[20:20 + json_length])}
-
-
-def _by_name(parsed: dict) -> dict[str, int]:
-    return {node["name"]: index for index, node in enumerate(parsed["gltf"]["nodes"])}
 
 
 def _export(tmp_path: Path, model: BuildingModel, plan, name: str) -> dict:
@@ -650,7 +1074,9 @@ def _export(tmp_path: Path, model: BuildingModel, plan, name: str) -> dict:
 
 def test_hidden_state_lands_as_a_hidden_group_in_actual_glb_output(tmp_path: Path) -> None:
     model = _two_level_model()
-    resolution = resolve_preset(_demo_config(), model, preset="preset:phase-1")
+    resolution = resolve_preset(
+        _demo_config(), model, preset="preset:phase-1", unassigned=UNASSIGNED_VISIBLE,
+    )
     plan = layer_glb_plan(model, resolution)
     assert plan.hidden_groups == {"layer:preset:phase-1:hidden"}
     assert plan.dimmed_ids == frozenset(resolution.ghosted_ids)
@@ -681,19 +1107,24 @@ def test_hidden_state_lands_as_a_hidden_group_in_actual_glb_output(tmp_path: Pat
 
 def test_supported_ghosts_dim_and_unsupported_are_disclosed(tmp_path: Path) -> None:
     model = _two_level_model()
-    resolution = resolve_preset(_demo_config(), model, preset="preset:ghost-power")
+    resolution = resolve_preset(
+        _demo_config(), model, preset="preset:ghost-power", unassigned=UNASSIGNED_VISIBLE,
+    )
     plan = layer_glb_plan(model, resolution)
-    # Devices, equipment and routes all have a real ghost style.
+    # Devices, equipment and routes all have a real ghost style, wires included.
     assert plan.unsupported_ghost_ids == ()
     result = _export(tmp_path, model, plan, "ghosted.glb")
     assert result["summary"]["dimmed"] == 3
+    # The key is absent while no wire is dimmed, like the other option keys.
+    assert "dimmed_conductor_wires" not in result["summary"]
     assert result["summary"]["emphasized"] == 0
 
 
 def test_isolate_export_hides_everything_outside_the_selection(tmp_path: Path) -> None:
     model = _two_level_model()
     resolution = resolve_preset(
-        _demo_config(), model, preset="preset:all", isolate=("layer:power",),
+        _demo_config(), model, preset="preset:all",
+        isolate=("layer:power",), unassigned=UNASSIGNED_VISIBLE,
     )
     plan = layer_glb_plan(model, resolution)
     result = _export(tmp_path, model, plan, "isolated.glb")
@@ -719,7 +1150,9 @@ def test_plan_exports_are_byte_deterministic_across_permutations(tmp_path: Path)
     permuted = LayerSelectionConfig.from_dict(document)
     payloads = []
     for index, source in enumerate((config, permuted)):
-        resolution = resolve_preset(source, model, preset="preset:phase-1")
+        resolution = resolve_preset(
+            source, model, preset="preset:phase-1", unassigned=UNASSIGNED_VISIBLE,
+        )
         plan = layer_glb_plan(model, resolution)
         target = tmp_path / f"run-{index}.glb"
         to_glb(

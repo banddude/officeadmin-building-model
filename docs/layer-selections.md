@@ -40,16 +40,19 @@ semantics, applied in this order:
 2. An entity in several layers takes the **strictest** state among them:
    `hidden` beats `ghosted` beats `visible`. This is the documented rule for
    overlapping layers; it is independent of layer order.
-3. An entity in no layer is **unassigned**. `unassigned_ids` always reports
-   incomplete coverage, and the caller's `unassigned` policy decides where
-   such entities land: `visible` (default, which keeps today's
-   everything-shown behaviour), `hidden`, `ghosted`, or `error` to refuse
-   incomplete coverage outright.
+3. An entity in no layer is **unassigned**. Incomplete coverage is a
+   property of the whole configuration, so `unassigned_ids` always reports
+   it, independent of `isolate` and of the level filter; isolate can hide
+   an unassigned entity but can never make the coverage gap disappear. The
+   caller's `unassigned` policy is a required argument, so there is no
+   silent default: it decides where unassigned entities land (`visible`
+   keeps today's everything-shown behaviour, `hidden` and `ghosted` tuck
+   them away) or refuses incomplete coverage outright (`error`, also under
+   isolate).
 4. A nonempty `isolate` restricts the considered layers to the named ones.
    Their members keep the strictest state among those layers under the
-   preset, and every other drawable entity is hidden. Coverage is still
-   reported for the whole configuration. Isolating an empty layer is legal
-   and renders nothing.
+   preset, and every other drawable entity is hidden. Isolating an empty
+   layer is legal and renders nothing.
 5. A nonempty `level_ids` filter keeps entities whose canonical level is in
    the filter and hides the rest. A route resolves its level from its start
    port's owner, the same documented rule the GLB exporter uses for
@@ -59,11 +62,14 @@ semantics, applied in this order:
 The three id sets are always a disjoint, complete partition of the drawable
 universe: the entities the current GLB exporter draws as canonical nodes
 (walls, slabs, spaces, electrical devices, electrical equipment, routes,
-physical electrical boxes). Ceilings and openings are not drawn by the GLB
+physical electrical boxes, and the 1.3 shared support components,
+interfaces and assemblies). Ceilings and openings are not drawn by the GLB
 exporter yet, so they are outside the universe; a member that exists in the
-model but outside the universe (a port, a raceway selection) is reported in
-`out_of_scope_member_ids` and never enters the partition. Conductor wire
-nodes are counted once, through their route id.
+model but outside the universe (a port, a raceway selection, a support
+selection outcome) is reported in `out_of_scope_member_ids` and never
+enters the partition. Conductor wire nodes are counted once, through their
+route id, and a support assembly brings its component and interface
+children with it exactly once.
 
 ## What resolution never claims
 
@@ -87,11 +93,14 @@ to the exporter's existing caller-supplied grouping and visibility boundary:
   required);
 - ghosted ids passed as `dimmed_ids`, so supported kinds actually render
   ghosted (translucent): electrical devices, electrical equipment and
-  routes; a glazed wall takes the dim only as a lower alpha;
+  routes, where a dimmed route dims the conductor wires drawn inside it
+  too, so the conduit ghosts whole; a glazed wall takes the dim only as a
+  lower alpha;
 - `unsupported_ghost_ids` names every ghosted id whose kind has no ghost
-  style today (plain walls, slabs, space plates, physical boxes). They stay
-  in the ghosted group but draw at normal appearance, and the caller must
-  surface the report instead of presenting them as ghosted.
+  style today (plain walls, slabs, space plates, physical boxes, support
+  components, interfaces and assemblies). They stay in the ghosted group
+  but draw at normal appearance, and the caller must surface the report
+  instead of presenting them as ghosted.
 
 The adapter adds no new exporter features and does not change the exporter;
 with no plan passed, `to_glb` output is byte-identical to its previous

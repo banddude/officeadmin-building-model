@@ -9,12 +9,14 @@ exactly those caller-supplied inputs, and nothing else: it never mutates the
 model, changes default export bytes, or invents new GLB features.
 
 Ghosting is disclosed honestly. The exporter can render a ghost (dimmed,
-translucent) style for electrical devices, electrical equipment and routes;
-a glazed wall takes the dim only as a lower alpha. For every other kind
-(plain walls, slabs, spaces, physical boxes) there is no ghost style today,
-so those ids still land in the ghosted group node but draw at their normal
-appearance, and :attr:`LayerGlbPlan.unsupported_ghost_ids` names them
-explicitly rather than silently advertising the behaviour as working.
+translucent) style for electrical devices, electrical equipment and routes,
+including the conductor wires drawn inside a dimmed route, so a ghosted
+route ghosts whole; a glazed wall takes the dim only as a lower alpha. For
+every other kind (plain walls, slabs, spaces, physical boxes, and the 1.3
+support components, interfaces and assemblies) there is no ghost style
+today, so those ids still land in the ghosted group node but draw at their
+normal appearance, and :attr:`LayerGlbPlan.unsupported_ghost_ids` names
+them explicitly rather than silently advertising the behaviour as working.
 """
 from __future__ import annotations
 

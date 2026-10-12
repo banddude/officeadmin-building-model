@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "OABM portable layer selections configuration, schema version 1.0.0",
-  "description": "Versioned configuration of named layers with explicit canonical entity membership and named saved presets. This schema covers structure only; duplicate layer/preset ids and names, duplicated members within a layer, a layer assigned two states in one preset, and a preset that does not assign every layer exactly one state are rejected by the Python reader (oabm.model.layers) and by any other strict implementation. Membership references are validated against a concrete canonical model at resolution time, not by this schema.",
+  "description": "Versioned configuration of named layers with explicit canonical entity membership and named saved presets. This schema covers structure only; duplicate layer/preset ids and names, duplicated members within a layer, a layer assigned two states in one preset, and a preset that does not assign every layer exactly one state are rejected by the Python reader (oabm.model.layers) and by any other strict implementation. The optional system/trade/phase labels follow one portable contract across constructor, decoder and this schema: absent or a nonempty string, never explicit null. Membership references are validated against a concrete canonical model at resolution time, not by this schema.",
   "type": "object",
   "additionalProperties": false,
   "required": [

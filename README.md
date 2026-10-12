@@ -47,6 +47,9 @@ semantic rankings, configured fake-adapter roles and measured vision gates.
 See [Layer selections](docs/layer-selections.md) for portable saved layer
 selections, the explicit membership resolver, and the GLB visibility handoff.
 
+See [Branch wall-evidence guard](docs/branch-wall-evidence-guard.md) for the
+source-bound architectural wall evidence handoff and open-chain rejection.
+
 See [Open-source reuse audit](docs/open-source-reuse-audit.md) for component
 decisions and the reproducible, public-safe calculation prototype from #93.
 

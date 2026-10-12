@@ -28,11 +28,17 @@ FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "fixtures/pdf_electrical/geometry-only-power-sheet-with-legend.pdf"
 )
-BASELINE_DENSE_SHA256 = "31dc13f2f270efe29b45237d5162fe646fe47e03146e9753deda4db18c6409c0"
+# Deliberate digest update for #276: every import now states its
+# branch_wall_evidence guard status in pdf_electrical attributes ("absent"
+# with the #76 note when no handoff was supplied, "applied" with chain and
+# rejection counts otherwise). Removing exactly that attribute from the new
+# output reproduces the previous digests byte for byte, so the attribute is
+# the sole intended delta on these fixtures.
+BASELINE_DENSE_SHA256 = "5f27f16b01a170ee688fd7a7c575c6120ad20debe27b99a8d4b583a1e2295a87"
 BASELINE_FIXTURE_SHA256 = {
-    "geometry-only-power-sheet-with-legend.pdf": "7571bb35281e1db129fd0fc7f7be921341c3aececd60cd62803f7d0cfd57acc9",
-    "two-page-sheet-local-legend.pdf": "6ff0d4dc2f2c04e6f241214aa1700673b3a7a4238ff5aead8ff4cff031478c0c",
-    "geometry-only-power-sheet-real-cad-glyphs.pdf": "f6c5790517d71992b314d91904d549d0a92711dfc672a061be79d66fb1ef51ec",
+    "geometry-only-power-sheet-with-legend.pdf": "3979e782b9bb48b742608f00c5fafb27353ee0cbab7b9ca0a03ea922ab1f1b92",
+    "two-page-sheet-local-legend.pdf": "c0fd1ae7a3564bfb8ce9d7ab335e94afb67bdd608a1e353c62f935cce18b5177",
+    "geometry-only-power-sheet-real-cad-glyphs.pdf": "311c8c52faf2fb936990b147560501abec4bf62a397a700695ae3d68f8c32ba2",
 }
 
 

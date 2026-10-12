@@ -35,6 +35,10 @@ from oabm.importers.pdf_display import (
     PdfPageDisplayTransform,
     page_display_transform,
 )
+from oabm.importers.pdf_wall_evidence import (
+    SourceWallEvidence,
+    WallEvidenceHandoffError,
+)
 
 # The shared colour-luminance rule from the architecture stroke-style work:
 # DeviceGray direct, DeviceRGB mixed 0.299/0.587/0.114, DeviceCMYK converted to
@@ -9398,6 +9402,152 @@ def _looks_like_note(text: str) -> bool:
     )
 
 
+class _SegmentPath(NamedTuple):
+    """A two-point stand-in path for a wall-evidence segment."""
+
+    page: int
+    points_pt: tuple[tuple[float, float], ...]
+    closed: bool = False
+
+
+def _validate_wall_evidence_binding(
+    document: PdfElectricalDocument,
+    wall_evidence: SourceWallEvidence,
+) -> None:
+    """Refuse a handoff that does not bind to this exact extraction.
+
+    The handoff claims one page of one fingerprinted source document. Both
+    lanes hash the same PDF bytes, so the handoff binds when its content
+    sha-256 equals the digest embedded in the document's source id, or when
+    the caller pinned both extractions to the same logical source id. A
+    stale hash or a foreign source is a hard refusal: applying architecture
+    evidence to the wrong extraction would be worse than having none.
+    """
+
+    embedded = (
+        document.source_id.removeprefix("sha256:")
+        if document.source_id.startswith("sha256:")
+        else None
+    )
+    bound_by_hash = embedded is not None and embedded == wall_evidence.content_sha256
+    bound_by_id = wall_evidence.source_id == document.source_id
+    if not bound_by_hash and not bound_by_id:
+        raise ElectricalPdfError(
+            "wall evidence was extracted from a different source: handoff "
+            f"source_id {wall_evidence.source_id!r} (sha256 "
+            f"{wall_evidence.content_sha256[:12]}...) does not match document "
+            f"source_id {document.source_id!r}; re-extract the architecture "
+            "classification from the same PDF"
+        )
+    if bound_by_id and embedded is not None and embedded != wall_evidence.content_sha256:
+        raise ElectricalPdfError(
+            "stale wall evidence: handoff content sha256 "
+            f"{wall_evidence.content_sha256[:12]}... does not match the "
+            "document bytes behind the same source id; the classification "
+            "predates a PDF revision"
+        )
+    if wall_evidence.page_number > document.page_count:
+        raise ElectricalPdfError(
+            f"wall evidence page {wall_evidence.page_number} is outside this "
+            f"document ({document.page_count} page(s))"
+        )
+
+
+def _wall_chains_by_page(
+    wall_evidence: SourceWallEvidence | None,
+) -> dict[int, tuple[Any, ...]]:
+    if wall_evidence is None:
+        return {}
+    return {wall_evidence.page_number: wall_evidence.chains}
+
+
+def _segment_is_symbol_stroke(
+    segment: Any,
+    outline: PdfVectorPathObservation,
+    tolerance_pt: float,
+) -> bool:
+    """Whether a classified segment coincides with a symbol outline stroke."""
+
+    path = _SegmentPath(page=outline.page, points_pt=(segment.start_pt, segment.end_pt))
+    if not _paths_touch(path, outline, tolerance_pt=tolerance_pt):
+        return False
+    middle = (
+        (segment.start_pt[0] + segment.end_pt[0]) / 2.0,
+        (segment.start_pt[1] + segment.end_pt[1]) / 2.0,
+    )
+    return _point_path_distance_pt(middle, outline) <= tolerance_pt
+
+
+def _vector_is_chain_stroke(
+    vector: PdfVectorPathObservation,
+    chains: Sequence[Any],
+    tolerance_pt: float,
+) -> bool:
+    """Whether a component vector is one of the chain's own claimed strokes.
+
+    Connectivity assembly absorbs the wall's own linework into the run, so
+    "the run touches the chain" is trivially true once that happened. The
+    conflict question is whether the run's OTHER vectors contact the
+    classified geometry, which needs the chain's own strokes excluded.
+    """
+
+    for chain in chains:
+        for segment in chain.segments:
+            path = _SegmentPath(
+                page=vector.page,
+                points_pt=(segment.start_pt, segment.end_pt),
+            )
+            if all(
+                _point_path_distance_pt(point, path) <= tolerance_pt
+                for point in (vector.points_pt[0], vector.points_pt[-1])
+            ):
+                return True
+    return False
+
+
+def _wall_chain_conflict(
+    component: Sequence[PdfVectorPathObservation],
+    chains: Sequence[Any],
+    *,
+    own_symbol_outlines: Sequence[PdfVectorPathObservation],
+    tolerance_pt: float,
+) -> Any | None:
+    """The classified wall chain this branch run contacts, if any.
+
+    Purely source-evidence driven: geometry contact between the run's own
+    vectors (not the wall's absorbed strokes, not the device's own
+    recognized symbol outline) and a positively classified wall chain is a
+    conflict. Shape, degree and vector counts are never consulted.
+    """
+
+    if not chains or not component:
+        return None
+    page = component[0].page
+    run_vectors = [
+        vector
+        for vector in component
+        if not _vector_is_chain_stroke(vector, chains, tolerance_pt)
+    ]
+    for chain in chains:
+        for segment in chain.segments:
+            path = _SegmentPath(
+                page=page,
+                points_pt=(segment.start_pt, segment.end_pt),
+            )
+            if not any(
+                _paths_cross_or_touch(vector, path, tolerance_pt=tolerance_pt)
+                for vector in run_vectors
+            ):
+                continue
+            if any(
+                _segment_is_symbol_stroke(segment, outline, tolerance_pt)
+                for outline in own_symbol_outlines
+            ):
+                continue
+            return chain
+    return None
+
+
 class ElectricalPdfImporter:
     """Deterministic electrical plan recognition into the canonical v1 model."""
 
@@ -9553,10 +9703,12 @@ class ElectricalPdfImporter:
         *,
         source_id: str | None = None,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
+        wall_evidence: SourceWallEvidence | None = None,
     ) -> BuildingModel:
         return self.import_document(
             extract_pdf(path, source_id=source_id),
             page_transforms=page_transforms,
+            wall_evidence=wall_evidence,
         )
 
     def import_document(
@@ -9565,7 +9717,11 @@ class ElectricalPdfImporter:
         *,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
         page_type_filters: Mapping[int, frozenset[str]] | None = None,
+        wall_evidence: SourceWallEvidence | None = None,
     ) -> BuildingModel:
+        if wall_evidence is not None:
+            _validate_wall_evidence_binding(document, wall_evidence)
+        wall_chains_by_page = _wall_chains_by_page(wall_evidence)
         transforms, region_transforms, has_explicit_registration = _resolve_page_transforms(
             document,
             page_transforms,
@@ -11049,6 +11205,34 @@ class ElectricalPdfImporter:
                         return closed
             return None
 
+        def component_own_symbol_outlines(
+            component: Sequence[PdfVectorPathObservation],
+        ) -> tuple[PdfVectorPathObservation, ...]:
+            """The component's own recognized symbol outline vectors.
+
+            A branch legitimately terminates at its device's own closed mark,
+            and a wall classifier shown the same combined sheet may claim that
+            mark's strokes as wall evidence. Contact with those strokes is the
+            device, not architecture, and must not read as a wall conflict.
+            """
+
+            if not component:
+                return ()
+            page = component[0].page
+            outlines = [
+                vector
+                for vector in vectors
+                if vector.page == page and vector.element_id in vector_symbol_ids
+            ]
+            return tuple(
+                outline
+                for outline in outlines
+                if any(
+                    _paths_touch(outline, branch, tolerance_pt=snap_tolerance_pt)
+                    for branch in component
+                )
+            )
+
         # Assemble components by growing outward from each homerun arrowhead.
         # The arrowhead is the signature of a homerun, so this both bounds the
         # work by the (small) arrowhead count and finds arrowed runs whose
@@ -11356,6 +11540,50 @@ class ElectricalPdfImporter:
                             "space, which branch wiring does not do"
                         ),
                         "cycle_element_id": enclosing.element_id,
+                        "component_vector_count": len(component),
+                    }
+                )
+                continue
+            wall_conflict = _wall_chain_conflict(
+                component,
+                wall_chains_by_page.get(page, ()),
+                own_symbol_outlines=component_own_symbol_outlines(component),
+                tolerance_pt=snap_tolerance_pt,
+            )
+            if wall_conflict is not None:
+                unresolved_circuits.append(
+                    {
+                        "kind": "homerun",
+                        "page": page,
+                        "source_element_id": sorted(
+                            item.element_id for item in component
+                        )[0],
+                        "source_element_ids": sorted(
+                            item.element_id for item in component
+                        ),
+                        "status": "unresolved",
+                        "reason_code": "enters_classified_wall_chain",
+                        "reason": (
+                            "branch run contacts positively classified "
+                            "architectural wall evidence "
+                            f"({wall_conflict.evidence_kind} classifier "
+                            f"{wall_evidence.classifier} v{wall_evidence.classifier_version}, "
+                            + (
+                                "open chain"
+                                if wall_conflict.open
+                                else "closed chain"
+                            ) + "); connectivity alone cannot separate it "
+                            "from wiring, so the circuit stays unresolved"
+                        ),
+                        "wall_chain_id": wall_conflict.chain_id,
+                        "wall_evidence_element_ids": sorted(
+                            {
+                                element_id
+                                for segment in wall_conflict.segments
+                                for element_id in segment.source_element_ids
+                            }
+                        ),
+                        "wall_evidence_source_sha256": wall_evidence.content_sha256,
                         "component_vector_count": len(component),
                     }
                 )
@@ -11742,6 +11970,38 @@ class ElectricalPdfImporter:
         ):
             page = component[0].page
             element_ids = sorted(item.element_id for item in component)
+            wall_conflict = _wall_chain_conflict(
+                component,
+                wall_chains_by_page.get(page, ()),
+                own_symbol_outlines=component_own_symbol_outlines(component),
+                tolerance_pt=self.topology_snap_radius_pt,
+            )
+            if wall_conflict is not None:
+                # The branch run walks into positively classified
+                # architectural wall evidence. Connectivity alone cannot
+                # separate that from wiring (#76), so the run stays
+                # unresolved and no circuit, ports or load membership is
+                # created from it.
+                unresolved_topology.append(
+                    {
+                        "page": page,
+                        "source_element_ids": element_ids,
+                        "attached_entity_ids": [],
+                        "status": "unresolved",
+                        "reason": "enters_classified_wall_chain",
+                        "wall_chain_id": wall_conflict.chain_id,
+                        "wall_chain_open": wall_conflict.open,
+                        "wall_evidence_element_ids": sorted(
+                            {
+                                element_id
+                                for segment in wall_conflict.segments
+                                for element_id in segment.source_element_ids
+                            }
+                        ),
+                        "wall_evidence_source_sha256": wall_evidence.content_sha256,
+                    }
+                )
+                continue
             attached: dict[str, ElectricalEquipment | ElectricalDevice] = {}
             ambiguous_endpoints: list[dict[str, Any]] = []
 
@@ -12426,6 +12686,43 @@ class ElectricalPdfImporter:
                             str(item["source_element_id"]),
                         ),
                     ),
+                    "branch_wall_evidence": (
+                        {
+                            "status": "applied",
+                            "source_id": wall_evidence.source_id,
+                            "content_sha256": wall_evidence.content_sha256,
+                            "classifier": wall_evidence.classifier,
+                            "classifier_version": wall_evidence.classifier_version,
+                            "page": wall_evidence.page_number,
+                            "evidence_kind": wall_evidence.evidence_kind,
+                            "confidence": wall_evidence.confidence,
+                            "chain_count": len(wall_evidence.chains),
+                            "open_chain_count": sum(
+                                1 for chain in wall_evidence.chains if chain.open
+                            ),
+                            "rejected_runs": sum(
+                                1
+                                for item in unresolved_circuits
+                                if item.get("reason_code")
+                                == "enters_classified_wall_chain"
+                            ) + sum(
+                                1
+                                for item in unresolved_topology
+                                if item.get("reason")
+                                == "enters_classified_wall_chain"
+                            ),
+                        }
+                        if wall_evidence is not None
+                        else {
+                            "status": "absent",
+                            "note": (
+                                "no source wall classification was supplied; branch "
+                                "runs are guarded by closed-outline and loop topology "
+                                "only, and open architectural chains stay "
+                                "indistinguishable from wiring (#76)"
+                            ),
+                        }
+                    ),
                     "unresolved_topology": sorted(
                         unresolved_topology,
                         key=lambda item: (
@@ -12452,11 +12749,13 @@ def import_pdf(
     page_transforms: Mapping[int, PageTransformInput] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
+    wall_evidence: SourceWallEvidence | None = None,
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_pdf(
         path,
         source_id=source_id,
         page_transforms=page_transforms,
+        wall_evidence=wall_evidence,
     )
 
 
@@ -12466,10 +12765,12 @@ def import_document(
     page_transforms: Mapping[int, PageTransformInput] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
+    wall_evidence: SourceWallEvidence | None = None,
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_document(
         document,
         page_transforms=page_transforms,
+        wall_evidence=wall_evidence,
     )
 
 

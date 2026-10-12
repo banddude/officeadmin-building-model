@@ -1,0 +1,638 @@
+{
+  "$defs": {
+    "BenchmarkCase": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_candidate_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "request": {
+          "$ref": "#/$defs/RankingRequest"
+        }
+      },
+      "required": [
+        "id",
+        "request",
+        "expected_candidate_id"
+      ],
+      "type": "object"
+    },
+    "BenchmarkTrial": {
+      "additionalProperties": false,
+      "properties": {
+        "availability_reason": {
+          "enum": [
+            null,
+            "rate_limited",
+            "unavailable"
+          ]
+        },
+        "case_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "response": {}
+      },
+      "required": [
+        "case_id",
+        "response",
+        "availability_reason"
+      ],
+      "type": "object"
+    },
+    "CandidateReference": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate": {
+          "$ref": "#/$defs/PlacementCandidate"
+        },
+        "content_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "content_fingerprint",
+        "candidate"
+      ],
+      "type": "object"
+    },
+    "Endpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "model_alias": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "provider_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter_id",
+        "provider_id",
+        "model_alias"
+      ],
+      "type": "object"
+    },
+    "ImageCrop": {
+      "additionalProperties": false,
+      "properties": {
+        "content_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "gray8_base64": {
+          "maxLength": 349528,
+          "type": "string"
+        },
+        "height": {
+          "maximum": 262144,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "region_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "source_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "width": {
+          "maximum": 262144,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_id",
+        "region_id",
+        "width",
+        "height",
+        "gray8_base64",
+        "content_fingerprint"
+      ],
+      "type": "object"
+    },
+    "PlacementCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "direction": {
+          "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Vector3"
+        },
+        "position": {
+          "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Point3"
+        },
+        "reasons": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 512,
+          "type": "array"
+        },
+        "score": {
+          "type": "number"
+        },
+        "space_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "valid": {
+          "type": "boolean"
+        },
+        "wall_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "position",
+        "wall_id",
+        "space_id",
+        "direction",
+        "score",
+        "confidence",
+        "reasons",
+        "valid"
+      ],
+      "type": "object"
+    },
+    "PlacementContext": {
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/CandidateReference"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "type": "array"
+        },
+        "model_source_context": {
+          "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/panel-schedule-report-v1.schema.json#/$defs/ModelSourceContext"
+        },
+        "options": {
+          "$ref": "#/$defs/PlacementOptions"
+        },
+        "source_model_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "sources": {
+          "items": {
+            "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/panel-schedule-report-v1.schema.json#/$defs/SourceSnapshot"
+          },
+          "maxItems": 512,
+          "type": "array"
+        }
+      },
+      "required": [
+        "model_source_context",
+        "sources",
+        "source_model_fingerprint",
+        "options",
+        "candidates"
+      ],
+      "type": "object"
+    },
+    "PlacementOptions": {
+      "additionalProperties": false,
+      "properties": {
+        "equipment_type": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "identity_key": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "mounting_height_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "served_device_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 128,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "working_depth_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "working_width_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "identity_key",
+        "equipment_type",
+        "name",
+        "level_id",
+        "served_device_ids",
+        "mounting_height_m",
+        "working_depth_m",
+        "working_width_m"
+      ],
+      "type": "object"
+    },
+    "ProposalResult": {
+      "additionalProperties": false,
+      "properties": {
+        "accepted": {
+          "const": false
+        },
+        "availability_reason": {
+          "enum": [
+            null,
+            "rate_limited",
+            "unavailable"
+          ]
+        },
+        "benchmark": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisionBenchmark"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config": {
+          "$ref": "#/$defs/RoutingConfig"
+        },
+        "diagnostic": {
+          "type": "boolean"
+        },
+        "diagnostic_requested": {
+          "type": "boolean"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "output": {
+          "$ref": "#/$defs/RankingOutput"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.3.schema.json#/$defs/Provenance"
+          },
+          "maxItems": 512,
+          "type": "array"
+        },
+        "request": {
+          "$ref": "#/$defs/RankingRequest"
+        },
+        "role": {
+          "enum": [
+            "text_glm",
+            "text_codex",
+            "vision_luna",
+            "vision_sol",
+            "diagnostic_astra"
+          ]
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "request",
+        "config",
+        "endpoint",
+        "role",
+        "output",
+        "benchmark",
+        "availability_reason",
+        "diagnostic_requested",
+        "provenance",
+        "diagnostic",
+        "accepted"
+      ],
+      "type": "object"
+    },
+    "RankedCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "evidence_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 8,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "reasons": {
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "confidence",
+        "reasons",
+        "evidence_ids"
+      ],
+      "type": "object"
+    },
+    "RankingOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "ranking": {
+          "items": {
+            "$ref": "#/$defs/RankedCandidate"
+          },
+          "maxItems": 128,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "ranking"
+      ],
+      "type": "object"
+    },
+    "RankingRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/PlacementContext"
+        },
+        "crop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageCrop"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "input_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "modality": {
+          "enum": [
+            "text",
+            "vision"
+          ]
+        },
+        "policy_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "prompt_version": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "task": {
+          "const": "rank_equipment_placement_candidates"
+        },
+        "task_version": {
+          "const": "1.0.0"
+        },
+        "validator_version": {
+          "const": "placement-ranking-v1"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      },
+      "required": [
+        "version",
+        "task",
+        "task_version",
+        "validator_version",
+        "prompt_version",
+        "policy_fingerprint",
+        "context",
+        "question",
+        "modality",
+        "crop",
+        "input_fingerprint"
+      ],
+      "type": "object"
+    },
+    "RoutingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "diagnostic_astra": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "text_codex": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "text_glm": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "version": {
+          "const": "1.0.0"
+        },
+        "vision_luna": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "vision_sol": {
+          "$ref": "#/$defs/Endpoint"
+        }
+      },
+      "required": [
+        "version",
+        "text_glm",
+        "text_codex",
+        "vision_luna",
+        "vision_sol",
+        "diagnostic_astra"
+      ],
+      "type": "object"
+    },
+    "VisionBenchmark": {
+      "additionalProperties": false,
+      "properties": {
+        "case_count": {
+          "maximum": 16,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/BenchmarkCase"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "config": {
+          "$ref": "#/$defs/RoutingConfig"
+        },
+        "content_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "corpus_fingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "endpoint": {
+          "$ref": "#/$defs/Endpoint"
+        },
+        "prompt_version": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        },
+        "required_success_count": {
+          "maximum": 16,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "success_count": {
+          "maximum": 16,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "task": {
+          "const": "rank_equipment_placement_candidates"
+        },
+        "task_version": {
+          "const": "1.0.0"
+        },
+        "trials": {
+          "items": {
+            "$ref": "#/$defs/BenchmarkTrial"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "type": "array"
+        },
+        "validator_version": {
+          "const": "placement-ranking-v1"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      },
+      "required": [
+        "version",
+        "config",
+        "endpoint",
+        "cases",
+        "trials",
+        "corpus_fingerprint",
+        "task",
+        "task_version",
+        "validator_version",
+        "prompt_version",
+        "case_count",
+        "success_count",
+        "required_success_count",
+        "content_fingerprint"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/banddude/officeadmin-building-model/contracts/bounded-proposal-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RankingRequest"
+    },
+    {
+      "$ref": "#/$defs/ProposalResult"
+    },
+    {
+      "$ref": "#/$defs/RoutingConfig"
+    },
+    {
+      "$ref": "#/$defs/VisionBenchmark"
+    }
+  ]
+}

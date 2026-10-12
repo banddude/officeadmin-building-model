@@ -166,6 +166,7 @@ Keep these responsibilities separated:
 - `src/oabm/importers/pdf_electrical`: electrical PDF ingestion
 - `src/oabm/quantities`: model and route derived quantities
 - `src/oabm/drawings`: plans, elevations, sections, schedules, and derived drawing outputs
+- `src/oabm/proposals`: bounded source-bound semantic proposals over actual deterministic candidates; injected adapters cannot mutate canonical state, choose their routing identity or bypass validation. Preserve inferred provenance, availability-only text fallback, measured vision gates and explicit diagnostic isolation.
 - `src/oabm/reports`: opt-in read-only fact reports; preserve canonical owner-relative evidence, exact source binding and explicit unknowns without engineering guesses. Drawing adapters must leave default outputs unchanged.
 - `fixtures` and QA tests: known-answer public-safe regression data
 

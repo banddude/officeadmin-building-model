@@ -41,6 +41,9 @@ report of supplied circuit values, missing facts and connected-load completeness
 See [Object scope ledger](docs/scope-ledger.md) for source-bound per-object
 scope facts, separate counts and explicit confirmed-unmarked caller policy.
 
+See [Bounded proposal ranking](docs/bounded-proposals.md) for strict source-bound
+semantic rankings, configured fake-adapter roles and measured vision gates.
+
 See [Open-source reuse audit](docs/open-source-reuse-audit.md) for component
 decisions and the reproducible, public-safe calculation prototype from #93.
 

@@ -37,6 +37,7 @@ from oabm.model import (
     BuildingModel,
     Level,
     Point3,
+    Polygon3D,
     Polyline3D,
     Provenance,
     Slab,
@@ -100,7 +101,7 @@ def synthetic_scan_room() -> BuildingModel:
     slab = Slab(
         id="slab:floor",
         level_id=level.id,
-        footprint=Polyline3D(points=(
+        footprint=Polygon3D(points=(
             Point3(x=0.0, y=0.0, z=0.0),
             Point3(x=6.0, y=0.0, z=0.0),
             Point3(x=6.0, y=4.0, z=0.0),

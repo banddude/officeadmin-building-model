@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+
+from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -55,3 +58,21 @@ def test_canonical_model_keeps_the_scan_thickness() -> None:
     model = evidence.synthetic_scan_room()
     scan = next(wall for wall in model.walls if wall.id == "wall:scan-south")
     assert scan.thickness_m == evidence.SCAN_THICKNESS_M
+
+
+def test_evidence_model_validates_against_the_canonical_schema() -> None:
+    # The synthetic fixture is canonical data: a Polyline3D slab footprint
+    # once passed the exporter silently while the v1 schema requires
+    # polygon3d. Full schema validation keeps the fixture honest.
+    schema = json.loads(
+        (ROOT / "contracts" / "oabm-model-v1.schema.json").read_text(encoding="utf-8"),
+    )
+    Draft202012Validator.check_schema(schema)
+    document = evidence.synthetic_scan_room().to_dict()
+    errors = sorted(
+        Draft202012Validator(schema).iter_errors(document),
+        key=lambda error: list(error.path),
+    )
+    assert not errors, "\n".join(error.message for error in errors)
+    slab = document["slabs"][0]
+    assert slab["footprint"]["kind"] == "polygon3d"

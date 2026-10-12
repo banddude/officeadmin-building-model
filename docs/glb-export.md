@@ -228,3 +228,35 @@ When a wall, device, electrical equipment or route has a non-empty canonical
 `name`, it travels as `extras["name"]` and shows up among Blender's custom
 properties — so a labeled route such as a low-voltage stub-up can be read
 directly in the viewer.
+
+### Wall display thickness
+
+A RoomPlan capture records a wall honestly at the 0.001 m default (issue
+#75), and a viewer that draws that faithfully produces a wall nobody can
+see. The `min_display_wall_thickness_m` option (issue #88) draws every wall
+whose recorded `thickness_m` is below it at that minimum instead. The ruling
+behind it: **display thickness is a rendering choice, not a model claim.**
+
+- The canonical wall keeps its recorded thickness. The drawn value exists
+  only in the exported vertices, and it never flows back into the model,
+  IFC or quantities; the takeoff keeps computing from the recorded value.
+- The drawn value is a labeled rendering parameter, not a silent constant:
+  the caller names it, and every wall drawn thickened discloses it in its
+  node `extras` — `canonical_thickness_m` (the recorded value),
+  `drawn_thickness_m` (what the mesh shows) and `thickness_source`
+  (`min_display_wall_thickness_m (drawing aid, not a measurement)`), side
+  by side where a viewer's element panel reads them.
+- A wall at or above the minimum draws exactly as before and gains nothing.
+- A glazed-wall outline (`glazed_outline`) follows its wall's drawn
+  corners, so the line never detaches from a thickened mesh.
+
+The summary reports the count of drawn-thickened walls as `thickened_walls`
+while the option is on; with the option `None` (the default) the export is
+byte-identical and the key is absent. This ruling applies to the viewer and
+stops there: IFC consumers treat any solid as a measurement and the file
+carries no chrome to explain itself, so IFC gets real representation
+coverage through the #84 line instead of display fictions. The OA
+production element panel still needs to surface the three disclosure keys
+on its side; that work is tracked in the follow-up issue linked from #88.
+`spikes/display_thickness_evidence/` renders the evidence image and the
+panel data from a synthetic room.

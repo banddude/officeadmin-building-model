@@ -25,6 +25,12 @@ Design notes:
   defaults off, with all options at their defaults the output is
   byte-identical, and none of them flow back into the canonical model, IFC
   or quantities.
+- Display thickness follows the same ruling: a wall whose recorded
+  thickness is below ``min_display_wall_thickness_m`` is *drawn* at that
+  minimum so a scanned wall is visible at building scale, while the model
+  keeps what it honestly knows. The drawn value is disclosed on the wall
+  node's ``extras`` next to the recorded one, and it is a statement about
+  the drawing, never a measurement of the building.
 """
 
 from __future__ import annotations
@@ -205,6 +211,14 @@ _WIRE_RADIUS_M = _WIRE_DIAMETER_M / 2.0
 #: carries no ``nominal_diameter_m`` to fit inside.
 _WIRE_BUNDLE_RADIUS_M = 0.005
 
+#: The ``extras["thickness_source"]`` value on a wall drawn at the caller's
+#: minimum display thickness. It names the viewer option the drawn value came
+#: from and states what it is not, so the drawing can never be mistaken for a
+#: measurement (issue #88).
+_DISPLAY_THICKNESS_SOURCE = (
+    "min_display_wall_thickness_m (drawing aid, not a measurement)"
+)
+
 
 class _DisplayOptions(NamedTuple):
     """Labeled rendering parameters for the optional display-only features.
@@ -228,6 +242,8 @@ class _DisplayOptions(NamedTuple):
     groups: tuple[tuple[str, frozenset[str]], ...] = ()
     hidden_groups: frozenset[str] = frozenset()
     glazed_outline: bool = False
+    # Walls thinner than this draw at this thickness; None draws canonically.
+    min_display_wall_thickness_m: float | None = None
 
 
 def to_glb(
@@ -245,6 +261,7 @@ def to_glb(
     groups: Mapping[str, Iterable[str]] | None = None,
     hidden_groups: Iterable[str] = (),
     glazed_outline: bool = False,
+    min_display_wall_thickness_m: float | None = None,
 ) -> dict[str, Any]:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
 
@@ -306,10 +323,36 @@ def to_glb(
       and follows its wall when a caller group reparents it. The summary
       reports the outline count as ``glazed_outlines`` while the option is
       on; with the option off the export is byte-identical.
+    - ``min_display_wall_thickness_m`` draws every wall whose recorded
+      ``thickness_m`` is below it at that minimum thickness instead, so a
+      scanned wall (recorded honestly as 0.001 m per issue #75) is visible
+      at building scale instead of reading as a stray line. This is the
+      issue #88 ruling: display thickness is a rendering choice, not a
+      model claim. The drawn value exists only in the exported vertices;
+      the canonical wall keeps its recorded thickness, and the wall's node
+      ``extras`` disclose both values side by side —
+      ``canonical_thickness_m`` and ``drawn_thickness_m`` — plus
+      ``thickness_source``, which names the option and states that it is a
+      drawing aid, not a measurement. A wall at or above the minimum draws
+      exactly as before and gains nothing. A glazed-wall outline drawn by
+      ``glazed_outline`` follows its wall's drawn corners, so the outline
+      never detaches from the mesh it traces. The summary reports the
+      count of drawn-thickened walls as ``thickened_walls`` while the
+      option is on. The drawn value never flows back into the canonical
+      model, IFC or quantities. With the option ``None`` (the default) the
+      export is byte-identical.
     """
 
     owner_of: dict[str, str] = {}
     normalized_groups: list[tuple[str, frozenset[str]]] = []
+    if min_display_wall_thickness_m is not None and not (
+        math.isfinite(min_display_wall_thickness_m)
+        and min_display_wall_thickness_m > 0.0
+    ):
+        raise ValueError(
+            "min_display_wall_thickness_m must be a positive finite number "
+            f"of metres or None, got {min_display_wall_thickness_m!r}"
+        )
     if groups:
         for name in groups:
             if not isinstance(name, str) or not name:
@@ -342,6 +385,7 @@ def to_glb(
             name for name in hidden_groups if name in group_names
         ),
         glazed_outline=glazed_outline,
+        min_display_wall_thickness_m=min_display_wall_thickness_m,
     )
     document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
@@ -402,6 +446,7 @@ def _build_document(
     dimmed_count = 0
     emphasized_count = 0
     glazed_outline_count = 0
+    thickened_wall_count = 0
     for entity in model.walls:
         height_m, height_source = _wall_height(entity, level_heights)
         extras = _extras(entity, "wall", entity.level_id)
@@ -412,6 +457,20 @@ def _build_document(
         wall_token = entity.construction
         if wall_token is not None:
             extras["construction"] = wall_token
+        # Issue #88: a wall recorded thinner than the caller's minimum is
+        # *drawn* at that minimum. The model keeps what it honestly knows;
+        # the disclosure travels beside it so the drawing never reads as a
+        # measurement. A wall at or above the minimum is untouched.
+        drawn_thickness_m = entity.thickness_m
+        if (
+            options.min_display_wall_thickness_m is not None
+            and entity.thickness_m < options.min_display_wall_thickness_m
+        ):
+            drawn_thickness_m = options.min_display_wall_thickness_m
+            thickened_wall_count += 1
+            extras["canonical_thickness_m"] = round(entity.thickness_m, 6)
+            extras["drawn_thickness_m"] = round(drawn_thickness_m, 6)
+            extras["thickness_source"] = _DISPLAY_THICKNESS_SOURCE
         if wall_token == WALL_CONSTRUCTION_GLAZED:
             if entity.id in options.dimmed_ids:
                 # The one wall kind the caller's dimming reaches, and the only
@@ -427,7 +486,7 @@ def _build_document(
             material_key = ("wall", _is_derived(entity.provenance, entity.attributes))
         add({
             "name": entity.id,
-            "vertices": _wall_vertices(entity, height_m),
+            "vertices": _wall_vertices(entity, height_m, drawn_thickness_m),
             "material_key": material_key,
             "extras": extras,
             "construction": wall_token,
@@ -435,11 +494,13 @@ def _build_document(
         if options.glazed_outline and wall_token == WALL_CONSTRUCTION_GLAZED:
             # One line-mode outline per glazed wall, tracing the same prism
             # the wall mesh builds, so the glazing reads at whole-floor zoom
-            # (issue #209). The wall mesh itself is untouched.
+            # (issue #209). The wall mesh itself is untouched; the outline
+            # follows the wall's *drawn* thickness so the line never
+            # detaches from a mesh the display thickness has thickened.
             glazed_outline_count += 1
             add({
                 "name": f"outline:{entity.id}",
-                "vertices": _wall_outline_vertices(entity, height_m),
+                "vertices": _wall_outline_vertices(entity, height_m, drawn_thickness_m),
                 "material_key": (_GLAZED_OUTLINE_MATERIAL,),
                 "extras": {
                     "display": _GLAZED_OUTLINE_DISPLAY,
@@ -715,6 +776,8 @@ def _build_document(
         counts["unresolved_box_selections"] = sum(o.status == "unresolved" for o in model.box_selection_outcomes)
     if options.glazed_outline:
         counts["glazed_outlines"] = glazed_outline_count
+    if options.min_display_wall_thickness_m is not None:
+        counts["thickened_walls"] = thickened_wall_count
     return document, bytes(buffer), counts
 
 
@@ -1321,17 +1384,21 @@ def _wall_height(
 
 
 def _wall_vertices(
-    wall: Wall, height_m: float | None
+    wall: Wall,
+    height_m: float | None,
+    thickness_m: float | None = None,
 ) -> list[tuple[float, float, float]]:
     """Vertical prisms, one per centerline segment, of the canonical height.
 
     Each segment extrudes up from its own base — the lower of the segment's
     two endpoint heights — by the wall's canonical height (its own, else its
     level's). ``height_m`` of ``None`` keeps the historical flat strip.
+    ``thickness_m`` overrides the drawn thickness for the issue #88 display
+    option; ``None`` draws the wall's canonical ``thickness_m``.
     """
 
     vertices: list[tuple[float, float, float]] = []
-    half = wall.thickness_m / 2.0
+    half = (wall.thickness_m if thickness_m is None else thickness_m) / 2.0
     for start, end in zip(wall.centerline.points, wall.centerline.points[1:]):
         dx, dy = end.x - start.x, end.y - start.y
         length = math.hypot(dx, dy)
@@ -1353,7 +1420,9 @@ def _wall_vertices(
 
 
 def _wall_outline_vertices(
-    wall: Wall, height_m: float | None
+    wall: Wall,
+    height_m: float | None,
+    thickness_m: float | None = None,
 ) -> list[tuple[float, float, float]]:
     """The wall prism's 12 edges as a line list: 24 vertices, 2 per edge.
 
@@ -1361,11 +1430,13 @@ def _wall_outline_vertices(
     ``_prism_corners``, same base and height resolution — reduced to its
     bottom ring, top ring and verticals, so the outline always sits exactly
     on the wall mesh it makes readable (issue #209). Wall geometry itself is
-    untouched.
+    untouched. ``thickness_m`` overrides the drawn thickness for the issue
+    #88 display option, so the outline follows a thickened wall's drawn
+    corners; ``None`` draws the wall's canonical ``thickness_m``.
     """
 
     lines: list[tuple[float, float, float]] = []
-    half = wall.thickness_m / 2.0
+    half = (wall.thickness_m if thickness_m is None else thickness_m) / 2.0
     for start, end in zip(wall.centerline.points, wall.centerline.points[1:]):
         dx, dy = end.x - start.x, end.y - start.y
         length = math.hypot(dx, dy)

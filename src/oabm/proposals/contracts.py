@@ -13,7 +13,7 @@ from oabm.model.common import _finite as _canonical_finite, _validate_id, _valid
 from oabm.model.model import _decode_dataclass as _canonical_decode_dataclass
 from oabm.reports.panel_schedules import (
     ModelSourceContext, SourceSnapshot, ENTITY_TYPES, _source_document,
-    _portable, _json, _array, _ids,
+    _portable as _canonical_portable, _json as _canonical_json, _array, _ids,
 )
 from oabm.routing.placement import PlacementCandidate, propose_equipment_placement
 
@@ -28,6 +28,20 @@ MAX_TEXT = 4096
 MAX_PIXELS = 262144
 MAX_PRODUCER_WORK = 100000
 MAX_GEOMETRY_VERTICES = 4096
+
+
+def _json(value):
+    try:return _canonical_json(value)
+    except ContractError:raise
+    except (ValueError,TypeError,OverflowError) as exc:
+        raise ContractError('proposal value cannot be represented as bounded JSON') from exc
+
+
+def _portable(value):
+    try:return _canonical_portable(value)
+    except ContractError:raise
+    except (ValueError,TypeError,OverflowError) as exc:
+        raise ContractError('proposal value cannot be represented as bounded JSON') from exc
 
 
 def _finite(value,label):
@@ -88,8 +102,9 @@ class Portable:
             raise ContractError('nonfinite proposal JSON number')
         try:
             data = json.loads(value, object_pairs_hook=pairs, parse_constant=constant)
-        except json.JSONDecodeError as exc:
-            raise ContractError('invalid proposal JSON') from exc
+        except ContractError:raise
+        except (ValueError,OverflowError) as exc:
+            raise ContractError('invalid or unrepresentable proposal JSON') from exc
         return cls.from_dict(data)
 
     def to_dict(self):
@@ -329,6 +344,9 @@ class RankingRequest(Portable):
 
     @classmethod
     def capture(cls,model,*,options,question,prompt_version,policy_fingerprint,crop=None):
+        text(question,'bounded ranking question',MAX_TEXT)
+        text(prompt_version,'prompt version')
+        fingerprint(policy_fingerprint,'routing policy fingerprint')
         data=dict(version=VERSION,task=TASK,task_version=TASK_VERSION,validator_version=VALIDATOR_VERSION,
             prompt_version=prompt_version,policy_fingerprint=policy_fingerprint,
             context=PlacementContext.capture(model,options),question=question,

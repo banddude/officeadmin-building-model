@@ -486,3 +486,19 @@ def test_huge_integer_output_no_fallback_and_failed_measured_trial(bound):
     assert benchmark.success_count==0
     assert benchmark.trials[0].response['ranking'][0]['confidence']==huge
     assert VisionBenchmark.from_json(benchmark.to_json()).success_count==0
+
+
+def test_json_integer_limit_is_a_contract_rejection(bound):
+    huge=10**5000
+    data=response(bound.to_dict());data['ranking'][0]['confidence']=huge
+    with pytest.raises(ContractError):RankingOutput.from_dict(data)
+    with pytest.raises(ContractError):RankingOutput.from_json('{"ranking":'+('9'*5000)+'}')
+
+
+def test_question_budget_precedes_producer(monkeypatch):
+    import oabm.proposals.contracts as contracts
+    def forbidden(*args,**kwargs):raise AssertionError('producer must not run')
+    monkeypatch.setattr(contracts,'propose_equipment_placement',forbidden)
+    with pytest.raises(ContractError,match='bounded ranking question'):
+        RankingRequest.capture(_model(door=True),options=options(),question='x'*4097,
+            prompt_version='v1',policy_fingerprint=config().fingerprint)

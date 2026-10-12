@@ -25,6 +25,8 @@ keys and nonfinite constants are rejected. Constructors and readers use the
 same invariants. Provenance confidence/page types reject booleans and nonfinite
 values. Input evidence paths must resolve on the input record, for example
 `permitted_products` or `reference.revision`; they are not output basis paths.
+Scope qualifiers are a set: normalization sorts their values without widening
+them. Provenance attributes must be JSON objects in both constructors and readers.
 The reader also checks reference integrity and owner-relative scope resolution,
 which JSON Schema alone cannot express.
 

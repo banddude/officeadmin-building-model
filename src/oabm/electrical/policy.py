@@ -84,6 +84,9 @@ class RacewayPolicyRule:
         ):
             raise ContractError("policy requires explicit typed source provenance")
         for record in self.provenance:
+            if not isinstance(record.attributes, dict):
+                raise ContractError("policy provenance.attributes must be a JSON object")
+            _validate_json_value(record.attributes)
             for name in ("source_kind", "source_id"):
                 _text(getattr(record, name), f"provenance.{name}")
             for name in ("source_element_id", "method"):
@@ -101,6 +104,7 @@ def _normalized_rule(rule: RacewayPolicyRule) -> RacewayPolicyRule:
     from dataclasses import replace
     return replace(rule, permitted_products=tuple(sorted(rule.permitted_products, key=_product_key)),
                    provenance=tuple(sorted((replace(p, confidence=float(p.confidence),
+                                                    scope_paths=None if p.scope_paths is None else tuple(sorted(p.scope_paths)),
                                                     attributes=_portable(p)["attributes"]) for p in rule.provenance),
                                            key=lambda p: json.dumps(_portable(p), sort_keys=True))))
 

@@ -279,3 +279,24 @@ def test_snapshot_source_facts_and_absent_implicit_baseline():
     assert compile_raceway_policy(policy(),route_types=()).evaluations==()
     with pytest.raises(ContractError): RacewayPolicy.from_dict({True:'not a JSON object key'})
     with pytest.raises(ContractError): replace(r,provenance=(replace(r.provenance[0],source_id=True),))
+
+
+def test_scope_qualifier_permutation_preserves_policy_json_and_compiled_identity():
+    original=record('rule:baseline','baseline',PRODUCTS)
+    evidence=replace(original.provenance[0],scope_paths=('route_type','permitted_products'))
+    first=policy(replace(original,provenance=(evidence,)))
+    second=policy(replace(original,provenance=(replace(evidence,scope_paths=tuple(reversed(evidence.scope_paths))),)))
+    assert first.to_json()==second.to_json()
+    a=compile_raceway_policy(first,route_types=('emt',));b=compile_raceway_policy(second,route_types=('emt',))
+    assert a.to_dict()==b.to_dict() and [r.reference for r in a.rules]==[r.reference for r in b.rules]
+    assert a.source_rules[0].provenance[0].scope_paths==('permitted_products','route_type')
+
+
+@pytest.mark.parametrize('attributes',[None,'value',[],42])
+def test_direct_policy_provenance_attributes_require_object(attributes):
+    original=record('rule:baseline','baseline',PRODUCTS)
+    malformed=replace(original.provenance[0],attributes=attributes)
+    with pytest.raises(ContractError,match='attributes must be a JSON object'):
+        replace(original,provenance=(malformed,))
+    doc=policy(original).to_dict();doc['rules'][0]['provenance'][0]['attributes']=attributes
+    with pytest.raises(ContractError): RacewayPolicy.from_dict(doc)

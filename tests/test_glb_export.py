@@ -2410,3 +2410,28 @@ def test_invalid_display_thickness_is_rejected(tmp_path: Path, bad: float) -> No
     model = _thin_wall_model(thickness_m=0.001)
     with pytest.raises(ValueError, match="min_display_wall_thickness_m"):
         to_glb(model, tmp_path / "bad.glb", min_display_wall_thickness_m=bad)
+
+
+@pytest.mark.parametrize("bad", [True, False, "0.1", b"0.1", object()])
+def test_bool_and_nonnumeric_display_thickness_are_rejected(
+    tmp_path: Path, bad: object,
+) -> None:
+    # True must never masquerade as a 1 metre wall: bools are rejected
+    # before any numeric test, as are strings, bytes and other non-numbers.
+    model = _thin_wall_model(thickness_m=0.001)
+    with pytest.raises(ValueError, match="min_display_wall_thickness_m"):
+        to_glb(model, tmp_path / "bad.glb", min_display_wall_thickness_m=bad)
+
+
+def test_disclosure_extras_carry_the_unrounded_values(tmp_path: Path) -> None:
+    # A sub-micrometre recorded wall: rounding the disclosure to 6 decimals
+    # would display 0 while the GLB geometry differs from both 0 and the
+    # drawn value. The extras carry the actual finite inputs.
+    sub_micrometre = 5e-07
+    model = _thin_wall_model(thickness_m=sub_micrometre)
+    to_glb(model, tmp_path / "thin.glb", min_display_wall_thickness_m=0.1)
+    parsed = _parse_glb(tmp_path / "thin.glb")
+    _spans, info = _wall_vertex_ranges(parsed)
+    assert info["extras"]["canonical_thickness_m"] == sub_micrometre
+    assert info["extras"]["drawn_thickness_m"] == 0.1
+    assert info["extras"]["canonical_thickness_m"] != 0.0

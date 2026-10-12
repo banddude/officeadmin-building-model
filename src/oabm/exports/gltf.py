@@ -340,18 +340,23 @@ def to_glb(
       count of drawn-thickened walls as ``thickened_walls`` while the
       option is on. The drawn value never flows back into the canonical
       model, IFC or quantities. With the option ``None`` (the default) the
-      export is byte-identical.
+      export is byte-identical. The value must be a positive finite number
+      of metres or ``None``; bools and non-numeric values are rejected, so
+      ``True`` can never masquerade as a 1 metre wall.
     """
 
     owner_of: dict[str, str] = {}
     normalized_groups: list[tuple[str, frozenset[str]]] = []
-    if min_display_wall_thickness_m is not None and not (
-        math.isfinite(min_display_wall_thickness_m)
-        and min_display_wall_thickness_m > 0.0
+    if min_display_wall_thickness_m is not None and (
+        isinstance(min_display_wall_thickness_m, bool)
+        or not isinstance(min_display_wall_thickness_m, (int, float))
+        or not math.isfinite(min_display_wall_thickness_m)
+        or min_display_wall_thickness_m <= 0.0
     ):
         raise ValueError(
             "min_display_wall_thickness_m must be a positive finite number "
-            f"of metres or None, got {min_display_wall_thickness_m!r}"
+            "of metres (not bool, not str) or None, got "
+            f"{min_display_wall_thickness_m!r}"
         )
     if groups:
         for name in groups:
@@ -468,8 +473,11 @@ def _build_document(
         ):
             drawn_thickness_m = options.min_display_wall_thickness_m
             thickened_wall_count += 1
-            extras["canonical_thickness_m"] = round(entity.thickness_m, 6)
-            extras["drawn_thickness_m"] = round(drawn_thickness_m, 6)
+            # The actual values, unrounded: a sub-micrometre recorded
+            # thickness rounded for display could read as 0 or as equal to
+            # the drawn one while the GLB geometry differs.
+            extras["canonical_thickness_m"] = entity.thickness_m
+            extras["drawn_thickness_m"] = drawn_thickness_m
             extras["thickness_source"] = _DISPLAY_THICKNESS_SOURCE
         if wall_token == WALL_CONSTRUCTION_GLAZED:
             if entity.id in options.dimmed_ids:

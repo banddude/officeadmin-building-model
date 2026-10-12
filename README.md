@@ -35,6 +35,8 @@ See [Shared supports](docs/shared-supports.md) for explicit contract 1.3 shared
 assemblies, individually counted components, and unresolved attachment inputs.
 See [Layered raceway policy](docs/layered-raceway-policy.md) for portable caller
 baseline/company/job permissions compiled into existing explicit selection rules.
+See [Panel schedule facts](docs/panel-schedule-facts.md) for an opt-in grouped
+report of supplied circuit values, missing facts and connected-load completeness.
 
 See [Open-source reuse audit](docs/open-source-reuse-audit.md) for component
 decisions and the reproducible, public-safe calculation prototype from #93.

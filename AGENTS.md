@@ -166,6 +166,7 @@ Keep these responsibilities separated:
 - `src/oabm/importers/pdf_electrical`: electrical PDF ingestion
 - `src/oabm/quantities`: model and route derived quantities
 - `src/oabm/drawings`: plans, elevations, sections, schedules, and derived drawing outputs
+- `src/oabm/reports`: opt-in read-only fact reports; preserve canonical owner-relative evidence, exact source binding and explicit unknowns without engineering guesses. Drawing adapters must leave default outputs unchanged.
 - `fixtures` and QA tests: known-answer public-safe regression data
 
 Examples:

@@ -17,6 +17,11 @@ baseline/company/job product permissions. Its strict reader/compiler lives in
 `src/oabm/electrical/policy.py`; [semantics and integration](../docs/layered-raceway-policy.md)
 preserve all canonical model versions and make no code-verification claim.
 
+Derived report `panel-schedule-report-v1.schema.json` preserves nested canonical
+source snapshots and supplied panel/circuit facts. See [report semantics and
+explicit drawing adapter](../docs/panel-schedule-facts.md); it does not introduce
+a building model version or a demand/engineering calculation.
+
 Contract v1 covers coordinate system and units, stable object IDs, levels/stories, walls/slabs/ceilings/spaces, openings, electrical devices and equipment, ports/connectivity, obstacles and route constraints, 3D route centerlines and fittings, circuit/conductor hooks, provenance/confidence, serialization, and schema versioning.
 
 ## Change rule

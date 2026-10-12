@@ -31,6 +31,7 @@ from oabm.model import (
     DERIVATION_USER,
     SCHEMA_VERSION,
     PHYSICAL_SCHEMA_VERSION,
+    RACEWAY_SCHEMA_VERSION,
     SUPPORTED_SCHEMA_VERSIONS,
     Box3D,
     BuildingModel,
@@ -129,6 +130,8 @@ _COLLECTION_BY_KIND = {
     "conductor": "conductors",
     "electrical_box": "electrical_boxes",
     "box_selection_outcome": "box_selection_outcomes",
+    "raceway_selection": "raceway_selections",
+    "raceway_selection_outcome": "raceway_selection_outcomes",
 }
 
 
@@ -496,6 +499,11 @@ def to_ifc(
         item = add_product(outcome, "box_selection_outcome", ordinal, "IfcAnnotation",
                            assign_container=False)
         _mark_adapter(ifc, item, Body="no", BodyReason="selection outcome is a decision, not a physical solid")
+    for kind, entities in (("raceway_selection", model.raceway_selections),
+                           ("raceway_selection_outcome", model.raceway_selection_outcomes)):
+        for ordinal, entity in enumerate(entities):
+            item = add_product(entity, kind, ordinal, "IfcAnnotation", assign_container=False)
+            _mark_adapter(ifc, item, Body="no", BodyReason="route product decision; existing route owns the physical run")
 
     # Fittings are canonical distribution elements and may own junction ports.
     # Materialize them before their canonical ports.
@@ -614,6 +622,12 @@ def to_ifc(
             pass
         _add_canonical_pset(ifc, route_system, "route", ordinal, model_document["routes"][ordinal])
         entity_ifc[route.id] = route_system
+        selection = next((s for s in model.raceway_selections if s.route_id == route.id), None)
+        outcome = next((o for o in model.raceway_selection_outcomes if o.route_id == route.id), None)
+        if selection is not None:
+            _add_raceway_product_pset(ifc, route_system, selection)
+        if outcome is not None:
+            _add_raceway_outcome_pset(ifc, route_system, outcome)
 
         segments: list[Any] = []
         segment_ports: list[tuple[Any, Any]] = []
@@ -638,6 +652,10 @@ def to_ifc(
             _set_pose(ifc, segment, Pose(position=Point3(x=0, y=0, z=0)))
             _assign_polyline_representation(ifc, segment, axis_context, (start, end))
             _assign_round_body(ifc, segment, body_context, start, end, route.nominal_diameter_m)
+            if selection is not None:
+                _add_raceway_product_pset(ifc, segment, selection)
+            if outcome is not None:
+                _add_raceway_outcome_pset(ifc, segment, outcome)
             direction = _direction(start, end)
             p_start = _add_adapter_port(
                 ifc,
@@ -1127,8 +1145,10 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         "provenance": header.get("provenance", []),
         "attributes": header.get("attributes", {}),
     }
-    if header["schema_version"] == PHYSICAL_SCHEMA_VERSION:
+    if header["schema_version"] in {PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION}:
         document.update(electrical_boxes=[], box_selection_outcomes=[])
+    if header["schema_version"] == RACEWAY_SCHEMA_VERSION:
+        document.update(raceway_selections=[], raceway_selection_outcomes=[])
 
     canonical_items: dict[str, tuple[Any, dict[str, Any], int, str]] = {}
     for item in ifc.by_type("IfcRoot"):
@@ -1156,6 +1176,11 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         canonical_items[canonical_id] = (item, data, meta["ordinal"], kind)
 
     route_segments = _route_segments(ifc)
+    for _, selection_data, _, kind in canonical_items.values():
+        if kind == "raceway_selection":
+            _validate_native_raceway_selection(selection_data, canonical_items, route_segments)
+        elif kind == "raceway_selection_outcome":
+            _validate_native_raceway_outcome(selection_data, canonical_items, route_segments)
     native_connections = _native_canonical_port_connections(ifc, canonical_items)
 
     buckets: dict[str, list[tuple[int, dict[str, Any]]]] = {
@@ -1548,6 +1573,10 @@ def _add_canonical_pset(
             visible_properties["ListedVolumeM3"] = payload["listed_volume_m3"]
     if kind == "box_selection_outcome":
         visible_properties.update(SelectionStatus=payload["status"], UnresolvedReasons=", ".join(payload["reason_codes"]))
+    if kind == "raceway_selection_outcome":
+        visible_properties.update(_raceway_outcome_properties(payload))
+    if kind == "raceway_selection":
+        visible_properties.update(_raceway_visible_properties(payload))
     attributes = payload.get("attributes", {})
     if kind == "electrical_equipment" and isinstance(attributes, Mapping):
         placement = attributes.get("placement")
@@ -2758,3 +2787,78 @@ def _point_tuple_dict(point: tuple[float, float, float]) -> dict[str, float]:
 
 def _tuple_distance(first: tuple[float, float, float], second: tuple[float, float, float]) -> float:
     return math.sqrt(sum((a - b) ** 2 for a, b in zip(first, second)))
+
+
+def _raceway_visible_properties(data: Mapping[str, Any]) -> dict[str, Any]:
+    product=data['product'];basis=data['basis']
+    return {'SelectionId':data['id'],'RouteId':data['route_id'],
+        'CatalogId':product['catalog_id'],'CatalogRevision':product['catalog_revision'],
+        'ProductId':product['product_id'],'WiringMethod':data['wiring_method'],
+        'RouteType':data['route_type'],'DesignationKind':data['designation_kind'],
+        'Designation':data['designation'],'RuleAuthority':basis['authority'],
+        'RuleRevision':basis['revision'],'RuleId':basis['rule_id'],
+        'CodeVerificationPerformed':False,'SelectionNominalDiameter':
+        'unknown' if data['nominal_diameter_m'] is None else str(data['nominal_diameter_m'])}
+
+
+def _add_raceway_product_pset(ifc: ifcopenshell.file, product: Any, selection: Any) -> None:
+    from dataclasses import asdict
+    pset=ifcopenshell.api.pset.add_pset(ifc,product=product,name='OABM_RacewaySelection')
+    ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties=_raceway_visible_properties(asdict(selection)))
+
+
+def _validate_native_raceway_selection(data, canonical_items, route_segments):
+    route_id=data['route_id']
+    route_record=canonical_items.get(route_id)
+    if route_record is None or route_record[3]!='route':
+        raise IfcAdapterError('raceway selection references missing native route')
+    system,route_data,_,_=route_record
+    expected=_raceway_visible_properties(data)
+    segments=route_segments.get(route_id,[])
+    for native in (system,*(segment for _,segment in segments)):
+        properties=_property_set(native,'OABM_RacewaySelection')
+        if properties is None or any(properties.get(k)!=v for k,v in expected.items()):
+            raise IfcAdapterError('native selected product/basis contradicts canonical selection')
+    expected_class,expected_type=_segment_ifc_type(data['route_type'])
+    for _,segment in segments:
+        if not segment.is_a(expected_class) or segment.PredefinedType!=expected_type:
+            raise IfcAdapterError('native raceway/cable method contradicts selected product')
+        body=_body_representation(segment)
+        nominal=route_data['nominal_diameter_m']
+        if nominal is None:
+            if body is not None:
+                raise IfcAdapterError('native route diameter is not represented by its canonical source claim')
+        elif (body is None or len(body.Items)!=1 or not body.Items[0].is_a('IfcSweptDiskSolid') or
+              abs(float(body.Items[0].Radius)*2-nominal)>1e-9):
+            raise IfcAdapterError('native route diameter contradicts its unchanged source nominal diameter')
+
+
+def _raceway_outcome_properties(data):
+    result={'RouteId':data['route_id'],'SelectionStatus':data['status'],'Scope':data['scope'],
+        'UnresolvedReasons':', '.join(data['reason_codes']),'CodeVerificationPerformed':False}
+    if data['requested_product'] is not None:
+        product=data['requested_product']
+        result.update(RequestedCatalogId=product['catalog_id'],RequestedCatalogRevision=product['catalog_revision'],
+                      RequestedProductId=product['product_id'])
+    if data['requested_basis'] is not None:
+        basis=data['requested_basis']
+        result.update(RequestedRuleAuthority=basis['authority'],RequestedRuleRevision=basis['revision'],
+                      RequestedRuleId=basis['rule_id'])
+    return result
+
+
+def _add_raceway_outcome_pset(ifc,product,outcome):
+    from dataclasses import asdict
+    pset=ifcopenshell.api.pset.add_pset(ifc,product=product,name='OABM_RacewayOutcome')
+    ifcopenshell.api.pset.edit_pset(ifc,pset=pset,properties=_raceway_outcome_properties(asdict(outcome)))
+
+
+def _validate_native_raceway_outcome(data,canonical_items,route_segments):
+    record=canonical_items.get(data['route_id'])
+    if record is None or record[3]!='route':
+        raise IfcAdapterError('raceway outcome references missing native route')
+    expected=_raceway_outcome_properties(data)
+    for native in (record[0],*(segment for _,segment in route_segments.get(data['route_id'],[]))):
+        actual=_property_set(native,'OABM_RacewayOutcome')
+        if actual is None or any(actual.get(k)!=v for k,v in expected.items()):
+            raise IfcAdapterError('native raceway uncertainty contradicts canonical outcome')

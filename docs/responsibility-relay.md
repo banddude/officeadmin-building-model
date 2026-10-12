@@ -61,7 +61,9 @@ The [physical box producer](electrical-boxes.md) is a downstream explicit
 intent/catalog lane after convergence. Gate D pure importer inputs refuse boxes
 and selection outcomes rather than dropping or relocating unregistered poses.
 Missing automatic box host/size selection remains unresolved; #266 raceways
-and #267 shared supports are separate contract work.
+are now carried by the [explicit whole-route product lane](raceway-selections.md)
+after routing; unsupported partial/mixed requests stay unresolved. #267 shared
+supports remain separate contract work.
 
 ## Final convergence
 

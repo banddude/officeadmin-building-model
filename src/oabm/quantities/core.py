@@ -217,18 +217,41 @@ def extract_quantities(
     warnings: list[QuantityWarning] = []
 
     for route in sorted(model.routes, key=lambda item: item.id):
+        selection = next((s for s in model.raceway_selections if s.route_id == route.id), None)
+        variant = (("nominal_diameter_m", route.nominal_diameter_m),)
+        evidence_entities = (route,)
+        if selection is not None:
+            variant += (("catalog_id", selection.product.catalog_id),
+                        ("catalog_revision", selection.product.catalog_revision),
+                        ("product_id", selection.product.product_id),
+                        ("designation", selection.designation),
+                        ("wiring_method", selection.wiring_method),
+                        ("rule_authority", selection.basis.authority),
+                        ("rule_revision", selection.basis.revision),
+                        ("rule_id", selection.basis.rule_id))
+            evidence_entities += (selection,)
+            warnings.append(QuantityWarning("raceway_code_unverified",
+                "Caller product/rule selection is not verified code sizing; installed run length is counted once.",
+                (route.id, selection.id)))
         contributions.append(
             _contribution(
                 category="route_length",
                 item_type=route.route_type,
                 quantity=_polyline_length(route),
                 unit=LENGTH_UNIT,
-                variant=(("nominal_diameter_m", route.nominal_diameter_m),),
-                entities=(route,),
+                variant=variant,
+                entities=evidence_entities,
                 assembly_resolver=assembly_resolver,
                 group=group_owner.get(route.id),
+                consumed_paths=("centerline",) if model.schema_version == "1.2.0" else None,
             )
         )
+
+    for outcome in model.raceway_selection_outcomes:
+        if outcome.status == "unresolved":
+            warnings.append(QuantityWarning("unresolved_raceway_selection",
+                f"{outcome.route_id}: {', '.join(outcome.reason_codes)}; route length is not a complete selected-product takeoff.",
+                (outcome.id, outcome.route_id)))
 
     for fitting in sorted(model.route_fittings, key=lambda item: item.id):
         if fitting.attributes.get("consolidation", {}).get("nonmaterial") is True:
@@ -628,6 +651,7 @@ _CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | frozenset({
     "levels", "electrical_equipment", "electrical_devices", "ports", "obstacles",
     "route_constraints", "routes", "route_fittings", "circuits", "conductors",
     "electrical_boxes", "box_selection_outcomes",
+    "raceway_selections", "raceway_selection_outcomes",
 })
 
 def _canonical_entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:

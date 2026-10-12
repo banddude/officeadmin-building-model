@@ -683,11 +683,13 @@ def _build_document(
         # Optional extension: never in extensionsRequired, so a viewer
         # without it still loads the file and simply shows the group.
         document["extensionsUsed"] = [_NODE_VISIBILITY_EXTENSION]
-    if model.schema_version == "1.1.0":
+    if model.schema_version in {"1.1.0", "1.2.0"}:
         document["asset"]["extras"].update(
             canonical_schema_version=model.schema_version,
             box_selection_outcomes=model.to_dict()["box_selection_outcomes"],
         )
+    if model.schema_version == "1.2.0":
+        document["asset"]["extras"]["raceway_selection_outcomes"] = model.to_dict()["raceway_selection_outcomes"]
     if buffer:
         document["bufferViews"] = buffer_views
         document["accessors"] = accessors
@@ -708,7 +710,7 @@ def _build_document(
     if options.groups:
         counts["groups"] = group_counts
         counts["unmatched_group_ids"] = unmatched_group_ids
-    if model.schema_version == "1.1.0":
+    if model.schema_version in {"1.1.0", "1.2.0"}:
         counts["electrical_boxes"] = len(model.electrical_boxes)
         counts["unresolved_box_selections"] = sum(o.status == "unresolved" for o in model.box_selection_outcomes)
     if options.glazed_outline:
@@ -961,6 +963,9 @@ def _route_extras(model: BuildingModel, route: Route) -> dict[str, Any]:
     ]
     if conductors:
         extras["conductors"] = conductors
+    if model.schema_version == "1.2.0":
+        extras["raceway_selections"] = [s for s in model.to_dict()["raceway_selections"] if s["route_id"] == route.id]
+        extras["raceway_selection_outcomes"] = [o for o in model.to_dict()["raceway_selection_outcomes"] if o["route_id"] == route.id]
     return extras
 
 

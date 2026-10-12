@@ -7,7 +7,7 @@
 The initial serialized contract is `1.0.0`.
 
 - A document must declare `schema_version: "1.0.0"`.
-- The shared Python reader supports explicitly declared 1.0 and 1.1; it rejects other versions rather than guessing. The 1.0 schema remains specific to 1.0.
+- The shared Python reader supports explicitly declared 1.0, 1.1 and 1.2; it rejects other versions rather than guessing. Each portable schema remains specific to its declared version.
 - Incompatible shape or meaning changes require a new version and migration notes.
 - The first version has no migration because there is no predecessor.
 
@@ -190,3 +190,7 @@ stronger regressions, but are not a universal promise for captured orientations.
 The original 1.0 contract below remains unchanged. Explicitly versioned 1.1
 adds typed electrical boxes and selection outcomes, with migration and consumer
 semantics documented in [Physical electrical boxes](electrical-boxes.md).
+
+Version 1.2 adds typed whole-route product/reference decisions and unresolved
+outcomes; see [Raceway and cable selections](raceway-selections.md). Versions
+1.0 and 1.1 keep their existing field semantics and serialized behavior.

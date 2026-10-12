@@ -1,7 +1,8 @@
 # Physical electrical boxes (contract 1.1)
 
 Issue #265 adds physical boxes and their selection outcomes to the canonical
-model. Raceway segments/fittings (#266) and shared supports (#267) remain
+model. [Whole-route raceway/cable selections](raceway-selections.md) use the
+explicit 1.2 boundary; mixed segment selection and shared supports (#267) remain
 separate work. Automatic PDF box selection, box-fill compliance, listed-product
 verification, prices, and complete installation quantities are not delivered by
 this boundary.

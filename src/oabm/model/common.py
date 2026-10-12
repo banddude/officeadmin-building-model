@@ -11,7 +11,8 @@ from typing import Any, Iterable, Mapping, Sequence, TypeVar, Union, get_args, g
 
 SCHEMA_VERSION = "1.0.0"
 PHYSICAL_SCHEMA_VERSION = "1.1.0"
-SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION})
+RACEWAY_SCHEMA_VERSION = "1.2.0"
+SUPPORTED_SCHEMA_VERSIONS = frozenset({SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION})
 ID_NAMESPACE = uuid.UUID("7ec97126-df4d-5bf7-b1b8-6c1f0b1265de")
 _ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 _SCOPE_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")

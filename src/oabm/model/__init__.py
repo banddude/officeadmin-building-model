@@ -3,6 +3,11 @@
 from .v1 import (
     SCHEMA_VERSION,
     PHYSICAL_SCHEMA_VERSION,
+    RACEWAY_SCHEMA_VERSION,
+    RuleReference,
+    RacewaySelection,
+    RacewaySelectionOutcome,
+    upgrade_to_v1_2,
     SUPPORTED_SCHEMA_VERSIONS,
     BOX_MOUNTINGS,
     CatalogProduct,
@@ -52,6 +57,11 @@ from .v1 import (
 __all__ = [
     "SCHEMA_VERSION",
     "PHYSICAL_SCHEMA_VERSION",
+    "RACEWAY_SCHEMA_VERSION",
+    "RuleReference",
+    "RacewaySelection",
+    "RacewaySelectionOutcome",
+    "upgrade_to_v1_2",
     "SUPPORTED_SCHEMA_VERSIONS",
     "BOX_MOUNTINGS",
     "CatalogProduct",

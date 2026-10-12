@@ -13,6 +13,13 @@ from .golden import (
     validate_lane_model,
     validate_public_fixture_provenance,
 )
+from .confidence_review import (
+    ConfidenceReviewManifest,
+    ReviewConfig,
+    ReviewItem,
+    REVIEW_VERSION,
+    build_confidence_review,
+)
 from .takeoff_comparison import (
     compare_counts,
     compare_with_references,
@@ -22,6 +29,7 @@ from .takeoff_comparison import (
 )
 
 __all__ = [
+    "ConfidenceReviewManifest",
     "GoldenCase",
     "GoldenFixtureError",
     "canonical_digest",
@@ -32,6 +40,10 @@ __all__ = [
     "iter_entities",
     "load_golden_cases",
     "load_golden_model",
+    "REVIEW_VERSION",
+    "ReviewConfig",
+    "ReviewItem",
+    "build_confidence_review",
     "reference_disagreements",
     "scored_types",
     "validate_golden_case",

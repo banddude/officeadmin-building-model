@@ -1,0 +1,28 @@
+{
+  "page_width_pt": 1300,
+  "page_height_pt": 800,
+  "scale_text": "SCALE: 1/4\" = 1'-0\"",
+  "construction_title": "A-110 CONSTRUCTION PLAN",
+  "electrical_note": "ELECTRICAL: coordinate the power plan separately",
+  "level_text": "LEVEL: FIRST FLOOR",
+  "fill_layer": "A-WALL-PATT",
+  "plan_a_strips": [
+    [120, 180, 445, 186],
+    [120, 514, 445, 520],
+    [110, 190, 116, 510],
+    [449, 190, 455, 510],
+    [170, 225, 330, 231],
+    [185, 267, 345, 273],
+    [160, 309, 305, 315],
+    [210, 351, 370, 357],
+    [175, 393, 315, 399],
+    [195, 435, 355, 441]
+  ],
+  "plan_b_offset_pt": [650, 0],
+  "electrical_offset_pt": [32, -24],
+  "excluded_fills": {
+    "legend_symbol": [45, 690, 63, 708],
+    "wide_panel": [520, 640, 610, 700],
+    "sheet_frame": [4, 4, 1296, 796]
+  }
+}

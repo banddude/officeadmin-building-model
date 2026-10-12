@@ -130,3 +130,43 @@ def test_non_outline_geometry_is_not_a_ring(field):
 def test_ambiguous_letters_stay_excluded():
     assert _grid_bubbles(page(texts=(label("I"),))) == {}
     assert _grid_bubbles(page(texts=(label("O"),))) == {}
+
+
+@pytest.mark.parametrize("sheet_ref", ["Q-27", "A204", "S3.2", "Q7"])
+def test_detail_reference_inside_same_ring_is_not_a_grid_label(sheet_ref):
+    # The divider is just short of the ring endpoints, as can happen after
+    # source flattening. Ring topology alone must not erase the sheet reference.
+    divider = PdfLineObservation("detail-divider",(82.1,100),(117.9,100))
+    number = PdfTextObservation("detail-number","2",(97,102,103,111),font_size_pt=8)
+    reference = PdfTextObservation("detail-sheet",sheet_ref,(89,88,111,97),font_size_pt=8)
+    assert _grid_bubbles(page(lines=ring()+(divider,),texts=(number,reference))) == {}
+
+
+def test_sheet_reference_outside_grid_ring_does_not_remove_grid_label():
+    reference = PdfTextObservation("nearby-sheet","Q-27",(122,92,150,101),font_size_pt=8)
+    assert _grid_bubbles(page(texts=(label("2"),reference)))["2"] == pytest.approx((100,100),abs=.001)
+
+
+def test_short_letter_number_grid_label_alone_remains_valid():
+    assert _grid_bubbles(page(texts=(label("Q7"),)))["Q7"] == pytest.approx((100,100),abs=.001)
+
+
+def test_detail_reference_font_bounds_can_overhang_its_source_ring():
+    number = PdfTextObservation("detail-n","4",(97,102,103,111),font_size_pt=8)
+    reference = PdfTextObservation("detail-ref","Q-27",(80,85,120,97),font_size_pt=10)
+    assert _grid_bubbles(page(texts=(number,reference))) == {}
+
+
+def test_adjacent_plan_caption_makes_number_a_view_label_not_a_grid():
+    caption = PdfTextObservation("view-title","FLOOR PLAN EAST",(135,91,290,109),font_size_pt=12)
+    assert _grid_bubbles(page(texts=(label("4"),caption))) == {}
+
+
+def test_plan_caption_on_another_row_does_not_veto_a_grid():
+    caption = PdfTextObservation("view-title","FLOOR PLAN EAST",(135,35,290,53),font_size_pt=12)
+    assert _grid_bubbles(page(texts=(label("4"),caption)))["4"] == pytest.approx((100,100),abs=.001)
+
+
+def test_plan_caption_font_baseline_offset_still_identifies_the_view_number():
+    caption = PdfTextObservation("view-title","FLOOR PLAN EAST",(135,102,290,120),font_size_pt=12)
+    assert _grid_bubbles(page(texts=(label("4"),caption))) == {}

@@ -413,6 +413,76 @@ def test_clustered_evidence_is_refused(tmp_path: Path) -> None:
     assert page.reason_codes == ("evidence_clustered",)
 
 
+def _sparse_shared_source(tmp_path: Path):
+    small = replace(MAIN, w=84.0, h=84.0)
+    drawing = replace(SECOND, rooms=(small,), stub=False)
+    path, source, architecture = _architecture(tmp_path, Sheet((drawing,)))
+    assert architecture.attributes["pdf_architecture"]["drawing_regions"][0]["status"] == "resolved"
+    electrical = extract_sheets(path, source_id="fixture:shared-electrical")
+    return source, architecture, electrical
+
+
+def test_shared_source_page_uses_its_resolved_frame_without_a_wall_match(tmp_path: Path) -> None:
+    source, architecture, electrical = _sparse_shared_source(tmp_path)
+    [page] = register_electrical_sheets(architecture, source, electrical).pages
+    assert page.status == REGISTERED
+    assert page.transform is not None
+    registration = page.record["registration"]
+    assert registration["evidence_method"] == "shared_source_page"
+    assert registration["source_content_sha256"] == source.content_sha256
+    assert registration["translation_pt"] == [0.0, 0.0]
+    assert registration["scale_ratio"] == 1.0
+    [region] = architecture.attributes["pdf_architecture"]["drawing_regions"]
+    frame = region["frame"]
+    x, y = ARCH_ORIGIN[0] + 42.0, ARCH_ORIGIN[1] + 42.0
+    mpp, theta = frame["meters_per_point"], frame["rotation_radians"]
+    tx, ty = frame["translation_m"]
+    mapped = page.transform.apply(x, y)
+    assert mapped.x == pytest.approx(mpp * (math.cos(theta) * x - math.sin(theta) * y) + tx)
+    assert mapped.y == pytest.approx(mpp * (math.sin(theta) * x + math.cos(theta) * y) + ty)
+    assert mapped.z == pytest.approx(architecture.levels[0].elevation_m)
+
+
+def test_shared_source_page_needs_the_same_digest(tmp_path: Path) -> None:
+    source, architecture, electrical = _sparse_shared_source(tmp_path)
+    electrical = replace(electrical, content_sha256="a" * 64)
+    [page] = register_electrical_sheets(architecture, source, electrical).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.reason_codes == ("evidence_clustered",)
+
+
+def test_shared_source_page_needs_unchanged_observations(tmp_path: Path) -> None:
+    source, architecture, electrical = _sparse_shared_source(tmp_path)
+    [observed] = electrical.pages
+    electrical = replace(electrical, pages=(replace(observed, lines=observed.lines[:-1]),))
+    [page] = register_electrical_sheets(architecture, source, electrical).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.transform is None
+
+
+def test_shared_source_page_keeps_conflicting_scale_refusals(tmp_path: Path) -> None:
+    source, architecture, electrical = _sparse_shared_source(tmp_path)
+    options = SheetRegistrationOptions(electrical_scale_overrides=((1, MPP * 2),))
+    [page] = register_electrical_sheets(architecture, source, electrical, options=options).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.transform is None
+
+
+@pytest.mark.parametrize("competing", [False, True])
+def test_shared_source_page_does_not_promote_bounded_or_competing_frames(tmp_path: Path, competing: bool) -> None:
+    source, architecture, electrical = _sparse_shared_source(tmp_path)
+    lane = dict(architecture.attributes["pdf_architecture"])
+    [region] = lane["drawing_regions"]
+    if competing:
+        lane["drawing_regions"] = [region, dict(region, region_id="drawing-region:other-sparse-frame")]
+    else:
+        lane["drawing_regions"] = [dict(region, source_bbox_pt=[120.0, 400.0, 204.0, 484.0])]
+    architecture = replace(architecture, attributes={**architecture.attributes, "pdf_architecture": lane})
+    [page] = register_electrical_sheets(architecture, source, electrical).pages
+    assert page.status == REGISTRATION_PENDING
+    assert page.transform is None
+
+
 def test_repeated_geometry_yields_competing_transforms(tmp_path: Path) -> None:
     twin = Room(414.0, 0.0, 354.0, 236.0, "ROOM: STUDY")
     _, source, architecture = _architecture(

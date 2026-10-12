@@ -120,6 +120,13 @@ the sheet observations that produced `architecture` (checked by content hash);
 electrical PDF. `register_electrical_pdf(...)` extracts both from paths. Neither
 model is modified.
 
+When both documents have the same SHA-256 and identical observations for a
+page, that page can reuse its uniquely resolved whole-sheet architectural
+frame. This records `shared_source_page` evidence, zero sheet translation,
+the source digest and the target frame's confidence. Its declared scale must
+agree with the frame. Bounded drawings, competing frames, changed observations
+and different source digests continue through geometric registration.
+
 Evidence is deterministic and compared like with like:
 
 - **wall vectors**: visible `A-WALL`/`AE-WALL` segments (xref prefixes such as
@@ -138,7 +145,7 @@ in `oabm.importers.pdf_architecture.wall_registration` and is shared with the
 architecture importer, which registers later architectural sheets to resolved
 same-level regions with it (#72).
 
-A page is `registered` only when all of these hold:
+A geometric registration is accepted only when all of these hold:
 
 - at least `min_inliers` (8) matched segments and `min_coverage` (30%) of the
   page's wall evidence;

@@ -172,20 +172,11 @@ def _displayed_point(x: float, y: float, page_rotation: int) -> tuple[float, flo
 
 
 def _expected_architecture_segment(page_rotation: int) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Displayed segment as the architecture extractor reports it.
-
-    The architecture lane rebuilds each drawn segment from the pdfplumber
-    line bbox corners, so on /Rotate 90 a diagonal segment is reported as
-    the bbox anti-diagonal (the electrical lane reports the drawn diagonal).
-    That pre-existing difference is independent of the MediaBox origin; the
-    origin fix only requires both twins to agree, and they do.
-    """
-
-    if page_rotation == 0:
-        return tuple(sorted((LINE_START, LINE_END)))
-    xs = sorted((LINE_START[1], LINE_END[1]))
-    ys = sorted((PAGE_WIDTH_PT - LINE_START[0], PAGE_WIDTH_PT - LINE_END[0]))
-    return ((xs[0], ys[0]), (xs[1], ys[1]))
+    """Both lanes now preserve the drawn endpoints, including diagonal slope."""
+    return tuple(sorted((
+        _displayed_point(*LINE_START, page_rotation),
+        _displayed_point(*LINE_END, page_rotation),
+    )))
 
 
 @pytest.mark.parametrize("page_rotation", [0, 90])

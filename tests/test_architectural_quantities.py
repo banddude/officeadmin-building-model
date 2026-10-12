@@ -1,8 +1,8 @@
 from dataclasses import dataclass, replace
 import math
 import pytest
-from oabm.model import (BuildingModel, Level, Wall, Slab, Ceiling, Space, Opening,
-                        Point3, Polygon3D, Polyline3D, Pose, Size3, Provenance, ContractError)
+from oabm.model import (BuildingModel, Level, Wall, Slab, Ceiling, Space, Opening, Obstacle,
+                        Box3D, Point3, Polygon3D, Polyline3D, Pose, Size3, Provenance, ContractError)
 from oabm.quantities import extract_quantities, QuantityError
 from oabm.quantities.architecture import polygon_area
 
@@ -186,3 +186,38 @@ def test_unknown_only_entity_model_is_explicitly_empty_not_zero():
     assert report.items == ()
     assert {w.code for w in report.warnings} == {"unmeasured_entities","empty_takeoff"}
     assert "contains entities" in next(w.message for w in report.warnings if w.code == "empty_takeoff")
+
+
+def test_issue_80_building_only_takeoff_is_not_silently_empty():
+    # Regression test for #80: a real LiDAR capture imported to 20 canonical
+    # entities (1 level, 1 space, 6 walls, 1 slab, 4 openings, 7 obstacles) with
+    # no electrical content. The takeoff must not be silently empty: it yields
+    # building quantity lines and explicitly names what it does not measure.
+    observed = Provenance(source_kind="scan", source_id="repro:issue-80", derivation="observed")
+    floor = polygon(((0,0,0),(10,0,0),(10,8,0),(0,8,0)))
+    runs = [(0,0,10,0),(10,0,10,8),(10,8,0,8),(0,8,0,0),(3,0,3,8),(7,0,7,8)]
+    walls = tuple(Wall(id=f"wall:{i}", level_id="level:a",
+                       centerline=Polyline3D(points=(Point3(x=x0,y=y0,z=0),Point3(x=x1,y=y1,z=0))),
+                       thickness_m=0.2, height_m=3.0, provenance=(observed,))
+                  for i,(x0,y0,x1,y1) in enumerate(runs))
+    openings = tuple(Opening(id=f"opening:{i}", host_id="wall:0", opening_type="door",
+                             pose=Pose(position=Point3(x=1.0+i,y=0,z=0), rotation=(0,0,0)),
+                             size=Size3(x=0.9,y=0.05,z=2.1), provenance=(observed,))
+                     for i in range(4))
+    obstacles = tuple(Obstacle(id=f"obstacle:{i}", level_id="level:a", obstacle_type="hard",
+                               geometry=Box3D(pose=Pose(position=Point3(x=i+0.5,y=4,z=0.5), rotation=(0,0,0)),
+                                             size=Size3(x=1.0,y=1.0,z=1.0)),
+                               provenance=(observed,)) for i in range(7))
+    model = BuildingModel(model_id="model:issue-80",
+                          levels=(Level(id="level:a", elevation_m=0),),
+                          spaces=(Space(id="space:a", level_id="level:a", footprint=floor, height_m=3.0, provenance=(observed,)),),
+                          walls=walls,
+                          slabs=(Slab(id="slab:a", level_id="level:a", footprint=floor, thickness_m=0.15, provenance=(observed,)),),
+                          openings=openings, obstacles=obstacles)
+    report = extract_quantities(model)
+    categories = {item.category for item in report.items}
+    assert len(report.items) > 0  # never silently empty again
+    assert {"wall_length","wall_face_area","slab_area","space_floor_area","opening_count"} <= categories
+    assert "empty_takeoff" not in {w.code for w in report.warnings}
+    unmeasured = [w for w in report.warnings if w.code == "unmeasured_entities"]
+    assert any("obstacle:0" in w.source_entity_ids for w in unmeasured)

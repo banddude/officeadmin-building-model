@@ -213,6 +213,7 @@ def split_drawing_regions(
     min_total_length_pt: float,
     min_relative_length: float = 0.25,
     excluded_text_ids: frozenset[str] = frozenset(),
+    scope_single_region: bool = False,
 ) -> DrawingRegionSplit:
     """Return separately scoped drawing regions when a sheet holds several plans."""
 
@@ -237,7 +238,7 @@ def split_drawing_regions(
         ):
             qualifying.append((bbox, items))
 
-    if len(qualifying) <= 1:
+    if not qualifying or (len(qualifying) == 1 and not scope_single_region):
         return DrawingRegionSplit(
             regions=(),
             sheet_texts=(),

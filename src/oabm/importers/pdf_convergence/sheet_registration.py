@@ -808,6 +808,58 @@ def _public(candidate: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in candidate.items() if not key.startswith("_")}
 
 
+def _shared_page_frame(
+    page: PdfPageObservation,
+    targets: tuple[_Target, ...],
+    options: SheetRegistrationOptions,
+    content_sha256: str,
+) -> PageRegistration | None:
+    """Reuse a whole-sheet frame when both lanes observed the identical page.
+
+    This is a source-coordinate identity, not a proposed geometric match.
+    Bounded drawings, competing frames, changed observations and conflicting
+    scale declarations still go through the ordinary registration checks.
+    """
+
+    same_page = [target for target in targets if target.page == page.page_number]
+    if len(same_page) != 1:
+        return None
+    target = same_page[0]
+    if target.source_page != page or target.bbox_pt != (0.0, 0.0, page.width_pt, page.height_pt):
+        return None
+    printed = printed_sheet_scale(page)
+    electrical_mpp = dict(options.electrical_scale_overrides).get(
+        page.page_number, printed[0] if printed else None,
+    )
+    if electrical_mpp is None or not math.isclose(
+        electrical_mpp, target.meters_per_point, rel_tol=1e-9, abs_tol=1e-12,
+    ):
+        return None
+    registration = {
+        "method": "shared PDF page frame",
+        "derivation": DERIVATION_INFERRED,
+        "evidence_method": "shared_source_page",
+        "source_content_sha256": content_sha256,
+        "source_page": page.page_number,
+        "target_region_id": target.region_id,
+        "agreeing_region_ids": [target.region_id],
+        "target_page": target.page,
+        "level_id": target.level_id,
+        "level_elevation_m": target.level_elevation_m,
+        "scale_ratio": 1.0,
+        "rotation_degrees": 0,
+        "translation_pt": [0.0, 0.0],
+        "confidence": round(target.confidence, 6),
+    }
+    coefficients = {key: round(value, 12) for key, value in _compose(target, 1.0, (0.0, 0.0)).items()}
+    transform = PdfPageTransform(frame_id=target.frame_id, registration=registration, **coefficients)
+    record = {
+        "page": page.page_number, "status": REGISTERED, "reason_codes": [],
+        "registration": registration, "page_transform": transform.to_attributes(),
+    }
+    return PageRegistration(page.page_number, REGISTERED, (), transform, record)
+
+
 def _register_page(
     page: PdfPageObservation,
     targets: tuple[_Target, ...],
@@ -1109,8 +1161,15 @@ def register_electrical_sheets(
 
     options = options or SheetRegistrationOptions()
     targets = _targets(architecture, architecture_source)
+    digest = architecture_source.content_sha256
+    shared_pdf = (
+        len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+        and digest == electrical_source.content_sha256
+    )
     pages = tuple(
-        _register_page(page, targets, options)
+        (_shared_page_frame(page, targets, options, digest) if shared_pdf else None)
+        or _register_page(page, targets, options)
         for page in sorted(electrical_source.pages, key=lambda item: item.page_number)
     )
     return ElectricalSheetRegistration(

@@ -29,6 +29,9 @@ See `docs/responsibility-relay.md` for the dependency graph.
 See [Physical electrical boxes](docs/electrical-boxes.md) for the explicit
 contract 1.1 migration, selection boundary, and unresolved quantity limitations.
 
+See [Raceway and cable selections](docs/raceway-selections.md) for explicit
+contract 1.2 product/reference decisions and unresolved mixed-run limitations.
+
 See [Open-source reuse audit](docs/open-source-reuse-audit.md) for component
 decisions and the reproducible, public-safe calculation prototype from #93.
 

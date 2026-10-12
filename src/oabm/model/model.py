@@ -7,13 +7,15 @@ from pathlib import Path
 from typing import Any, Mapping, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from .common import (
-    SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS,
+    SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS,
     ContractError, CoordinateSystem, Entity, Point3, Provenance,
     UnsupportedSchemaVersion, _distance, _finite, _validate_id, _validate_json_value,
 )
 from .physical import ElectricalBox, BoxSelectionOutcome, box_contains_point
+from .raceway import RacewaySelection, RacewaySelectionOutcome, wiring_method_for_route_type
 
 _PHYSICAL_FIELDS = frozenset({"electrical_boxes", "box_selection_outcomes"})
+_RACEWAY_FIELDS = frozenset({"raceway_selections", "raceway_selection_outcomes"})
 from .entities import (
     Ceiling, Circuit, Conductor, ElectricalDevice, ElectricalEquipment, Level,
     Obstacle, Opening, Port, Route, RouteConstraint, RouteFitting, Slab, Space, Wall,
@@ -42,6 +44,8 @@ class BuildingModel:
     conductors: tuple[Conductor, ...] = ()
     electrical_boxes: tuple[ElectricalBox, ...] = ()
     box_selection_outcomes: tuple[BoxSelectionOutcome, ...] = ()
+    raceway_selections: tuple[RacewaySelection, ...] = ()
+    raceway_selection_outcomes: tuple[RacewaySelectionOutcome, ...] = ()
     provenance: tuple[Provenance, ...] = ()
     attributes: dict[str, Any] = field(default_factory=dict)
 
@@ -53,6 +57,8 @@ class BuildingModel:
             )
         if self.schema_version == SCHEMA_VERSION and (self.electrical_boxes or self.box_selection_outcomes):
             raise ContractError("physical electrical objects require explicit schema_version 1.1.0")
+        if self.schema_version != RACEWAY_SCHEMA_VERSION and (self.raceway_selections or self.raceway_selection_outcomes):
+            raise ContractError("raceway selections require explicit schema_version 1.2.0")
         _validate_json_value(self.attributes)
         validate_model(self)
 
@@ -71,8 +77,12 @@ class BuildingModel:
             )
         if version == SCHEMA_VERSION and _PHYSICAL_FIELDS.intersection(document):
             raise ContractError("1.0.0 has unknown physical-object fields; explicitly migrate to 1.1.0")
-        if version == PHYSICAL_SCHEMA_VERSION and not _PHYSICAL_FIELDS.issubset(document):
-            raise ContractError("1.1.0 requires electrical_boxes and box_selection_outcomes arrays")
+        if version != SCHEMA_VERSION and not _PHYSICAL_FIELDS.issubset(document):
+            raise ContractError(f"{version} requires electrical_boxes and box_selection_outcomes arrays")
+        if version != RACEWAY_SCHEMA_VERSION and _RACEWAY_FIELDS.intersection(document):
+            raise ContractError(f"{version} has unknown raceway-selection fields; explicitly migrate to 1.2.0")
+        if version == RACEWAY_SCHEMA_VERSION and not _RACEWAY_FIELDS.issubset(document):
+            raise ContractError("1.2.0 requires raceway_selections and raceway_selection_outcomes arrays")
         return _decode_dataclass(cls, document)
 
     @classmethod
@@ -112,6 +122,8 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Entity, ...], ...]:
         model.conductors,
         model.electrical_boxes,
         model.box_selection_outcomes,
+        model.raceway_selections,
+        model.raceway_selection_outcomes,
     )
 
 
@@ -157,6 +169,40 @@ def validate_model(model: BuildingModel) -> None:
     def require(ref: str | None, mapping: Mapping[str, Any], label: str) -> None:
         if ref is not None and ref not in mapping:
             raise ContractError(f"{label} references missing id {ref!r}")
+
+    selections = {s.id: s for s in model.raceway_selections}
+    selected_routes: set[str] = set()
+    for selection in model.raceway_selections:
+        require(selection.route_id, routes, f"{selection.id}.route_id")
+        route = routes[selection.route_id]
+        if selection.route_id in selected_routes:
+            raise ContractError("a route cannot have multiple whole-route selections")
+        selected_routes.add(selection.route_id)
+        if selection.route_type != route.route_type or selection.wiring_method != wiring_method_for_route_type(route.route_type):
+            raise ContractError("selected wiring method contradicts canonical route type")
+        if route.nominal_diameter_m is not None and (selection.nominal_diameter_m is None or
+            abs(route.nominal_diameter_m-selection.nominal_diameter_m)>1e-9):
+            raise ContractError("selected nominal diameter contradicts the source route diameter")
+    selection_intents: set[str] = set()
+    outcome_routes: set[str] = set()
+    selected_ids: set[str] = set()
+    for outcome in model.raceway_selection_outcomes:
+        require(outcome.route_id, routes, f"{outcome.id}.route_id")
+        if outcome.intent_id in selection_intents or outcome.route_id in outcome_routes:
+            raise ContractError("one active raceway outcome is allowed per intent and route")
+        selection_intents.add(outcome.intent_id)
+        outcome_routes.add(outcome.route_id)
+        if outcome.selected_selection_id is not None:
+            require(outcome.selected_selection_id, selections, f"{outcome.id}.selected_selection_id")
+            selection = selections[outcome.selected_selection_id]
+            if (selection.intent_id != outcome.intent_id or selection.route_id != outcome.route_id or
+                selection.product != outcome.requested_product or selection.basis != outcome.requested_basis):
+                raise ContractError("raceway outcome contradicts its selected route/product/basis")
+            selected_ids.add(selection.id)
+        elif outcome.route_id in selected_routes:
+            raise ContractError("unresolved route already has a whole-route selection")
+    if selected_ids != set(selections):
+        raise ContractError("every raceway selection requires one active selected outcome")
 
     for entity in (*model.spaces, *model.walls, *model.slabs, *model.ceilings):
         require(entity.level_id, levels, f"{entity.id}.level_id")
@@ -218,7 +264,7 @@ def validate_model(model: BuildingModel) -> None:
 
     for port in model.ports:
         require(port.owner_id, by_id, f"{port.id}.owner_id")
-        if port.owner_id in {outcome.id for outcome in model.box_selection_outcomes}:
+        if port.owner_id in {outcome.id for outcome in (*model.box_selection_outcomes, *model.raceway_selection_outcomes, *model.raceway_selections)}:
             raise ContractError(f"{port.id} cannot be owned by a nonphysical selection outcome")
         if port.owner_id in boxes and not box_contains_point(boxes[port.owner_id], port.pose.position):
             raise ContractError(f"{port.id} lies outside its physical box envelope")
@@ -277,6 +323,9 @@ def _encode(value: Any) -> Any:
         if isinstance(value, BuildingModel) and value.schema_version == SCHEMA_VERSION:
             for name in _PHYSICAL_FIELDS:
                 encoded.pop(name)
+        if isinstance(value, BuildingModel) and value.schema_version != RACEWAY_SCHEMA_VERSION:
+            for name in _RACEWAY_FIELDS:
+                encoded.pop(name)
         if isinstance(value, Provenance) and value.derivation is None:
             # An unset derivation states nothing, so omit it rather than
             # writing an explicit null. Adding the field then leaves the
@@ -306,7 +355,15 @@ def _encode(value: Any) -> Any:
 def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
     """Explicit, lossless opt-in to the physical-object contract; never downgrade."""
     from dataclasses import replace
+    if model.schema_version == RACEWAY_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.2")
     return replace(model, schema_version=PHYSICAL_SCHEMA_VERSION)
+
+
+def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
+    """Explicit lossless opt-in; preserve prior physical box inventory."""
+    from dataclasses import replace
+    return replace(model, schema_version=RACEWAY_SCHEMA_VERSION)
 
 
 T = TypeVar("T")

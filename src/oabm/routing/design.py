@@ -98,6 +98,7 @@ def _sorted_entities(model: BuildingModel) -> BuildingModel:
         "electrical_equipment", "electrical_devices", "ports", "obstacles",
         "route_constraints", "routes", "route_fittings", "circuits", "conductors",
         "electrical_boxes", "box_selection_outcomes",
+        "raceway_selections", "raceway_selection_outcomes",
     )
     return replace(model, **{
         name: tuple(sorted(getattr(model, name), key=lambda item: item.id))

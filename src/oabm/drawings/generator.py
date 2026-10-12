@@ -579,8 +579,10 @@ def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
         _device_schedule(model),
         _circuit_schedule(model),
     )
-    if model.schema_version == "1.1.0":
+    if model.schema_version in {"1.1.0", "1.2.0"}:
         schedules += (_box_schedule(model), _box_selection_schedule(model))
+    if model.schema_version == "1.2.0":
+        schedules += (_raceway_schedule(model), _raceway_outcome_schedule(model))
     return tuple(schedule for schedule in schedules if schedule.rows)
 
 
@@ -1404,6 +1406,7 @@ def _entities(model: BuildingModel) -> tuple[Entity, ...]:
         *model.ports, *model.obstacles, *model.route_constraints, *model.routes,
         *model.route_fittings, *model.circuits, *model.conductors,
         *model.electrical_boxes, *model.box_selection_outcomes,
+        *model.raceway_selections, *model.raceway_selection_outcomes,
     )
 
 
@@ -1467,3 +1470,20 @@ def _format_dimension_text(value: float, decimals: int | None) -> str:
     if quantized == 0:
         quantized = abs(quantized)
     return f"{format(quantized, 'f')} m"
+
+
+def _raceway_schedule(model: BuildingModel) -> DrawingSchedule:
+    columns=tuple(ScheduleColumn(k,t) for k,t in (('route','Route'),('product','Catalog product'),
+        ('designation','Trade size / listed assembly'),('basis','Caller rule reference'),('verification','Code verification')))
+    rows=tuple(ScheduleRow(source_id=s.id,cells=(s.route_id,
+        f'{s.product.catalog_id}/{s.product.catalog_revision}/{s.product.product_id}',s.designation,
+        f'{s.basis.authority}/{s.basis.revision}/{s.basis.rule_id}','not performed'))
+        for s in sorted(model.raceway_selections,key=lambda s:s.id))
+    return DrawingSchedule(id='schedule:raceway-selections',title='Raceway / Cable Products',columns=columns,rows=rows)
+
+
+def _raceway_outcome_schedule(model: BuildingModel) -> DrawingSchedule:
+    columns=tuple(ScheduleColumn(k,t) for k,t in (('route','Route'),('status','Status'),('scope','Request scope'),('reasons','Unresolved reasons')))
+    rows=tuple(ScheduleRow(source_id=o.id,cells=(o.route_id,o.status,o.scope,', '.join(o.reason_codes)))
+        for o in sorted(model.raceway_selection_outcomes,key=lambda o:o.id))
+    return DrawingSchedule(id='schedule:raceway-outcomes',title='Raceway Selection Outcomes',columns=columns,rows=rows)

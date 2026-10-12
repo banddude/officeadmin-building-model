@@ -5,7 +5,7 @@ import json
 from typing import Sequence
 
 from oabm.model import (
-    BOX_MOUNTINGS, PHYSICAL_SCHEMA_VERSION, BuildingModel, BoxSelectionOutcome,
+    BOX_MOUNTINGS, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, BuildingModel, BoxSelectionOutcome,
     CatalogProduct, ContractError, DERIVATION_USER, ElectricalBox, Pose, Provenance,
     Size3, stable_id,
 )
@@ -86,7 +86,7 @@ def select_electrical_boxes(
     as an unresolved outcome, not a claim that every device requires a box.
     Removing a box with live ports/routes refuses through reference validation.
     """
-    if model.schema_version != PHYSICAL_SCHEMA_VERSION:
+    if model.schema_version not in {PHYSICAL_SCHEMA_VERSION,RACEWAY_SCHEMA_VERSION}:
         raise ContractError("explicit upgrade_to_v1_1 is required before box selection")
     for entity in (*model.electrical_boxes, *model.box_selection_outcomes):
         if not any(p.source_kind == _PRODUCER_KIND and p.method == _INTENT_METHOD for p in entity.provenance):

@@ -26,6 +26,8 @@ _COLLECTION_FIELDS = (
     "conductors",
     "electrical_boxes",
     "box_selection_outcomes",
+    "raceway_selections",
+    "raceway_selection_outcomes",
 )
 
 _DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "fixtures" / "golden" / "v1"
@@ -183,7 +185,8 @@ def load_golden_model(case: GoldenCase) -> BuildingModel:
 
 def _entity_counts(model: BuildingModel) -> dict[str, int]:
     return {field_name: len(getattr(model, field_name)) for field_name in _COLLECTION_FIELDS
-            if model.schema_version != SCHEMA_VERSION or field_name not in {"electrical_boxes", "box_selection_outcomes"}}
+            if (model.schema_version != SCHEMA_VERSION or field_name not in {"electrical_boxes", "box_selection_outcomes"})
+            and (model.schema_version == "1.2.0" or field_name not in {"raceway_selections", "raceway_selection_outcomes"})}
 
 
 def _validate_expectations(case: GoldenCase, model: BuildingModel) -> None:

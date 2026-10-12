@@ -38,6 +38,13 @@ from oabm.qa import (
     load_golden_cases,
     load_golden_model,
 )
+from oabm.qa.confidence_review import (
+    EvidenceReference,
+    QuantityWarning,
+    _warning_items,
+    fingerprint_provenance,
+)
+from oabm.importers.roomplan.importer import load_captured_room
 from oabm.quantities import extract_quantities
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -260,10 +267,9 @@ def test_quantity_warnings_become_items_with_stable_ids() -> None:
     model = _routed_garage()
     manifest = build_confidence_review(model, ReviewConfig(confidence_threshold=0.5))
     report = extract_quantities(model)
-    expected = {
-        f"review:warning:{warning.code}:{'|'.join(sorted(warning.source_entity_ids))}"
-        for warning in report.warnings
-    }
+    from oabm.qa.confidence_review import _warning_item_id
+
+    expected = {_warning_item_id(warning) for warning in report.warnings}
     warning_items = {
         item.item_id: item for item in manifest.items
         if item.item_id.startswith("review:warning:")
@@ -320,6 +326,75 @@ def test_real_fixture_input_to_model_to_manifest() -> None:
     assert manifest.confidence_threshold == 0.9
 
 
+def test_real_importer_input_to_model_to_manifest() -> None:
+    """A public synthetic CapturedRoom import drives input to manifest.
+
+    This is the real pipeline the review serves: an importer input file is
+    parsed into a canonical model by the RoomPlan importer, and the
+    manifest is built from that model — no manually constructed rows.
+    """
+
+    model = load_captured_room(
+        ROOT / "fixtures" / "roomplan" / "captured-room-3d.json",
+        source_id="fixture:captured-room-3d",
+    )
+    assert model.walls
+    manifest = build_confidence_review(model, ReviewConfig(confidence_threshold=1.0))
+    report = extract_quantities(model)
+    assert report.warnings
+
+    # The importer records real uncertainty (some entities at 0.66/0.33),
+    # and the manifest must flag exactly those, computed from the model
+    # itself rather than assumed here.
+    entity_items = {
+        item.entity_ids[0]: item
+        for item in manifest.items if item.item_id.startswith("review:entity:")
+    }
+    warning_items = [
+        item for item in manifest.items if item.item_id.startswith("review:warning:")
+    ]
+    assert len(warning_items) == len(report.warnings)
+
+    expected_unsure: set[str] = set()
+    for name, ids in _all_entity_ids(model).items():
+        for entity in getattr(model, name):
+            if entity.confidence < 1.0 or not entity.provenance or any(
+                record.confidence < 1.0 for record in entity.provenance
+            ):
+                expected_unsure.add(entity.id)
+    assert set(entity_items) == expected_unsure
+    for entity_id, item in entity_items.items():
+        assert "low_entity_confidence" in item.reasons or (
+            "missing_provenance" in item.reasons
+        )
+
+    # A flagged wall's assumed-thickness record travels verbatim: an
+    # inferred derivation stays inferred, with its field scope, never
+    # relabeled and never raised.
+    wall = next(
+        w for w in model.walls
+        if w.id in entity_items and any(r.derivation == "inferred" for r in w.provenance)
+    )
+    wall_records = [
+        record for record in wall.provenance if record.derivation == "inferred"
+    ]
+    item = entity_items[wall.id]
+    for record in wall_records:
+        payload = next(
+            entry for entry in item.provenance
+            if entry.get("source_id") == record.source_id
+            and entry.get("derivation") == "inferred"
+            and entry.get("scope_paths") == (
+                list(record.scope_paths) if record.scope_paths is not None else None
+            )
+        )
+        assert payload["confidence"] == record.confidence
+    assert all(
+        entry.get("source_id") == "fixture:captured-room-3d"
+        for entry in item.provenance
+    )
+
+
 def test_manifest_is_deterministic_under_input_permutations() -> None:
     north = replace(_wall(), id="wall:review-north", confidence=0.6)
     south = _wall(confidence=0.4)
@@ -346,57 +421,146 @@ def test_input_model_bytes_are_unchanged() -> None:
     build_confidence_review(
         model,
         ReviewConfig(confidence_threshold=0.5),
-        evidence={"wall:review-south": ("crop:a",)},
+        evidence=[_bound_reference(model, ref_id="crop:a")],
     )
     assert model.to_json() == before_json
     assert [entity.id for entity in model.walls] == before_ids
     assert model.walls[0].confidence == 0.4
 
 
-def test_crops_ride_along_and_missing_crops_stay_missing() -> None:
+def _bound_reference(model: BuildingModel, **changes) -> EvidenceReference:
+    """A validly bound reference to the review wall's provenance record."""
+
+    record = model.walls[0].provenance[0]
+    values = {
+        "ref_id": "crop:page-2-a",
+        "entity_id": model.walls[0].id,
+        "source_kind": record.source_kind,
+        "source_id": record.source_id,
+        "page": record.page,
+        "fingerprint": fingerprint_provenance(record),
+    }
+    values.update(changes)
+    return EvidenceReference(**values)
+
+
+def test_bound_crops_ride_along_and_missing_crops_stay_missing() -> None:
     model = _review_model(_wall(confidence=0.4))
     manifest = build_confidence_review(
         model,
         ReviewConfig(confidence_threshold=0.5),
-        evidence={"wall:review-south": ("crop:page-2-a",)},
+        evidence=[_bound_reference(model)],
     )
     item = next(item for item in manifest.items if item.entity_ids == ("wall:review-south",))
-    assert item.crops == ("crop:page-2-a",)
-    # An entity nobody supplied crops for carries none: unavailable, never
-    # invented.
+    assert item.crops[0]["ref_id"] == "crop:page-2-a"
+    assert item.crops[0]["fingerprint"] == fingerprint_provenance(
+        model.walls[0].provenance[0]
+    )
+    # An entity nobody supplied evidence for carries none: unavailable,
+    # never invented.
     bare = _review_model(
         _wall(confidence=0.4),
         replace(_wall(), id="wall:review-north", confidence=0.3),
     )
     unnamed = build_confidence_review(
         bare, ReviewConfig(confidence_threshold=0.5),
-        evidence={"wall:review-south": ("crop:a",)},
+        evidence=[_bound_reference(bare, ref_id="crop:a")],
     )
     north = next(item for item in unnamed.items if item.entity_ids == ("wall:review-north",))
     assert north.crops == ()
 
 
-def test_dangling_duplicate_and_stale_evidence_fail_closed() -> None:
+def test_evidence_bindings_fail_closed() -> None:
     model = _review_model(_wall(confidence=0.4))
-    with pytest.raises(ValueError, match="unknown or stale"):
+    # Unknown entity: dangling.
+    with pytest.raises(ValueError, match="unknown or stale entity"):
         build_confidence_review(
             model, ReviewConfig(confidence_threshold=0.5),
-            evidence={"wall:does-not-exist": ("crop:a",)},
+            evidence=[_bound_reference(model, entity_id="wall:does-not-exist")],
         )
-    with pytest.raises(ValueError, match="duplicate evidence reference"):
+    # Duplicate reference ids.
+    with pytest.raises(ValueError, match="duplicate evidence reference id"):
         build_confidence_review(
             model, ReviewConfig(confidence_threshold=0.5),
-            evidence={"wall:review-south": ("crop:a", "crop:a")},
+            evidence=[
+                _bound_reference(model),
+                _bound_reference(model, source_kind="other-source"),
+            ],
         )
-    # Stale: the reference was valid for an earlier model, not this one.
+    # Wrong source: the entity does not carry it.
+    with pytest.raises(ValueError, match="does not currently carry"):
+        build_confidence_review(
+            model, ReviewConfig(confidence_threshold=0.5),
+            evidence=[_bound_reference(model, source_id="plan:elsewhere")],
+        )
+    # Wrong page.
+    with pytest.raises(ValueError, match="names page"):
+        build_confidence_review(
+            model, ReviewConfig(confidence_threshold=0.5),
+            evidence=[_bound_reference(model, page=7)],
+        )
+    # Stale: the record changed after the reference was made.
+    stale = _bound_reference(model)
+    edited = replace(
+        model,
+        walls=(replace(model.walls[0], provenance=(
+            replace(model.walls[0].provenance[0], confidence=0.95),
+        )),),
+    )
+    with pytest.raises(ValueError, match="stale"):
+        build_confidence_review(
+            edited, ReviewConfig(confidence_threshold=0.5), evidence=[stale],
+        )
+    # Reference to an entity id that existed earlier but not now.
     without_wall = _review_model(
         replace(_wall(), id="wall:review-north", confidence=0.3),
     )
-    with pytest.raises(ValueError, match="unknown or stale"):
+    with pytest.raises(ValueError, match="unknown or stale entity"):
         build_confidence_review(
             without_wall, ReviewConfig(confidence_threshold=0.5),
-            evidence={"wall:review-south": ("crop:a",)},
+            evidence=[_bound_reference(model)],
         )
+
+
+def test_evidence_ordering_does_not_change_output() -> None:
+    model = _review_model(_wall(confidence=0.4))
+    first = build_confidence_review(
+        model, ReviewConfig(confidence_threshold=0.5),
+        evidence=[
+            _bound_reference(model, ref_id="crop:b"),
+            _bound_reference(model, ref_id="crop:a"),
+        ],
+    )
+    second = build_confidence_review(
+        model, ReviewConfig(confidence_threshold=0.5),
+        evidence=[
+            _bound_reference(model, ref_id="crop:a"),
+            _bound_reference(model, ref_id="crop:b"),
+        ],
+    )
+    assert first.to_json() == second.to_json()
+    item = next(item for item in first.items if item.entity_ids == ("wall:review-south",))
+    assert [crop["ref_id"] for crop in item.crops] == ["crop:a", "crop:b"]
+
+
+def test_provenance_ordering_does_not_change_output() -> None:
+    first = Provenance(
+        source_kind="scan", source_id="scan:one", confidence=0.2, derivation="inferred",
+    )
+    second = Provenance(
+        source_kind="drawing", source_id="plan:two", confidence=0.3, derivation="observed",
+    )
+    forward = _review_model(_wall(confidence=0.8, provenance=(first, second)))
+    backward = _review_model(_wall(confidence=0.8, provenance=(second, first)))
+    left = build_confidence_review(forward, ReviewConfig(confidence_threshold=0.5))
+    right = build_confidence_review(backward, ReviewConfig(confidence_threshold=0.5))
+    assert left.to_json() == right.to_json()
+    item = next(
+        item for item in left.items if item.entity_ids == ("wall:review-south",)
+    )
+    # Both facts survive, canonically ordered, values untouched.
+    assert [entry["source_id"] for entry in item.provenance] == ["plan:two", "scan:one"]
+    assert [entry["confidence"] for entry in item.provenance] == [0.3, 0.2]
 
 
 def test_strict_config_decoding() -> None:
@@ -433,10 +597,19 @@ def test_strict_config_decoding() -> None:
 
 def test_strict_manifest_roundtrip() -> None:
     model = _routed_garage()
+    route = model.routes[0]
+    record = route.provenance[0]
     manifest = build_confidence_review(
         model,
         ReviewConfig(confidence_threshold=0.99),
-        evidence={model.routes[0].id: ("crop:route-a",)},
+        evidence=[EvidenceReference(
+            ref_id="crop:route-a",
+            entity_id=route.id,
+            source_kind=record.source_kind,
+            source_id=record.source_id,
+            page=record.page,
+            fingerprint=fingerprint_provenance(record),
+        )],
     )
     document = manifest.to_dict()
     decoded = ConfidenceReviewManifest.from_dict(document)
@@ -462,6 +635,112 @@ def test_strict_manifest_roundtrip() -> None:
     }
     with pytest.raises(ValueError, match="missing keys"):
         ConfidenceReviewManifest.from_dict(incomplete_item)
+
+
+def test_strict_decode_rejects_semantic_garbage() -> None:
+    model = _routed_garage()
+    manifest = build_confidence_review(model, ReviewConfig(confidence_threshold=0.99))
+    document = manifest.to_dict()
+    item = document["items"][0]
+
+    # Confidence outside [0, 1], or a boolean, in an item.
+    for value in (5, True, 1.5, -0.5):
+        with pytest.raises(ValueError, match="confidence"):
+            ConfidenceReviewManifest.from_dict({
+                **document,
+                "items": [{**item, "confidence": value}],
+            })
+    # Malformed provenance: unknown keys, missing keys, bool confidence,
+    # bad derivation, bad page, bad scope paths.
+    provenance = item["provenance"] or [
+        {"source_kind": "drawing", "source_id": "plan:x", "confidence": 1.0},
+    ]
+    with pytest.raises(ValueError, match="unknown provenance keys"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{**item, "provenance": [{**provenance[0], "extra": 1}]}],
+        })
+    with pytest.raises(ValueError, match="missing keys"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{**item, "provenance": [{"source_kind": "drawing"}]}],
+        })
+    with pytest.raises(ValueError, match="confidence"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{**item, "provenance": [{**provenance[0], "confidence": True}]}],
+        })
+    with pytest.raises(ValueError, match="confidence"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{**item, "provenance": [{**provenance[0], "confidence": 7}]}],
+        })
+    with pytest.raises(ValueError, match="derivation"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{
+                **item,
+                "provenance": [{**provenance[0], "derivation": "guessed"}],
+            }],
+        })
+    with pytest.raises(ValueError, match="page"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{**item, "provenance": [{**provenance[0], "page": 0}]}],
+        })
+    with pytest.raises(ValueError, match="scope_paths"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{
+                **item,
+                "provenance": [{**provenance[0], "scope_paths": ["a", "a"]}],
+            }],
+        })
+    # Reason tokens and duplicate identities.
+    with pytest.raises(ValueError, match="reason"):
+        ConfidenceReviewManifest.from_dict({
+            **document,
+            "items": [{**item, "reasons": ["Not A Token"]}],
+        })
+    duplicated = {**document, "items": [item, item]}
+    with pytest.raises(ValueError, match="duplicate item ids"):
+        ConfidenceReviewManifest.from_dict(duplicated)
+    duplicate_collections = {
+        **document,
+        "collections": [*document["collections"], document["collections"][0]],
+    }
+    with pytest.raises(ValueError, match="duplicate names"):
+        ConfidenceReviewManifest.from_dict(duplicate_collections)
+    duplicate_entity_ids = {
+        **document,
+        "items": [{**item, "entity_ids": ["a", "a"]}],
+    }
+    with pytest.raises(ValueError, match="entity_ids"):
+        ConfidenceReviewManifest.from_dict(duplicate_entity_ids)
+
+
+def test_distinct_same_code_warnings_never_collide() -> None:
+    sources = ("route:a",)
+    first = QuantityWarning(
+        code="overlap",
+        message="route a overlaps in segment 1",
+        source_entity_ids=sources,
+    )
+    second = QuantityWarning(
+        code="overlap",
+        message="route a overlaps in segment 9",
+        source_entity_ids=sources,
+    )
+    collections = {"routes": ()}
+    forward = _warning_items([first, second], {}, collections)
+    backward = _warning_items([second, first], {}, collections)
+    assert len(forward) == 2 and len(backward) == 2
+    assert {item.item_id for item in forward} == {item.item_id for item in backward}
+    assert forward[0].item_id != forward[1].item_id
+    assert forward == backward
+    # The identical warning deduplicates onto one item.
+    single = _warning_items([first, first], {}, collections)
+    assert len(single) == 1
 
 
 def test_manifest_json_is_deterministic_bytes() -> None:

@@ -1,0 +1,146 @@
+{
+  "catalog_products": [
+    {
+      "catalog_id": "synthetic",
+      "catalog_revision": "1",
+      "product_id": "product-a"
+    },
+    {
+      "catalog_id": "synthetic",
+      "catalog_revision": "1",
+      "product_id": "product-b"
+    },
+    {
+      "catalog_id": "synthetic",
+      "catalog_revision": "1",
+      "product_id": "product-c"
+    }
+  ],
+  "policy_id": "policy:synthetic",
+  "rules": [
+    {
+      "actor_id": "synthetic-reviewer",
+      "enabled": true,
+      "explanation": "Synthetic permission rule:baseline",
+      "layer": "baseline",
+      "permitted_products": [
+        {
+          "catalog_id": "synthetic",
+          "catalog_revision": "1",
+          "product_id": "product-a"
+        },
+        {
+          "catalog_id": "synthetic",
+          "catalog_revision": "1",
+          "product_id": "product-b"
+        },
+        {
+          "catalog_id": "synthetic",
+          "catalog_revision": "1",
+          "product_id": "product-c"
+        }
+      ],
+      "provenance": [
+        {
+          "attributes": {
+            "source_note": "public synthetic policy fact"
+          },
+          "confidence": 0.7,
+          "derivation": "observed",
+          "method": null,
+          "page": null,
+          "scope_paths": [
+            "permitted_products"
+          ],
+          "source_element_id": "rule:baseline",
+          "source_id": "fixture:layered-policy",
+          "source_kind": "synthetic"
+        }
+      ],
+      "reference": {
+        "authority": "synthetic-policy",
+        "revision": "1",
+        "rule_id": "rule:baseline"
+      },
+      "route_type": "emt"
+    },
+    {
+      "actor_id": "synthetic-reviewer",
+      "enabled": true,
+      "explanation": "Synthetic permission rule:company",
+      "layer": "company",
+      "permitted_products": [
+        {
+          "catalog_id": "synthetic",
+          "catalog_revision": "1",
+          "product_id": "product-a"
+        },
+        {
+          "catalog_id": "synthetic",
+          "catalog_revision": "1",
+          "product_id": "product-b"
+        }
+      ],
+      "provenance": [
+        {
+          "attributes": {
+            "source_note": "public synthetic policy fact"
+          },
+          "confidence": 0.4,
+          "derivation": "observed",
+          "method": null,
+          "page": null,
+          "scope_paths": [
+            "permitted_products"
+          ],
+          "source_element_id": "rule:company",
+          "source_id": "fixture:layered-policy",
+          "source_kind": "synthetic"
+        }
+      ],
+      "reference": {
+        "authority": "synthetic-policy",
+        "revision": "1",
+        "rule_id": "rule:company"
+      },
+      "route_type": "emt"
+    },
+    {
+      "actor_id": "synthetic-reviewer",
+      "enabled": true,
+      "explanation": "Synthetic permission rule:job",
+      "layer": "job",
+      "permitted_products": [
+        {
+          "catalog_id": "synthetic",
+          "catalog_revision": "1",
+          "product_id": "product-a"
+        }
+      ],
+      "provenance": [
+        {
+          "attributes": {
+            "source_note": "public synthetic policy fact"
+          },
+          "confidence": 0.7,
+          "derivation": "observed",
+          "method": null,
+          "page": null,
+          "scope_paths": [
+            "permitted_products"
+          ],
+          "source_element_id": "rule:job",
+          "source_id": "fixture:layered-policy",
+          "source_kind": "synthetic"
+        }
+      ],
+      "reference": {
+        "authority": "synthetic-policy",
+        "revision": "1",
+        "rule_id": "rule:job"
+      },
+      "route_type": "emt"
+    }
+  ],
+  "version": "1.0.0"
+}

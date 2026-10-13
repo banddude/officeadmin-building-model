@@ -660,15 +660,12 @@ def _title_block_exclusion(
     candidate_boxes = [
         item.bbox_pt for item in _ordinary_vector_rect_loops(page)
     ] + [item.bbox_pt for item in page.rects]
-    # On the recognized construction/electrical plan inputs, an outer frame
-    # can enclose all title markers without being a title block. Keep this
-    # recovery scoped to those roles; other legacy page-role handling remains
-    # unchanged until its drawing-region evidence is independently resolved.
-    if _construction_title_and_sheet_mark(page) or classify_page(page).kind == "electrical":
-        candidate_boxes = [
-            bbox for bbox in candidate_boxes
-            if not _is_sheet_frame_enclosure(page, bbox)
-        ]
+    # A sheet frame enclosing title markers is never the title block itself,
+    # including on ordinary FLOOR PLAN sheets without a construction title.
+    candidate_boxes = [
+        bbox for bbox in candidate_boxes
+        if not _is_sheet_frame_enclosure(page, bbox)
+    ]
     multi_label_boxes = [
         bbox
         for bbox in candidate_boxes
@@ -3746,7 +3743,7 @@ def _wall_pair_has_endpoint_junction(
     second_index: int,
     runs: list[_WallFaceRun],
     records: list[tuple[float, float, float, float, float]],
-    endpoint_cells: dict[tuple[int, int], set[tuple[int, tuple[float, float]]]],
+    junction_cells: dict[tuple[int, int], set[int]],
     junction_tolerance_pt: float,
 ) -> bool:
     dx = end_pt[0] - start_pt[0]
@@ -3760,9 +3757,10 @@ def _wall_pair_has_endpoint_junction(
     for endpoint in (start_pt, end_pt):
         cell_x = math.floor(endpoint[0] / cell_size)
         cell_y = math.floor(endpoint[1] / cell_size)
-        for nearby_x in range(cell_x - 1, cell_x + 2):
-            for nearby_y in range(cell_y - 1, cell_y + 2):
-                for run_index, other_endpoint in endpoint_cells.get(
+        # One cell for junction tolerance plus one for run-sampling distance.
+        for nearby_x in range(cell_x - 2, cell_x + 3):
+            for nearby_y in range(cell_y - 2, cell_y + 3):
+                for run_index in junction_cells.get(
                     (nearby_x, nearby_y),
                     (),
                 ):
@@ -3771,7 +3769,17 @@ def _wall_pair_has_endpoint_junction(
                     oux, ouy, _, _, _ = records[run_index]
                     if abs(ux * ouy - uy * oux) < minimum_cross:
                         continue
-                    if math.dist(endpoint, other_endpoint) <= junction_tolerance_pt:
+                    # A partition can terminate midway along a crossing wall
+                    # face (a T junction), rather than at that face's endpoint.
+                    run = runs[run_index]
+                    ax, ay = run.start_pt
+                    bx, by = run.end_pt
+                    fraction = max(0.0, min(1.0, (
+                        (endpoint[0] - ax) * (bx - ax)
+                        + (endpoint[1] - ay) * (by - ay)
+                    ) / ((bx - ax) ** 2 + (by - ay) ** 2)))
+                    nearest = (ax + fraction * (bx - ax), ay + fraction * (by - ay))
+                    if math.dist(endpoint, nearest) <= junction_tolerance_pt:
                         return True
     return False
 
@@ -4253,19 +4261,25 @@ def _geometric_wall_face_pairs(
 
     junction_tolerance_pt = (12.0 * _INCH_M) / transform.meters_per_point
     junction_cell_size = max(junction_tolerance_pt, 1.0)
-    endpoint_cells: dict[
-        tuple[int, int],
-        set[tuple[int, tuple[float, float]]],
-    ] = {}
+    junction_cells: dict[tuple[int, int], set[int]] = {}
     for run_index, run in enumerate(eligible_runs):
-        for endpoint in (run.start_pt, run.end_pt):
-            endpoint_cells.setdefault(
+        # Index the whole run, with samples at most one cell apart. Querying
+        # nearby cells covers the tolerance without an all-runs scan.
+        steps = max(1, math.ceil(
+            math.dist(run.start_pt, run.end_pt) / junction_cell_size,
+        ))
+        for step in range(steps + 1):
+            point = tuple(
+                a + (b - a) * step / steps
+                for a, b in zip(run.start_pt, run.end_pt)
+            )
+            junction_cells.setdefault(
                 (
-                    math.floor(endpoint[0] / junction_cell_size),
-                    math.floor(endpoint[1] / junction_cell_size),
+                    math.floor(point[0] / junction_cell_size),
+                    math.floor(point[1] / junction_cell_size),
                 ),
                 set(),
-            ).add((run_index, endpoint))
+            ).add(run_index)
 
     accepted: list[_WallFacePair] = []
     seen_anchors: set[str] = set()
@@ -4313,7 +4327,7 @@ def _geometric_wall_face_pairs(
                     second_index,
                     eligible_runs,
                     records,
-                    endpoint_cells,
+                    junction_cells,
                     junction_tolerance_pt,
                 ),
                 geometry_anchor=geometry_anchor,
@@ -5782,6 +5796,7 @@ def _geometric_wall_loop_entities(
     allow_bounded_unlayered_poche: bool = False,
     sheet_anchor: str | None = None,
     curved_contexts: tuple[_WallContext, ...] = (),
+    existing_wall_contexts: tuple[_WallContext, ...] = (),
 ) -> tuple[
     tuple[_WallContext, ...],
     tuple[Space, ...],
@@ -5981,6 +5996,39 @@ def _geometric_wall_loop_entities(
             for context in curved_contexts
         )
     }
+    # Shell recognition consumes its wall-face strokes before this pass. A
+    # door-gapped partition still has a supported T junction on those already
+    # materialized walls; consuming their strokes must not erase that proof.
+    def ends_on_existing_wall(pair: _WallFacePair) -> bool:
+        a, b = transform.apply(pair.start_pt), transform.apply(pair.end_pt)
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(dx, dy)
+        for context in existing_wall_contexts:
+            points = context.wall.centerline.points
+            for start, end in zip(points, points[1:]):
+                wx, wy = end.x - start.x, end.y - start.y
+                wall_length = math.hypot(wx, wy)
+                if (
+                    wall_length <= 1e-12
+                    or abs(dx * wy - dy * wx)
+                    < length * wall_length * math.sin(math.radians(15))
+                ):
+                    continue
+                for x, y in (a, b):
+                    t = max(0.0, min(1.0, (
+                        (x - start.x) * wx + (y - start.y) * wy
+                    ) / wall_length ** 2))
+                    if (
+                        math.hypot(x - start.x - t * wx, y - start.y - t * wy)
+                        <= 12 * _INCH_M + context.wall.thickness_m / 2
+                    ):
+                        return True
+        return False
+
+    existing_junction_pair_indexes = {
+        index for index in partial_pair_indexes
+        if ends_on_existing_wall(pairs[index])
+    }
     no_junction_partial_pair_indexes = {
         index
         for index in partial_pair_indexes
@@ -5988,6 +6036,7 @@ def _geometric_wall_loop_entities(
         and not pairs[index].junction_supported
         and index not in poche_junction_pair_indexes
         and index not in curve_junction_pair_indexes
+        and index not in existing_junction_pair_indexes
     }
     evidence_supported_partial_pair_indexes = (
         partial_pair_indexes
@@ -6081,11 +6130,13 @@ def _geometric_wall_loop_entities(
         pair_junction_supported = (
             pair.junction_supported or index in poche_junction_pair_indexes
             or index in curve_junction_pair_indexes
+            or index in existing_junction_pair_indexes
         )
         junction_source_attributes = (
             {"junction_source": "poche_leg"}
             if index in poche_junction_pair_indexes
             else {"junction_source": "curved_wall"} if index in curve_junction_pair_indexes
+            else {"junction_source": "materialized_wall"} if index in existing_junction_pair_indexes
             else {}
         )
 
@@ -6693,8 +6744,14 @@ def _nested_rect_wall_evidence(
 
     minimum = options.min_wall_thickness_m / meters_per_point - 1e-9
     maximum = options.max_wall_thickness_m / meters_per_point + 1e-9
+    title_centers = tuple(
+        text.center_pt for text in page.texts
+        if _STRONG_TITLE_BLOCK_RE.search(_clean_text(text.text))
+    )
     rects = sorted(
-        (rect for rect in page.rects if not _is_sheet_frame_enclosure(page, rect.bbox_pt)),
+        (rect for rect in page.rects
+         if not _is_sheet_frame_enclosure(page, rect.bbox_pt)
+         and not any(_inside(rect.bbox_pt, center) for center in title_centers)),
         key=lambda rect: (rect.bbox_pt, rect.element_id),
     )
     starts = [rect.bbox_pt[0] for rect in rects]
@@ -8341,6 +8398,7 @@ def import_observations(
                 ),
                 sheet_anchor=_sheet_anchor(page),
                 curved_contexts=curved_walls,
+                existing_wall_contexts=tuple(page_walls),
             )
             resolved_geometric_label_anchors = {
                 space.attributes["pdf_architecture"].get("label_anchor")

@@ -2575,6 +2575,7 @@ _LIGHTING_HEADER_MAX_GAP_PT = 90.0
 _LIGHTING_SWITCH_CODES: Mapping[str, tuple[str, str]] = {
     "S": ("switch", "single_pole"),
     "S3": ("switch", "three_way"),
+    "S4": ("switch", "four_way"),
     "SD": ("switch", "dimmer"),
     "OS": ("occupancy_sensor", "occupancy_sensor"),
 }
@@ -6615,8 +6616,12 @@ def _detect_legend_regions(
 def _legend_page_aliases(
     regions: Sequence[_LegendRegion],
     texts: Sequence[PdfTextObservation],
+    *,
+    legend_pages: Iterable[int] = (),
 ) -> dict[int, tuple[str, ...]]:
-    aliases: dict[int, set[str]] = {region.page: set() for region in regions}
+    aliases: dict[int, set[str]] = {
+        page: set() for page in (*legend_pages, *(region.page for region in regions))
+    }
     regions_by_page = {region.page: region for region in regions}
     for page, region in regions_by_page.items():
         if region.heading is not None:
@@ -7836,6 +7841,42 @@ def _recognize_lighting(
         fixture_entries_by_page[page] = tuple(fixture_entries)
         switch_entries_by_page[page] = tuple(switch_entries)
 
+    # Lighting tags are often defined on a separate symbol sheet. Apply the
+    # same explicit-reference rule as the generic legend recognizer, while
+    # keeping local prototypes authoritative and ambiguous targets unresolved.
+    references, reference_misses = _resolve_explicit_legend_references(
+        texts=texts,
+        aliases_by_page=_legend_page_aliases(
+            (), texts, legend_pages=legend_entries_by_page,
+        ),
+        active_legend_pages=set(legend_entries_by_page),
+    )
+    unresolved.extend(reference_misses)
+    references_by_page: dict[int, list[_LegendReference]] = {}
+    for reference in references:
+        references_by_page.setdefault(reference.page, []).append(reference)
+        claimed_text_ids.add(reference.source_element_id)
+    applied_references: dict[int, _LegendReference] = {}
+    for page, page_references in sorted(references_by_page.items()):
+        if page in legend_entries_by_page:
+            continue
+        targets = {reference.legend_page for reference in page_references}
+        if len(targets) != 1:
+            unresolved.append({
+                "kind": "legend_reference", "page": page,
+                "source_element_id": page_references[0].source_element_id,
+                "source_element_ids": [item.source_element_id for item in page_references],
+                "reason_code": "lighting_legend_reference_ambiguous",
+                "status": "unresolved_legend_reference",
+                "reason": "lighting sheet references more than one legend page",
+                "candidate_legend_pages": sorted(targets),
+            })
+            continue
+        reference = page_references[0]
+        fixture_entries_by_page[page] = fixture_entries_by_page[reference.legend_page]
+        switch_entries_by_page[page] = switch_entries_by_page[reference.legend_page]
+        applied_references[page] = reference
+
     fixture_tags_by_page: dict[int, set[str]] = {
         page: set(tags) for page, tags in schedule_tags_by_page.items()
     }
@@ -7925,7 +7966,7 @@ def _recognize_lighting(
                 ambiguous_cluster_keys.add((cluster.page, cluster.geometry_key))
                 if _is_lighting_shaped(
                     cluster,
-                    legend_entries_by_page.get(cluster.page, ()),
+                    fixture_entries_by_page.get(cluster.page, ()),
                 ):
                     claimed_vector_ids.update(cluster.source_element_ids)
             continue
@@ -7967,7 +8008,7 @@ def _recognize_lighting(
             diagnosed_cluster_keys.add(key)
             if _is_lighting_shaped(
                 cluster,
-                legend_entries_by_page.get(cluster.page, ()),
+                fixture_entries_by_page.get(cluster.page, ()),
             ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.update(
@@ -8051,7 +8092,7 @@ def _recognize_lighting(
             diagnosed_cluster_keys.add(key)
             if _is_lighting_shaped(
                 cluster,
-                legend_entries_by_page.get(cluster.page, ()),
+                fixture_entries_by_page.get(cluster.page, ()),
             ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.add(tag_observation.element_id)
@@ -8345,7 +8386,7 @@ def _recognize_lighting(
             for cluster in nearby:
                 if _is_lighting_shaped(
                     cluster,
-                    legend_entries_by_page.get(cluster.page, ()),
+                    switch_entries_by_page.get(cluster.page, ()),
                 ):
                     claimed_vector_ids.update(cluster.source_element_ids)
             continue
@@ -8397,7 +8438,7 @@ def _recognize_lighting(
             claimed_text_ids.add(observation.element_id)
             if _is_lighting_shaped(
                 cluster,
-                legend_entries_by_page.get(cluster.page, ()),
+                fixture_entries_by_page.get(cluster.page, ()),
             ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             continue
@@ -8493,6 +8534,16 @@ def _recognize_lighting(
 
     # Misses are counted beside recognitions so any recall a stricter rule
     # costs stays visible in the output instead of silently disappearing.
+    for candidate in candidates.values():
+        reference = applied_references.get(candidate.page)
+        if reference is not None:
+            candidate.provenance.append(_provenance(
+                document, element_id=reference.source_element_id, page=reference.page,
+                method="pdf-lighting-legend-reference", confidence=0.99,
+                attributes={"source_text": reference.text,
+                            "legend_page": reference.legend_page,
+                            "target_alias": reference.target_alias},
+            ))
     unresolved_by_reason: dict[str, int] = {}
     for item in unresolved:
         reason_code = str(item.get("reason_code"))
@@ -8525,6 +8576,14 @@ def _recognize_lighting(
             }
         ),
     }
+    if references or reference_misses:
+        recognition_summary["legend_references"] = [
+            {"page": reference.page, "legend_page": reference.legend_page,
+             "source_element_id": reference.source_element_id,
+             "target_alias": reference.target_alias,
+             "applied": applied_references.get(reference.page) == reference}
+            for reference in references
+        ]
     return (
         candidates,
         matched_vector_ids,

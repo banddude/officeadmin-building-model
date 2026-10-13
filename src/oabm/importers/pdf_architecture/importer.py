@@ -284,6 +284,7 @@ class _WallFacePair:
     dashed: bool
     junction_supported: bool
     geometry_anchor: str
+    body_junction_supported: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -3736,7 +3737,7 @@ def _hatch_family_members(
     return members
 
 
-def _wall_pair_has_endpoint_junction(
+def _wall_pair_junction_kind(
     start_pt: tuple[float, float],
     end_pt: tuple[float, float],
     first_index: int,
@@ -3745,15 +3746,16 @@ def _wall_pair_has_endpoint_junction(
     records: list[tuple[float, float, float, float, float]],
     junction_cells: dict[tuple[int, int], set[int]],
     junction_tolerance_pt: float,
-) -> bool:
+) -> str | None:
     dx = end_pt[0] - start_pt[0]
     dy = end_pt[1] - start_pt[1]
     length = math.hypot(dx, dy)
     if length <= 1e-12:
-        return False
+        return None
     ux, uy = dx / length, dy / length
     minimum_cross = math.sin(math.radians(15.0))
     cell_size = max(junction_tolerance_pt, 1.0)
+    body_junction = False
     for endpoint in (start_pt, end_pt):
         cell_x = math.floor(endpoint[0] / cell_size)
         cell_y = math.floor(endpoint[1] / cell_size)
@@ -3772,6 +3774,9 @@ def _wall_pair_has_endpoint_junction(
                     # A partition can terminate midway along a crossing wall
                     # face (a T junction), rather than at that face's endpoint.
                     run = runs[run_index]
+                    if any(math.dist(endpoint, point) <= junction_tolerance_pt
+                           for point in (run.start_pt, run.end_pt)):
+                        return "endpoint"
                     ax, ay = run.start_pt
                     bx, by = run.end_pt
                     fraction = max(0.0, min(1.0, (
@@ -3780,8 +3785,8 @@ def _wall_pair_has_endpoint_junction(
                     ) / ((bx - ax) ** 2 + (by - ay) ** 2)))
                     nearest = (ax + fraction * (bx - ax), ay + fraction * (by - ay))
                     if math.dist(endpoint, nearest) <= junction_tolerance_pt:
-                        return True
-    return False
+                        body_junction = True
+    return "wall_body" if body_junction else None
 
 
 def _collinear_wall_face_runs(
@@ -4308,6 +4313,10 @@ def _geometric_wall_face_pairs(
         accepted_candidate_indexes.add(candidate_index)
         first = eligible_runs[first_index]
         second = eligible_runs[second_index]
+        junction_kind = _wall_pair_junction_kind(
+            start_source, end_source, first_index, second_index,
+            eligible_runs, records, junction_cells, junction_tolerance_pt,
+        )
         accepted.append(
             _WallFacePair(
                 start_pt=start_source,
@@ -4320,16 +4329,8 @@ def _geometric_wall_face_pairs(
                     sorted(set(first.primitive_families) | set(second.primitive_families))
                 ),
                 dashed=first.dashed or second.dashed,
-                junction_supported=_wall_pair_has_endpoint_junction(
-                    start_source,
-                    end_source,
-                    first_index,
-                    second_index,
-                    eligible_runs,
-                    records,
-                    junction_cells,
-                    junction_tolerance_pt,
-                ),
+                junction_supported=junction_kind == "endpoint",
+                body_junction_supported=junction_kind == "wall_body",
                 geometry_anchor=geometry_anchor,
             )
         )
@@ -5797,6 +5798,7 @@ def _geometric_wall_loop_entities(
     sheet_anchor: str | None = None,
     curved_contexts: tuple[_WallContext, ...] = (),
     existing_wall_contexts: tuple[_WallContext, ...] = (),
+    existing_spaces: tuple[Space, ...] = (),
 ) -> tuple[
     tuple[_WallContext, ...],
     tuple[Space, ...],
@@ -5999,7 +6001,27 @@ def _geometric_wall_loop_entities(
     # Shell recognition consumes its wall-face strokes before this pass. A
     # door-gapped partition still has a supported T junction on those already
     # materialized walls; consuming their strokes must not erase that proof.
+    interior_polygons = [polygon for _, polygon, _ in loops] + [
+        tuple((point.x, point.y) for point in space.footprint.points)
+        for space in existing_spaces
+    ]
+
+    def is_interior_pair(pair: _WallFacePair) -> bool:
+        a, b = transform.apply(pair.start_pt), transform.apply(pair.end_pt)
+        midpoint = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        return any(
+            all(_point_in_polygon(point, polygon) for point in (a, midpoint, b))
+            for polygon in interior_polygons
+        )
+
+    body_junction_pair_indexes = {
+        index for index in partial_pair_indexes
+        if pairs[index].body_junction_supported and is_interior_pair(pairs[index])
+    }
+
     def ends_on_existing_wall(pair: _WallFacePair) -> bool:
+        if not is_interior_pair(pair):
+            return False
         a, b = transform.apply(pair.start_pt), transform.apply(pair.end_pt)
         dx, dy = b[0] - a[0], b[1] - a[1]
         length = math.hypot(dx, dy)
@@ -6037,6 +6059,7 @@ def _geometric_wall_loop_entities(
         and index not in poche_junction_pair_indexes
         and index not in curve_junction_pair_indexes
         and index not in existing_junction_pair_indexes
+        and index not in body_junction_pair_indexes
     }
     evidence_supported_partial_pair_indexes = (
         partial_pair_indexes
@@ -6131,12 +6154,14 @@ def _geometric_wall_loop_entities(
             pair.junction_supported or index in poche_junction_pair_indexes
             or index in curve_junction_pair_indexes
             or index in existing_junction_pair_indexes
+            or index in body_junction_pair_indexes
         )
         junction_source_attributes = (
             {"junction_source": "poche_leg"}
             if index in poche_junction_pair_indexes
             else {"junction_source": "curved_wall"} if index in curve_junction_pair_indexes
             else {"junction_source": "materialized_wall"} if index in existing_junction_pair_indexes
+            else {"junction_source": "interior_wall_face"} if index in body_junction_pair_indexes
             else {}
         )
 
@@ -8399,6 +8424,7 @@ def import_observations(
                 sheet_anchor=_sheet_anchor(page),
                 curved_contexts=curved_walls,
                 existing_wall_contexts=tuple(page_walls),
+                existing_spaces=tuple(spaces[counts_before[0]:]),
             )
             resolved_geometric_label_anchors = {
                 space.attributes["pdf_architecture"].get("label_anchor")

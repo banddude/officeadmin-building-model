@@ -92,6 +92,8 @@ def test_t_junction_without_consumed_shell_and_unsupported_parallel_faces(tmp_pa
                 if "ROOM: WORKROOM" not in c]
     # These two long faces have no crossing junction at either end.
     commands += ["500 350 m 500 500 l S", "504 350 m 504 500 l S"]
+    # An outward stub has only a mid-face junction, with no interior proof.
+    commands += ["700 500 m 800 500 l S", "700 504 m 800 504 l S"]
     _write_sheet(path, commands)
     model = import_architectural_pdf(path)
     assert len(model.walls) == 6

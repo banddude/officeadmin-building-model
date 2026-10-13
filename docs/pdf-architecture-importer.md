@@ -55,7 +55,10 @@ Nested title-block rectangles containing title markers are excluded from
 wall evidence, so registration and drawing-region detection cannot claim
 their ruled borders as walls. A uniquely paired partial partition can prove
 its junction at the interior of a crossing wall face, including a wall whose
-faces were already consumed by room-shell recognition. This does not close a
+faces were already consumed by room-shell recognition. This new mid-face
+junction support requires the partition endpoints and midpoint to lie inside one proven
+closed wall loop or a materialized room footprint; outward stubs and unbounded
+open chains retain the existing endpoint-junction requirement. This does not close a
 door gap or invent a room; unsupported parallel faces stay unmaterialized.
 Generated regressions are in `tests/test_pdf_importer_ti_regressions.py`.
 

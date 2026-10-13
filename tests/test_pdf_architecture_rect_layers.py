@@ -202,6 +202,103 @@ def test_rect_wall_import_is_deterministic(tmp_path: Path) -> None:
     assert first.to_json() == second.to_json()
 
 
+def _write_construction_rect_sheet(path: Path, *, ticks: bool) -> None:
+    """A construction-marked sheet whose wall evidence is thin wall bands.
+
+    The plan's wall linework is four long stroked ``A-WALL`` band rectangles;
+    the optional annotation variant adds two small stroked tick rectangles on
+    an ``A-WALL-PATT`` optional-content group, as a dimension would.
+    """
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=1300, height=800)
+    wall_group = DictionaryObject({
+        NameObject("/Type"): NameObject("/OCG"),
+        NameObject("/Name"): TextStringObject("A-WALL"),
+    })
+    pattern_group = DictionaryObject({
+        NameObject("/Type"): NameObject("/OCG"),
+        NameObject("/Name"): TextStringObject("A-WALL-PATT"),
+    })
+    font = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    }))
+    wall_ref = writer._add_object(wall_group)
+    pattern_ref = writer._add_object(pattern_group)
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+        NameObject("/Properties"): DictionaryObject({
+            NameObject("/WALL"): wall_ref,
+            NameObject("/PATT"): pattern_ref,
+        }),
+    })
+    writer._root_object[NameObject("/OCProperties")] = DictionaryObject({
+        NameObject("/OCGs"): ArrayObject([wall_ref, pattern_ref]),
+        NameObject("/D"): DictionaryObject({NameObject("/BaseState"): NameObject("/ON")}),
+    })
+    commands = [
+        "BT /F1 12 Tf 1 0 0 1 1040 150 Tm (A-110 CONSTRUCTION PLAN) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 120 130 Tm (SCALE: 1:48) Tj ET",
+        "BT /F1 10 Tf 1 0 0 1 230 450 Tm (ROOM: SALES) Tj ET",
+        "/OC /WALL BDC",
+        # Four thin bands framing the plan; their long edges are the linework.
+        "120 314 325 3 re S",
+        "120 614 325 3 re S",
+        "123 317 3 297 re S",
+        "439 317 3 297 re S",
+        "EMC",
+    ]
+    if ticks:
+        commands.extend((
+            "/OC /PATT BDC",
+            "96 268 8 8 re S",
+            "456 268 8 8 re S",
+            "EMC",
+        ))
+    stream = DecodedStreamObject()
+    stream.set_data(("\n".join(commands) + "\n").encode())
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def test_construction_sheet_rect_annotation_ticks_do_not_join_wall_evidence(tmp_path: Path) -> None:
+    clean = tmp_path / "synthetic-rect-construction-clean.pdf"
+    ticked = tmp_path / "synthetic-rect-construction-ticked.pdf"
+    _write_construction_rect_sheet(clean, ticks=False)
+    _write_construction_rect_sheet(ticked, ticks=True)
+
+    clean_source = extract_pdf(clean, source_id="fixture:rect-construction-ticks")
+    ticked_source = extract_pdf(ticked, source_id="fixture:rect-construction-ticks")
+    # The tick rectangles are real native ``re`` observations on the pattern
+    # layer; extraction keeps them and the annotation guard keeps their
+    # outline segments out of the wall evidence.
+    tick_rects = [rect for rect in ticked_source.pages[0].rects
+                  if rect.source_layer == "A-WALL-PATT"]
+    assert [(rect.bbox_pt, rect.filled) for rect in tick_rects] == [
+        ((96.0, 268.0, 104.0, 276.0), False),
+        ((456.0, 268.0, 464.0, 276.0), False),
+    ]
+    assert extract_pdf(ticked, source_id="fixture:rect-construction-ticks") == ticked_source
+
+    clean_model = import_observations(clean_source)
+    ticked_model = import_observations(ticked_source)
+    clean_regions = clean_model.attributes["pdf_architecture"]["drawing_regions"]
+    ticked_regions = ticked_model.attributes["pdf_architecture"]["drawing_regions"]
+    assert clean_regions == ticked_regions
+    assert [(item["scope"], item["status"]) for item in ticked_regions] == [
+        ("region", "no_supported_geometry"),
+    ]
+    assert ticked_regions[0]["source_bbox_pt"] == [120.0, 314.0, 445.0, 617.0]
+    clean_detection = clean_model.attributes["pdf_architecture"]["pages"][0]["drawing_region_detection"]
+    ticked_detection = ticked_model.attributes["pdf_architecture"]["pages"][0]["drawing_region_detection"]
+    assert clean_detection == ticked_detection
+    assert ticked_detection["evidence_kind"] == "visible_wall_layer"
+    assert ticked_detection["evidence_segment_count"] == 8
+
+
 def test_wall_layer_lines_include_wall_layer_rect_edges() -> None:
     page = PdfPageObservation(
         page_number=1,

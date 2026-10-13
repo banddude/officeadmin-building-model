@@ -92,6 +92,11 @@ def _document(page: PdfPageObservation, key: str) -> PdfDocumentObservation:
                                   pages=(page,))
 
 
+def _retitle(page: PdfPageObservation, key: str, value: str, x: float, y: float) -> PdfPageObservation:
+    texts = tuple(item for item in page.texts if item.element_id != key)
+    return replace(page, texts=(*texts, _text(key, value, x, y)))
+
+
 def test_construction_plan_with_electrical_note_is_architectural_and_resolves_filled_region() -> None:
     page = _plan()
     assert classify_page(page).kind == "architectural_plan"
@@ -117,6 +122,27 @@ def test_filled_strips_supply_evidence_when_face_pairing_is_sparse(monkeypatch: 
     assert len(evidence.drawings[0][1]) == len(FIXTURE["plan_a_strips"])
 
 
+def _electrical_devices_document(x: float, y: float) -> PdfElectricalDocument:
+    return PdfElectricalDocument(
+        source_id="fixture:filled-construction-electrical",
+        page_count=1,
+        texts=(ElectricalTextObservation(
+            element_id="electrical-sheet", page=1, text="E-110 POWER PLAN",
+            x_pt=1100, y_pt=50,
+        ),),
+        symbols=(PdfSymbolObservation(
+            element_id="device:1", page=1, name="DUPLEX RECEPTACLE OUTLET",
+            x_pt=x, y_pt=y, metadata={"native_id": "device-1"},
+        ),),
+        page_provenance={1: {
+            "page_rotation": 0,
+            "displayed_page_width_pt": FIXTURE["page_width_pt"],
+            "displayed_page_height_pt": FIXTURE["page_height_pt"],
+            "coordinate_space": "displayed",
+        }},
+    )
+
+
 def test_filled_plan_registers_sparse_electrical_walls() -> None:
     source = _document(_plan(), "arch")
     model = import_observations(source)
@@ -135,26 +161,8 @@ def test_filled_plan_registers_sparse_electrical_walls() -> None:
     assert point.x == pytest.approx((x - dx) * MPP, abs=1e-6)
     assert point.y == pytest.approx((y - dy) * MPP, abs=1e-6)
     assert point.z == model.levels[0].elevation_m
-    electrical_devices = PdfElectricalDocument(
-        source_id="fixture:filled-construction-electrical",
-        page_count=1,
-        texts=(ElectricalTextObservation(
-            element_id="electrical-sheet", page=1, text="E-110 POWER PLAN",
-            x_pt=1100, y_pt=50,
-        ),),
-        symbols=(PdfSymbolObservation(
-            element_id="device:1", page=1, name="DUPLEX RECEPTACLE OUTLET",
-            x_pt=x, y_pt=y, metadata={"native_id": "device-1"},
-        ),),
-        page_provenance={1: {
-            "page_rotation": 0,
-            "displayed_page_width_pt": FIXTURE["page_width_pt"],
-            "displayed_page_height_pt": FIXTURE["page_height_pt"],
-            "coordinate_space": "displayed",
-        }},
-    )
     electrical_model = ElectricalPdfImporter().import_document(
-        electrical_devices, page_transforms=result.page_transforms(),
+        _electrical_devices_document(x, y), page_transforms=result.page_transforms(),
     )
     merged = converge_pdf_models(model, electrical_model)
     validate_model(merged)
@@ -426,3 +434,210 @@ def test_electrical_sheet_keeps_its_actual_small_title_block_excluded():
     page = replace(page,rects=(PdfRectObservation("title-box",title),),
                    texts=(*page.texts,_text("drawn-marker","DRAWN BY:",1050,90),_text("checked-marker","CHECKED BY:",1050,65)))
     assert architecture_importer._title_block_exclusion(page)[0] == (title,)
+
+
+def test_site_plan_printed_first_does_not_displace_the_floor_plan():
+    site = PdfPageObservation(
+        page_number=1, width_pt=FIXTURE["page_width_pt"], height_pt=FIXTURE["page_height_pt"],
+        texts=(_text("site-title", "SITE PLAN", 1040, 50),
+               _text("site-scale", FIXTURE["scale_text"], 120, 150)),
+        lines=tuple(
+            PdfLineObservation(
+                element_id=f"site:{index}", start_pt=(x0, y0), end_pt=(x1, y1),
+                primitive_family="polyline", source_layers=("C-SITE",),
+            )
+            for index, (x0, y0, x1, y1) in enumerate((
+                (120, 180, 900, 186), (120, 700, 900, 706),
+                (120, 180, 126, 700), (894, 180, 900, 700),
+            ))
+        ),
+    )
+    plan = _retitle(_plan(), "title", "A-110 CONSTRUCTION PLAN", 1040, 50)
+    model = import_observations(PdfDocumentObservation(
+        source_id="fixture:site-plan-first", content_sha256="d" * 64,
+        pages=(site, replace(plan, page_number=2)),
+    ))
+    validate_model(model)
+    resolved = [item for item in model.attributes["pdf_architecture"]["drawing_regions"]
+                if item["status"] == "resolved"]
+    assert resolved, "the floor plan must resolve behind the site plan"
+    bbox = resolved[0]["source_bbox_pt"]
+    assert 100 <= bbox[0] and bbox[2] <= 470
+
+
+def test_key_plan_printed_first_does_not_displace_the_floor_plan():
+    key = PdfPageObservation(
+        page_number=1, width_pt=FIXTURE["page_width_pt"], height_pt=FIXTURE["page_height_pt"],
+        texts=(_text("key-title", "KEY PLAN", 1040, 50),
+               _text("key-scale", FIXTURE["scale_text"], 120, 150)),
+        lines=tuple(
+            PdfLineObservation(
+                element_id=f"key:{index}", start_pt=(x0, y0), end_pt=(x1, y1),
+                primitive_family="polyline", source_layers=("A-KEY",),
+            )
+            for index, (x0, y0, x1, y1) in enumerate((
+                (120, 180, 700, 186), (120, 560, 700, 566),
+                (120, 180, 126, 566), (694, 180, 700, 566),
+            ))
+        ),
+    )
+    model = import_observations(PdfDocumentObservation(
+        source_id="fixture:key-plan-first", content_sha256="e" * 64,
+        pages=(key, replace(_plan(), page_number=2)),
+    ))
+    validate_model(model)
+    resolved = [item for item in model.attributes["pdf_architecture"]["drawing_regions"]
+                if item["status"] == "resolved"]
+    assert resolved, "the floor plan must resolve behind the key plan"
+    bbox = resolved[0]["source_bbox_pt"]
+    assert 100 <= bbox[0] and bbox[2] <= 470
+
+
+def test_small_filled_symbols_inside_the_plan_area_stay_out_of_wall_evidence():
+    page = _plan()
+    symbols = tuple(
+        line
+        for index, (x, y) in enumerate(((200, 240), (300, 300), (250, 420), (350, 470)))
+        for line in _strip(f"symbol:{index}", [x, y, x + 8, y + 8])
+    )
+    evidence = sheet_wall_evidence(replace(page, lines=(*page.lines, *symbols)), meters_per_point=MPP)
+    baseline = sheet_wall_evidence(page, meters_per_point=MPP)
+    assert evidence.drawings == baseline.drawings
+
+
+def test_missing_scale_keeps_a_precise_reason_code():
+    page = _plan()
+    page = replace(page, texts=tuple(item for item in page.texts if item.element_id != "scale"))
+    model = import_observations(_document(page, "no-scale"))
+    unresolved = [item for item in model.attributes["pdf_architecture"]["drawing_regions"]
+                  if item["status"] != "resolved"]
+    assert unresolved, "a plan without any scale annotation must not resolve"
+    assert any("scale" in code for code in unresolved[0]["reason_codes"])
+
+
+def test_dimension_ticks_and_hatch_fields_stay_out_of_construction_wall_evidence():
+    page = _plan()
+    extra = [
+        PdfLineObservation(
+            element_id=f"hatch:{index}", start_pt=(360, 240 + index * 6),
+            end_pt=(430, 250 + index * 6), primitive_family="polyline",
+            filled=False, stroke_present=True, source_layers=("A-WALL-PATT",),
+        )
+        for index in range(6)
+    ]
+    extra.append(PdfLineObservation(
+        element_id="dimension-line", start_pt=(100, 170), end_pt=(460, 170),
+        primitive_family="polyline", source_layers=("A-DIMS",),
+    ))
+    extra.extend(_strip("dimension-tick-left", [96, 166, 104, 174], filled=False))
+    extra.extend(_strip("dimension-tick-right", [456, 166, 464, 174], filled=False))
+    annotated = replace(page, lines=(*page.lines, *extra))
+    baseline = sheet_wall_evidence(page, meters_per_point=MPP)
+    evidence = sheet_wall_evidence(annotated, meters_per_point=MPP)
+    # Ticks and hatch strokes on a wall-pattern layer must not flip the sheet
+    # into the visible-wall-layer mode and evict the filled strips.
+    assert evidence.evidence_kind == baseline.evidence_kind
+    assert evidence.drawings == baseline.drawings
+    model = import_observations(_document(annotated, "annotated"))
+    validate_model(model)
+    reference = import_observations(_document(page, "annotated"))
+    regions = model.attributes["pdf_architecture"]["drawing_regions"]
+    reference_regions = reference.attributes["pdf_architecture"]["drawing_regions"]
+    assert [item["status"] for item in regions] == [item["status"] for item in reference_regions]
+    assert [item["source_bbox_pt"] for item in regions] == [
+        item["source_bbox_pt"] for item in reference_regions
+    ]
+    assert len(model.walls) == len(reference.walls) == len(FIXTURE["plan_a_strips"])
+
+
+def test_multi_scale_sheet_splits_and_binds_each_region_to_its_own_scale():
+    page = _plan(second=True, excluded=False)
+    page = replace(page, texts=tuple(
+        _text("scale-b", 'SCALE: 1/8" = 1\'-0"', 770, 150)
+        if item.element_id == "scale-b" else item
+        for item in page.texts
+    ))
+    model = import_observations(_document(page, "multi-scale"))
+    validate_model(model)
+    regions = model.attributes["pdf_architecture"]["drawing_regions"]
+    assert [item["scope"] for item in regions] == ["region", "region"]
+    assert regions[0]["source_bbox_pt"][2] < regions[1]["source_bbox_pt"][0]
+    first, second = regions
+    assert first["status"] == "resolved"
+    assert first["scale"]["source_element_id"] == "scale"
+    assert first["scale"]["meters_per_point"] == pytest.approx(48 * .0254 / 72, abs=1e-9)
+    # The second drawing keeps its own printed scale evidence but carries no
+    # frame: nothing registers a second floor drawn beside the first onto the
+    # canonical frame without a region-scoped registration hint.
+    assert second["scale"]["source_element_id"] == "scale-b"
+    assert second["scale"]["meters_per_point"] == pytest.approx(96 * .0254 / 72, abs=1e-9)
+    assert second["status"] == "unresolved"
+    assert second["reason_codes"] == ["registration_unresolved"]
+    assert second["frame"] is None
+    detection = model.attributes["pdf_architecture"]["pages"][0]["drawing_region_detection"]
+    assert detection["drawing_cluster_count"] == 2
+    assert detection["detection_meters_per_point"] == pytest.approx(48 * .0254 / 72, abs=1e-9)
+    assert model.to_json() == import_observations(_document(page, "multi-scale")).to_json()
+
+
+def test_native_rectangle_ticks_stay_out_of_construction_wall_evidence():
+    from oabm.importers.pdf_architecture.types import PdfRectObservation
+    page = _plan()
+    ticks = (
+        PdfRectObservation("rect-tick-left", (96, 166, 104, 174), source_layer=FIXTURE["fill_layer"]),
+        PdfRectObservation("rect-tick-right", (456, 166, 464, 174), source_layer=FIXTURE["fill_layer"]),
+    )
+    annotated = replace(page, rects=(*page.rects, *ticks))
+    baseline = sheet_wall_evidence(page, meters_per_point=MPP)
+    evidence = sheet_wall_evidence(annotated, meters_per_point=MPP)
+    # Native stroked rectangles on a wall-pattern layer are the same ticks to
+    # a reader as drawn ones; their outline segments must not claim the
+    # wall-layer mode or grow the evidence bbox.
+    assert evidence.evidence_kind == baseline.evidence_kind == "paired_wall_faces"
+    assert evidence.drawings == baseline.drawings
+    model = import_observations(_document(annotated, "rect-ticks"))
+    validate_model(model)
+    reference = import_observations(_document(page, "rect-ticks"))
+    regions = model.attributes["pdf_architecture"]["drawing_regions"]
+    reference_regions = reference.attributes["pdf_architecture"]["drawing_regions"]
+    assert [item["status"] for item in regions] == [item["status"] for item in reference_regions]
+    assert [item["source_bbox_pt"] for item in regions] == [
+        item["source_bbox_pt"] for item in reference_regions
+    ]
+    assert len(model.walls) == len(reference.walls) == len(FIXTURE["plan_a_strips"])
+
+
+def test_native_rectangle_ticks_do_not_break_sparse_electrical_registration():
+    from oabm.importers.pdf_architecture.types import PdfRectObservation
+    page = _plan()
+    ticks = (
+        PdfRectObservation("rect-tick-left", (96, 166, 104, 174), source_layer=FIXTURE["fill_layer"]),
+        PdfRectObservation("rect-tick-right", (456, 166, 464, 174), source_layer=FIXTURE["fill_layer"]),
+    )
+    annotated = replace(page, rects=(*page.rects, *ticks))
+    source = _document(annotated, "arch")
+    model = import_observations(source)
+    validate_model(model)
+    result = register_electrical_sheets(model, source, _document(_electrical(), "electrical"))
+    assert result.all_registered
+    record = result.pages[0].record["registration"]
+    assert record["wall_inlier_count"] >= 8
+    assert record["wall_residual_rms_m"] <= .05
+    transform = result.pages[0].transform
+    assert transform is not None
+    dx, dy = FIXTURE["electrical_offset_pt"]
+    x, y = 250 + dx, 300 + dy
+    point = transform.apply(x, y)
+    assert point.x == pytest.approx((x - dx) * MPP, abs=1e-6)
+    assert point.y == pytest.approx((y - dy) * MPP, abs=1e-6)
+    electrical_model = ElectricalPdfImporter().import_document(
+        _electrical_devices_document(x, y), page_transforms=result.page_transforms(),
+    )
+    merged = converge_pdf_models(model, electrical_model)
+    validate_model(merged)
+    assert len(merged.electrical_devices) == 1
+    placed = merged.electrical_devices[0]
+    assert placed.device_type == "receptacle_duplex"
+    assert placed.pose.position.x == pytest.approx(point.x, abs=1e-6)
+    assert placed.pose.position.y == pytest.approx(point.y, abs=1e-6)
+    assert placed.level_id == model.levels[0].id

@@ -6717,6 +6717,54 @@ def _nested_rect_wall_evidence(
     return result
 
 
+#: A printed wall-layer stroke shorter than about a quarter inch of paper is a
+#: dimension or extension tick at every plan scale; no wall face that could
+#: locate a drawing region is drawn that small.
+_TICK_STROKE_FLOOR_PT = 18.0
+
+
+def _wall_layer_linework_without_annotations(
+    lines: Iterable[PdfLineObservation],
+) -> list[PdfLineObservation]:
+    """Unfilled wall-layer strokes that may locate a drawing on a construction sheet.
+
+    Dimension ticks never reach a quarter inch of paper, and a wall-pattern
+    stroke belonging to a parallel constant-pitch family tiles a surface
+    instead of facing a wall (the same doctrine as the recognition path's
+    hatch families). Neither may count toward the wall-layer evidence mode,
+    or annotation strokes on a wall-pattern layer can outnumber the sheet's
+    real linework, flip the evidence mode, and evict its filled-wall strips.
+    """
+
+    kept = [
+        line for line in lines
+        if math.dist(line.start_pt, line.end_pt) >= _TICK_STROKE_FLOOR_PT
+    ]
+    pattern = [
+        line for line in kept
+        if any(_is_wall_pattern_layer(layer) for layer in line.source_layers)
+    ]
+    if len(pattern) >= 3:
+        runs = [
+            _WallFaceRun(
+                line.start_pt,
+                line.end_pt,
+                (line.element_id,),
+                (line.primitive_family,),
+                line.dashed,
+                line.filled,
+            )
+            for line in pattern
+        ]
+        member_ids = {
+            runs[index].source_element_ids[0]
+            for index in _hatch_family_members(runs, [_line_record(run) for run in runs])
+        }
+        if member_ids:
+            kept = [line for line in kept if line.element_id not in member_ids]
+    return kept
+
+
 def _drawing_region_evidence(
     page: PdfPageObservation,
     meters_per_point: float | None,
@@ -6739,16 +6787,22 @@ def _drawing_region_evidence(
         ),
         page.page_number,
     )
-    wall_lines = (
-        *(
-            line for line in page.lines
-            if any(_is_wall_source_layer(layer) for layer in line.source_layers)
-            and (not line.filled or not recovered_construction)
-            and line.element_id not in excluded_line_ids
-            and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
-        ),
-        *wall_rect_segments,
+    wall_layer_lines = (
+        line for line in page.lines
+        if any(_is_wall_source_layer(layer) for layer in line.source_layers)
+        and (not line.filled or not recovered_construction)
+        and line.element_id not in excluded_line_ids
+        and not _is_sheet_border_segment(page, line.start_pt, line.end_pt)
     )
+    if recovered_construction:
+        # A construction sheet's real wall evidence is its validated filled
+        # poché or paired faces; unfilled annotation strokes on wall layers
+        # must not outnumber that linework and claim the layer mode. Rectangle
+        # outlines are the same strokes to a reader, so they ride the same
+        # rule; a room-sized wall rectangle keeps its long edges.
+        wall_layer_lines = _wall_layer_linework_without_annotations(wall_layer_lines)
+        wall_rect_segments = _wall_layer_linework_without_annotations(wall_rect_segments)
+    wall_lines = (*wall_layer_lines, *wall_rect_segments)
     if use_wall_layers and len(wall_lines) >= _REGION_MIN_WALL_LAYER_SEGMENTS:
         return "visible_wall_layer", tuple(
             RegionEvidence(line.start_pt, line.end_pt, (line.element_id,))
@@ -6977,6 +7031,71 @@ def _split_sheet(
     return evidence_kind, evidence, split, separation_pt
 
 
+def _printed_detection_scales(page: PdfPageObservation) -> list[float]:
+    """Distinct printed sheet scales in first-appearance order."""
+
+    result: list[float] = []
+    for value, _, _ in _scale_candidates(page):
+        if not any(abs(value - existing) / existing <= 1e-6 for existing in result):
+            result.append(value)
+    return result
+
+
+def _split_sheet_at_detection_scale(
+    page: PdfPageObservation,
+    options: ImportOptions,
+    *,
+    meters_per_point: float | None = None,
+    use_wall_layers: bool = True,
+) -> tuple[str, tuple[RegionEvidence, ...], DrawingRegionSplit, float, float | None]:
+    """Split a sheet, choosing a detection scale when printed scales disagree.
+
+    Region detection only sizes the separation and wall-thickness gates; every
+    drawing region rebinds its own printed scale afterwards. A sheet whose
+    regions print different scales has no single unambiguous scale, so each
+    distinct printed scale is tried as the detection scale and the attempt that
+    reveals the most separately drawn plans wins, preferring the attempt whose
+    regions' own scale texts agree with the detection scale used, then the
+    earliest printed scale. One unambiguous scale, an explicit detection scale,
+    and the no-scale fallback all keep the previous behavior unchanged.
+    """
+
+    detection = (
+        meters_per_point
+        if meters_per_point is not None
+        else _region_detection_scale(page, options)
+    )
+    if detection is not None:
+        evidence_kind, evidence, split, separation_pt = _split_sheet(
+            page, detection, options, use_wall_layers=use_wall_layers,
+        )
+        return evidence_kind, evidence, split, separation_pt, detection
+
+    best: tuple[tuple[int, int], tuple[str, tuple[RegionEvidence, ...], DrawingRegionSplit, float], float] | None = None
+    for candidate in _printed_detection_scales(page):
+        attempt = _split_sheet(page, candidate, options, use_wall_layers=use_wall_layers)
+        if not attempt[2].regions:
+            continue
+        consistent = sum(
+            1
+            for region in attempt[2].regions
+            if any(
+                abs(value - candidate) / candidate <= 1e-6
+                for value, _, _ in _scale_candidates(region.page)
+            )
+        )
+        key = (len(attempt[2].regions), consistent)
+        if best is None or key > best[0]:
+            best = (key, attempt, candidate)
+    if best is not None:
+        evidence_kind, evidence, split, separation_pt = best[1]
+        return evidence_kind, evidence, split, separation_pt, best[2]
+    evidence_kind, evidence, split, separation_pt = _split_sheet(
+        page, None, options, use_wall_layers=use_wall_layers,
+    )
+    return evidence_kind, evidence, split, separation_pt, None
+
+
 @dataclass(frozen=True, slots=True)
 class SheetWallEvidence:
     """Read-only wall evidence of one sheet, grouped by separately drawn plan.
@@ -7031,10 +7150,11 @@ def sheet_wall_evidence(
     page = wall_geometry_page(page, expand_native_fills=_construction_title_and_sheet_mark(page))
 
     options = options or ImportOptions()
-    if meters_per_point is None:
-        meters_per_point = _region_detection_scale(page, options)
-    evidence_kind, evidence, split, _ = _split_sheet(
-        page, meters_per_point, options, use_wall_layers=use_wall_layers,
+    evidence_kind, evidence, split, _, meters_per_point = _split_sheet_at_detection_scale(
+        page,
+        options,
+        meters_per_point=meters_per_point,
+        use_wall_layers=use_wall_layers,
     )
     drawings: tuple[tuple[tuple[float, float, float, float], tuple[RegionEvidence, ...]], ...]
     if split.regions:
@@ -7103,8 +7223,9 @@ def _sheet_drawing_regions(
 ) -> _SheetRegions:
     """Find the separately drawn plans on one architectural sheet."""
 
-    meters_per_point = _region_detection_scale(page, options)
-    evidence_kind, evidence, split, separation_pt = _split_sheet(page, meters_per_point, options)
+    evidence_kind, evidence, split, separation_pt, meters_per_point = (
+        _split_sheet_at_detection_scale(page, options)
+    )
     detection: dict[str, object] = {
         "evidence_kind": evidence_kind,
         "evidence_segment_count": len(evidence),

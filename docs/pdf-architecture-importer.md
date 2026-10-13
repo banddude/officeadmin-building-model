@@ -48,6 +48,20 @@ All semantic output is canonical `Level`, `Space`, `Wall`, `Opening`, `Slab`, `C
 
 ## Scale and registration
 
+Printed imperial scales accept straight quotes, primes, and typographic
+apostrophes/double quotes, including the characters emitted by pypdf from CAD
+fonts. Near-page sheet frames never qualify as title-block exclusion boxes.
+Nested title-block rectangles containing title markers are excluded from
+wall evidence, so registration and drawing-region detection cannot claim
+their ruled borders as walls. A uniquely paired partial partition can prove
+its junction at the interior of a crossing wall face, including a wall whose
+faces were already consumed by room-shell recognition. This new mid-face
+junction support requires the partition endpoints and midpoint to lie inside one proven
+closed wall loop or a materialized room footprint; outward stubs and unbounded
+open chains retain the existing endpoint-junction requirement. This does not close a
+door gap or invent a room; unsupported parallel faces stay unmaterialized.
+Generated regressions are in `tests/test_pdf_importer_ti_regressions.py`.
+
 The first architectural plan that resolves level and scale and actually emits supported canonical spatial geometry may define the project-local XY origin. A resolved plan that emits no supported spatial geometry is recorded as `no_supported_geometry_recognized` with `architectural_geometry_unrecognized`; it does not claim the shared frame. Once a base geometry page exists, an explicit `RegistrationHint` remains authoritative when supplied.
 
 Without a hint, a later sheet or drawing region is first **registered to an already-resolved region of the same level by shared walls** (#72). It uses the #104 wall matcher from `wall_registration.py`, shared with electrical sheet registration, under the same default thresholds:

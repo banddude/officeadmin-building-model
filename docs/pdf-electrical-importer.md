@@ -518,6 +518,23 @@ fixture-type evidence. Geometry is supporting evidence only: the same symbol may
 legitimately appear under multiple fixture tags, so the importer never chooses a
 fixture type from shape alone.
 
+If a field sheet has no local lighting legend, a printed reference such as
+`SEE E002 FOR LIGHTING LEGEND` can select one independently recognized
+lighting legend on that electrical sheet. This uses the same sheet-alias
+and explicit-reference resolver as the power-device path. Missing references,
+ambiguous sheet aliases, and references to multiple legend pages do not lend
+prototypes. The borrowing gate includes every resolved and ambiguous outcome
+on the field page: a valid E002 reference cannot override a separate ambiguous
+E003 reference. The `lighting_legend_reference_ambiguous` diagnostic retains
+all note IDs, per-note outcomes and candidate pages, and states whether a
+local legend remains authoritative. Note and page ordering do not change the
+refusal. A local lighting legend remains authoritative. Confirmed devices
+retain both the field geometry/tag evidence and the other page's prototype,
+plus `pdf-lighting-legend-reference` provenance for the selecting note.
+`lighting_recognition.legend_references` records the targets and whether they
+were applied. Schedules remain local enrichment; no set-wide schedule or
+implicit legend inheritance is introduced.
+
 Legend rows are read as table structure rather than as distance from the
 heading. The heading anchors the table over its own column, whose labels
 define the row grid; a further printed column belongs to the same legend only
@@ -559,7 +576,7 @@ and schedule cells.
 
 Field association is one-to-one and local. A schedule/legend-known tag must be
 uniquely adjacent to a small glyph, and a luminaire additionally requires that
-tag's own lighting-legend prototype on the same sheet with the adjacent glyph
+tag's own local or explicitly referenced lighting-legend prototype with the adjacent glyph
 clearing the glyph match minimum (`_GLYPH_MATCH_SCORE_MIN`) against it. The tag
 narrows the candidates to one fixture type, so this is the power-device margin
 rule for a single candidate type; the lower absolute floor only marks shapes
@@ -609,12 +626,12 @@ unresolved with explicit reason codes. A bare schedule-known letter elsewhere
 on the sheet, including a room-name lookalike, does not create a luminaire
 because it has no qualifying adjacent glyph.
 
-On a confirmed lighting page, exact legible codes `S`, `S3`, `SD`, and
-`OS` may classify switching as single-pole, three-way, dimmer, or occupancy
+On a confirmed lighting page, exact legible codes `S`, `S3`, `S4`, `SD`, and
+`OS` may classify switching as single-pole, three-way, four-way, dimmer, or occupancy
 sensor respectively. Like a fixture tag, the code alone is not evidence: `SD`
 inside a circle is a smoke detector and `S` in a bubble is a column grid label.
 A switch therefore needs one unambiguous adjacent glyph that clears the match
-minimum against that code's own lighting-legend prototype on the sheet. A
+minimum against that code's own local or explicitly referenced lighting-legend prototype. A
 lighting-legend row labelled with a switching code is that code's switch
 prototype only when the row's own description names a switching device
 (`SWITCH`, `DIMMER`, `OCCUPANCY`, or `VACANCY`), because `S1`/`S2`/`S3` are

@@ -523,7 +523,12 @@ If a field sheet has no local lighting legend, a printed reference such as
 lighting legend on that electrical sheet. This uses the same sheet-alias
 and explicit-reference resolver as the power-device path. Missing references,
 ambiguous sheet aliases, and references to multiple legend pages do not lend
-prototypes. A local lighting legend remains authoritative. Confirmed devices
+prototypes. The borrowing gate includes every resolved and ambiguous outcome
+on the field page: a valid E002 reference cannot override a separate ambiguous
+E003 reference. The `lighting_legend_reference_ambiguous` diagnostic retains
+all note IDs, per-note outcomes and candidate pages, and states whether a
+local legend remains authoritative. Note and page ordering do not change the
+refusal. A local lighting legend remains authoritative. Confirmed devices
 retain both the field geometry/tag evidence and the other page's prototype,
 plus `pdf-lighting-legend-reference` provenance for the selecting note.
 `lighting_recognition.legend_references` records the targets and whether they

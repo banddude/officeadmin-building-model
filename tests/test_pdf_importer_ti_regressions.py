@@ -8,7 +8,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from oabm.importers.pdf_architecture import import_architectural_pdf
 from oabm.importers.pdf_architecture.extract import extract_pdf
 from oabm.importers.pdf_architecture.importer import region_wall_evidence, printed_sheet_scale
-from oabm.importers.pdf_electrical import ElectricalPdfImporter
+from oabm.importers.pdf_electrical import ElectricalPdfImporter, extract_pdf as extract_electrical_pdf
 from oabm.model import validate_model
 
 
@@ -110,7 +110,9 @@ def _switch(x, y):
     return f"{x-5} {y-5} m {x+5} {y-5} l {x} {y+5} l h S"
 
 
-def _lighting_set(tmp_path, *, reference=True, duplicate_legend=False, other_legend=False, circuit=False):
+def _lighting_set(tmp_path, *, reference=True, duplicate_legend=False, other_legend=False,
+                  circuit=False, ambiguous_other=False, reverse_notes=False,
+                  page_order=None, local_legend=False):
     legend = [_text(900, 40, "E002"), _text(600, 730, "LIGHTING FIXTURE LEGEND")]
     for tag, y in zip(("RE", "EX", "L1", "L2"), (690, 660, 630, 600)):
         legend.extend([_fixture(610, y), _text(632, y, tag, 8)])
@@ -124,6 +126,8 @@ def _lighting_set(tmp_path, *, reference=True, duplicate_legend=False, other_leg
         field.append(_text(20, 700, "SEE E002 FOR LIGHTING LEGEND"))
     if other_legend:
         field.append(_text(20, 680, "SEE E003 FOR LIGHTING LEGEND"))
+    if reverse_notes:
+        field[2:4] = reversed(field[2:4])
     for x, tag in ((100, "RE"), (250, "EX"), (400, "L1"), (550, "L2"), (700, "RE")):
         field.extend([_fixture(x, 450), _text(x+18, 450, tag, 8)])
     for x, code in ((100, "S"), (250, "S3"), (400, "S4")):
@@ -135,12 +139,19 @@ def _lighting_set(tmp_path, *, reference=True, duplicate_legend=False, other_leg
             _text(300, 700, "PANEL LP 120/208V 3PH"), _text(35, 515, "LP-12", 8),
             "40 495 m 30 500 l 40 505 l S", "30 500 m 100 450 l S",
         ])
+    if local_legend:
+        field.extend(legend[1:])
     writer = PdfWriter()
     sheets = [legend, field]
     if duplicate_legend:
         sheets.append(legend)
     if other_legend:
         sheets.append([command.replace("E002", "E003") for command in legend])
+    if ambiguous_other:
+        assert other_legend
+        sheets.append(sheets[-1])
+    if page_order is not None:
+        sheets = [sheets[index] for index in page_order]
     for index, commands in enumerate(sheets):
         page_path = tmp_path / f"synthetic-page-{index}.pdf"
         _write_sheet(page_path, commands)
@@ -188,3 +199,47 @@ def test_referenced_lighting_devices_can_be_circuit_loads(tmp_path):
 def test_lighting_does_not_borrow_unreferenced_or_ambiguous_legend(tmp_path, kwargs):
     model = ElectricalPdfImporter().import_pdf(_lighting_set(tmp_path, **kwargs))
     assert not model.electrical_devices
+
+
+@pytest.mark.parametrize("reverse_notes", [False, True])
+@pytest.mark.parametrize("page_order", [(0, 1, 2, 3), (3, 1, 0, 2), (1, 2, 3, 0)])
+@pytest.mark.parametrize("local_legend", [False, True])
+def test_mixed_valid_and_ambiguous_references_keep_uncertainty(
+    tmp_path, reverse_notes, page_order, local_legend,
+):
+    path = _lighting_set(
+        tmp_path, other_legend=True, ambiguous_other=True,
+        reverse_notes=reverse_notes, page_order=page_order, local_legend=local_legend,
+    )
+    document = extract_electrical_pdf(path, source_id="synthetic:mixed-legend-references")
+    model = ElectricalPdfImporter().import_document(document)
+    assert len(model.electrical_devices) == (8 if local_legend else 0)
+    lane = model.attributes["pdf_electrical"]
+    misses = [item for item in lane["unresolved_observations"]
+              if item.get("reason_code") == "lighting_legend_reference_ambiguous"]
+    assert len(misses) == 1
+    miss = misses[0]
+    notes = [item for item in document.texts if item.text.startswith("SEE E00")]
+    assert miss["source_element_ids"] == sorted(item.element_id for item in notes)
+    assert miss["page"] == notes[0].page
+    assert miss["local_legend_authoritative"] == local_legend
+    legend_pages = {item.text: [] for item in document.texts if item.text in {"E002", "E003"}}
+    for item in document.texts:
+        if item.text in legend_pages:
+            legend_pages[item.text].append(item.page)
+    assert miss["candidate_legend_pages"] == sorted(legend_pages["E002"] + legend_pages["E003"])
+    outcomes = {item["text"]: item for item in miss["reference_outcomes"]}
+    for note in notes:
+        outcome = outcomes[note.text]
+        assert outcome["source_element_id"] == note.element_id
+        alias = "E002" if "E002" in note.text else "E003"
+        assert outcome["candidate_legend_pages"] == sorted(legend_pages[alias])
+        assert outcome["status"] == ("resolved" if alias == "E002" else "ambiguous")
+    summary = lane["lighting_recognition"]
+    assert summary["unresolved_by_reason"]["lighting_legend_reference_ambiguous"] == 1
+    assert "None" not in summary["unresolved_by_reason"]
+    assert not any(item["applied"] for item in summary["legend_references"])
+    assert not any(p.method == "pdf-lighting-legend-reference"
+                   for d in model.electrical_devices for p in d.provenance)
+    validate_model(model)
+    assert model.to_json() == ElectricalPdfImporter().import_document(document).to_json()

@@ -7851,26 +7851,47 @@ def _recognize_lighting(
         ),
         active_legend_pages=set(legend_entries_by_page),
     )
-    unresolved.extend(reference_misses)
     references_by_page: dict[int, list[_LegendReference]] = {}
     for reference in references:
         references_by_page.setdefault(reference.page, []).append(reference)
         claimed_text_ids.add(reference.source_element_id)
+    misses_by_page: dict[int, list[dict[str, Any]]] = {}
+    for miss in reference_misses:
+        misses_by_page.setdefault(miss["page"], []).append(miss)
+        claimed_text_ids.add(miss["source_element_id"])
     applied_references: dict[int, _LegendReference] = {}
-    for page, page_references in sorted(references_by_page.items()):
-        if page in legend_entries_by_page:
-            continue
+    for page in sorted(set(references_by_page) | set(misses_by_page)):
+        page_references = references_by_page.get(page, [])
+        page_misses = misses_by_page.get(page, [])
         targets = {reference.legend_page for reference in page_references}
-        if len(targets) != 1:
+        if page_misses or len(targets) != 1:
+            outcomes = [
+                {"source_element_id": reference.source_element_id,
+                 "text": reference.text, "status": "resolved",
+                 "candidate_legend_pages": [reference.legend_page]}
+                for reference in page_references
+            ] + [
+                {"source_element_id": miss["source_element_id"],
+                 "text": miss["text"], "status": "ambiguous",
+                 "candidate_legend_pages": miss["candidate_legend_pages"]}
+                for miss in page_misses
+            ]
+            outcomes.sort(key=lambda item: item["source_element_id"])
             unresolved.append({
                 "kind": "legend_reference", "page": page,
-                "source_element_id": page_references[0].source_element_id,
-                "source_element_ids": [item.source_element_id for item in page_references],
+                "source_element_id": outcomes[0]["source_element_id"],
+                "source_element_ids": [item["source_element_id"] for item in outcomes],
                 "reason_code": "lighting_legend_reference_ambiguous",
                 "status": "unresolved_legend_reference",
-                "reason": "lighting sheet references more than one legend page",
-                "candidate_legend_pages": sorted(targets),
+                "reason": "lighting sheet has ambiguous or conflicting external legend references",
+                "candidate_legend_pages": sorted({
+                    target for item in outcomes for target in item["candidate_legend_pages"]
+                }),
+                "reference_outcomes": outcomes,
+                "local_legend_authoritative": page in legend_entries_by_page,
             })
+            continue
+        if page in legend_entries_by_page:
             continue
         reference = page_references[0]
         fixture_entries_by_page[page] = fixture_entries_by_page[reference.legend_page]

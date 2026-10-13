@@ -122,6 +122,27 @@ def test_filled_strips_supply_evidence_when_face_pairing_is_sparse(monkeypatch: 
     assert len(evidence.drawings[0][1]) == len(FIXTURE["plan_a_strips"])
 
 
+def _electrical_devices_document(x: float, y: float) -> PdfElectricalDocument:
+    return PdfElectricalDocument(
+        source_id="fixture:filled-construction-electrical",
+        page_count=1,
+        texts=(ElectricalTextObservation(
+            element_id="electrical-sheet", page=1, text="E-110 POWER PLAN",
+            x_pt=1100, y_pt=50,
+        ),),
+        symbols=(PdfSymbolObservation(
+            element_id="device:1", page=1, name="DUPLEX RECEPTACLE OUTLET",
+            x_pt=x, y_pt=y, metadata={"native_id": "device-1"},
+        ),),
+        page_provenance={1: {
+            "page_rotation": 0,
+            "displayed_page_width_pt": FIXTURE["page_width_pt"],
+            "displayed_page_height_pt": FIXTURE["page_height_pt"],
+            "coordinate_space": "displayed",
+        }},
+    )
+
+
 def test_filled_plan_registers_sparse_electrical_walls() -> None:
     source = _document(_plan(), "arch")
     model = import_observations(source)
@@ -140,26 +161,8 @@ def test_filled_plan_registers_sparse_electrical_walls() -> None:
     assert point.x == pytest.approx((x - dx) * MPP, abs=1e-6)
     assert point.y == pytest.approx((y - dy) * MPP, abs=1e-6)
     assert point.z == model.levels[0].elevation_m
-    electrical_devices = PdfElectricalDocument(
-        source_id="fixture:filled-construction-electrical",
-        page_count=1,
-        texts=(ElectricalTextObservation(
-            element_id="electrical-sheet", page=1, text="E-110 POWER PLAN",
-            x_pt=1100, y_pt=50,
-        ),),
-        symbols=(PdfSymbolObservation(
-            element_id="device:1", page=1, name="DUPLEX RECEPTACLE OUTLET",
-            x_pt=x, y_pt=y, metadata={"native_id": "device-1"},
-        ),),
-        page_provenance={1: {
-            "page_rotation": 0,
-            "displayed_page_width_pt": FIXTURE["page_width_pt"],
-            "displayed_page_height_pt": FIXTURE["page_height_pt"],
-            "coordinate_space": "displayed",
-        }},
-    )
     electrical_model = ElectricalPdfImporter().import_document(
-        electrical_devices, page_transforms=result.page_transforms(),
+        _electrical_devices_document(x, y), page_transforms=result.page_transforms(),
     )
     merged = converge_pdf_models(model, electrical_model)
     validate_model(merged)
@@ -575,3 +578,66 @@ def test_multi_scale_sheet_splits_and_binds_each_region_to_its_own_scale():
     assert detection["drawing_cluster_count"] == 2
     assert detection["detection_meters_per_point"] == pytest.approx(48 * .0254 / 72, abs=1e-9)
     assert model.to_json() == import_observations(_document(page, "multi-scale")).to_json()
+
+
+def test_native_rectangle_ticks_stay_out_of_construction_wall_evidence():
+    from oabm.importers.pdf_architecture.types import PdfRectObservation
+    page = _plan()
+    ticks = (
+        PdfRectObservation("rect-tick-left", (96, 166, 104, 174), source_layer=FIXTURE["fill_layer"]),
+        PdfRectObservation("rect-tick-right", (456, 166, 464, 174), source_layer=FIXTURE["fill_layer"]),
+    )
+    annotated = replace(page, rects=(*page.rects, *ticks))
+    baseline = sheet_wall_evidence(page, meters_per_point=MPP)
+    evidence = sheet_wall_evidence(annotated, meters_per_point=MPP)
+    # Native stroked rectangles on a wall-pattern layer are the same ticks to
+    # a reader as drawn ones; their outline segments must not claim the
+    # wall-layer mode or grow the evidence bbox.
+    assert evidence.evidence_kind == baseline.evidence_kind == "paired_wall_faces"
+    assert evidence.drawings == baseline.drawings
+    model = import_observations(_document(annotated, "rect-ticks"))
+    validate_model(model)
+    reference = import_observations(_document(page, "rect-ticks"))
+    regions = model.attributes["pdf_architecture"]["drawing_regions"]
+    reference_regions = reference.attributes["pdf_architecture"]["drawing_regions"]
+    assert [item["status"] for item in regions] == [item["status"] for item in reference_regions]
+    assert [item["source_bbox_pt"] for item in regions] == [
+        item["source_bbox_pt"] for item in reference_regions
+    ]
+    assert len(model.walls) == len(reference.walls) == len(FIXTURE["plan_a_strips"])
+
+
+def test_native_rectangle_ticks_do_not_break_sparse_electrical_registration():
+    from oabm.importers.pdf_architecture.types import PdfRectObservation
+    page = _plan()
+    ticks = (
+        PdfRectObservation("rect-tick-left", (96, 166, 104, 174), source_layer=FIXTURE["fill_layer"]),
+        PdfRectObservation("rect-tick-right", (456, 166, 464, 174), source_layer=FIXTURE["fill_layer"]),
+    )
+    annotated = replace(page, rects=(*page.rects, *ticks))
+    source = _document(annotated, "arch")
+    model = import_observations(source)
+    validate_model(model)
+    result = register_electrical_sheets(model, source, _document(_electrical(), "electrical"))
+    assert result.all_registered
+    record = result.pages[0].record["registration"]
+    assert record["wall_inlier_count"] >= 8
+    assert record["wall_residual_rms_m"] <= .05
+    transform = result.pages[0].transform
+    assert transform is not None
+    dx, dy = FIXTURE["electrical_offset_pt"]
+    x, y = 250 + dx, 300 + dy
+    point = transform.apply(x, y)
+    assert point.x == pytest.approx((x - dx) * MPP, abs=1e-6)
+    assert point.y == pytest.approx((y - dy) * MPP, abs=1e-6)
+    electrical_model = ElectricalPdfImporter().import_document(
+        _electrical_devices_document(x, y), page_transforms=result.page_transforms(),
+    )
+    merged = converge_pdf_models(model, electrical_model)
+    validate_model(merged)
+    assert len(merged.electrical_devices) == 1
+    placed = merged.electrical_devices[0]
+    assert placed.device_type == "receptacle_duplex"
+    assert placed.pose.position.x == pytest.approx(point.x, abs=1e-6)
+    assert placed.pose.position.y == pytest.approx(point.y, abs=1e-6)
+    assert placed.level_id == model.levels[0].id

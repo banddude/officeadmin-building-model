@@ -6797,8 +6797,11 @@ def _drawing_region_evidence(
     if recovered_construction:
         # A construction sheet's real wall evidence is its validated filled
         # poché or paired faces; unfilled annotation strokes on wall layers
-        # must not outnumber that linework and claim the layer mode.
+        # must not outnumber that linework and claim the layer mode. Rectangle
+        # outlines are the same strokes to a reader, so they ride the same
+        # rule; a room-sized wall rectangle keeps its long edges.
         wall_layer_lines = _wall_layer_linework_without_annotations(wall_layer_lines)
+        wall_rect_segments = _wall_layer_linework_without_annotations(wall_rect_segments)
     wall_lines = (*wall_layer_lines, *wall_rect_segments)
     if use_wall_layers and len(wall_lines) >= _REGION_MIN_WALL_LAYER_SEGMENTS:
         return "visible_wall_layer", tuple(

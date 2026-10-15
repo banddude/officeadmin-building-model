@@ -3,8 +3,8 @@
 from pathlib import Path
 
 import pytest
-from pypdf import PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject, RectangleObject
 
 from oabm.importers.pdf_architecture.extract import extract_pdf
 from oabm.importers.pdf_architecture.importer import drawing_level_names, import_observations
@@ -18,6 +18,7 @@ def _source(
     label: bool = True,
     sample_x: float = 600,
     sample_y: float = 400,
+    font_size: float = 10,
 ) -> Path:
     writer = PdfWriter()
     page = writer.add_blank_page(width=1000, height=700)
@@ -33,7 +34,7 @@ def _source(
 
     def text(x: float, y: float, value: str) -> str:
         escaped = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-        return f"BT /F1 10 Tf 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET"
+        return f"BT /F1 {font_size} Tf 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET"
 
     commands = [
         text(80, 50, "FIRST FLOOR PLAN"),
@@ -98,3 +99,43 @@ def test_incomplete_or_nonlocal_legend_evidence_preserves_real_level_conflict(
     assert "level_ambiguous" in {
         row["code"] for row in model.attributes["pdf_architecture"]["ambiguities"]
     }
+
+
+@pytest.mark.parametrize("font_size", [6, 14])
+def test_legend_sample_distances_follow_source_text_size(tmp_path: Path, font_size: float) -> None:
+    source = _source(tmp_path / "text-size.pdf", font_size=font_size)
+    model = import_observations(extract_pdf(source, source_id="fixture:legend-text-size"))
+    assert [level.name for level in model.levels] == ["First Floor"]
+    assert len(model.walls) == 4
+    assert len(model.spaces) == 1
+    assert all(wall.thickness_m == pytest.approx(0.1524) for wall in model.walls)
+    assert len(model.attributes["pdf_architecture"]["pages"][0]["excluded_level_examples"]) == 1
+
+
+@pytest.mark.parametrize("rotation", [90, 270])
+def test_rotated_source_page_uses_normalized_legend_coordinates(tmp_path: Path, rotation: int) -> None:
+    source = _source(tmp_path / "upright.pdf")
+    reader = PdfReader(source)
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])
+    page = writer.pages[0]
+    page[NameObject("/MediaBox")] = RectangleObject((0, 0, 700, 1000))
+    page[NameObject("/Rotate")] = NumberObject(rotation)
+    # Counter-rotate content so the displayed sheet is the same upright drawing.
+    matrix = b"0 1 -1 0 700 0 cm" if rotation == 90 else b"0 -1 1 0 0 1000 cm"
+    content = page["/Contents"].get_object().get_data()
+    stream = DecodedStreamObject()
+    stream.set_data(b"q\n" + matrix + b"\n" + content + b"\nQ\n")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    rotated = tmp_path / "rotated.pdf"
+    with rotated.open("wb") as handle:
+        writer.write(handle)
+    assert not rotated.with_suffix(".expected.json").exists()
+    model = import_observations(extract_pdf(rotated, source_id="fixture:rotated-legend"))
+    assert [level.name for level in model.levels] == ["First Floor"]
+    assert len(model.walls) == 4
+    assert len(model.spaces) == 1
+    assert all(wall.thickness_m == pytest.approx(0.1524) for wall in model.walls)
+    assert all(wall.height_m == pytest.approx(2.7432) for wall in model.walls)
+    repeated = import_observations(extract_pdf(rotated, source_id="fixture:rotated-legend"))
+    assert model.to_json() == repeated.to_json()

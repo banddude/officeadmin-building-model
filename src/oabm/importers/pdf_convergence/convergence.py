@@ -8,9 +8,6 @@ from typing import Any
 
 from oabm.model import (
     DERIVATION_INFERRED,
-    PHYSICAL_SCHEMA_VERSION,
-    RACEWAY_SCHEMA_VERSION,
-    SUPPORT_SCHEMA_VERSION,
     BuildingModel,
     Ceiling,
     ElectricalDevice,
@@ -657,6 +654,11 @@ def _validate_lane_models(
         raise PdfConvergenceError(
             "electrical input must be the canonical output of the PDF electrical lane"
         )
+    if electrical.structural_members:
+        raise PdfConvergenceError(
+            "electrical input contains structural members; "
+            "caller-confirmed members belong to the PDF architecture lane"
+        )
 
     if any(
         (
@@ -880,13 +882,13 @@ def converge_pdf_models(
         },
     )
 
+    schema_version = max(
+        (architecture.schema_version, electrical.schema_version),
+        key=lambda version: tuple(int(component) for component in version.split(".")),
+    )
+
     return BuildingModel(
-        schema_version=(SUPPORT_SCHEMA_VERSION if SUPPORT_SCHEMA_VERSION in
-                        {architecture.schema_version, electrical.schema_version} else
-                        RACEWAY_SCHEMA_VERSION if RACEWAY_SCHEMA_VERSION in
-                        {architecture.schema_version, electrical.schema_version} else
-                        PHYSICAL_SCHEMA_VERSION if PHYSICAL_SCHEMA_VERSION in
-                        {architecture.schema_version, electrical.schema_version} else architecture.schema_version),
+        schema_version=schema_version,
         model_id=stable_id(
             "model",
             f"pdf-convergence:{architecture.model_id}:{electrical.model_id}",
@@ -899,6 +901,9 @@ def converge_pdf_models(
         slabs=tuple(sorted(architecture.slabs, key=lambda item: item.id)),
         ceilings=tuple(sorted(architecture.ceilings, key=lambda item: item.id)),
         openings=tuple(sorted(architecture.openings, key=lambda item: item.id)),
+        structural_members=tuple(
+            sorted(architecture.structural_members, key=lambda item: item.id)
+        ),
         electrical_equipment=equipment,
         electrical_devices=devices,
         ports=ports,

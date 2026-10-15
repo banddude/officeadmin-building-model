@@ -4329,6 +4329,82 @@ def _dash_window_on_arc(window: Sequence[_Dash]) -> bool:
     return True
 
 
+def _nearest_dash_endpoints(
+    ends: Sequence[tuple[float, float]],
+) -> dict[int, int]:
+    """Exact radius-bounded nearest ends, excluding the query's own dash.
+
+    Coordinate groups retain the lowest indices from two distinct dashes.
+    The first eligible index is the lexicographic winner at that coordinate.
+    Cells stay one chain gap wide. Within each cell, search outward along its
+    wider axis and stop only when that axis distance exceeds the best actual
+    hypot distance. Equality is retained for endpoint-index tie breaking.
+    """
+    grouped: dict[tuple[float, float], list[int]] = {}
+    cell = _DASH_ARC_CHAIN_GAP_PT
+    for index, point in enumerate(ends):
+        indices = grouped.setdefault(point, [])
+        if len(indices) < 2 and all(other // 2 != index // 2 for other in indices):
+            indices.append(index)
+    grid: dict[tuple[int, int], list[tuple[tuple[float, float], list[int]]]] = {}
+    for point, indices in grouped.items():
+        key = (math.floor(point[0] / cell), math.floor(point[1] / cell))
+        grid.setdefault(key, []).append((point, indices))
+    cells = {}
+    for key, entries in grid.items():
+        xs = [point[0] for point, _ in entries]
+        ys = [point[1] for point, _ in entries]
+        bounds = (min(xs), min(ys), max(xs), max(ys))
+        axis = int(bounds[3] - bounds[1] > bounds[2] - bounds[0])
+        entries.sort(key=lambda entry: entry[0][axis])
+        cells[key] = (axis, [point[axis] for point, _ in entries], entries, bounds)
+    nearest: dict[int, int] = {}
+    offsets = ((0, 0), *((dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                          if (dx, dy) != (0, 0)))
+    for index, (x, y) in enumerate(ends):
+        coincident = grouped[(x, y)]
+        if len(coincident) == 2:
+            nearest[index] = next(other for other in coincident if other // 2 != index // 2)
+            continue
+        cell_x, cell_y = math.floor(x / cell), math.floor(y / cell)
+        best: tuple[float, int] | None = None
+        for dx, dy in offsets:
+            data = cells.get((cell_x + dx, cell_y + dy))
+            if data is None:
+                continue
+            axis, positions, entries, bounds = data
+            radius = best[0] if best is not None else cell
+            if max(bounds[0] - x, x - bounds[2], bounds[1] - y, y - bounds[3]) > radius:
+                continue
+            query = (x, y)[axis]
+            right = bisect.bisect_left(positions, query)
+            left = right - 1
+            while left >= 0 or right < len(entries):
+                if right == len(entries) or (
+                    left >= 0 and query - positions[left] <= positions[right] - query
+                ):
+                    position = left
+                    left -= 1
+                else:
+                    position = right
+                    right += 1
+                radius = best[0] if best is not None else cell
+                if abs(positions[position] - query) > radius:
+                    break
+                point, indices = entries[position]
+                other = next((value for value in indices if value // 2 != index // 2), None)
+                if other is None:
+                    continue
+                distance = math.hypot(point[0] - x, point[1] - y)
+                if distance <= cell:
+                    candidate = (distance, other)
+                    if best is None or candidate < best:
+                        best = candidate
+        if best is not None:
+            nearest[index] = best[1]
+    return nearest
+
+
 def _page_dashed_arc_train_vector_ids(
     vectors: Sequence[PdfVectorPathObservation],
 ) -> set[str]:
@@ -4349,28 +4425,7 @@ def _page_dashed_arc_train_vector_ids(
     ends: list[tuple[float, float]] = []
     for dash in dashes:
         ends.extend((dash.start, dash.end))
-    cell = _DASH_ARC_CHAIN_GAP_PT
-    grid: dict[tuple[int, int], list[int]] = {}
-    for index, (x, y) in enumerate(ends):
-        grid.setdefault((math.floor(x / cell), math.floor(y / cell)), []).append(index)
-
-    nearest: dict[int, int] = {}
-    for index, (x, y) in enumerate(ends):
-        cell_x, cell_y = math.floor(x / cell), math.floor(y / cell)
-        best: tuple[float, int] | None = None
-        for neighbour_x in (cell_x - 1, cell_x, cell_x + 1):
-            for neighbour_y in (cell_y - 1, cell_y, cell_y + 1):
-                for other in grid.get((neighbour_x, neighbour_y), ()):
-                    if other // 2 == index // 2:
-                        continue
-                    distance = math.hypot(ends[other][0] - x, ends[other][1] - y)
-                    if distance > _DASH_ARC_CHAIN_GAP_PT:
-                        continue
-                    key = (distance, other)
-                    if best is None or key < best:
-                        best = key
-        if best is not None:
-            nearest[index] = best[1]
+    nearest = _nearest_dash_endpoints(ends)
 
     # Mutual nearest ends link two dashes; each dash end links at most once,
     # so the links form simple chains.

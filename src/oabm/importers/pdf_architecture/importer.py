@@ -1220,7 +1220,19 @@ def _level_name_candidates(
                 name = (f"{designation.capitalize()} Floor" if match.group(1)
                         else "Mezzanine")
                 result.append((name, item))
-    return tuple(result)
+    # Coalesce only an exact ordinal/word pair actually present on this drawing.
+    # A previously resolved single-label drawing keeps its name and canonical ID.
+    # Level 2, Ground/Main and different floor numbers remain distinct evidence.
+    names = {name.casefold(): name for name, _ in result}
+    aliases = {
+        f"{ordinal} floor": names[f"{word} floor"]
+        for ordinal, word in (
+            ("1st", "first"), ("2nd", "second"), ("3rd", "third"),
+            ("4th", "fourth"), ("5th", "fifth"), ("6th", "sixth"),
+        )
+        if f"{word} floor" in names
+    }
+    return tuple((aliases.get(name.casefold(), name), item) for name, item in result)
 
 
 def _elevation_from_text(page: PdfPageObservation) -> tuple[float, PdfTextObservation] | None:

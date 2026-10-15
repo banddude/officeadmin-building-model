@@ -19,6 +19,7 @@ def _source(
     sample_x: float = 600,
     sample_y: float = 400,
     font_size: float = 10,
+    titles: tuple[str, ...] = ("FIRST FLOOR PLAN",),
 ) -> Path:
     writer = PdfWriter()
     page = writer.add_blank_page(width=1000, height=700)
@@ -37,7 +38,7 @@ def _source(
         return f"BT /F1 {font_size} Tf 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET"
 
     commands = [
-        text(80, 50, "FIRST FLOOR PLAN"),
+        *(text(80, 50 + index * 60, title) for index, title in enumerate(titles)),
         text(80, 70, "SCALE: 1/4\" = 1'-0\""),
         text(80, 90, "LEVEL CEILING HEIGHT: 9'-0\""),
         text(160, 240, "ROOM: BEDROOM"),

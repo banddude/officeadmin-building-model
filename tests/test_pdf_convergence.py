@@ -14,7 +14,20 @@ from oabm.importers.pdf_electrical import (
     PdfElectricalDocument,
     PdfPageTransform,
 )
-from oabm.model import BuildingModel, Point3, Pose, validate_model
+from oabm.model import (
+    STRUCTURAL_SCHEMA_VERSION,
+    SUPPORT_SCHEMA_VERSION,
+    BuildingModel,
+    Point3,
+    Pose,
+    Provenance,
+    Size3,
+    StructuralMember,
+    SUPPORTED_SCHEMA_VERSIONS,
+    upgrade_to_v1_3,
+    upgrade_to_v1_4,
+    validate_model,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +58,23 @@ def _load_case() -> tuple[dict, BuildingModel, PdfElectricalDocument, BuildingMo
 
 def _by_name(items, name):
     return next(item for item in items if item.name == name)
+
+
+def _caller_confirmed_member(level_id: str) -> StructuralMember:
+    return StructuralMember(
+        id="member:caller-confirmed-beam",
+        kind="beam",
+        level_id=level_id,
+        pose=Pose(position=Point3(x=2.7, y=0.2, z=1.65)),
+        size=Size3(x=0.4, y=0.3, z=0.5),
+        provenance=(
+            Provenance(
+                source_kind="synthetic",
+                source_id="fixture:caller-confirmed-structural-member",
+                derivation="user",
+            ),
+        ),
+    )
 
 
 def test_registered_pdf_lanes_converge_into_one_hosted_canonical_model() -> None:
@@ -234,3 +264,97 @@ def test_equally_plausible_wall_hosts_remain_explicit_ambiguity() -> None:
     }
     assert candidate_sides == {"south", "west"}
     validate_model(result)
+
+
+def test_caller_confirmed_architecture_members_survive_convergence_and_roundtrip(
+) -> None:
+    _, architecture, _, electrical = _load_case()
+    architecture = upgrade_to_v1_4(architecture)
+    beam = _caller_confirmed_member(architecture.levels[0].id)
+    joist = replace(
+        beam,
+        id="member:caller-confirmed-joist",
+        kind="joist",
+        pose=Pose(position=Point3(x=3.1, y=0.4, z=1.8)),
+    )
+    architecture = replace(architecture, structural_members=(joist, beam))
+    electrical = upgrade_to_v1_3(electrical)
+
+    assert architecture.schema_version == STRUCTURAL_SCHEMA_VERSION
+    assert electrical.schema_version == SUPPORT_SCHEMA_VERSION
+
+    result = converge_pdf_models(architecture, electrical)
+    reversed_architecture = replace(
+        architecture,
+        structural_members=(beam, joist),
+    )
+    reversed_result = converge_pdf_models(reversed_architecture, electrical)
+    assert reversed_result.to_json() == result.to_json()
+
+    expected_members = tuple(sorted((beam, joist), key=lambda item: item.id))
+    assert result.schema_version == STRUCTURAL_SCHEMA_VERSION
+    assert result.structural_members == expected_members
+    for member in expected_members:
+        preserved = next(
+            item for item in result.structural_members if item.id == member.id
+        )
+        assert preserved.pose == member.pose
+        assert preserved.size == member.size
+        assert preserved.provenance == member.provenance
+    validate_model(result)
+
+    schema = json.loads(
+        (ROOT / "contracts" / "oabm-model-v1.4.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    Draft202012Validator(schema).validate(result.to_dict())
+
+    reparsed = BuildingModel.from_json(result.to_json())
+    assert reparsed.to_dict() == result.to_dict()
+    assert reparsed.structural_members == expected_members
+
+def test_convergence_selects_highest_supported_input_schema_in_either_order() -> None:
+    _, base_architecture, _, base_electrical = _load_case()
+    supported_versions = sorted(
+        SUPPORTED_SCHEMA_VERSIONS,
+        key=lambda version: tuple(int(component) for component in version.split(".")),
+    )
+
+    for architecture_version in supported_versions:
+        for electrical_version in supported_versions:
+            architecture = replace(
+                base_architecture,
+                schema_version=architecture_version,
+            )
+            electrical = replace(
+                base_electrical,
+                schema_version=electrical_version,
+            )
+
+            result = converge_pdf_models(architecture, electrical)
+
+            expected_version = max(
+                (architecture_version, electrical_version),
+                key=lambda version: tuple(
+                    int(component) for component in version.split(".")
+                ),
+            )
+            assert result.schema_version == expected_version
+            validate_model(result)
+
+def test_convergence_rejects_structural_members_in_electrical_lane() -> None:
+    _, architecture, _, electrical = _load_case()
+    member = _caller_confirmed_member(architecture.levels[0].id)
+    electrical_with_member = replace(
+        upgrade_to_v1_4(electrical),
+        levels=architecture.levels,
+        structural_members=(member,),
+    )
+    validate_model(electrical_with_member)
+
+    with pytest.raises(
+        PdfConvergenceError,
+        match="structural members.*PDF architecture lane",
+    ):
+        converge_pdf_models(architecture, electrical_with_member)

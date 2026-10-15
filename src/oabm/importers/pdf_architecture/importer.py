@@ -1159,6 +1159,38 @@ _CONSTRUCTION_LEVEL_TITLE_RE = re.compile(
 )
 
 
+def _legend_level_example(page: PdfPageObservation, candidate: PdfTextObservation) -> bool:
+    """Recognize a labeled placeholder elevation-tag example, not an actual level.
+
+    All three local source signals are required: a legend/tag heading above,
+    a horizontally aligned X-placeholder elevation above the level text, and
+    a finish-floor/elevation description beside the sample. A heading alone,
+    a real numeric elevation, or an unrelated placeholder cannot hide a level.
+    Distances scale with the source text height, not sheet dimensions.
+    """
+
+    x0, y0, x1, y1 = candidate.bbox_pt
+    height = y1 - y0
+    if height <= 0:
+        return False
+    cx, cy = candidate.center_pt
+    heading = placeholder = description = False
+    for item in page.texts:
+        if item.element_id == candidate.element_id:
+            continue
+        text = _clean_text(item.text).upper()
+        ix, iy = item.center_pt
+        if text in {"LEGEND", "SYMBOLS", "TAGS", "SYMBOL LEGEND"}:
+            heading |= 0 < iy - cy <= 24 * height and abs(ix - cx) <= 24 * height
+        if re.fullmatch(r"[+\s/-]*X[X.\s]*", text):
+            placeholder |= (0 < iy - cy <= 3 * height
+                            and min(x1, item.bbox_pt[2]) > max(x0, item.bbox_pt[0]))
+        if re.fullmatch(r"(?:FINISH(?:ED)? FLOOR(?: ELEV(?:ATION)?\.?)?|ELEV(?:ATION)?\.)", text):
+            description |= (0 <= item.bbox_pt[0] - x1 <= 12 * height
+                            and abs(iy - cy) <= 3 * height)
+    return heading and placeholder and description
+
+
 def _level_name_candidates(
     page: PdfPageObservation,
 ) -> tuple[tuple[str, PdfTextObservation], ...]:
@@ -1169,6 +1201,8 @@ def _level_name_candidates(
         text = _clean_text(item.text)
         match = _EXPLICIT_LEVEL_RE.fullmatch(text) or _BARE_LEVEL_RE.fullmatch(text)
         if match:
+            if _legend_level_example(page, item):
+                continue
             candidate = _clean_text(match.group(1))
             if candidate.upper() != "PLAN":
                 result.append((candidate.title() if candidate.isupper() else candidate, item))
@@ -8700,6 +8734,20 @@ def import_observations(
             "architectural_score": classification.architectural_score,
             "electrical_score": classification.electrical_score,
         }
+        excluded_level_examples = [
+            {
+                "source_element_id": item.element_id,
+                "source_text": item.text,
+                "source_bbox_pt": list(item.bbox_pt),
+                "reason_code": "labeled_placeholder_elevation_tag_in_legend",
+            }
+            for item in page.texts
+            if (_EXPLICIT_LEVEL_RE.fullmatch(_clean_text(item.text))
+                or _BARE_LEVEL_RE.fullmatch(_clean_text(item.text)))
+            and _legend_level_example(page, item)
+        ]
+        if excluded_level_examples:
+            page_record["excluded_level_examples"] = excluded_level_examples
         sheet = sheets.get(page.page_number)
         if sheet is None:
             page_record["status"] = "ignored_non_architectural_plan"

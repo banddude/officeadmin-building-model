@@ -255,3 +255,56 @@ def test_present_resource_category_does_not_fall_back_for_a_missing_name():
     assert red_pixels(raw_print_pixels(document))==0
     with pytest.raises(ContractError,match='unresolved.*resource'):
         capture(document)
+
+
+def type3_resource_appearance_pdf(*,conditional=False):
+    """Independent Type3 glyph delegates painting to its font-local XObject."""
+    from pypdf import PdfReader
+    from pypdf.generic import TextStringObject, NumberObject
+    writer=PdfWriter()
+    writer.clone_document_from_reader(PdfReader(io.BytesIO(annotated_pdf())))
+    appearance=writer.pages[0]['/Annots'][0].get_object()['/AP']['/N'].get_object()
+    inner=DecodedStreamObject();inner.set_data(b'1 0 0 rg 0 0 20 20 re f')
+    inner.update({NameObject('/Type'):NameObject('/XObject'),
+        NameObject('/Subtype'):NameObject('/Form'),
+        NameObject('/BBox'):RectangleObject([0,0,20,20]),
+        NameObject('/Resources'):DictionaryObject()})
+    if conditional:
+        layer=writer._add_object(DictionaryObject({NameObject('/Type'):NameObject('/OCG'),
+            NameObject('/Name'):TextStringObject('Synthetic Type3 hidden paint')}))
+        writer._root_object[NameObject('/OCProperties')]=DictionaryObject({
+            NameObject('/OCGs'):ArrayObject([layer]),NameObject('/D'):DictionaryObject({
+                NameObject('/BaseState'):NameObject('/ON'),NameObject('/OFF'):ArrayObject([layer])})})
+        inner[NameObject('/OC')]=layer
+    glyph=DecodedStreamObject();glyph.set_data(b'20 0 d0 /Inner Do')
+    font=DictionaryObject({NameObject('/Type'):NameObject('/Font'),
+        NameObject('/Subtype'):NameObject('/Type3'),
+        NameObject('/FontBBox'):RectangleObject([0,0,20,20]),
+        NameObject('/FontMatrix'):ArrayObject([NumberObject(v) for v in (1,0,0,1,0,0)]),
+        NameObject('/CharProcs'):DictionaryObject({NameObject('/A'):writer._add_object(glyph)}),
+        NameObject('/Encoding'):DictionaryObject({NameObject('/Type'):NameObject('/Encoding'),
+            NameObject('/Differences'):ArrayObject([NumberObject(65),NameObject('/A')])}),
+        NameObject('/FirstChar'):NumberObject(65),NameObject('/LastChar'):NumberObject(65),
+        NameObject('/Widths'):ArrayObject([NumberObject(20)]),
+        NameObject('/Resources'):DictionaryObject({NameObject('/XObject'):
+            DictionaryObject({NameObject('/Inner'):writer._add_object(inner)})})})
+    appearance[NameObject('/Resources')]=DictionaryObject({NameObject('/Font'):
+        DictionaryObject({NameObject('/F1'):writer._add_object(font)})})
+    appearance.set_data(b'BT /F1 1 Tf 0 0 Td (A) Tj ET')
+    output=io.BytesIO();writer.write(output);return output.getvalue()
+
+
+def test_type3_font_own_resources_render_and_optional_glyph_paint_refuses():
+    visible=type3_resource_appearance_pdf()
+    assert red_pixels(raw_print_pixels(visible))==1600
+    assert not source_annotation_inventory(visible,page=1)['annotations'][0]['optional_content']
+    ref,pixels=capture(visible)
+    assert red_pixels(pixels)==1600
+    ref.validate_bytes(pixels,document=visible)
+    hidden=type3_resource_appearance_pdf(conditional=True)
+    assert red_pixels(raw_print_pixels(hidden))==0
+    assert source_annotation_inventory(hidden,page=1)['annotations'][0]['optional_content']
+    with pytest.raises(ContractError,match='supported normal appearance'):
+        capture(hidden)
+    old,old_pixels=legacy_capture(hidden)
+    old.validate_bytes(old_pixels,document=hidden)

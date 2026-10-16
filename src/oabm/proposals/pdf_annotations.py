@@ -76,13 +76,17 @@ def _appearance_optional_content(appearance, page_resources=None):
                 is_content = isinstance(value, StreamObject) and (
                     content or value.get('/Subtype') == '/Form' or value.get('/PatternType') == 1)
                 resources = parent_resources
-                if is_content:
+                # Type3 glyph streams resolve names in their font dictionary's
+                # resources before using the existing page-category fallback.
+                is_type3_font = value.get('/Subtype') == '/Type3'
+                if is_content or is_type3_font:
                     own_resources = resolved(value.get('/Resources'))
                     if own_resources is not None and not isinstance(own_resources, DictionaryObject):
                         raise ContractError('annotation appearance resources must be a dictionary')
                     resources = own_resources if own_resources is not None else parent_resources
                     if resources is None:
                         resources = page_resources
+                if is_content:
                     data = value.get_data()
                     decoded_bytes += len(data)
                     if decoded_bytes > 8_000_000:

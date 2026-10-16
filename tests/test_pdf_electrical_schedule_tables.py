@@ -91,7 +91,9 @@ def test_offset_media_box_preserves_cells_and_native_ids(tmp_path):
 
 
 @pytest.mark.parametrize("heading", ["PLUMBING FIXTURE SCHEDULE",
-    "MECHANICAL FIXTURE SCHEDULE", "HVAC LIGHTING FIXTURE SCHEDULE"])
+    "MECHANICAL FIXTURE SCHEDULE", "HVAC LIGHTING FIXTURE SCHEDULE",
+    "PLUMBING FIXTURE SCHEDULE - MECHANICAL ROOM",
+    "MECHANICAL ROOM FIXTURE SCHEDULE"])
 def test_unrelated_trade_schedule_is_not_lighting(tmp_path, heading):
     path = tmp_path / "other-trade.pdf"
     _write_schedule(path, heading=heading)
@@ -185,3 +187,47 @@ def test_observed_merged_body_grid_cannot_invent_a_column_split(tmp_path):
     rows, _, unresolved, _ = _parse(document)
     assert set(rows) == {(1, "Q-2")}
     assert [item["reason_code"] for item in unresolved] == ["lighting_schedule_merged_body_cell"]
+
+
+@pytest.mark.parametrize("heading", [
+    "LIGHTING FIXTURE SCHEDULE - MECHANICAL ROOM",
+    "MECHANICAL ROOM LIGHTING FIXTURE SCHEDULE",
+    "LIGHTING FIXTURE SCHEDULE - HVAC EQUIPMENT ROOM",
+])
+def test_location_qualifier_does_not_change_lighting_trade(tmp_path, heading):
+    path = tmp_path / "qualified-lighting.pdf"
+    _write_schedule(path, heading=heading, rows=[("Q-1", "WALL LIGHT")])
+    rows, _, unresolved, _ = _parse(extract_pdf(path))
+    assert not unresolved
+    assert rows[(1, "Q-1")].fields["description"] == "WALL LIGHT"
+
+
+def test_decoy_heading_box_does_not_suppress_independent_legacy_columns(tmp_path):
+    path = tmp_path / "decoy-box.pdf"
+    _write_schedule(path, rows=[("Q-1", "WALL LIGHT")])
+    # Replace the authored geometry with a two-cell heading box and separate
+    # unruled schedule columns below it. The box contains no schedule header.
+    from pypdf import PdfReader
+    reader = PdfReader(path)
+    writer = PdfWriter()
+    page = writer.add_page(reader.pages[0])
+    commands = ["40 730 410 30 re S", "400 730 m 400 760 l S",
+                "BT /F1 9 Tf 50 740 Td (LIGHTING FIXTURE SCHEDULE) Tj ET",
+                "BT /F1 9 Tf 50 710 Td (TAG) Tj ET",
+                "BT /F1 9 Tf 140 710 Td (DESCRIPTION) Tj ET",
+                "BT /F1 9 Tf 50 690 Td (Q-1) Tj ET",
+                "BT /F1 9 Tf 140 690 Td (WALL LIGHT) Tj ET"]
+    content = DecodedStreamObject()
+    content.set_data("\n".join(commands).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    writer.write(path)
+    document = extract_pdf(path)
+    tables = document.page_provenance[1]["lighting_schedule_tables"]
+    assert len(tables) == 1  # A real observed decoy, not fabricated metadata.
+    baseline, _, _, _ = _parse(document, [])
+    assert baseline[(1, "Q-1")].fields["description"] == "WALL LIGHT"
+    rows, claimed, unresolved, _ = _parse(document)
+    assert rows == baseline
+    assert any(item["reason_code"] == "lighting_schedule_header_not_confirmed"
+               for item in unresolved)
+    assert all(source_id in claimed for source_id in rows[(1, "Q-1")].source_element_ids)

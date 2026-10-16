@@ -6967,8 +6967,19 @@ def _normalize_lighting_tag(value: str) -> str | None:
 def _lighting_heading_kind(observation: PdfTextObservation) -> str | None:
     normalized = _normalize_legend_alias(observation.text)
     words = set(normalized.split())
-    if words & {"PLUMBING", "MECHANICAL", "HVAC", "SANITARY"}:
+    # A named room qualifies the location, not the drawing discipline. Keep
+    # explicit trade headings excluded, including mixed/ambiguous headings.
+    discipline_text = re.sub(
+        r"\b(?:PLUMBING|MECHANICAL|HVAC|SANITARY)\s+"
+        r"(?:(?:EQUIPMENT|SERVICE)\s+)?(?:ROOMS?|AREAS?|SPACES?)\b",
+        "", normalized,
+    )
+    if set(discipline_text.split()) & {"PLUMBING", "MECHANICAL", "HVAC", "SANITARY"}:
         return None
+    if discipline_text != normalized and not words & {
+        "LIGHT", "LIGHTING", "LUMINAIRE", "LUMINAIRES",
+    }:
+        return None  # A room qualifier alone cannot establish the trade.
     has_lighting_cue = bool(
         words
         & {
@@ -7028,6 +7039,11 @@ def _lighting_rows_from_ruled_tables(
             header_candidates.append((index, keys))
     if len(header_candidates) != 1:
         reject("lighting_schedule_header_not_confirmed")
+        unresolved[-1].update({
+            "header_candidate_count": len(header_candidates),
+            "table_element_id": table.get("element_id"),
+            "bbox_pt": table.get("bbox_pt"),
+        })
         return parsed, metadata, unresolved
     header_index, keys = header_candidates[0]
     known = [key for key in keys if key is not None]
@@ -7137,13 +7153,30 @@ def _detect_lighting_fixture_schedules(
             for row in parsed_rows:
                 rows_by_key.setdefault((row.page, row.tag), []).append(row)
                 claimed_text_ids.update(row.source_element_ids)
-            # Malformed observed tables must not fall back to guessed columns.
-            continue
+            independent_columns_possible = (
+                len(tables) == 1 and len(problems) == 1
+                and problems[0].get("header_candidate_count") == 0
+            )
+            if not independent_columns_possible:
+                # Confirmed/ambiguous schedule headers and malformed body
+                # cells must never fall back to guessed columns.
+                continue
+            # Mere containment in a ruled box does not associate a schedule.
+            # Retain its unresolved evidence, and admit only independently
+            # observed native headers/rows outside that unconfirmed box.
+            bounds = tables[0].get("bbox_pt", ())
+            if len(bounds) != 4:
+                continue
+            claimed_text_ids.update(
+                item.element_id for item in texts if item.page == heading.page
+                and bounds[0] <= item.x_pt <= bounds[2]
+                and bounds[1] <= item.y_pt <= bounds[3]
+            )
         header_candidates = [
             observation
             for observation in texts
             if observation.page == heading.page
-            and observation.element_id != heading.element_id
+            and observation.element_id not in claimed_text_ids
             and 0.0 < heading.y_pt - observation.y_pt <= _LIGHTING_HEADER_MAX_GAP_PT
             and _lighting_schedule_header_key(observation.text) is not None
         ]
@@ -7239,7 +7272,7 @@ def _detect_lighting_fixture_schedules(
                 and min_x <= observation.x_pt <= max_x
                 and abs(observation.y_pt - tag_cell.y_pt)
                 <= _LIGHTING_ROW_Y_TOLERANCE_PT
-                and observation.element_id != heading.element_id
+                and observation.element_id not in claimed_text_ids
             ]
             if tag_cell not in row_cells:
                 row_cells.append(tag_cell)

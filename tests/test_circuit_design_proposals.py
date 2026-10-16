@@ -368,3 +368,52 @@ def test_all_context_roles_and_input_owner_snapshots_are_explicit(source):
     for snapshot in request.sources:
         assert snapshot.content_fingerprint and snapshot.entity['id']==snapshot.id
     with pytest.raises(ContractError):replace(request,proposal_sources=request.proposal_sources[:-1])
+
+
+@pytest.mark.parametrize('first',['completed','rate_limited'])
+def test_journal_reuse_rejected_before_transport_preserves_prior_run(source,tmp_path,first):
+    request,policy,output,kwargs,_=source;calls=[];path=tmp_path/'one-attempt.jsonl'
+    def adapter(*a,**kw):
+        calls.append(kw)
+        if first=='rate_limited':raise AdapterAvailabilityError('rate_limited')
+        return CircuitAdapterReply(output_json=output.to_json(),resolved_model_id='synthetic-strong-actual')
+    with AttemptJournal.create(path) as journal:
+        run=dispatch_circuit_proposal(request,policy,**kwargs,adapters={'vision_sol':adapter},journal=journal)
+        before=path.read_bytes()
+        with pytest.raises(ContractError,match='new empty'):
+            dispatch_circuit_proposal(request,policy,**kwargs,adapters={'vision_sol':adapter},journal=journal)
+        assert len(calls)==1 and path.read_bytes()==before and AttemptJournal.read(path)==run.attempts
+        if first=='completed':assert compile_run(run,path,source).request.groups==output.groups
+
+
+def test_durable_nonempty_journal_is_checked_even_if_memory_receipts_are_missing(source,tmp_path):
+    request,policy,output,kwargs,_=source;path=tmp_path/'durable.jsonl';calls=[]
+    with AttemptJournal.create(path) as journal:
+        from oabm.proposals.symbols import AttemptReceipt
+        from datetime import datetime,timezone
+        journal.append(AttemptReceipt(attempt_id='synthetic:prior-attempt',phase='start',status='started',role=policy.role,
+            endpoint=policy.endpoint,request_fingerprint=request.fingerprint,policy_fingerprint=policy.fingerprint,
+            timestamp_utc=datetime.now(timezone.utc).isoformat(),reason='Synthetic preexisting execution.'))
+        journal._receipts.clear()  # Simulate detached in-memory state; durable bytes are authoritative.
+        before=path.read_bytes()
+        with pytest.raises(ContractError,match='new empty'):
+            dispatch_circuit_proposal(request,policy,**kwargs,adapters={'vision_sol':lambda *a,**kw:calls.append(kw)},journal=journal)
+        assert not calls and path.read_bytes()==before
+
+
+def test_same_journal_concurrent_dispatch_reserves_only_one_execution(source,tmp_path,monkeypatch):
+    import concurrent.futures,threading
+    request,policy,output,kwargs,_=source;barrier=threading.Barrier(2);calls=[]
+    original=CircuitProposalRequest.validate_inputs
+    def validate(self,**values):
+        result=original(self,**values);barrier.wait(timeout=30);return result
+    monkeypatch.setattr(CircuitProposalRequest,'validate_inputs',validate)
+    def adapter(*a,**kw):calls.append(kw);return CircuitAdapterReply(output_json=output.to_json(),resolved_model_id='synthetic-strong-actual')
+    with AttemptJournal.create(tmp_path/'concurrent.jsonl') as journal:
+        def invoke():
+            try:return dispatch_circuit_proposal(request,policy,**kwargs,adapters={'vision_sol':adapter},journal=journal)
+            except ContractError:return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _:invoke(),range(2)))
+        assert sum(r is not None for r in results)==1 and len(calls)==1
+        assert len(AttemptJournal.read(journal.path))==2

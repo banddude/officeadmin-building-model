@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import math
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from oabm.model import (BuildingModel, ContractError, ElectricalDevice,
@@ -222,8 +223,31 @@ def _review_from_rows(rows, coverage):
                         duplicate_candidates=_duplicate_groups(rows))
 
 
+def _batch_inputs(requests, images, documents):
+    references = {}
+    for request in requests:
+        for image in request.images:
+            if image.id in references and references[image.id] != image:
+                raise ContractError("batch image ID identifies conflicting source references")
+            references[image.id] = image
+    if set(images) != set(references):
+        raise ContractError("batch image bytes must exactly cover all requested context")
+    expected_documents = {image.source.document_sha256 for image in references.values()}
+    if set(documents) != expected_documents:
+        raise ContractError("batch PDF bytes must exactly cover all requested sources")
+
+
+def _request_inputs(request, images, documents):
+    # Select the complete declared context for this request from the batch union.
+    # Other requests' target tiles are not additional undeclared model context.
+    return ({image.id: images[image.id] for image in request.images},
+            {image.source.document_sha256: documents[image.source.document_sha256]
+             for image in request.images})
+
+
 def build_symbol_review(runs: Sequence, *, documents: Mapping[str, bytes],
-                        images: Mapping[str, bytes]) -> SymbolReview:
+                        images: Mapping[str, bytes],
+                        journal_paths: Mapping[str, str | Path]) -> SymbolReview:
     """Reverify original PDFs/pixels via the adapter; never trust detached rows.
 
     This is the AI-first intake entrypoint. It does not call the legacy shape
@@ -233,12 +257,22 @@ def build_symbol_review(runs: Sequence, *, documents: Mapping[str, bytes],
 
     if not runs:
         raise ContractError("symbol stage requires at least one explicit run")
+    if not isinstance(journal_paths, Mapping):
+        raise ContractError("symbol review requires caller-selected journal paths")
+    if any(not isinstance(run, SymbolRun) for run in runs):
+        raise ContractError("symbol stage requires typed SymbolRun inputs")
+    _batch_inputs([run.request for run in runs], images, documents)
+    expected = {run.request.fingerprint for run in runs}
+    if set(journal_paths) != expected:
+        raise ContractError("journal paths must exactly cover the source requests")
     rows, coverage = [], []
     for run in runs:
         if not isinstance(run, SymbolRun):
             raise ContractError("symbol stage requires typed SymbolRun inputs")
         run = SymbolRun.from_dict(run.to_dict())
-        proposals = run.proposals(documents=documents, images=images)
+        request_images, request_documents = _request_inputs(run.request, images, documents)
+        proposals = run.proposals(documents=request_documents, images=request_images,
+                                  journal_path=journal_paths[run.request.fingerprint])
         rows.extend(_portable(p) for p in proposals)
         # Retain the complete run request/output/attempt envelope for review;
         # no provider identity or empty-result completeness is inferred here.
@@ -254,14 +288,15 @@ class SymbolExtraction:
 
 
 def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
-                          images, journal, qualification=None) -> SymbolExtraction:
+                          images, journals, qualification=None) -> SymbolExtraction:
     """Dispatch the primary AI interpretation stage and return its review handoff.
 
     Endpoint selection, escalation and append-only attempt receipts belong to
     the symbol adapter. No deterministic recognition is required to run this
-    stage. Failed calls propagate; their receipts remain in the supplied journal.
+    stage. Dispatch exceptions propagate; failed run statuses and their receipts
+    remain explicit in the review coverage and per-request journals.
     """
-    from oabm.proposals.symbols import SymbolRequest, dispatch_symbols
+    from oabm.proposals.symbols import AttemptJournal, SymbolRequest, dispatch_symbols
 
     if not requests:
         raise ContractError("symbol stage requires explicit source regions")
@@ -272,11 +307,25 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
         checked.append(SymbolRequest.from_dict(request.to_dict()))
     if len({r.fingerprint for r in checked}) != len(checked):
         raise ContractError("duplicate symbol requests")
-    runs = tuple(dispatch_symbols(request, policy, adapters=adapters,
-        images=images, documents=documents, journal=journal,
-        qualification=qualification) for request in checked)
+    _batch_inputs(checked, images, documents)
+    expected = {request.fingerprint for request in checked}
+    if not isinstance(journals, Mapping) or set(journals) != expected:
+        raise ContractError("journals must exactly cover the source requests")
+    if any(not isinstance(journal, AttemptJournal) for journal in journals.values()):
+        raise ContractError("symbol extraction requires typed attempt journals")
+    journal_paths = {key: journal.path for key, journal in journals.items()}
+    if len({Path(path).resolve() for path in journal_paths.values()}) != len(checked):
+        raise ContractError("each source request requires its own attempt journal")
+    runs = []
+    for request in checked:
+        request_images, request_documents = _request_inputs(request, images, documents)
+        runs.append(dispatch_symbols(request, policy, adapters=adapters,
+            images=request_images, documents=request_documents,
+            journal=journals[request.fingerprint], qualification=qualification))
+    runs = tuple(runs)
     return SymbolExtraction(runs=runs,
-        review=build_symbol_review(runs, documents=documents, images=images))
+        review=build_symbol_review(runs, documents=documents, images=images,
+                                   journal_paths=journal_paths))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -289,6 +338,7 @@ class SymbolStageOutcome:
 def materialize_reviewed_symbols(
     model: BuildingModel, review: SymbolReview, *, runs: Sequence,
     documents: Mapping[str, bytes], images: Mapping[str, bytes],
+    journal_paths: Mapping[str, str | Path],
     decisions: Sequence[SymbolDecision], registrations: Sequence[SymbolRegistration],
 ) -> SymbolStageOutcome:
     """Return a new validated canonical model; all unreviewed rows stay pending.
@@ -300,7 +350,7 @@ def materialize_reviewed_symbols(
     if not isinstance(model, BuildingModel):
         raise ContractError("symbol intake requires a canonical BuildingModel")
     model = BuildingModel.from_dict(model.to_dict())
-    verified = build_symbol_review(runs, documents=documents, images=images)
+    verified = build_symbol_review(runs, documents=documents, images=images, journal_paths=journal_paths)
     if not isinstance(review, SymbolReview) or review.to_dict() != verified.to_dict():
         raise ContractError("stale or modified symbol review; rebuild from verified sources")
     return _materialize_verified(model, verified, decisions, registrations)

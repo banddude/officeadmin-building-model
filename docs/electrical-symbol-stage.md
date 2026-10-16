@@ -9,8 +9,9 @@ optional independent checks without blocking this path.
 Provider selection, strong-model escalation, exact PDF/pixel verification and
 append-only attempt receipts belong to the symbol adapter. The caller supplies
 the actual PDFs, rendered images, configured policy, adapters and private
-journal. This module neither chooses provider/model aliases nor makes network
-calls itself. Failed calls propagate; the adapter journal retains their receipts.
+per-request journals. This module neither chooses provider/model aliases nor
+makes network calls itself. Dispatch exceptions propagate; failed run statuses
+and their receipts remain explicit in review coverage and the journals.
 
 The stage is replaceable: preserve requests, immutable source digests, renders,
 outputs, receipts and subsequent review decisions privately. Another recognizer
@@ -25,23 +26,35 @@ from oabm.importers.pdf_electrical.symbol_stage import (
     SymbolRegistration, SymbolPlacement, SymbolDecision,
 )
 
+# One newly created AttemptJournal per request, keyed by request fingerprint.
+# Each file records exactly that request's full escalation/attempt sequence.
+journals = {request.fingerprint: journal_for_request(request) for request in requests}
+journal_paths = {key: journal.path for key, journal in journals.items()}
 extraction = extract_symbol_review(
     requests, policy, adapters=adapters, documents=documents,
-    images=images, journal=journal,
+    images=images, journals=journals,
 )
 # Present extraction.review and source pixels to an authorized reviewer.
 # Construct explicit SymbolDecision and SymbolRegistration records separately.
 outcome = materialize_reviewed_symbols(
     model, extraction.review, runs=extraction.runs,
-    documents=documents, images=images,
+    documents=documents, images=images, journal_paths=journal_paths,
     decisions=decisions, registrations=registrations,
 )
 reviewed_model = outcome.model
 ```
 
 `build_symbol_review` can also rebuild a manifest from saved typed `SymbolRun`
-records. Both building and consuming a manifest reverify source pixels through
-`SymbolRun.proposals`. Saved manifest hashes are bindings, not source
+records and caller-selected trusted journal paths keyed by request fingerprint.
+Both building and consuming a manifest reverify source pixels through
+`SymbolRun.proposals`, including equality with the persisted attempt receipts and raw
+response in that journal. Each journal file contains exactly one run, including its escalation attempts.
+Batch extraction rejects shared or incomplete journal mappings before calling
+a provider. Each request receives its entire declared image/document context from
+the batch union, without undeclared target tiles belonging only to another request.
+Conflicting image identities, missing bytes and extra undeclared inputs fail
+before dispatch. Journal paths are supplied separately by the trusted caller;
+a saved result cannot choose or attest its own journal. Saved manifest hashes are bindings, not source
 attestations. Consumption recomputes the entire manifest and rejects any change
 in proposals, coverage or source context. Review decisions bind both the exact
 manifest and complete proposal fingerprint. No confidence score accepts a mark.

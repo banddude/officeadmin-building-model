@@ -432,7 +432,7 @@ def test_public_ai_stage_to_reviewed_model_all_categories_without_legacy_recogni
     req, policy, adapters, documents, images, journal, calls, centres = symbol_source_fixture(tmp_path)
     with journal:
         extraction = extract_symbol_review([req], policy, adapters=adapters,
-            documents=documents, images=images, journal=journal)
+            documents=documents, images=images, journals={req.fingerprint: journal})
     assert len(calls) == 1 and calls[0][1]["model_alias"] == "vision_sol"
     assert len(extraction.review.proposals) == 9
     assert extraction.review.coverage[0]["status"] == "completed"
@@ -451,7 +451,7 @@ def test_public_ai_stage_to_reviewed_model_all_categories_without_legacy_recogni
                 anchor_pt=centres[category], height_above_level_m=1.1,
                 yaw_radians=0, remaining_unknowns=("physical size not supplied",))))
     outcome = materialize_reviewed_symbols(model(), extraction.review, runs=extraction.runs,
-        documents=documents, images=images, decisions=records, registrations=[reg])
+        documents=documents, images=images, journal_paths={req.fingerprint: journal.path}, decisions=records, registrations=[reg])
     assert len(outcome.model.electrical_devices) == 8
     assert len(outcome.model.electrical_equipment) == 1
     assert not outcome.model.circuits and not outcome.model.ports and not outcome.model.routes
@@ -469,17 +469,17 @@ def test_public_intake_reverifies_pixels_and_rejects_modified_manifest(tmp_path)
     req, policy, adapters, documents, images, journal, calls, _ = symbol_source_fixture(tmp_path)
     with journal:
         extraction = extract_symbol_review([req], policy, adapters=adapters,
-            documents=documents, images=images, journal=journal)
+            documents=documents, images=images, journals={req.fingerprint: journal})
     forged = extraction.review.to_dict()
     forged["proposals"][0]["category"] = "detector"
     forged["proposals"][0]["confidence"] = 1.0
     with pytest.raises(ContractError, match="stale or modified"):
         materialize_reviewed_symbols(model(), SymbolReview.from_dict(forged), runs=extraction.runs,
-            documents=documents, images=images, decisions=[], registrations=[])
+            documents=documents, images=images, journal_paths={req.fingerprint: journal.path}, decisions=[], registrations=[])
     corrupted_images = {**images, "field": b"different pixels"}
     with pytest.raises(ContractError):
         materialize_reviewed_symbols(model(), extraction.review, runs=extraction.runs,
-            documents=documents, images=corrupted_images, decisions=[], registrations=[])
+            documents=documents, images=corrupted_images, journal_paths={req.fingerprint: journal.path}, decisions=[], registrations=[])
     assert len(calls) == 1  # source verification never calls the provider
 
 
@@ -488,11 +488,11 @@ def test_missing_context_is_present_in_pending_review_and_cannot_silently_accept
     req, policy, adapters, documents, images, journal, _, _ = symbol_source_fixture(tmp_path, missing_notes=True)
     with journal:
         extraction = extract_symbol_review([req], policy, adapters=adapters,
-            documents=documents, images=images, journal=journal)
+            documents=documents, images=images, journals={req.fingerprint: journal})
     assert all(any(reason.startswith("missing_notes:") for reason in p["unknowns"])
                for p in extraction.review.proposals)
     pending = materialize_reviewed_symbols(model(), extraction.review, runs=extraction.runs,
-        documents=documents, images=images, decisions=[], registrations=[])
+        documents=documents, images=images, journal_paths={req.fingerprint: journal.path}, decisions=[], registrations=[])
     assert not pending.model.electrical_devices and not pending.model.electrical_equipment
     assert len(pending.dispositions) == 9
 
@@ -533,3 +533,91 @@ def test_returned_disposition_mutation_cannot_rewrite_audit_or_break_replay():
     replay = apply(manifest, target=result.model)
     assert replay.model == result.model
     assert replay.dispositions[0]["status"] == "accept"
+
+
+def test_public_stage_rejects_self_consistent_saved_output_that_differs_from_trusted_journal(tmp_path):
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review, build_symbol_review
+    from oabm.proposals.symbols import SymbolOutput
+    req, policy, adapters, documents, images, journal, _, _ = symbol_source_fixture(tmp_path)
+    with journal:
+        extraction = extract_symbol_review([req], policy, adapters=adapters,
+            documents=documents, images=images, journals={req.fingerprint: journal})
+    run, = extraction.runs
+    output = SymbolOutput.from_json(run.attempts[-1].raw_output)
+    changed = replace(output, marks=(replace(output.marks[0], confidence=.99), *output.marks[1:]))
+    forged_finish = replace(run.attempts[-1], raw_output=changed.to_json())
+    forged_run = replace(run, attempts=(*run.attempts[:-1], forged_finish))
+    with pytest.raises(ContractError):
+        build_symbol_review([forged_run], documents=documents, images=images, journal_paths={req.fingerprint: journal.path})
+    # The original saved result still verifies against the same persisted journal.
+    assert build_symbol_review([run], documents=documents, images=images,
+                               journal_paths={req.fingerprint: journal.path}) == extraction.review
+
+
+def test_batch_uses_one_trusted_journal_per_request_and_rebuilds_after_close(tmp_path):
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review, build_symbol_review
+    from oabm.proposals.symbols import AttemptJournal
+    req, policy, adapters, documents, images, first, calls, _ = symbol_source_fixture(tmp_path)
+    second_req = replace(req, question=req.question + " Independently requested second interpretation.")
+    second = AttemptJournal.create(tmp_path / "second-attempts.jsonl", run_id="second-request")
+    journals = {req.fingerprint: first, second_req.fingerprint: second}
+    with first, second:
+        extraction = extract_symbol_review([req, second_req], policy, adapters=adapters,
+            documents=documents, images=images, journals=journals)
+    assert len(calls) == 2
+    assert len(extraction.runs) == 2
+    assert len(extraction.review.proposals) == 18  # all candidates retained for review
+    assert len(AttemptJournal.read(first.path)) == len(AttemptJournal.read(second.path)) == 2
+    assert build_symbol_review(extraction.runs, documents=documents, images=images,
+        journal_paths={key: journal.path for key, journal in journals.items()}) == extraction.review
+
+
+def test_shared_or_incomplete_journal_mapping_fails_before_provider_call(tmp_path):
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review
+    req, policy, adapters, documents, images, journal, calls, _ = symbol_source_fixture(tmp_path)
+    second_req = replace(req, question=req.question + " Second requested interpretation.")
+    with journal:
+        with pytest.raises(ContractError, match="exactly cover"):
+            extract_symbol_review([req, second_req], policy, adapters=adapters,
+                documents=documents, images=images, journals={req.fingerprint: journal})
+        with pytest.raises(ContractError, match="own attempt journal"):
+            extract_symbol_review([req, second_req], policy, adapters=adapters,
+                documents=documents, images=images,
+                journals={req.fingerprint: journal, second_req.fingerprint: journal})
+    assert calls == []
+    assert journal.receipts == ()
+
+
+def test_distinct_target_batches_send_complete_declared_context_without_other_target_leakage(tmp_path):
+    import json
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review
+    from oabm.proposals.symbols import AttemptJournal
+    req, policy, adapters, documents, images, first, calls, _ = symbol_source_fixture(tmp_path)
+    second_req = replace(req,
+        images=tuple(replace(im, id="second-field") if im.id == "field" else im for im in req.images),
+        target_image_ids=("second-field",))
+    images = {**images, "second-field": images["field"]}
+    second = AttemptJournal.create(tmp_path / "second-field.jsonl", run_id="second-field")
+    original_adapter = adapters["fake-symbols"]
+
+    def adapter(payload, **kwargs):
+        assert set(kwargs["images"]) == {im["id"] for im in payload["images"]}
+        reply = original_adapter(payload, **kwargs)
+        if payload["target_image_ids"] == ["second-field"]:
+            value = json.loads(reply.output_json)
+            value["scanned_image_ids"] = ["second-field"]
+            for mark in value["marks"]:
+                mark["image_id"] = "second-field"
+                mark["evidence_image_ids"] = ["second-field" if key == "field" else key
+                                                for key in mark["evidence_image_ids"]]
+            reply = replace(reply, output_json=json.dumps(value))
+        return reply
+
+    with first, second:
+        extraction = extract_symbol_review([req, second_req], policy,
+            adapters={"fake-symbols": adapter}, documents=documents, images=images,
+            journals={req.fingerprint: first, second_req.fingerprint: second})
+    assert len(extraction.review.proposals) == 18
+    assert len(calls) == 2
+    assert set(calls[0][1]["images"]) == {"field", "legend", "notes", "schedule"}
+    assert set(calls[1][1]["images"]) == {"second-field", "legend", "notes", "schedule"}

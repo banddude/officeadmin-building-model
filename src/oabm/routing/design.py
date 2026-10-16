@@ -148,6 +148,20 @@ def design_proposed_circuits(
                 raise PlacementError("explicit load port owner, role or domain mismatch")
     elif load_port_ids is not None:
         raise PlacementError("explicit load identities require an explicit source port")
+    equipment_provenance = equipment.provenance
+    if explicit_ports:
+        source_records = next(row for row in model.to_dict()["electrical_equipment"]
+                              if row["id"] == equipment.id)["provenance"]
+        # These scopes belong to the panel. Derived connections reference that
+        # owner and retain its full records without applying its fields to routes.
+        equipment_provenance = tuple(Provenance(
+            source_kind=record.source_kind, source_id=record.source_id,
+            source_element_id=equipment.id, method="reviewed-circuit-owner-dependency",
+            confidence=record.confidence, derivation=DERIVATION_INFERRED,
+            attributes={"source_owner":{"model_id":model.model_id,
+                "collection":"electrical_equipment", "canonical_id":equipment.id},
+                "source_record":source_record, "source_observed":False},
+        ) for record,source_record in zip(equipment.provenance,source_records))
     devices = {item.id: item for item in model.electrical_devices}
     if not device_ids or len(device_ids) != len(set(device_ids)):
         raise PlacementError("device_ids must be nonempty and unique")
@@ -289,7 +303,7 @@ def design_proposed_circuits(
             )
             if route.id in {item.id for item in routes}:
                 raise PlacementError("design route identity collides with another route")
-            route = replace(route, provenance=tuple((*route.provenance, *equipment.provenance, *provenance)),
+            route = replace(route, provenance=tuple((*route.provenance, *equipment_provenance, *provenance)),
                             attributes={**route.attributes, "design_status": "designed",
                                         "equipment_id": equipment_id})
             routes.append(route)

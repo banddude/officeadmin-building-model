@@ -263,3 +263,47 @@ def test_designed_connector_offset_does_not_move_observed_device(tmp_path):
     assert all(d.pose.position.z==pytest.approx(4.2) for d in devices.values())
     quantities=json.loads(result.artifacts['quantities'])
     assert sum(r['quantity'] for r in quantities['items'] if r['category']=='route_length')==pytest.approx(31.)
+
+
+@pytest.mark.parametrize('scope',[('pose.position',),('equipment_type',),('level_id',)])
+def test_panel_field_evidence_is_owner_relative_in_saved_design(tmp_path,scope):
+    model,review,args,request=case(tmp_path/'source')
+    panel=replace(model.electrical_equipment[0],provenance=tuple(replace(p,scope_paths=scope)
+        for p in model.electrical_equipment[0].provenance))
+    model=BuildingModel.from_dict(replace(model,electrical_equipment=(panel,)).to_dict())
+    prior=args['assertion_review']
+    assertion=PlacementAssertionReview.capture(model,review,decisions=args['decisions'],registrations=args['registrations'],
+        canonical_datum_id=prior.canonical_datum_id,reviewer_id=prior.reviewer_id,
+        reviewer_derivation=prior.reviewer_derivation,rationale=prior.rationale,assertions=prior.assertions)
+    request=replace(request,model_fingerprint=digest(model.to_dict()),assertion_review_fingerprint=assertion.fingerprint)
+    value=(model,review,{**args,'assertion_review':assertion},request)
+    final=persist_saved_electrical(save_inputs(tmp_path/'saved',value),output_root=tmp_path/'out',run_id='qualified-panel')
+    result=BuildingModel.from_json((final/'model.json').read_text())
+    assert result.electrical_equipment==(panel,)
+    source_record=model.to_dict()['electrical_equipment'][0]['provenance'][0]
+    for entity in (*result.routes,*result.route_fittings):
+        references=[p for p in entity.provenance if p.method=='reviewed-circuit-owner-dependency']
+        assert len(references)==1
+        ref=references[0]
+        assert ref.derivation=='inferred' and ref.scope_paths is None
+        assert ref.confidence==panel.provenance[0].confidence
+        assert ref.attributes['source_owner']=={'model_id':model.model_id,'collection':'electrical_equipment','canonical_id':panel.id}
+        assert ref.attributes['source_record']==source_record
+        assert not ref.attributes['source_observed']
+    from oabm.ifc.adapter import from_ifc
+    restored=from_ifc(final/'model.ifc')
+    assert restored.electrical_equipment[0].provenance==panel.provenance
+    assert {e.id:e.provenance for e in restored.routes}=={e.id:e.provenance for e in result.routes}
+
+
+@pytest.mark.parametrize('field,key,missing,bad',[
+    ('rules','assumed_poles','assumed_voltage_v',True),
+    ('rules','include_ground','conductor_size',1),
+    ('routing_controls','max_bends','clearance_m',True),
+    ('rules','assumed_poles','assumed_voltage_v',0),
+    ('routing_controls','max_bends','clearance_m',-1),
+    ('routing_controls','coordinate_precision','clearance_m',13),
+])
+def test_supplied_partial_profile_values_are_validated_before_missing_fields(tmp_path,field,key,missing,bad):
+    value=case(tmp_path);profile=dict(getattr(value[3],field));del profile[missing];profile[key]=bad
+    with pytest.raises(ContractError):deliver(value,circuit_design=replace(value[3],**{field:profile}))

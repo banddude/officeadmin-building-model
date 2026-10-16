@@ -87,7 +87,6 @@ def _profile(values, cls, label):
     if values is None:return None,["missing_"+label]
     if not isinstance(values,dict) or set(values)-required:raise ContractError("unsupported "+label+" fields")
     missing = sorted(required-set(values))
-    if missing:return None,["missing_"+label+"_field:"+n for n in missing]
     for name,value in values.items():
         if cls is CircuitDesignRules and name in ("route_type","conductor_material","conductor_size"):
             text(value,name)
@@ -98,7 +97,11 @@ def _profile(values, cls, label):
             if isinstance(value,bool) or not isinstance(value,int):raise ContractError(name+" must be integer")
         elif isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value):
             raise ContractError(name+" must be finite numeric input")
-    return cls(**values),[]
+    # Constructor defaults are used only to validate supplied partial values;
+    # no profile or physical output is returned until every field is explicit.
+    validated = cls(**values)
+    if missing:return None,["missing_"+label+"_field:"+n for n in missing]
+    return validated,[]
 
 
 def apply_reviewed_circuit_design(model, *, request, base_model, review, assertion_review, dispositions, evidence_documents):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
@@ -17,7 +18,7 @@ from oabm.proposals.symbols import AttemptJournal, SymbolResourceLimits
 from oabm.proposals.circuit_design import (VERSION as PROPOSAL_VERSION, TASK, VALIDATOR,
     CircuitProposalRequest, CircuitProposalRun, CircuitReviewDecision, CircuitRoutingPolicy,
     CircuitReviewPolicy, ApprovedConnector, ApprovedCircuitProfile, CircuitImage, CircuitContext,
-    PLACEMENT_KEYS, _invocation, dispatch_circuit_proposal, compile_circuit_review)
+    PLACEMENT_KEYS, _state, _invocation, dispatch_circuit_proposal, compile_circuit_review)
 from oabm.proposals.circuit_transport import TRANSPORT_VERSION
 from . import saved_electrical as saved
 from .saved_revisions import _load as _verify_delivery
@@ -125,9 +126,29 @@ def _runtime_refs(root,refs):
     return {key:_blob_read(root,ref) for key,ref in refs.items()}
 
 
+def _manifest_reference(ref, *, nullable=False):
+    if nullable and ref is None:return
+    _require(isinstance(ref,dict) and set(ref)=={'path','sha256'},
+             'job input requires an exact local path/SHA-256 reference')
+    _require(isinstance(ref['path'],str) and ref['path'].strip()
+             and '://' not in ref['path'] and '\x00' not in ref['path'],
+             'job input requires a local path')
+    fingerprint(ref['sha256'],'job input SHA-256')
+
+
 def _check_manifest(manifest):
     _require(isinstance(manifest,dict) and set(manifest)==KEYS and manifest['version']==VERSION,'unsupported exact job manifest')
     _safe_id(manifest['job_id'])
+    _manifest_reference(manifest['upstream'])
+    _manifest_reference(manifest['settings'],nullable=True)
+    _manifest_reference(manifest['review'],nullable=True)
+    _require(manifest['settings'] is not None or manifest['review'] is None,
+             'circuit review requires circuit settings')
+    for key in ('circuit_images','circuit_documents','policy_documents'):
+        refs=manifest[key]
+        _require(isinstance(refs,dict) and all(isinstance(k,str) and k for k in refs),
+                 'job buffers must be explicit named mappings')
+        for ref in refs.values():_manifest_reference(ref)
     if manifest['parent_revision'] is not None:fingerprint(manifest['parent_revision'],'parent job revision')
     retry=manifest['retry_policy']
     _require(isinstance(retry,dict) and set(retry)==RETRY_KEYS and isinstance(retry['allow_dispatch'],bool),'explicit complete job retry policy required')
@@ -176,10 +197,12 @@ def _snapshot(root,manifest_path,manifest,raw,revision,session):
         key,separator,identity=label.partition('/')
         if separator:upstream[key][identity]=_blob(root,data)
         else:upstream[key]=_blob(root,data)
-    settings_raw=saved.read_saved_reference(manifest['settings'],manifest_path,'circuit settings')
-    CircuitJobSettings.from_json(settings_raw.decode())
+    settings_raw=None
+    if manifest['settings'] is not None:
+        settings_raw=saved.read_saved_reference(manifest['settings'],manifest_path,'circuit settings')
+        CircuitJobSettings.from_json(settings_raw.decode())
     snapshot={'runtime':_versions(),'upstream':_blob(root,saved._json(upstream)),
-        'settings':_blob(root,settings_raw),'upstream_original':_blob(root,upstream_raw),
+        'settings':None if settings_raw is None else _blob(root,settings_raw),'upstream_original':_blob(root,upstream_raw),
         'review':None,'retry_policy':manifest['retry_policy']}
     for key in ('circuit_images','circuit_documents','policy_documents'):
         refs=manifest[key];_require(isinstance(refs,dict),'job buffers must be explicit mappings')
@@ -301,6 +324,46 @@ def _export(root,revision,manifest,retry):
     return output,report,{'export_attempt_id':identity,'export_reused':False}
 
 
+def _partial_readiness(inputs,placement):
+    # Replay the real placement gate without requiring downstream authority.
+    # This reports missing choices; it never asserts that source plans lack them.
+    outcome,eligible=_state(inputs.model,inputs.review,placement)
+    missing=[
+        {'field':'circuit_configuration','proposal_id':None,
+         'reason':'No downstream circuit settings supplied.',
+         'needed':'Explicit caller-selected circuit configuration before entering that stage.'},
+        {'field':'review_authority','proposal_id':None,
+         'reason':'No circuit review authority supplied.',
+         'needed':'Explicit authorized circuit reviewer policy before dispatch and review.'},
+        {'field':'source_port','proposal_id':None,
+         'reason':'No panel source port has been selected for circuit design.',
+         'needed':'Caller selection of an existing reviewed panel source port.'},
+        {'field':'approved_profile','proposal_id':None,
+         'reason':'No approved circuit design profile has been selected.',
+         'needed':'Explicit caller-approved rules and routing controls.'}]
+    if not eligible:
+        missing.append({'field':'eligibility','proposal_id':None,
+            'reason':'No admitted devices available.','needed':'Reviewed physical placements.'})
+    for row in outcome.dispositions:
+        if row['status'] in ('defer','pending'):
+            missing.append({'field':'placement','proposal_id':row['proposal_id'],
+                'reason':row['reason'],'needed':'Resolve upstream placement evidence.'})
+    for proposal_id,canonical_id in eligible:
+        missing.append({'field':'connector','proposal_id':proposal_id,
+            'reason':'No approved connector selected.','needed':'Approved connector offset and direction.'})
+    return {'status':'waiting_for_placement' if not eligible else 'waiting_for_circuit_configuration',
+        'job_complete':False,'missing_inputs':missing,
+        'placement_readiness':{'status':'validated','source_proposals':len(inputs.review.proposals),
+            'dispositions':dict(Counter(row['status'] for row in outcome.dispositions)),
+            'eligible_circuit_devices':len(eligible),
+            'canonical_levels':len(outcome.model.levels),
+            'canonical_devices':len(outcome.model.electrical_devices),
+            'canonical_equipment':len(outcome.model.electrical_equipment),
+            'canonical_ports':len(outcome.model.ports)},
+        'placement_dispositions':list(outcome.dispositions),
+        'circuit_readiness':{'configuration':'missing','review_authority':'missing','provider_called':False}}
+
+
 def run_saved_electrical_job(manifest_path, *, job_root, adapters=None):
     """Advance one immutable job revision; no automatic review or uncertain retry.
 
@@ -326,8 +389,11 @@ def run_saved_electrical_job(manifest_path, *, job_root, adapters=None):
             stage='load_saved_stages'
             upstream_data=_blob_read(root,snapshot['upstream']);upstream_path=session/'upstream.json';_atomic(upstream_path,upstream_data)
             inputs=saved.load_saved_electrical_inputs(upstream_path,journal_directory=session/'journals')
-            settings=CircuitJobSettings.from_json(_blob_read(root,snapshot['settings']).decode())
             placement={key:inputs.kwargs[key] for key in PLACEMENT_KEYS}
+            if snapshot['settings'] is None:
+                stage='placement_readiness'
+                return finish(_partial_readiness(inputs,placement))
+            settings=CircuitJobSettings.from_json(_blob_read(root,snapshot['settings']).decode())
             kwargs={'review_policy':settings.review_policy,'model':inputs.model,'review':inputs.review,'placement':placement,
                 'images':_runtime_refs(root,snapshot['circuit_images']),'documents':_runtime_refs(root,snapshot['circuit_documents']),
                 'policy_documents':_runtime_refs(root,snapshot['policy_documents'])}
@@ -338,6 +404,9 @@ def run_saved_electrical_job(manifest_path, *, job_root, adapters=None):
                 resource_limits=settings.resource_limits)
             request.validate_inputs(policy=settings.policy,**kwargs)
             report['missing_inputs']=[row.to_dict() for row in request.required_missing_inputs]
+            if not request.eligible:
+                return finish({'status':'waiting_for_placement','job_complete':False,
+                    'placement_dispositions':list(request.placement_dispositions)})
             stage='circuit_proposal';run,directory,info=_proposal(root,revision,request,settings,kwargs,snapshot['retry_policy'],adapters or {})
             report.update(info)
             if run is None:return finish({})

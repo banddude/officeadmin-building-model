@@ -6,13 +6,17 @@ Call `run_saved_electrical_job(manifest_path, job_root=..., adapters=...)` with 
 
 ## Inputs and revisions
 
-The exact version is `persisted-electrical-job-v1`. A job manifest contains `version`, `job_id`, `parent_revision`, `upstream`, `settings`, `circuit_images`, `circuit_documents`, `policy_documents`, `review`, and `retry_policy`. File references contain a local path and exact raw-byte SHA256. The upstream manifest is the existing saved-electrical contract with no circuit design. Settings serialize `CircuitJobSettings`, including caller-selected routing and review policies, approved profiles/connectors, source ports, image/context declarations, prompt version, and resource limits.
+The exact version is `persisted-electrical-job-v1`. A job manifest contains `version`, `job_id`, `parent_revision`, `upstream`, `settings`, `circuit_images`, `circuit_documents`, `policy_documents`, `review`, and `retry_policy`. File references contain a local path and exact raw-byte SHA256. The upstream manifest is the existing saved-electrical contract with no circuit design. Settings may explicitly be null while the job is still at source/placement readiness. A non-null reference serializes `CircuitJobSettings`, including caller-selected routing and review policies, approved profiles/connectors, source ports, image/context declarations, prompt version, and resource limits.
 
 The first revision has no parent. Each later revision names the SHA256 of an existing committed job manifest. Raw inputs are privately snapshotted into immutable content-addressed blobs. A committed revision can resume without consulting changed original inputs. New inputs require a new revision and hash. No arbitrary model attributes are interpreted as filesystem references or executable adapter names.
 
 The private job root holds immutable revision snapshots, execution-key bindings, proposal attempts, export attempts, and per-invocation session results. POSIX advisory locking prevents concurrent callers from advancing the same job. This is a single-host runner, not a distributed task queue.
 
 ## Waiting, recovery, and retries
+
+With null settings and null circuit review, the runner validates the existing saved source and placement inputs, records source dispositions and eligible-device counts, and returns `waiting_for_placement` or `waiting_for_circuit_configuration`. It reports missing configuration, review authority, selected panel source port/profile, and per-proposal placement or connector inputs. It does not dispatch, create circuit attempts, or export; `job_complete` remains false. Zero eligible devices is a waiting condition, including when valid circuit settings have been supplied. No source observation is promoted into a physical fact by this readiness check.
+
+A later immutable revision may supply downstream settings. Their complete typed routing/review policies and authority documents remain mandatory before provider dispatch; review and compilation keep their existing exact binding requirements. A circuit review reference without circuit settings is rejected. Malformed references and supplied invalid settings are rejected even for partial jobs.
 
 A completed provider attempt is reused across missing-review pauses and export-only revisions when its complete request and task framing remain identical. A durable terminal receipt can reconstruct a missing parsed checkpoint. Missing or unfinished terminal receipts leave the call in doubt; the runner blocks and never automatically repeats that external call.
 

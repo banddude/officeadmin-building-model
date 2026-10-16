@@ -228,3 +228,105 @@ def test_late_export_failure_requires_fresh_attempt_without_provider_replay(tmp_
     assert recovered['export_attempt_id']!=failed['export_attempt_id'] and recovered['proposal_reused']
     assert tree_bytes(old)==frozen
     assert run(path,adapter)['export_reused'] and len(calls)==1
+
+def partial_inputs(path):
+    from dataclasses import replace
+    from oabm.importers.pdf_electrical.placement_assertions import PlacementAssertionReview
+    upstream=Path(json.loads(path.read_text())['upstream']['path'])
+    inputs=job.saved.load_saved_electrical_inputs(upstream,journal_directory=path.parent/'partial-setup-journals')
+    model=replace(inputs.model,levels=(),electrical_equipment=(),ports=())
+    # All marks remain source observations; no physical placement is approved.
+    decisions=tuple(replace(d,action='defer',placement=None,
+        rationale='Reviewed registration, level/datum and physical mounting/orientation remain unresolved.')
+        for d in inputs.kwargs['decisions'])
+    prior=inputs.kwargs['assertion_review']
+    assertion=PlacementAssertionReview.capture(model,inputs.review,decisions=decisions,registrations=(),
+        canonical_datum_id=prior.canonical_datum_id,reviewer_id=prior.reviewer_id,
+        reviewer_derivation=prior.reviewer_derivation,rationale='Source-only synthetic review; no physical facts approved.',assertions=())
+    document=json.loads(upstream.read_text())
+    def put(name,value):
+        p=path.parent/name;data=job.saved._json(value);p.write_bytes(data)
+        return {'path':str(p),'sha256':hashlib.sha256(data).hexdigest()}
+    document.update(model=put('partial-model.json',model.to_dict()),
+        decisions=put('partial-decisions.json',[d.to_dict() for d in decisions]),
+        registrations=put('partial-registrations.json',[]),
+        assertion_review=put('partial-assertions.json',assertion.to_dict()),
+        proposal_groups={'deferred':list(d.proposal_id for d in decisions)},canonical_groups={})
+    upstream.write_text(json.dumps(document))
+    manifest=json.loads(path.read_text())
+    manifest['upstream']['sha256']=hashlib.sha256(upstream.read_bytes()).hexdigest()
+    manifest.update(settings=None,review=None,circuit_images={},circuit_documents={},policy_documents={})
+    path.write_text(json.dumps(manifest))
+
+def test_partial_source_job_needs_no_circuit_authority_or_provider(tmp_path):
+    path,source,calls,adapter=setup(tmp_path);partial_inputs(path)
+    # Even allow_dispatch cannot enter a stage without explicit configuration.
+    result=run(path,adapter);again=run(path,adapter)
+    assert result['status']==again['status']=='waiting_for_placement'
+    assert result['job_complete'] is False and not calls
+    assert result['placement_readiness']=={'status':'validated','source_proposals':3,
+        'dispositions':{'defer':3},'eligible_circuit_devices':0,'canonical_levels':0,
+        'canonical_devices':0,'canonical_equipment':0,'canonical_ports':0}
+    fields=[row['field'] for row in result['missing_inputs']]
+    assert fields.count('placement')==3
+    assert {'circuit_configuration','review_authority','source_port','approved_profile','eligibility'}<=set(fields)
+    assert len(result['placement_dispositions'])==3
+    root=tmp_path/'jobs/synthetic-job'
+    assert not list((root/'proposals').iterdir()) and not list((root/'exports').iterdir())
+    assert not result['source_complete'] and not result['buildable'] and not result['code_compliance_verified']
+
+def test_configuration_can_arrive_in_new_revision_before_dispatch(tmp_path):
+    path,source,calls,adapter=setup(tmp_path)
+    settings=json.loads(path.read_text())['settings']
+    doc=json.loads(path.read_text());doc['settings']=None;path.write_text(json.dumps(doc))
+    partial=run(path,adapter)
+    assert partial['status']=='waiting_for_circuit_configuration' and not calls
+    assert partial['placement_readiness']['eligible_circuit_devices']==2
+    assert 'connector' in {row['field'] for row in partial['missing_inputs']}
+    revise(path,lambda d:d.update(settings=settings))
+    pending=run(path,adapter)
+    assert pending['status']=='waiting_for_review' and len(calls)==1
+    assert run(path,adapter)['proposal_reused'] and len(calls)==1
+
+def test_empty_authority_still_blocks_configured_stage(tmp_path):
+    path,source,calls,adapter=setup(tmp_path)
+    doc=json.loads(path.read_text());settings=Path(doc['settings']['path'])
+    body=json.loads(settings.read_text());body['review_policy']['authorities']=[]
+    settings.write_text(json.dumps(body));doc['settings']['sha256']=hashlib.sha256(settings.read_bytes()).hexdigest()
+    path.write_text(json.dumps(doc))
+    with pytest.raises(job.SavedJobError,match='distinct explicit review authorities required'):
+        run(path,adapter)
+    assert not calls
+
+@pytest.mark.parametrize('update',[
+    {'settings':{}},{'settings':[]},{'settings':None,'review':{'path':'review.json','sha256':'a'*64}},
+    {'settings':None,'circuit_images':[]},{'settings':None,'policy_documents':{'x':{'path':'https://invalid/input','sha256':'a'*64}}}])
+def test_partial_manifest_keeps_exact_reference_validation(tmp_path,update):
+    path,source,calls,adapter=setup(tmp_path)
+    doc=json.loads(path.read_text());doc.update(update);path.write_text(json.dumps(doc))
+    with pytest.raises(job.SavedJobError) as error:run(path,adapter)
+    assert error.value.stage=='load_job' and not calls
+
+def test_no_eligible_devices_with_valid_settings_still_waits(tmp_path):
+    from dataclasses import replace
+    from oabm.proposals.circuit_design import CircuitReviewPolicy
+    path,source,calls,adapter=setup(tmp_path)
+    original=json.loads(path.read_text())
+    settings=job.CircuitJobSettings.from_json(Path(original['settings']['path']).read_text())
+    partial_inputs(path)
+    review_policy=CircuitReviewPolicy.capture(authorities=settings.review_policy.authorities,
+        source_port_ids=(),connectors=(),profiles=())
+    contexts=tuple(replace(c,status='missing',profile_ids=(),
+        rationale='No approved profile supplied for this synthetic partial job.')
+        if c.role=='project_rules' else c for c in settings.contexts)
+    settings=replace(settings,review_policy=review_policy,source_port_ids=(),connectors=(),profiles=(),contexts=contexts)
+    p=tmp_path/'empty-choices-settings.json';p.write_text(settings.to_json())
+    doc=json.loads(path.read_text())
+    doc['settings']={'path':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest()}
+    for key in ('circuit_images','circuit_documents','policy_documents'):doc[key]=original[key]
+    path.write_text(json.dumps(doc))
+    result=run(path,adapter)
+    assert result['status']=='waiting_for_placement' and not result['job_complete'] and not calls
+    assert {'eligibility','source_port','approved_profile','placement'}<={r['field'] for r in result['missing_inputs']}
+    root=tmp_path/'jobs/synthetic-job'
+    assert not list((root/'proposals').iterdir()) and not list((root/'exports').iterdir())

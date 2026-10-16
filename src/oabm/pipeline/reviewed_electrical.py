@@ -39,6 +39,7 @@ class ReviewedElectricalDelivery:
     model_json: str
     artifacts: Mapping[str, bytes]
     completion_json: str
+    circuit_admitted_model_json: str | None = None
 
     @property
     def model(self):
@@ -187,13 +188,16 @@ def deliver_reviewed_electrical(
             assertion_review=assertion_review,evidence_documents=evidence_documents)
         canonical=outcome.model
         design_report=None
+        circuit_admitted_model_json=None
         if circuit_design is not None:
             stage="circuit_design"
             from .reviewed_circuit_design import apply_reviewed_circuit_design
+            circuit_admitted_model_json=canonical.to_json(indent=None)
             canonical,design_report=apply_reviewed_circuit_design(canonical,request=circuit_design,
                 base_model=model,review=verified,assertion_review=assertion_review,
                 dispositions=outcome.dispositions,evidence_documents=evidence_documents)
             design_report["request"]=circuit_design.to_dict()
+            design_report["admitted_model_sha256"]=_sha(circuit_admitted_model_json.encode())
             put("circuit_design",_json(design_report).encode())
             report["circuit_design"]=design_report
             report["unresolved"].extend({"code":reason,"request_id":circuit_design.request_id} for reason in design_report["reasons"])
@@ -312,7 +316,7 @@ def deliver_reviewed_electrical(
             report["stages"]["ifc"]={"status":"not_requested"}
         report["unresolved"].append({"code":"source_coverage_unavailable"})
         report["delivery_ready"]=True
-        return ReviewedElectricalDelivery(model_json,MappingProxyType(dict(payloads)),_json(report))
+        return ReviewedElectricalDelivery(model_json,MappingProxyType(dict(payloads)),_json(report),circuit_admitted_model_json)
     except Exception as error:
         report["stages"][stage]={"status":"failed","error_type":type(error).__name__,"message":str(error)}
         report["failure_stage"]=stage

@@ -112,17 +112,26 @@ def _load(directory):
              and report["quantity_eligibility"]["base_bid"] == "not_established"
              and report["quantity_eligibility"]["source_complete"] is False, "unsupported completeness limits")
     artifacts = report["artifacts"]
+    circuit_enabled = "circuit_design" in artifacts
     kinds = set(KINDS) | ({"ifc"} if "ifc" in artifacts else set())
+    filenames = dict(FILES)
+    circuit_paths = set()
+    if circuit_enabled:
+        from .saved_circuit_revisions import circuit_inputs
+        kinds.add("circuit_design")
+        filenames["circuit_design"] = "circuit-design.json"
+        _, _, circuit_paths = circuit_inputs(payloads)
     _require(set(artifacts) == kinds and report["requested_outputs"] == sorted(kinds), "unsupported artifact request set")
-    expected_paths = {FILES[k] for k in kinds} | {"completion-report.json", "input-receipt.json"}
+    expected_paths = {filenames[k] for k in kinds} | circuit_paths | {"completion-report.json", "input-receipt.json"}
     _require(all(n in expected_paths or (n.startswith("journals/") and n.endswith(".jsonl")) for n in payloads),
              "unexpected payload outside the saved-review format")
     for kind in kinds:
-        data = payloads[FILES[kind]]
-        _require(artifacts[kind] == {"reference": str(root / FILES[kind]), "sha256": _sha(data), "bytes": len(data)},
+        data = payloads[filenames[kind]]
+        _require(artifacts[kind] == {"reference": str(root / filenames[kind]), "sha256": _sha(data), "bytes": len(data)},
                  "artifact/model report binding mismatch")
-    _require(set(report["stages"]) == set(STAGES), "unsupported runner stages")
-    for stage in STAGES:
+    stages = (*STAGES, *(("circuit_design",) if circuit_enabled else ()))
+    _require(set(report["stages"]) == set(stages), "unsupported runner stages")
+    for stage in stages:
         expected = "not_requested" if stage == "ifc" and "ifc" not in kinds else "passed"
         _require(report["stages"][stage]["status"] == expected, "incomplete runner stage")
     model = BuildingModel.from_json(payloads[FILES["canonical_model"]].decode())
@@ -164,6 +173,11 @@ def _load(directory):
              "unsupported input receipt format")
     fingerprint(receipts["manifest_sha256"], "original input manifest digest")
     scalar_inputs = {"model", "review", "runs", "decisions", "registrations", "assertion_review", "scope_policy", "review_config"}
+    if circuit_enabled:
+        scalar_inputs.add("circuit_design")
+    else:
+        _require("circuit_design" not in report and "circuit_design_fingerprint" not in report["input_bindings"],
+                 "circuit lineage without circuit artifact")
     prefixes = {"documents", "images", "evidence_documents", "journals"}
     receipt_rows = {}
     for row in receipts["files"]:
@@ -215,6 +229,10 @@ def _load(directory):
         _require(journal_records[key]["sha256"] == _sha(payloads[name])
                  and journal_records[key]["bytes"] == len(payloads[name])
                  and AttemptJournal.read(root / name) == current[key].attempts, "saved journal/run mismatch")
+    circuit_lineage = None
+    if circuit_enabled:
+        from .saved_circuit_revisions import verify_circuit_revision
+        circuit_lineage = verify_circuit_revision(model, report, review, assertion, payloads, receipt_rows)
     groups = report["quantity_eligibility"]["group_bindings"]["resolved"]
     takeoff = extract_quantities(model, groups=groups)
     _require(takeoff.to_json().encode() == payloads[FILES["quantities"]]
@@ -249,9 +267,12 @@ def _load(directory):
                  "IFC reload identity/frame mismatch")
     _require(all(_read(root / name) == data for name, data in payloads.items())
              and _read(root / "COMPLETED.json") == marker_bytes, "delivery changed during validation")
-    return model, report, tuple(sorted(sources)), {"directory": str(root), "completion_marker_sha256": _sha(marker_bytes),
+    metadata = {"directory": str(root), "completion_marker_sha256": _sha(marker_bytes),
         "canonical_model_sha256": model_sha, "verified_files": len(payloads),
         "retained_review_base_fingerprint": assertion.model_fingerprint}
+    if circuit_lineage is not None:
+        metadata["circuit_design_lineage"] = circuit_lineage
+    return model, report, tuple(sorted(sources)), metadata
 
 
 def compare_saved_reviews(base_directory, target_directory):

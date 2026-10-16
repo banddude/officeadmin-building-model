@@ -39,6 +39,14 @@ def test_statewide_selection_is_deterministic_at_and_around_cutoff() -> None:
     assert after.profile is not None
     assert after.profile.edition == "2025 California Electrical Code"
     assert after.profile.underlying_nec_edition == "2023 NEC"
+    nfpa_basis = next(
+        item for item in after.profile.boundary_references
+        if item.source_id == "nfpa-2025-cec-nec-basis"
+    )
+    assert nfpa_basis.uri == (
+        "https://www.nfpa.org/for-professionals/codes-and-standards/"
+        "standards-development/nfpa-codes-and-standards-with-jurisdictional-changes"
+    )
     assert after.profile.application_interval.starts_on == date(2026, 1, 1)
     assert after.profile.code_effective_interval == after.profile.code_operative_interval
     assert after.profile.errata_references[0].published_on == date(2026, 1, 1)
@@ -119,6 +127,33 @@ def test_future_supplement_is_not_active_before_its_effective_date() -> None:
     too_far_ahead = resolve(JURISDICTION_CALIFORNIA, "2027-07-02")
     assert too_far_ahead.profile is None
     assert too_far_ahead.unresolved_reasons == ("future_code_timeline_not_registered",)
+
+
+@pytest.mark.parametrize(
+    "jurisdiction",
+    [JURISDICTION_CALIFORNIA, JURISDICTION_LA_COUNTY, JURISDICTION_LA_CITY],
+)
+def test_2025_application_interval_is_bounded_through_inclusive_registry_cutoff(
+    jurisdiction: str,
+) -> None:
+    day_before = resolve(jurisdiction, date(2027, 6, 30))
+    cutoff = resolve(jurisdiction, NEXT_KNOWN_SUPPLEMENT_DATE)
+    day_after = resolve(jurisdiction, date(2027, 7, 2))
+
+    assert day_before.profile is not None
+    assert day_before.profile.edition == "2025 California Electrical Code"
+    assert day_before.profile.application_interval.ends_on == NEXT_KNOWN_SUPPLEMENT_DATE
+    assert day_before.profile.application_interval.contains(date(2027, 6, 30))
+
+    assert cutoff.profile is not None
+    assert cutoff.profile.edition == "2025 California Electrical Code"
+    assert cutoff.profile.application_interval.ends_on == NEXT_KNOWN_SUPPLEMENT_DATE
+    assert cutoff.profile.application_interval.contains(NEXT_KNOWN_SUPPLEMENT_DATE)
+    assert cutoff.profile.code_effective_interval.ends_on is None
+    assert cutoff.profile.code_operative_interval.ends_on is None
+
+    assert day_after.profile is None
+    assert day_after.unresolved_reasons == ("future_code_timeline_not_registered",)
 
 
 @pytest.mark.parametrize(

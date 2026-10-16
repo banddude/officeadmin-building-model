@@ -353,9 +353,9 @@ _BSC_BULLETIN_25_01 = CodeSourceReference(
 )
 _NFPA_2025_CEC_BASIS = CodeSourceReference(
     source_id="nfpa-2025-cec-nec-basis",
-    title="NFPA NEC enforcement map, California Electrical Code basis",
+    title="NFPA Codes and Standards with Jurisdictional Changes, California Electrical Code basis",
     authority="National Fire Protection Association",
-    uri="https://www.nfpa.org/education-and-research/electrical/nec-enforcement-maps",
+    uri="https://www.nfpa.org/for-professionals/codes-and-standards/standards-development/nfpa-codes-and-standards-with-jurisdictional-changes",
     document_id="California 2025 Electrical Code",
     revision="2025 CEC based on 2023 NEC",
     evidence_status="official_page_indexed",
@@ -617,7 +617,8 @@ def _make_profile(
         ends_on=(
             date(2025, 12, 30)
             if is_2022 and jurisdiction_id == JURISDICTION_LA_CITY
-            else STATE_OLD_CUTOFF if is_2022 else None
+            else STATE_OLD_CUTOFF if is_2022
+            else NEXT_KNOWN_SUPPLEMENT_DATE
         ),
     )
     code_interval = DateInterval(

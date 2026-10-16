@@ -8023,6 +8023,18 @@ def _recognize_lighting(
         excluded_text_ids=set(schedule_text_ids),
     )
 
+    from .lighting_categories import (
+        detect_category_legends, bind_schedule_categories,
+        category_geometry_evidence, leader_candidates,
+    )
+    category_entries_by_page, category_keys, category_text_ids, category_problems, category_metadata = detect_category_legends(
+        texts=texts, clusters=clusters,
+        excluded_text_ids=set(schedule_text_ids) | set(legend_text_ids),
+    )
+    prototype_keys.update(category_keys)
+    legend_text_ids.update(category_text_ids)
+    legend_unresolved.extend(category_problems)
+    legend_metadata.extend(category_metadata)
     from .schedule_applicability import resolve_schedule_associations
 
     applicable_schedules, schedule_associations, association_unresolved = resolve_schedule_associations(
@@ -8105,9 +8117,9 @@ def _recognize_lighting(
     references, reference_misses = _resolve_explicit_legend_references(
         texts=texts,
         aliases_by_page=_legend_page_aliases(
-            (), texts, legend_pages=legend_entries_by_page,
+            (), texts, legend_pages=(*legend_entries_by_page, *category_entries_by_page),
         ),
-        active_legend_pages=set(legend_entries_by_page),
+        active_legend_pages=set(legend_entries_by_page) | set(category_entries_by_page),
     )
     references_by_page: dict[int, list[_LegendReference]] = {}
     for reference in references:
@@ -8149,13 +8161,23 @@ def _recognize_lighting(
                 "local_legend_authoritative": page in legend_entries_by_page,
             })
             continue
-        if page in legend_entries_by_page:
+        if page in legend_entries_by_page or page in category_entries_by_page:
             continue
         reference = page_references[0]
-        fixture_entries_by_page[page] = fixture_entries_by_page[reference.legend_page]
-        switch_entries_by_page[page] = switch_entries_by_page[reference.legend_page]
+        fixture_entries_by_page[page] = fixture_entries_by_page.get(reference.legend_page, ())
+        switch_entries_by_page[page] = switch_entries_by_page.get(reference.legend_page, ())
+        category_entries_by_page[page] = category_entries_by_page.get(reference.legend_page, ())
         applied_references[page] = reference
 
+    fixture_entries_by_page, category_bindings, category_binding_problems = bind_schedule_categories(
+        schedules=applicable_schedules, category_entries=category_entries_by_page,
+        tagged_entries=fixture_entries_by_page,
+    )
+    unresolved.extend(category_binding_problems)
+    geometry_entries_by_page = {
+        page: (*fixture_entries_by_page.get(page, ()), *category_entries_by_page.get(page, ()))
+        for page in set(fixture_entries_by_page) | set(category_entries_by_page)
+    }
     fixture_tags_by_page: dict[int, set[str]] = {}
     for page, tag in applicable_schedules:
         fixture_tags_by_page.setdefault(page, set()).add(tag)
@@ -8169,6 +8191,24 @@ def _recognize_lighting(
         for cluster in clusters
         if (cluster.page, cluster.geometry_key) not in prototype_keys
     ]
+    field_clusters = [
+        _strip_cluster_for_matching(cluster, texts=texts,
+            glyph_extent_pt=max(_cluster_extent_pt(entry.prototype)
+                                for entry in category_entries_by_page[cluster.page]))
+        if category_entries_by_page.get(cluster.page) else cluster
+        for cluster in field_clusters
+    ]
+    category_geometry_cache: dict[tuple[int, str, str], tuple[bool, dict[str, Any]]] = {}
+
+    def category_evidence_for(cluster: _VectorCluster, entry: _LightingLegendEntry):
+        cache_key = (cluster.page, cluster.geometry_key, entry.label.element_id)
+        if cache_key not in category_geometry_cache:
+            category_geometry_cache[cache_key] = category_geometry_evidence(
+                cluster, entry, category_entries_by_page.get(cluster.page, ()),
+            )
+        return category_geometry_cache[cache_key]
+
+    tag_leader_evidence: dict[tuple[str, str], dict[str, Any]] = {}
     assignments: dict[tuple[int, str], list[tuple[PdfTextObservation, str]]] = {}
     ambiguous_cluster_keys: set[tuple[int, str]] = set()
     diagnosed_cluster_keys: set[tuple[int, str]] = set()
@@ -8191,24 +8231,43 @@ def _recognize_lighting(
             )
             <= _LIGHTING_TAG_CLUSTER_RADIUS_PT
         ]
+        leader_hits: list[_VectorCluster] = []
+        multiple_category_candidates = False
+        if category_entries_by_page.get(observation.page):
+            leader_hits, leader_info = leader_candidates(observation, field_clusters, vectors)
+            if leader_hits:
+                nearby = leader_hits
+                for geometry_key, evidence in leader_info.items():
+                    tag_leader_evidence[(observation.element_id, geometry_key)] = evidence
+        if (observation.page, tag) in category_bindings and not leader_hits:
+            expected_entry = next(entry for entry in fixture_entries_by_page[observation.page] if entry.tag == tag)
+            supported = [cluster for cluster in nearby if category_evidence_for(cluster, expected_entry)[0]]
+            if supported:
+                nearby = supported
+                multiple_category_candidates = len(supported) > 1
         nearby.sort(
             key=lambda cluster: (
-                _distance_pt(
-                    cluster.center_pt[0],
-                    cluster.center_pt[1],
-                    observation.x_pt,
-                    observation.y_pt,
-                ),
+                _distance_pt(cluster.center_pt[0], cluster.center_pt[1], observation.x_pt, observation.y_pt),
                 cluster.geometry_key,
             )
         )
+        if not nearby and (observation.page, tag) in category_bindings:
+            unresolved.append({
+                "kind": "lighting_fixture", "page": observation.page,
+                "source_element_id": observation.element_id, "fixture_tag": tag,
+                "status": "unresolved_geometry", "reason_code": "lighting_fixture_geometry_not_associated",
+                "category_binding": category_bindings[(observation.page, tag)],
+            })
+            claimed_text_ids.add(observation.element_id)
         if not nearby:
             # A bare schedule-known letter elsewhere on the plan is not enough:
             # it may be a room name or other drafting label.
             continue
         if (
             len(nearby) > 1
-            and _distance_pt(
+            and (multiple_category_candidates
+            or any((observation.element_id, cluster.geometry_key) in tag_leader_evidence for cluster in nearby)
+            or _distance_pt(
                 nearby[1].center_pt[0],
                 nearby[1].center_pt[1],
                 observation.x_pt,
@@ -8220,7 +8279,7 @@ def _recognize_lighting(
                 observation.x_pt,
                 observation.y_pt,
             )
-            < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
+            < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT)
         ):
             unresolved.append(
                 {
@@ -8245,7 +8304,7 @@ def _recognize_lighting(
                 ambiguous_cluster_keys.add((cluster.page, cluster.geometry_key))
                 if _is_lighting_shaped(
                     cluster,
-                    fixture_entries_by_page.get(cluster.page, ()),
+                    geometry_entries_by_page.get(cluster.page, ()),
                 ):
                     claimed_vector_ids.update(cluster.source_element_ids)
             continue
@@ -8287,7 +8346,7 @@ def _recognize_lighting(
             diagnosed_cluster_keys.add(key)
             if _is_lighting_shaped(
                 cluster,
-                fixture_entries_by_page.get(cluster.page, ()),
+                geometry_entries_by_page.get(cluster.page, ()),
             ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.update(
@@ -8316,11 +8375,28 @@ def _recognize_lighting(
         )
         legend_entry, shape_score, shape_guard = _lighting_shape_support(
             cluster,
-            fixture_entries_by_page.get(cluster.page, ()),
+            geometry_entries_by_page.get(cluster.page, ()),
             tag=tag,
         )
         schedule_row = applicable_schedules.get((cluster.page, tag))
         schedule_association = schedule_associations.get((cluster.page, tag))
+
+        category_binding = category_bindings.get((cluster.page, tag))
+        category_geometry = None
+        if category_binding and legend_entry is not None:
+            confirmed, category_geometry = category_evidence_for(cluster, legend_entry)
+            if not confirmed:
+                unresolved.append({
+                    "kind": "lighting_fixture", "page": cluster.page,
+                    "source_element_id": tag_observation.element_id,
+                    "source_element_ids": list(cluster.source_element_ids), "fixture_tag": tag,
+                    "status": "unresolved_classification", **category_geometry,
+                    "schedule_category_binding": category_binding,
+                })
+                claimed_vector_ids.update(cluster.source_element_ids)
+                claimed_text_ids.add(tag_observation.element_id)
+                diagnosed_cluster_keys.add(key)
+                continue
 
         # A schedule enriches a confirmed fixture but never proves one: a
         # schedule-known letter beside arbitrary small geometry is exactly what
@@ -8372,7 +8448,7 @@ def _recognize_lighting(
             diagnosed_cluster_keys.add(key)
             if _is_lighting_shaped(
                 cluster,
-                fixture_entries_by_page.get(cluster.page, ()),
+                geometry_entries_by_page.get(cluster.page, ()),
             ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.add(tag_observation.element_id)
@@ -8395,6 +8471,19 @@ def _recognize_lighting(
                 "prototype_geometry_key": legend_entry.prototype.geometry_key,
             },
         }
+        if category_binding:
+            recognition["category_binding"] = category_binding
+            recognition["category_geometry"] = category_geometry
+            if cluster.cleanup_actions or cluster.excluded_source_element_ids:
+                recognition["geometry_cleanup"] = {
+                    "actions": list(cluster.cleanup_actions),
+                    "excluded_source_element_ids": list(cluster.excluded_source_element_ids),
+                }
+            recognition["legend"].pop("tag_source_element_id", None)
+            recognition["legend"]["description_source_element_id"] = legend_entry.label.element_id
+        leader_evidence = tag_leader_evidence.get((tag_observation.element_id, cluster.geometry_key))
+        if leader_evidence:
+            recognition["tag_geometry_association"] = leader_evidence
         if schedule_row is not None:
             recognition["fixture_schedule"] = _lighting_schedule_attributes(
                 schedule_row
@@ -8468,12 +8557,14 @@ def _recognize_lighting(
                 document,
                 element_id=legend_entry.label.element_id,
                 page=legend_entry.page,
-                method="pdf-lighting-legend-tag",
+                method="pdf-lighting-legend-category" if category_binding else "pdf-lighting-legend-tag",
                 confidence=legend_entry.confidence,
                 attributes={
                     "source_text": legend_entry.label.text,
                     "fixture_tag": tag,
                     "prototype_geometry_key": legend_entry.prototype.geometry_key,
+                    **({"category_binding": category_binding, "category_geometry": category_geometry}
+                       if category_binding else {}),
                 },
             )
         )
@@ -8499,6 +8590,19 @@ def _recognize_lighting(
                 derivation=str(schedule_association["derivation"]),
                 attributes=schedule_association,
             ))
+        if category_binding and schedule_row is not None:
+            candidate.provenance.append(_provenance(
+                document, element_id=schedule_row.source_element_ids[0], page=schedule_row.page,
+                method="pdf-lighting-category-association", confidence=0.90,
+                derivation=DERIVATION_INFERRED, attributes=category_binding,
+            ))
+        if leader_evidence:
+            for source_element_id in leader_evidence["source_element_ids"]:
+                candidate.provenance.append(_provenance(
+                    document, element_id=source_element_id, page=cluster.page,
+                    method="pdf-lighting-tag-leader", confidence=0.90,
+                    derivation=DERIVATION_INFERRED, attributes=leader_evidence,
+                ))
         candidates[candidate.key] = candidate
         matched_vector_ids.update(cluster.source_element_ids)
         claimed_vector_ids.update(cluster.source_element_ids)

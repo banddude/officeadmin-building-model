@@ -200,8 +200,12 @@ def _load(directory):
     for fact in assertion.assertions:
         for evidence in fact.evidence:
             identity = evidence.document_sha256
-            _require("documents/" + identity in receipt_rows or "evidence_documents/" + identity in receipt_rows,
-                     "missing placement evidence document receipt")
+            available = [receipt_rows[label] for label in ("documents/" + identity, "evidence_documents/" + identity)
+                         if label in receipt_rows]
+            _require(bool(available), "missing placement evidence document receipt")
+            _require(all(1 <= row["bytes"] <= 128_000_000 for row in available)
+                     and len({row["bytes"] for row in available}) == 1,
+                     "cited placement evidence receipt has unsupported or contradictory byte size")
     journal_records = {label[len("journals/"):]: row for label, row in receipt_rows.items() if label.startswith("journals/")}
     _require(set(current) == set(journal_records), "journal request receipt mismatch")
     journal_names = {"journals/" + str(i) + ".jsonl" for i in range(len(current))}

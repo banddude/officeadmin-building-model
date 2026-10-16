@@ -248,3 +248,16 @@ def test_unlisted_non_payload_entries_refused(original_source,tmp_path,kind):
     if kind=="fifo":os.mkfifo(b/"unlisted-pipe")
     else:(b/"unlisted-empty-directory").mkdir()
     with pytest.raises(ContractError):compare_saved_reviews(a,b)
+
+
+@pytest.mark.parametrize('size',[0,128_000_001])
+def test_cited_evidence_receipt_requires_original_supported_byte_range(original_source,tmp_path,size):
+    a,b=pair(original_source,tmp_path)
+    model=BuildingModel.from_json((b/'model.json').read_text())
+    cited={e['document_sha256'] for f in model.attributes['placement_assertion_reviews'][-1]['review']['assertions'] for e in f['evidence']}
+    receipt=json.loads((b/'input-receipt.json').read_bytes())
+    row=next(r for r in receipt['files'] if r['input'].startswith('evidence_documents/') and r['input'].split('/',1)[1] in cited)
+    row['bytes']=size
+    (b/'input-receipt.json').write_text(json.dumps(receipt));rehash_marker(b)
+    with pytest.raises(ContractError,match='cited placement evidence receipt'):
+        compare_saved_reviews(a,b)

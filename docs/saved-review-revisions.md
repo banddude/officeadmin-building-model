@@ -115,3 +115,8 @@ claimed. A receipt is internal consistency evidence, not external authenticity.
 Filesystem inventory uses entry types without following links. Only regular
 manifest files and the directories required to contain them are supported;
 FIFOs, sockets, devices, symlinks and unlisted directories are refused.
+Cited placement evidence receipts must also retain the original evidence gate's
+supported byte range, 1 through 128,000,000 inclusive. When both document maps
+record the same cited digest, their declared sizes must agree. Unused evidence
+retains the receipt format's existing behavior; unavailable source bytes are
+still not represented as independently reread.

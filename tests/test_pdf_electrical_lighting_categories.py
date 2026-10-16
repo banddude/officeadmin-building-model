@@ -55,6 +55,12 @@ def _source(path: Path, *, mode="normal"):
                 text(400,700,"999"),text(400,680,"111"),
                 glyph(30,700,surface),glyph(30,680,recessed),
                 text(50,620,"SEE LIGHTING LEGEND ON E1.1")]
+    if mode in {"fixture-words", "nonlighting-fixture-words"}:
+        field=[command.replace("SURFACE MOUNTED CEILING LIGHT", "SURFACE MOUNTED CEILING FIXTURE")
+                      .replace("RECESSED DOWN LIGHT", "RECESSED CEILING FIXTURES") for command in field]
+        schedule=[command.replace("RECESSED DOWNLIGHT", "RECESSED CEILING") for command in schedule]
+        if mode == "nonlighting-fixture-words":
+            field=[command.replace("LIGHTING LEGEND", "PLUMBING FIXTURE LEGEND") for command in field]
     for commands in [field, schedule]:
         page=writer.add_blank_page(width=900,height=800)
         page[NameObject("/Resources")]=DictionaryObject({NameObject("/Font"):
@@ -204,3 +210,21 @@ def test_leader_candidates_are_scoped_to_page_with_identical_geometry_keys(tmp_p
         assert evidence[clusters[0].geometry_key]['source_element_ids']
         assert all(source_id.startswith(f'p{page}:') for source_id in
                    evidence[clusters[0].geometry_key]['source_element_ids'])
+
+
+@pytest.mark.parametrize('mode,expected', [('fixture-words', {'Q-1','Q-2'}),
+                                         ('nonlighting-fixture-words', set())])
+def test_fixture_description_words_require_confirmed_lighting_legend(tmp_path,mode,expected):
+    path=tmp_path/'fixture-labels.pdf';_source(path,mode=mode)
+    assert not path.with_suffix('.expected.json').exists()
+    if not expected:
+        from oabm.importers.pdf_electrical import importer as api
+        from oabm.importers.pdf_electrical.lighting_categories import detect_category_legends
+        document=api.extract_pdf(path)
+        clusters=api._glyph_clusters(document,document.vectors)
+        entries,keys,claimed,problems,metadata=detect_category_legends(
+            texts=document.texts,clusters=clusters,excluded_text_ids=set())
+        assert not entries and not keys and not claimed and not metadata
+    else:
+        model=ElectricalPdfImporter().import_pdf(path)
+        assert {device.name for device in _fixtures(model)}==expected

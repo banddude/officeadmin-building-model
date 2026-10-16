@@ -36,7 +36,7 @@ def detect_category_legends(*, texts: Sequence[Any], clusters: Sequence[Any], ex
                   and 0 < heading.y_pt - t.y_pt <= api._LIGHTING_LEGEND_VERTICAL_SPAN_PT
                   and abs(t.x_pt - heading.x_pt) <= api._LIGHTING_LEGEND_HEADING_COLUMN_SPAN_PT
                   and api._normalize_lighting_tag(t.text) is None
-                  and re.search(r"\b(?:LIGHT|LIGHTS|DOWNLIGHT|PENDANT|SCONCE|LUMINAIRE|LUMINAIRES)\b", t.text, re.I)]
+                  and re.search(r"\b(?:LIGHT|LIGHTS|DOWNLIGHT|PENDANT|SCONCE|LUMINAIRE|LUMINAIRES|FIXTURE|FIXTURES)\b", t.text, re.I)]
         for column in api._lighting_legend_label_columns(labels):
             if len(column) < 2 or api._lighting_legend_column_grid_rows(column, api._lighting_legend_row_grid(column)) is None:
                 continue

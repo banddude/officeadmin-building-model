@@ -85,7 +85,7 @@ def deliver_reviewed_electrical(
     decisions, registrations, assertion_review, evidence_documents,
     scope_policy: ScopePolicy, proposal_groups, canonical_groups,
     review_config: ReviewConfig, source_references, artifact_references,
-    glb_options, include_ifc, coverage_report, circuit_design=None,
+    glb_options, include_ifc, coverage_report, circuit_design=None, review_drawings=None,
 ):
     """Replay saved trusted inputs and return immutable in-memory payloads.
 
@@ -129,6 +129,14 @@ def deliver_reviewed_electrical(
             report["stages"]["circuit_design"]={"status":"not_run"}
         expected=set(KINDS)|({"ifc"} if include_ifc else set())
         if circuit_design is not None:expected.add("circuit_design")
+        if review_drawings is not None:
+            from .review_drawings import ReviewDrawingConfig
+            if not isinstance(review_drawings, ReviewDrawingConfig):
+                raise ContractError("typed review drawing configuration required")
+            review_drawings=ReviewDrawingConfig.from_dict(review_drawings.to_dict())
+            report["stages"]["review_drawings"]={"status":"not_run"}
+        if review_drawings is not None:
+            expected.update(review_drawings.artifact_kinds)
         if not isinstance(artifact_references,Mapping) or set(artifact_references)!=expected:
             raise ContractError("artifact references must exactly cover requested outputs")
         refs=dict(artifact_references)
@@ -170,6 +178,8 @@ def deliver_reviewed_electrical(
 
         if circuit_design is not None:
             report["input_bindings"]["circuit_design_fingerprint"]=circuit_design.fingerprint
+        if review_drawings is not None:
+            report["input_bindings"]["review_drawings_fingerprint"]=_sha(_json(review_drawings.to_dict()).encode())
         stage="source_review"
         verified=build_symbol_review(runs,documents=documents,images=images,journal_paths=journal_paths)
         if verified.to_dict()!=review.to_dict():
@@ -314,6 +324,16 @@ def deliver_reviewed_electrical(
             passed()
         else:
             report["stages"]["ifc"]={"status":"not_requested"}
+        if review_drawings is not None:
+            stage="review_drawings"
+            from .review_drawings import generate_review_drawings
+            drawing_payloads,drawing_status=generate_review_drawings(canonical,review_drawings)
+            for kind,data in drawing_payloads.items():
+                put(kind,data)
+            drawing_status["source_proposals_not_admitted"]=[dict(d) for d in outcome.dispositions
+                if d["canonical_id"] is None]
+            report["review_drawings"]=drawing_status
+            passed()
         report["unresolved"].append({"code":"source_coverage_unavailable"})
         report["delivery_ready"]=True
         return ReviewedElectricalDelivery(model_json,MappingProxyType(dict(payloads)),_json(report),circuit_admitted_model_json)

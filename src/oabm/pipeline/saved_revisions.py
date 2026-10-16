@@ -113,6 +113,7 @@ def _load(directory):
              and report["quantity_eligibility"]["source_complete"] is False, "unsupported completeness limits")
     artifacts = report["artifacts"]
     circuit_enabled = "circuit_design" in artifacts
+    drawing_enabled = "drawing_set" in artifacts
     kinds = set(KINDS) | ({"ifc"} if "ifc" in artifacts else set())
     filenames = dict(FILES)
     circuit_paths = set()
@@ -121,15 +122,25 @@ def _load(directory):
         kinds.add("circuit_design")
         filenames["circuit_design"] = "circuit-design.json"
         _, _, circuit_paths = circuit_inputs(payloads)
+    drawing_config = None
+    drawing_paths = set()
+    if drawing_enabled:
+        from .review_drawings import ReviewDrawingConfig
+        drawing_paths.add("drawing-inputs/config.json")
+        drawing_config = ReviewDrawingConfig.from_dict(_decode(payloads["drawing-inputs/config.json"]))
+        kinds.update(drawing_config.artifact_kinds)
+        filenames.update(drawing_set="drawing-set.json", panel_facts="panel-facts.json")
+        for index, plan in enumerate(sorted(drawing_config.plans, key=lambda p: p.id), 1):
+            filenames["review_plan:" + plan.id] = f"review-plan-{index:03d}.svg"
     _require(set(artifacts) == kinds and report["requested_outputs"] == sorted(kinds), "unsupported artifact request set")
-    expected_paths = {filenames[k] for k in kinds} | circuit_paths | {"completion-report.json", "input-receipt.json"}
+    expected_paths = {filenames[k] for k in kinds} | circuit_paths | drawing_paths | {"completion-report.json", "input-receipt.json"}
     _require(all(n in expected_paths or (n.startswith("journals/") and n.endswith(".jsonl")) for n in payloads),
              "unexpected payload outside the saved-review format")
     for kind in kinds:
         data = payloads[filenames[kind]]
         _require(artifacts[kind] == {"reference": str(root / filenames[kind]), "sha256": _sha(data), "bytes": len(data)},
                  "artifact/model report binding mismatch")
-    stages = (*STAGES, *(("circuit_design",) if circuit_enabled else ()))
+    stages = (*STAGES, *(("circuit_design",) if circuit_enabled else ()), *(("review_drawings",) if drawing_enabled else ()))
     _require(set(report["stages"]) == set(stages), "unsupported runner stages")
     for stage in stages:
         expected = "not_requested" if stage == "ifc" and "ifc" not in kinds else "passed"
@@ -178,6 +189,12 @@ def _load(directory):
     else:
         _require("circuit_design" not in report and "circuit_design_fingerprint" not in report["input_bindings"],
                  "circuit lineage without circuit artifact")
+    if drawing_enabled:
+        scalar_inputs.add("review_drawings")
+    else:
+        _require("review_drawings" not in report
+                 and "review_drawings_fingerprint" not in report["input_bindings"],
+                 "drawing lineage without drawing artifacts")
     prefixes = {"documents", "images", "evidence_documents", "journals"}
     receipt_rows = {}
     for row in receipts["files"]:
@@ -233,6 +250,20 @@ def _load(directory):
     if circuit_enabled:
         from .saved_circuit_revisions import verify_circuit_revision
         circuit_lineage = verify_circuit_revision(model, report, review, assertion, payloads, receipt_rows)
+    if drawing_enabled:
+        config_data = payloads["drawing-inputs/config.json"]
+        config_receipt = receipt_rows["review_drawings"]
+        _require(config_receipt["sha256"] == _sha(config_data)
+                 and config_receipt["bytes"] == len(config_data)
+                 and report["input_bindings"]["review_drawings_fingerprint"] == _sha(_json(drawing_config.to_dict()).encode()),
+                 "retained drawing configuration binding mismatch")
+        from .review_drawings import generate_review_drawings
+        drawing_payloads, drawing_status = generate_review_drawings(model, drawing_config)
+        drawing_status["source_proposals_not_admitted"] = [dict(d) for d in report["dispositions"] if d["canonical_id"] is None]
+        _require(drawing_status == report["review_drawings"]
+                 and set(drawing_payloads) == set(drawing_config.artifact_kinds)
+                 and all(data == payloads[filenames[kind]] for kind, data in drawing_payloads.items()),
+                 "drawing/model replay mismatch")
     groups = report["quantity_eligibility"]["group_bindings"]["resolved"]
     takeoff = extract_quantities(model, groups=groups)
     _require(takeoff.to_json().encode() == payloads[FILES["quantities"]]
@@ -272,6 +303,8 @@ def _load(directory):
         "retained_review_base_fingerprint": assertion.model_fingerprint}
     if circuit_lineage is not None:
         metadata["circuit_design_lineage"] = circuit_lineage
+    if drawing_enabled:
+        metadata["review_drawings_config_fingerprint"] = report["input_bindings"]["review_drawings_fingerprint"]
     return model, report, tuple(sorted(sources)), metadata
 
 

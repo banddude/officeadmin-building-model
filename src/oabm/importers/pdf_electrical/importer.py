@@ -2163,6 +2163,9 @@ def _merge_provenance(
 
 _GLYPH_PATH_MAX_EXTENT_PT = 54.0
 _GLYPH_CLUSTER_GAP_PT = 2.5
+# Candidate lookup only: full path boxes are registered, so cell size does not
+# decide connectivity. A gap-scale grid avoids broad quadratic candidate buckets.
+_GLYPH_CLUSTER_INDEX_CELL_PT = max(4.0 * _GLYPH_CLUSTER_GAP_PT, 1.0)
 _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT = 120.0
 _LEGEND_ROW_VERTICAL_TOLERANCE_PT = 12.0
 _LEGEND_TITLE_REGION_RADIUS_PT = 320.0
@@ -3947,7 +3950,7 @@ def _cluster_small_vector_glyphs(
         else:
             parent[first_root] = second_root
 
-    cell_size = _GLYPH_PATH_MAX_EXTENT_PT + _GLYPH_CLUSTER_GAP_PT
+    cell_size = _GLYPH_CLUSTER_INDEX_CELL_PT
     buckets: dict[tuple[int, int, int], list[int]] = {}
     for second_index, (second, second_bbox) in enumerate(small):
         min_cell_x = math.floor(

@@ -13,7 +13,7 @@ from .placement import (
     EquipmentPlacementProposal, PlacementError, apply_equipment_proposal,
     propose_equipment_placement,
 )
-from .router import route_between_ports
+from .router import RoutingOptions, route_between_ports
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +112,9 @@ def design_proposed_circuits(
     device_ids: tuple[str, ...], rules: CircuitDesignRules | None = None,
     user_groups: tuple[tuple[str, ...], ...] | None = None,
     user_input_id: str | None = None,
+    source_port_id: str | None = None,
+    load_port_ids: dict[str, str] | None = None,
+    routing_options: RoutingOptions | None = None,
 ) -> BuildingModel:
     """Design or replace circuits and runs; never claim source observation.
 
@@ -121,10 +124,30 @@ def design_proposed_circuits(
     quantities before the new design is calculated.
     """
 
+    if source_port_id is not None and rules is None:
+        raise PlacementError("explicit reviewed source requires supplied rules")
     rules = rules or CircuitDesignRules()
     equipment = next((item for item in model.electrical_equipment if item.id == equipment_id), None)
-    if equipment is None or "placement" not in equipment.attributes:
-        raise PlacementError("equipment_id must identify proposed equipment")
+    explicit_ports = source_port_id is not None
+    if equipment is None or (not explicit_ports and "placement" not in equipment.attributes):
+        raise PlacementError("equipment_id must identify proposed equipment or explicit reviewed source")
+    if explicit_ports:
+        if equipment.equipment_type != "panelboard" or rules is None or user_groups is None or not user_input_id:
+            raise PlacementError("explicit reviewed source requires panelboard, rules and user groups")
+        if not isinstance(routing_options, RoutingOptions) or not isinstance(load_port_ids, dict):
+            raise PlacementError("explicit reviewed ports require routing controls and load identities")
+        if set(load_port_ids) != set(device_ids) or len(set(load_port_ids.values())) != len(device_ids):
+            raise PlacementError("explicit load ports must exactly cover selected devices")
+        by_id = {p.id:p for p in model.ports}
+        source = by_id.get(source_port_id)
+        if source is None or source.owner_id != equipment_id or source.role != "source" or source.domain != "electrical":
+            raise PlacementError("explicit source port owner, role or domain mismatch")
+        for owner, identity in load_port_ids.items():
+            port = by_id.get(identity)
+            if port is None or port.owner_id != owner or port.role != "load" or port.domain != source.domain:
+                raise PlacementError("explicit load port owner, role or domain mismatch")
+    elif load_port_ids is not None:
+        raise PlacementError("explicit load identities require an explicit source port")
     devices = {item.id: item for item in model.electrical_devices}
     if not device_ids or len(device_ids) != len(set(device_ids)):
         raise PlacementError("device_ids must be nonempty and unique")
@@ -189,7 +212,7 @@ def design_proposed_circuits(
         raise PlacementError("a designed route is shared with another circuit")
     if any(item.id not in prior_ids and any(
         port_id in item.load_port_ids for port_id in (
-            stable_id("port", f"{device_id}:designed-load") for device_id in device_ids
+            load_port_ids[device_id] if explicit_ports else stable_id("port", f"{device_id}:designed-load") for device_id in device_ids
         )
     ) for item in model.circuits):
         raise PlacementError("a selected device already belongs to another circuit")
@@ -215,7 +238,7 @@ def design_proposed_circuits(
                              if item.route_id not in prior_route_ids),
     )
     source_port = next((port for port in base.ports if (
-        port.owner_id == equipment_id and port.role == "source"
+        (port.id == source_port_id if explicit_ports else port.owner_id == equipment_id and port.role == "source")
     )), None)
     if source_port is None:
         raise PlacementError("proposed equipment has no source port")
@@ -230,7 +253,8 @@ def design_proposed_circuits(
         attributes={"source_observed": False, "rules": rules.to_dict()},
     ),)
     ports = list(base.ports)
-    port_by_owner = {port.owner_id: port for port in ports if port.role == "load"}
+    port_by_owner = ({owner:next(p for p in ports if p.id == identity) for owner,identity in load_port_ids.items()}
+                     if explicit_ports else {port.owner_id: port for port in ports if port.role == "load"})
     for device_id in sorted(device_ids):
         if device_id not in port_by_owner:
             device = devices[device_id]
@@ -261,7 +285,7 @@ def design_proposed_circuits(
             next_port_id = port_by_owner[device_id].id
             route, route_fittings = route_between_ports(
                 base, previous_port_id, next_port_id, rules.route_type,
-                nominal_diameter_m=rules.nominal_diameter_m,
+                nominal_diameter_m=rules.nominal_diameter_m, options=routing_options,
             )
             if route.id in {item.id for item in routes}:
                 raise PlacementError("design route identity collides with another route")

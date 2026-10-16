@@ -441,18 +441,19 @@ def _explicit_drawing_role(title: str | None) -> str | None:
     title = title.replace("_", " ")
     if re.search(r"\b(?:SEE|REFER|REFERENCE|REFERENCES)\b", title):
         return None
+    if re.search(r"\b(?:ELECTRICAL|POWER|LIGHTING)\b.*\bPLANS?\b", title):
+        return "electrical"
+    # A named floor-plan component can share a sheet with a separate roof,
+    # site or detail drawing. Keep those sheets for region-level handling.
+    # FLOOR FRAMING PLAN does not contain an independent FLOOR PLAN component.
+    if re.search(r"\bFLOOR\s+PLANS?\b", title):
+        return "architectural_plan"
     if (_NON_FLOOR_PLAN_TITLE_RE.search(title)
             or re.search(r"\b(?:FRAMING|GRADING|DRAINAGE)\s+PLANS?\b", title)
             or re.fullmatch(r"(?:COVER(?: SHEET| PAGE)?|(?:DRAWING|SHEET) INDEX|INDEX(?: SHEET)?|"
                             r"(?:(?:GENERAL|STRUCTURAL|ELECTRICAL|ARCHITECTURAL) )?NOTES?|"
                             r"WALL PARTITION TYPES(?: EXTERIOR)?(?: INTERIOR)?)", title)):
         return "other"
-    if re.search(r"\b(?:ELECTRICAL|POWER|LIGHTING)\b.*\bPLANS?\b", title):
-        return "electrical"
-    # A combined plan/detail sheet still needs region-level interpretation.
-    # Only titles without an explicit floor-plan component exclude the sheet.
-    if re.search(r"\bFLOOR\s+PLANS?\b", title):
-        return "architectural_plan"
     if re.search(r"\b(?:DETAILS?|MILLWORK|ELEVATIONS?|SECTIONS?|SCHEDULES?)\b", title):
         return "other"
     if _FLOOR_TITLE_RE.fullmatch(title):

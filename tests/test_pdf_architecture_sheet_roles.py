@@ -132,3 +132,17 @@ def test_competing_occupied_ruled_cells_do_not_supply_an_explicit_title(tmp_path
     page=extract_pdf(_source(tmp_path/'competing-cells.pdf',"FIRST FLOOR FRAMING PLAN",
         unlabeled=True,competing_cell=True)).pages[0]
     assert _explicit_drawing_title(page) is None
+
+
+@pytest.mark.parametrize("title,role",[
+    ("FIRST FLOOR PLAN AND ROOF PLAN", "architectural_plan"),
+    ("FIRST FLOOR PLAN AND SITE PLAN", "architectural_plan"),
+    ("SITE PLAN AND FIRST FLOOR PLAN", "architectural_plan"),
+    ("FIRST FLOOR FRAMING PLAN", "other"),
+    ("FIRST FLOOR ELECTRICAL PLAN", "electrical"),
+])
+def test_independent_floor_component_survives_other_plan_roles(tmp_path,title,role):
+    document=extract_pdf(_source(tmp_path/'mixed-plan-title.pdf',title))
+    assert classify_page(document.pages[0]).kind==role
+    model=import_observations(document)
+    assert bool(model.walls)==(role=="architectural_plan")

@@ -1411,10 +1411,15 @@ def _room_scope_boxes(
 def _ceiling_height_scopes(
     page: PdfPageObservation,
 ) -> tuple[tuple[PdfTextObservation, float, str, str | None], ...]:
+    notes = _ceiling_height_notes(page)
+    if not notes:
+        return ()
+    if all(_is_explicit_global_ceiling_height(observation.text) for observation, _ in notes):
+        return tuple((observation, height_m, "global", None) for observation, height_m in notes)
     rooms = _room_labels(page)
     boxes = _room_scope_boxes(page, rooms)
     result: list[tuple[PdfTextObservation, float, str, str | None]] = []
-    for observation, height_m in _ceiling_height_notes(page):
+    for observation, height_m in notes:
         upper = _clean_text(observation.text).upper()
         if _is_explicit_global_ceiling_height(observation.text):
             result.append((observation, height_m, "global", None))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -76,6 +77,110 @@ def _write(path, data):
         os.fsync(stream.fileno())
 
 
+@dataclass(frozen=True, slots=True)
+class SavedElectricalInputs:
+    manifest: dict
+    manifest_bytes: bytes
+    receipts: tuple[dict,...]
+    input_payloads: dict[str,bytes]
+    model: BuildingModel
+    review: SymbolReview
+    kwargs: dict
+
+
+def read_saved_reference(ref, manifest_path, label):
+    """Read one exact local path/hash reference; shared by saved input callers."""
+    if (not isinstance(ref,dict) or set(ref)!={"path","sha256"}
+            or not isinstance(ref["path"],str) or not ref["path"].strip()
+            or "://" in ref["path"] or "\x00" in ref["path"]
+            or not isinstance(ref["sha256"],str) or re.fullmatch("[0-9a-f]{64}",ref["sha256"]) is None):
+        raise ContractError("input reference requires local path and SHA-256")
+    path=Path(ref["path"])
+    if not path.is_absolute():path=Path(manifest_path).absolute().parent/path
+    data=_read(path)
+    if _sha(data)!=ref["sha256"]:raise ContractError("saved input hash mismatch: "+label)
+    return data
+
+
+def load_saved_electrical_inputs(manifest_path, *, journal_directory):
+    """Use the delivery reader without exporting or invoking providers.
+
+    journal_directory must be a fresh private destination. Original journal bytes
+    are copied exactly and remain source-bound inputs, never reopened for dispatch.
+    """
+    manifest_path = Path(manifest_path).absolute()
+    manifest_bytes = _read(manifest_path)
+    manifest = _decode(manifest_bytes)
+    if not isinstance(manifest,dict):raise ContractError("saved input manifest must be an object")
+    version=manifest.get("version")
+    expected=REQUIRED | ({"circuit_design"} if version==CIRCUIT_VERSION else set())
+    if version not in (VERSION,CIRCUIT_VERSION) or set(manifest)!=expected:
+        raise ContractError("saved input manifest requires exact versioned keys")
+    if manifest["coverage_report"] is not None:
+        raise ContractError("coverage_report must explicitly be null")
+    receipts = []
+    input_payloads = {}
+    def read_ref(ref, label):
+        data = read_saved_reference(ref, manifest_path, label)
+        input_payloads[label] = data
+        receipts.append({"input": label, "sha256": _sha(data), "bytes": len(data)})
+        return data
+    def doc(key):
+        return _decode(read_ref(manifest[key], key))
+    def sequence(key, cls):
+        rows = doc(key)
+        if not isinstance(rows, list):
+            raise ContractError(key + " must be a JSON array")
+        return tuple(cls.from_dict(row) for row in rows)
+    def buffers(key):
+        refs = manifest[key]
+        if not isinstance(refs, dict) or any(not isinstance(k, str) or not k for k in refs):
+            raise ContractError(key + " must map explicit identities to file references")
+        return {k: read_ref(ref, key + "/" + k) for k, ref in sorted(refs.items())}
+    model = BuildingModel.from_dict(doc("model"))
+    review = SymbolReview.from_dict(doc("review"))
+    runs = sequence("runs", SymbolRun)
+    decisions = sequence("decisions", SymbolDecision)
+    registrations = sequence("registrations", SymbolRegistration)
+    assertion = PlacementAssertionReview.from_dict(doc("assertion_review"))
+    policy = ScopePolicy.from_dict(doc("scope_policy"))
+    config = ReviewConfig.from_dict(doc("review_config"))
+    circuit_design=None
+    if version==CIRCUIT_VERSION and manifest["circuit_design"] is not None:
+        from .reviewed_circuit_design import ReviewedCircuitRequest
+        circuit_design=ReviewedCircuitRequest.from_dict(doc("circuit_design"))
+    documents, images, evidence = buffers("documents"), buffers("images"), buffers("evidence_documents")
+    journals = buffers("journals")
+    journal_dir = Path(journal_directory)
+    journal_dir.mkdir(mode=0o700)
+    journal_paths = {}
+    for index, (key, data) in enumerate(sorted(journals.items())):
+        path = journal_dir / (str(index) + ".jsonl")
+        _write(path, data)
+        journal_paths[key] = path
+    _sync_dir(journal_dir)
+    sources = manifest["source_references"]
+    if not isinstance(sources, list):
+        raise ContractError("source_references must be explicit rows")
+    registry = {}
+    for row in sources:
+        if not isinstance(row, dict) or set(row) != {"source_kind", "source_id", "reference"}:
+            raise ContractError("source reference row requires kind, ID and reference")
+        key = (row["source_kind"], row["source_id"])
+        if key in registry:
+            raise ContractError("duplicate source reference identity")
+        registry[key] = row["reference"]
+    if not isinstance(manifest["include_ifc"], bool):
+        raise ContractError("include_ifc must be explicit boolean")
+    kwargs = dict(delivery_id=manifest["delivery_id"], runs=runs, documents=documents, images=images,
+        journal_paths=journal_paths, decisions=decisions, registrations=registrations,
+        assertion_review=assertion, evidence_documents=evidence, scope_policy=policy,
+        proposal_groups=manifest["proposal_groups"], canonical_groups=manifest["canonical_groups"],
+        review_config=config, source_references=registry, glb_options=manifest["glb_options"],
+        include_ifc=manifest["include_ifc"], coverage_report=None, circuit_design=circuit_design)
+    return SavedElectricalInputs(manifest,manifest_bytes,tuple(receipts),input_payloads,model,review,kwargs)
+
+
 class SavedDeliveryError(ContractError):
     """A failed attempt is retained, never published as a delivery."""
     def __init__(self, attempt_directory, stage, cause):
@@ -115,81 +220,11 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         _write(attempt / "attempt.json", _json({"version": VERSION, "run_id": run_id,
             "state": "reserved", "completion_rule": "delivery/COMPLETED.json plus verified file hashes"}))
         stage = "load_inputs"
-        manifest_path = Path(manifest_path).absolute()
-        manifest_bytes = _read(manifest_path)
-        manifest = _decode(manifest_bytes)
-        if not isinstance(manifest,dict):raise ContractError("saved input manifest must be an object")
-        version=manifest.get("version")
-        expected=REQUIRED | ({"circuit_design"} if version==CIRCUIT_VERSION else set())
-        if version not in (VERSION,CIRCUIT_VERSION) or set(manifest)!=expected:
-            raise ContractError("saved input manifest requires exact versioned keys")
-        if manifest["coverage_report"] is not None:
-            raise ContractError("coverage_report must explicitly be null")
-        receipts = []
-        input_payloads = {}
-        def read_ref(ref, label):
-            if (not isinstance(ref, dict) or set(ref) != {"path", "sha256"}
-                    or not isinstance(ref["path"], str) or not ref["path"].strip()
-                    or "://" in ref["path"] or "\x00" in ref["path"]
-                    or not isinstance(ref["sha256"], str)
-                    or re.fullmatch("[0-9a-f]{64}", ref["sha256"]) is None):
-                raise ContractError("input reference requires local path and SHA-256")
-            path = Path(ref["path"])
-            if not path.is_absolute():
-                path = manifest_path.parent / path
-            data = _read(path)
-            if _sha(data) != ref["sha256"]:
-                raise ContractError("saved input hash mismatch: " + label)
-            input_payloads[label] = data
-            receipts.append({"input": label, "sha256": _sha(data), "bytes": len(data)})
-            return data
-        def doc(key):
-            return _decode(read_ref(manifest[key], key))
-        def sequence(key, cls):
-            rows = doc(key)
-            if not isinstance(rows, list):
-                raise ContractError(key + " must be a JSON array")
-            return tuple(cls.from_dict(row) for row in rows)
-        def buffers(key):
-            refs = manifest[key]
-            if not isinstance(refs, dict) or any(not isinstance(k, str) or not k for k in refs):
-                raise ContractError(key + " must map explicit identities to file references")
-            return {k: read_ref(ref, key + "/" + k) for k, ref in sorted(refs.items())}
-        model = BuildingModel.from_dict(doc("model"))
-        review = SymbolReview.from_dict(doc("review"))
-        runs = sequence("runs", SymbolRun)
-        decisions = sequence("decisions", SymbolDecision)
-        registrations = sequence("registrations", SymbolRegistration)
-        assertion = PlacementAssertionReview.from_dict(doc("assertion_review"))
-        policy = ScopePolicy.from_dict(doc("scope_policy"))
-        config = ReviewConfig.from_dict(doc("review_config"))
-        circuit_design=None
-        if version==CIRCUIT_VERSION and manifest["circuit_design"] is not None:
-            from .reviewed_circuit_design import ReviewedCircuitRequest
-            circuit_design=ReviewedCircuitRequest.from_dict(doc("circuit_design"))
-        documents, images, evidence = buffers("documents"), buffers("images"), buffers("evidence_documents")
-        journals = buffers("journals")
-        journal_dir = pending / "journals"
-        journal_dir.mkdir(mode=0o700)
-        journal_paths = {}
-        for index, (key, data) in enumerate(sorted(journals.items())):
-            path = journal_dir / (str(index) + ".jsonl")
-            _write(path, data)
-            journal_paths[key] = path
-        _sync_dir(journal_dir)
-        sources = manifest["source_references"]
-        if not isinstance(sources, list):
-            raise ContractError("source_references must be explicit rows")
-        registry = {}
-        for row in sources:
-            if not isinstance(row, dict) or set(row) != {"source_kind", "source_id", "reference"}:
-                raise ContractError("source reference row requires kind, ID and reference")
-            key = (row["source_kind"], row["source_id"])
-            if key in registry:
-                raise ContractError("duplicate source reference identity")
-            registry[key] = row["reference"]
-        if not isinstance(manifest["include_ifc"], bool):
-            raise ContractError("include_ifc must be explicit boolean")
+        inputs = load_saved_electrical_inputs(manifest_path, journal_directory=pending / "journals")
+        manifest, manifest_bytes = inputs.manifest, inputs.manifest_bytes
+        receipts, input_payloads = inputs.receipts, inputs.input_payloads
+        circuit_design = inputs.kwargs["circuit_design"]
+        assertion, evidence, documents = (inputs.kwargs[key] for key in ("assertion_review","evidence_documents","documents"))
         kinds = tuple(KINDS) + (("ifc",) if manifest["include_ifc"] else ())
         filenames=dict(FILES)
         if circuit_design is not None:
@@ -200,13 +235,8 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         _write(pending / "input-receipt.json", _json({"version": VERSION,
             "manifest_sha256": _sha(manifest_bytes), "files": receipts}))
         stage = "compute_delivery"
-        result = deliver_reviewed_electrical(model, review, delivery_id=manifest["delivery_id"],
-            runs=runs, documents=documents, images=images, journal_paths=journal_paths,
-            decisions=decisions, registrations=registrations, assertion_review=assertion,
-            evidence_documents=evidence, scope_policy=policy,
-            proposal_groups=manifest["proposal_groups"], canonical_groups=manifest["canonical_groups"],
-            review_config=config, source_references=registry, artifact_references=refs,
-            glb_options=manifest["glb_options"], include_ifc=manifest["include_ifc"], coverage_report=None,circuit_design=circuit_design)
+        result = deliver_reviewed_electrical(inputs.model, inputs.review,
+            **inputs.kwargs, artifact_references=refs)
         stage = "persist_delivery"
         if set(result.artifacts) != set(kinds) or result.completion["delivery_ready"] is not True:
             raise ContractError("runner returned an incomplete payload set")

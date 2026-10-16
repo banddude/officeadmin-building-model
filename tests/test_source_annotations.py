@@ -202,3 +202,56 @@ def test_recursive_appearance_resources_are_bounded_and_cycles_refuse():
     stream[NameObject('/Resources')]=head
     with pytest.raises(ContractError,match='budget'):
         _appearance_optional_content(stream)
+
+
+def page_fallback_appearance_pdf(resources_mode,*,conditional=True,inherited=False,shadow=False):
+    from pypdf import PdfReader
+    writer=PdfWriter();writer.clone_document_from_reader(PdfReader(io.BytesIO(layered_appearance_pdf('nested_form'))))
+    page=writer.pages[0];appearance=page['/Annots'][0].get_object()['/AP']['/N'].get_object()
+    objects=appearance['/Resources']['/XObject']
+    nested=objects['/Nested'].get_object()
+    if not conditional:
+        del nested['/OC']
+    page_resources=DictionaryObject({NameObject('/XObject'):objects})
+    if inherited:
+        page['/Parent'].get_object()[NameObject('/Resources')]=page_resources
+        if '/Resources' in page:del page['/Resources']
+    else:
+        page[NameObject('/Resources')]=page_resources
+    if resources_mode=='absent':
+        del appearance['/Resources']
+    elif resources_mode=='empty':
+        appearance[NameObject('/Resources')]=DictionaryObject()
+    elif resources_mode=='font_only':
+        appearance[NameObject('/Resources')]=DictionaryObject({NameObject('/Font'):DictionaryObject()})
+    else:
+        raise AssertionError(resources_mode)
+    if shadow:
+        appearance[NameObject('/Resources')]=DictionaryObject({NameObject('/XObject'):DictionaryObject()})
+    output=io.BytesIO();writer.write(output);return output.getvalue()
+
+
+@pytest.mark.parametrize('resources_mode',['absent','empty','font_only'])
+@pytest.mark.parametrize('inherited',[False,True])
+def test_page_resolved_optional_form_refuses_and_visible_control_survives(resources_mode,inherited):
+    hidden=page_fallback_appearance_pdf(resources_mode,inherited=inherited)
+    assert red_pixels(raw_print_pixels(hidden))==0
+    assert source_annotation_inventory(hidden,page=1)['annotations'][0]['optional_content']
+    with pytest.raises(ContractError,match='supported normal appearance'):
+        capture(hidden)
+    visible=page_fallback_appearance_pdf(resources_mode,conditional=False,inherited=inherited)
+    assert red_pixels(raw_print_pixels(visible))>=1500
+    assert not source_annotation_inventory(visible,page=1)['annotations'][0]['optional_content']
+    ref,pixels=capture(visible)
+    assert red_pixels(pixels)>=1500
+    ref.validate_bytes(pixels,document=visible)
+    legacy,old=legacy_capture(hidden)
+    legacy.validate_bytes(old,document=hidden)
+
+
+def test_present_resource_category_does_not_fall_back_for_a_missing_name():
+    # PDFium's category exists locally, so a missing name is not looked up on page.
+    document=page_fallback_appearance_pdf('empty',conditional=False,shadow=True)
+    assert red_pixels(raw_print_pixels(document))==0
+    with pytest.raises(ContractError,match='unresolved.*resource'):
+        capture(document)

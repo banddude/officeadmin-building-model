@@ -17,29 +17,56 @@ from oabm.model import ContractError
 from .contracts import _finite, integer
 
 
-def _appearance_optional_content(appearance):
+def _appearance_optional_content(appearance, page_resources=None):
     """Bounded appearance/resource inspection without changing layer visibility."""
     seen, active = set(), set()
     nodes = 0
     decoded_bytes = 0
 
-    def walk(value, *, depth=0, content=False, glyphs=False):
+    def resolved(value):
+        references = set()
+        while isinstance(value, IndirectObject):
+            key = (id(value.pdf), value.idnum, value.generation)
+            if key in references or len(references) >= 32:
+                raise ContractError('cyclic or excessive annotation resource indirection')
+            references.add(key)
+            value = value.get_object()
+        return value
+
+    page_resources = resolved(page_resources)
+    if page_resources is not None and not isinstance(page_resources, DictionaryObject):
+        raise ContractError('effective page resources must be a dictionary')
+
+    def resource(resources, category, name):
+        # PDFium falls back by resource CATEGORY, not by missing entry name.
+        holder = resolved(resources.get(category)) if isinstance(resources, DictionaryObject) else None
+        if not isinstance(holder, DictionaryObject):
+            holder = resolved(page_resources.get(category)) if page_resources is not None else None
+        if not isinstance(holder, DictionaryObject) or name not in holder:
+            raise ContractError('unresolved annotation appearance resource reference')
+        target = resolved(holder[name])
+        if (category == '/XObject' and not isinstance(target,StreamObject)) or (
+                category in ('/Font','/ExtGState','/Pattern','/Shading') and not isinstance(target,DictionaryObject)):
+            raise ContractError('unsupported annotation appearance resource object')
+        return target
+
+    def walk(value, *, depth=0, content=False, glyphs=False, parent_resources=None):
         nonlocal nodes, decoded_bytes
         nodes += 1
         if depth > 32 or nodes > 4096:
             raise ContractError('annotation appearance resource inspection budget exceeded')
-        if isinstance(value, IndirectObject):
-            value = value.get_object()
+        value = resolved(value)
         if isinstance(value, NameObject):
             return value in ('/OC', '/OCG', '/OCMD')
         if not isinstance(value, (DictionaryObject, list, tuple, ArrayObject)):
             return False
-        key = id(value)
-        if key in active:
+        identity = id(value)
+        key = (identity, id(parent_resources), content, glyphs)
+        if identity in active:
             raise ContractError('cyclic annotation appearance resource graph')
         if key in seen:
             return False
-        active.add(key)
+        active.add(identity)
         try:
             if isinstance(value, DictionaryObject):
                 if '/OC' in value or value.get('/Type') in ('/OCG', '/OCMD'):
@@ -48,7 +75,14 @@ def _appearance_optional_content(appearance):
                 # binary image/font resources are traversed but not tokenized.
                 is_content = isinstance(value, StreamObject) and (
                     content or value.get('/Subtype') == '/Form' or value.get('/PatternType') == 1)
+                resources = parent_resources
                 if is_content:
+                    own_resources = resolved(value.get('/Resources'))
+                    if own_resources is not None and not isinstance(own_resources, DictionaryObject):
+                        raise ContractError('annotation appearance resources must be a dictionary')
+                    resources = own_resources if own_resources is not None else parent_resources
+                    if resources is None:
+                        resources = page_resources
                     data = value.get_data()
                     decoded_bytes += len(data)
                     if decoded_bytes > 8_000_000:
@@ -57,21 +91,37 @@ def _appearance_optional_content(appearance):
                     operations = ContentStream(value, getattr(reference, 'pdf', None)).operations
                     if len(operations) > 100000:
                         raise ContractError('annotation appearance operator budget exceeded')
-                    for operands, _operator in operations:
-                        if walk(operands, depth=depth+1):
+                    for operands, operator in operations:
+                        if walk(operands, depth=depth+1, parent_resources=resources):
                             return True
+                        category = None
+                        name = None
+                        if operator in (b'Do', b'Tf', b'gs', b'sh', b'CS', b'cs'):
+                            category = {b'Do':'/XObject', b'Tf':'/Font', b'gs':'/ExtGState',
+                                        b'sh':'/Shading', b'CS':'/ColorSpace', b'cs':'/ColorSpace'}[operator]
+                            name = operands[0] if operands else None
+                            if category == '/ColorSpace' and name in ('/DeviceGray','/DeviceRGB','/DeviceCMYK','/Pattern'):
+                                category = None
+                        elif operator in (b'SCN', b'scn') and operands and isinstance(operands[-1],NameObject):
+                            category, name = '/Pattern', operands[-1]
+                        if category is not None:
+                            if not isinstance(name,NameObject):
+                                raise ContractError('invalid annotation appearance resource operand')
+                            target = resource(resources,category,name)
+                            if walk(target,depth=depth+1,parent_resources=resources):
+                                return True
                 for name, child in value.items():
                     if walk(child, depth=depth+1, content=glyphs,
-                            glyphs=name == '/CharProcs'):
+                            glyphs=name == '/CharProcs', parent_resources=resources):
                         return True
             else:
                 for child in value:
-                    if walk(child, depth=depth+1, content=content, glyphs=glyphs):
+                    if walk(child, depth=depth+1, content=content, glyphs=glyphs, parent_resources=parent_resources):
                         return True
             seen.add(key)
             return False
         finally:
-            active.remove(key)
+            active.remove(identity)
 
     try:
         return walk(appearance, content=True)
@@ -79,6 +129,26 @@ def _appearance_optional_content(appearance):
         raise
     except Exception as exc:
         raise ContractError('annotation appearance resources cannot be inspected') from exc
+
+
+def _effective_page_resources(page):
+    current = page
+    seen = set()
+    for _ in range(32):
+        if isinstance(current,IndirectObject):
+            current=current.get_object()
+        if not isinstance(current,DictionaryObject) or id(current) in seen:
+            raise ContractError('invalid page resource inheritance')
+        seen.add(id(current))
+        if '/Resources' in current:
+            resources=current['/Resources']
+            if not isinstance(resources,DictionaryObject):
+                raise ContractError('effective page resources must be a dictionary')
+            return resources
+        if '/Parent' not in current:
+            return None
+        current=current['/Parent']
+    raise ContractError('page resource inheritance budget exceeded')
 
 
 def page_annotation_inventory(page):
@@ -89,6 +159,7 @@ def page_annotation_inventory(page):
         if not isinstance(annotations, (list, ArrayObject)) or len(annotations) > 10000:
             raise ContractError('unsupported source annotation array')
         result = []
+        page_resources = _effective_page_resources(page)
         for index, ref in enumerate(annotations):
             annot = ref.get_object()
             if not isinstance(annot, DictionaryObject):
@@ -114,7 +185,7 @@ def page_annotation_inventory(page):
                            'normal_appearance_sha256': hashlib.sha256(appearance_bytes).hexdigest() if appearance_bytes is not None else None,
                            'normal_appearance_nonempty': bool(appearance_bytes),
                            'optional_content': '/OC' in annot or (
-                               isinstance(normal, StreamObject) and _appearance_optional_content(normal))})
+                               isinstance(normal, StreamObject) and _appearance_optional_content(normal, page_resources))})
         return tuple(result)
     except ContractError:
         raise

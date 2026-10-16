@@ -207,3 +207,9 @@ only the annotation dictionary: marked-content `/OC` tags, nested forms,
 patterns, Type3 glyph resources and soft-mask resources are inspected. Cycles,
 unparseable content and inspection limits refuse explicitly. Binary image/font
 streams are not tokenized as content. Layer visibility is never forced ON.
+
+Resource inspection also follows effective page resources (including inherited
+page-tree resources) when an appearance resource category is absent. A locally
+present category shadows the page category; an unresolved name refuses. This
+lookup is applied to rendering resource operators and nested form contexts,
+with the same recursive/decoded-content budgets. It never changes OCG state.

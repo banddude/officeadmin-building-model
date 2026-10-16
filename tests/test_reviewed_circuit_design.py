@@ -17,7 +17,7 @@ from oabm.proposals.contracts import digest
 from oabm.routing import RoutingOptions
 from oabm.pipeline.reviewed_circuit_design import ReviewedCircuitRequest,ReviewedLoadPort,VERSION
 from oabm.pipeline.reviewed_electrical import deliver_reviewed_electrical,ReviewedElectricalDeliveryError
-from oabm.pipeline.saved_electrical import persist_saved_electrical,CIRCUIT_VERSION
+from oabm.pipeline.saved_electrical import persist_saved_electrical,CIRCUIT_VERSION,SavedDeliveryError
 from test_reviewed_electrical_pipeline import inputs
 import test_symbol_proposals as symbols
 import test_takeoff_proposals as takeoff
@@ -65,7 +65,7 @@ def case(tmp_path,*,height=1.2,blocked=False,select_deferred=False):
         pose=Pose(position=Point3(x=1.,y=1.,z=4.2)),provenance=prov)
     source=Port(id='port:supplied-source',owner_id=panel.id,domain='electrical',role='source',pose=panel.pose,
         direction=Vector3(x=1.,y=0.,z=0.),provenance=prov)
-    obstacles=() if not blocked else (Obstacle(id='obstacle:source-blocked',obstacle_type='hard',
+    obstacles=() if not blocked else (Obstacle(id='obstacle:source-blocked',name='Synthetic blocked source envelope',obstacle_type='hard',
         geometry=Box3D(pose=source.pose,size=Size3(x=2.,y=2.,z=2.))),)
     model=BuildingModel.from_dict(replace(model,electrical_equipment=(panel,),ports=(source,),obstacles=obstacles).to_dict())
     prior=args['assertion_review']
@@ -173,7 +173,8 @@ def test_actual_saved_entrypoint_repeat_ifc_and_reviewed_recomputation(tmp_path)
 
 @pytest.mark.parametrize('change,reason',[
     ({'rules':None},'missing_circuit_rules'),({'routing_controls':None},'missing_routing_controls'),
-    ({'source_port_id':None},'source_port_unavailable'),({'load_ports':()},'missing_load_port:'),
+    ({'source_port_id':None},'source_port_unavailable'),({'equipment_id':None},'source_equipment_unavailable'),
+    ({'groups':None},'missing_circuit_groups'),({'load_ports':()},'missing_load_port:'),
     ({'evidence':()},'missing_design_decision_evidence'),({'rule_references':()},'missing_design_rule_references')])
 def test_missing_inputs_defer_without_partial_graph(tmp_path,change,reason):
     value=case(tmp_path);result=deliver(value,circuit_design=replace(value[3],**change))
@@ -189,3 +190,76 @@ def test_deferred_selected_proposal_and_failed_route_are_atomic(tmp_path):
         assert result.model.ports==value[0].ports and not result.model.circuits and not result.model.routes
         assert not result.completion['circuit_design']['created_ids']
         assert result.completion['circuit_design']['status']=='deferred'
+
+
+@pytest.mark.parametrize('field,key,bad',[
+    ('rules','assumed_voltage_v',float('nan')),
+    ('rules','assumed_poles',True),
+    ('rules','include_ground',1),
+    ('rules','conductor_material',''),
+    ('rules','nominal_diameter_m',-1.),
+    ('routing_controls','clearance_m',float('inf')),
+    ('routing_controls','coordinate_precision',True),
+    ('routing_controls','preferred_corridor_discount',1.),
+])
+def test_invalid_explicit_profiles_fail_closed(tmp_path,field,key,bad):
+    value=case(tmp_path);profile={**getattr(value[3],field),key:bad}
+    with pytest.raises((ReviewedElectricalDeliveryError,ContractError)):
+        deliver(value,circuit_design=replace(value[3],**{field:profile}))
+    assert not value[0].circuits and len(value[0].ports)==1
+
+
+def test_partial_profile_defers_instead_of_using_engine_default(tmp_path):
+    value=case(tmp_path);profile=dict(value[3].rules);del profile['assumed_voltage_v']
+    result=deliver(value,circuit_design=replace(value[3],rules=profile))
+    assert result.completion['circuit_design']['reasons']==['missing_circuit_rules_field:assumed_voltage_v']
+    assert result.model.ports==value[0].ports and not result.model.circuits
+
+
+@pytest.mark.parametrize('fault',['stale','evidence','unknown-proposal','port-collision'])
+def test_broken_review_bindings_abort_before_output(tmp_path,fault):
+    value=case(tmp_path);request=value[3];changes={}
+    if fault=='stale':request=replace(request,assertion_review_fingerprint='0'*64)
+    elif fault=='evidence':
+        evidence=request.evidence[0]
+        changes['evidence_documents']={**value[2]['evidence_documents'],evidence.document_sha256:b'tampered'}
+    elif fault=='unknown-proposal':request=replace(request,groups=(('unknown',),),load_ports=())
+    else:request=replace(request,load_ports=(replace(request.load_ports[0],id='port:supplied-source'),*request.load_ports[1:]))
+    with pytest.raises(ReviewedElectricalDeliveryError):deliver(value,circuit_design=request,**changes)
+    assert not value[0].circuits and len(value[0].ports)==1
+
+
+def test_disabled_stage_preserves_existing_artifacts(tmp_path):
+    value=case(tmp_path);model,review,args,_=value
+    args={**args,'artifact_references':{k:v for k,v in args['artifact_references'].items() if k!='circuit_design'}}
+    omitted=deliver_reviewed_electrical(model,review,**args)
+    disabled=deliver_reviewed_electrical(model,review,**args,circuit_design=None)
+    assert omitted.artifacts==disabled.artifacts
+    assert omitted.completion==disabled.completion
+    assert 'circuit_design' not in disabled.completion['stages']
+
+
+def test_saved_invalid_binding_publishes_no_delivery(tmp_path):
+    value=case(tmp_path);value=(*value[:3],replace(value[3],model_fingerprint='0'*64))
+    manifest=save_inputs(tmp_path/'saved-invalid',value)
+    with pytest.raises(SavedDeliveryError) as rejected:
+        persist_saved_electrical(manifest,output_root=tmp_path/'out',run_id='invalid')
+    assert isinstance(rejected.value.__cause__,ReviewedElectricalDeliveryError)
+    assert rejected.value.__cause__.stage=='circuit_design'
+    assert 'stale reviewed circuit request binding' in str(rejected.value.__cause__)
+    assert not list((tmp_path/'out').rglob('COMPLETED.json'))
+    assert not list((tmp_path/'out').rglob('model.json'))
+
+
+def test_designed_connector_offset_does_not_move_observed_device(tmp_path):
+    value=case(tmp_path)
+    request=replace(value[3],load_ports=tuple(replace(p,offset_canonical_m=(0.,0.,.5)) for p in value[3].load_ports))
+    result=deliver(value,circuit_design=request)
+    devices={d.id:d for d in result.model.electrical_devices}
+    for port in result.model.ports:
+        if port.role=='load':
+            assert port.pose.position.z==pytest.approx(devices[port.owner_id].pose.position.z+.5)
+            assert port.provenance[-1].attributes['role']=='designed'
+    assert all(d.pose.position.z==pytest.approx(4.2) for d in devices.values())
+    quantities=json.loads(result.artifacts['quantities'])
+    assert sum(r['quantity'] for r in quantities['items'] if r['category']=='route_length')==pytest.approx(31.)

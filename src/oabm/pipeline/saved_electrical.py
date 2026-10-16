@@ -21,6 +21,8 @@ from .reviewed_electrical import KINDS, deliver_reviewed_electrical, ReviewedEle
 
 VERSION = "saved-electrical-input-v1"
 CIRCUIT_VERSION = "saved-electrical-design-input-v1"
+DRAWING_VERSION = "saved-electrical-input-v2"
+CIRCUIT_DRAWING_VERSION = "saved-electrical-design-input-v2"
 FILES = {"canonical_model": "model.json", "quantities": "quantities.json",
          "scope_ledger": "scope-ledger.json", "confidence_review": "confidence-review.json",
          "source_map": "source-map.json", "glb": "model.glb",
@@ -113,8 +115,10 @@ def load_saved_electrical_inputs(manifest_path, *, journal_directory):
     manifest = _decode(manifest_bytes)
     if not isinstance(manifest,dict):raise ContractError("saved input manifest must be an object")
     version=manifest.get("version")
-    expected=REQUIRED | ({"circuit_design"} if version==CIRCUIT_VERSION else set())
-    if version not in (VERSION,CIRCUIT_VERSION) or set(manifest)!=expected:
+    extensions = {VERSION: set(), CIRCUIT_VERSION: {"circuit_design"},
+                  DRAWING_VERSION: {"review_drawings"},
+                  CIRCUIT_DRAWING_VERSION: {"circuit_design", "review_drawings"}}
+    if version not in extensions or set(manifest) != REQUIRED | extensions[version]:
         raise ContractError("saved input manifest requires exact versioned keys")
     if manifest["coverage_report"] is not None:
         raise ContractError("coverage_report must explicitly be null")
@@ -146,9 +150,13 @@ def load_saved_electrical_inputs(manifest_path, *, journal_directory):
     policy = ScopePolicy.from_dict(doc("scope_policy"))
     config = ReviewConfig.from_dict(doc("review_config"))
     circuit_design=None
-    if version==CIRCUIT_VERSION and manifest["circuit_design"] is not None:
+    if version in (CIRCUIT_VERSION,CIRCUIT_DRAWING_VERSION) and manifest["circuit_design"] is not None:
         from .reviewed_circuit_design import ReviewedCircuitRequest
         circuit_design=ReviewedCircuitRequest.from_dict(doc("circuit_design"))
+    drawing_config = None
+    if version in (DRAWING_VERSION,CIRCUIT_DRAWING_VERSION) and manifest["review_drawings"] is not None:
+        from .review_drawings import ReviewDrawingConfig
+        drawing_config = ReviewDrawingConfig.from_dict(doc("review_drawings"))
     documents, images, evidence = buffers("documents"), buffers("images"), buffers("evidence_documents")
     journals = buffers("journals")
     journal_dir = Path(journal_directory)
@@ -178,6 +186,8 @@ def load_saved_electrical_inputs(manifest_path, *, journal_directory):
         proposal_groups=manifest["proposal_groups"], canonical_groups=manifest["canonical_groups"],
         review_config=config, source_references=registry, glb_options=manifest["glb_options"],
         include_ifc=manifest["include_ifc"], coverage_report=None, circuit_design=circuit_design)
+    if drawing_config is not None:
+        kwargs["review_drawings"] = drawing_config
     return SavedElectricalInputs(manifest,manifest_bytes,tuple(receipts),input_payloads,model,review,kwargs)
 
 
@@ -224,12 +234,18 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         manifest, manifest_bytes = inputs.manifest, inputs.manifest_bytes
         receipts, input_payloads = inputs.receipts, inputs.input_payloads
         circuit_design = inputs.kwargs["circuit_design"]
+        drawing_config = inputs.kwargs.get("review_drawings")
         assertion, evidence, documents = (inputs.kwargs[key] for key in ("assertion_review","evidence_documents","documents"))
         kinds = tuple(KINDS) + (("ifc",) if manifest["include_ifc"] else ())
         filenames=dict(FILES)
         if circuit_design is not None:
             kinds+=("circuit_design",)
             filenames["circuit_design"]="circuit-design.json"
+        if drawing_config is not None:
+            kinds += drawing_config.artifact_kinds
+            filenames.update(drawing_set="drawing-set.json", panel_facts="panel-facts.json")
+            for index, plan in enumerate(sorted(drawing_config.plans, key=lambda p: p.id), 1):
+                filenames["review_plan:" + plan.id] = f"review-plan-{index:03d}.svg"
         final = attempt / "delivery"
         refs = {k: str(final / filenames[k]) for k in kinds}
         _write(pending / "input-receipt.json", _json({"version": VERSION,
@@ -263,6 +279,11 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
                 _write(replay / "evidence" / (identity + ".bin"), payload)
             if cited:
                 _sync_dir(replay / "evidence")
+            _sync_dir(replay)
+        if drawing_config is not None:
+            replay = pending / "drawing-inputs"
+            replay.mkdir(mode=0o700)
+            _write(replay / "config.json", input_payloads["review_drawings"])
             _sync_dir(replay)
         _write(pending / "completion-report.json", result.completion_json.encode())
         entries = []

@@ -131,3 +131,134 @@ source-of-truth override, physical default, code profile or bid policy.
 Tests generate synthetic PDFs and use saved in-process stub dispatch receipts,
 not live inference, private drawings or answer-derived geometry. They exercise
 the real intake, quantities, review bundle and IFC roundtrip.
+
+## Opt-in electrical review plans and panel facts
+
+The optional `review_drawings` argument takes a typed
+`oabm.pipeline.review_drawings.ReviewDrawingConfig`. Omission or explicit `None`
+keeps the previous delivery bytes, report shape and requested artifact set.
+This is a bounded #233 review-output connection, not permit documentation or
+completion of the broader engineering/document suite.
+
+The configuration has version `review-electrical-drawings-v1`, an explicit tuple
+of `ReviewPlan` records and finite positive `pixels_per_model_unit`. Each plan
+requires `id`, `level_id`, `bounds_m=(min_x,min_y,max_x,max_y)`, `cut_height_m`,
+`view_depth_below_m`, `view_depth_above_m`, `scale`, and explicit boolean
+`show_architecture`, `show_spaces`, `show_routes`, `show_dimensions`. No physical
+or engineering parameters are inferred from the view choice. Unknown levels,
+nonfinite values, booleans masquerading as numbers and duplicate view IDs fail.
+
+The existing generator selects from level elevation minus below depth through
+level elevation plus cut height plus above depth. A default narrow plan could
+hide ceiling fixtures: this opt-in boundary therefore supplies no implicit cut
+or depth. Caller bounds and display scale are presentation decisions, not
+source measurements. Routes, when shown, are only existing canonical routes;
+this connection performs no routing or circuit assignment.
+
+Generation consumes the exact post-admission canonical snapshot used by
+quantities, GLB and IFC. It invokes `generate_drawing_set` with the existing
+compact labels and default semantic schedules disabled, then explicitly adds
+`panel_report_to_drawing_schedules(generate_panel_schedule_report(model))`.
+The original canonical model is not changed. Only exact `panelboard` ownership
+and existing canonical circuit facts feed the panel report. Missing load values
+stay null/unknown; an existing known-load arithmetic subtotal of zero is not a
+claim of zero building load. No slots, phases, breaker sizes, demand factors,
+missing circuits, code profiles or load calculations are introduced.
+
+Additional artifact keys are `drawing_set`, `panel_facts`, and
+`review_plan:<view-id>` for each requested view. Caller artifact references must
+cover these as well as the existing outputs. Drawing JSON wraps the existing
+`DrawingSet` in a `drawing_set` field with a `review` status envelope. Panel JSON
+similarly wraps the existing strict `PanelScheduleReport` under `panel_facts`;
+its review envelope binds the canonical snapshot and explicitly says incomplete
+and not permit ready. The original report's semantic fingerprint algorithm
+remains separate from the exact canonical JSON digest.
+
+Each SVG has a visible paper banner, **INCOMPLETE REVIEW - NOT FOR PERMIT OR
+CONSTRUCTION**, outside the generated model geometry. Existing canonical source
+IDs, projection coordinates and symbols are retained. SVG is an inspection
+artifact; no PDF issuance, required discipline sheet set or paper-scale printing
+workflow is established. Panel drawing-table titles carry the same review label.
+
+The completion report and drawing JSON list each view's actual non-label
+`rendered_electrical_ids`, `omitted_electrical_ids`, and
+`clipped_electrical_ids`. The last field conservatively identifies rendered
+entities whose source extents cross the requested XY/depth window. Existing
+solid depth selection does not imply every solid is physically clipped at that
+plane; the report records that limitation. Omissions can reflect another level,
+depth, bounds, disabled route visibility or unsupported presentation and never
+establish source absence. The candidate inventory covers devices, equipment,
+boxes, support components/interfaces, routes and fittings; circuits/conductors
+are separate facts and are not claimed as drawn physical objects. A text label
+alone does not count as rendered geometry.
+
+Deferred/unadmitted proposal IDs remain in the completion report's
+`review_drawings.source_proposals_not_admitted`; they do not become plan symbols.
+An explicitly empty plan tuple emits no SVGs, retaining a no-views status and
+panel facts without inventing a level or a blank placed floor. Source coverage
+stays unavailable and physical completeness unverified for every review package.
+A requested drawing failure fails the delivery rather than returning partial
+success. Atomic local persistence uses the same whole-delivery transaction.
+
+### Saved-input entrypoint
+
+The existing `python -m oabm.pipeline.saved_electrical` invocation accepts the
+unchanged `saved-electrical-input-v1` format and the explicit
+`saved-electrical-input-v2` format. V2 has the same required keys plus
+`review_drawings`: either null (disabled), or an ordinary `{path, sha256}` file
+reference to `ReviewDrawingConfig.to_dict()` JSON. Unknown versioned fields fail;
+v1 cannot silently enable a drawing extension. The configuration bytes are
+hash-checked and included in the input receipt like the other supplied files.
+
+Enabled outputs add `drawing-set.json`, `panel-facts.json` and
+`review-plan-001.svg`, `review-plan-002.svg`, etc., ordered by explicit view ID.
+View IDs are data, never output filenames or path components. The completion
+report maps the `review_plan:<view-id>` artifact keys to those final paths and
+exact hashes; the persistence marker covers all additional files. A requested
+generation error or even a late SVG write failure prevents the full directory
+from being published. Existing version reservations, failure receipts, ancestor
+syncs and no-overwrite/no-delete behavior remain unchanged.
+
+SVG view identifiers must satisfy the XML 1.0 character ranges. Forbidden control
+characters, surrogates and U+FFFE/U+FFFF fail saved-input decoding. Valid tab,
+newline and carriage-return characters are encoded as attribute character
+references, preserving exact identities instead of letting XML normalize them
+to spaces. The final generated SVG is parsed before being returned, and its
+`data-view-id` must roundtrip exactly; invalid canonical label text also fails
+the requested delivery before publication.
+
+The opt-in drawing JSON enriches each `source_index` entry with the complete
+canonical owner's provenance records, preserving optional `scope_paths`, absent
+legacy derivation fields, nested provenance attributes and designed/observed
+placement roles. `provenance_owner_collection` identifies where those qualifiers
+apply; they describe the canonical owner, not the whole view or an arithmetic
+subtotal. Geometry and entity attributes remain authoritative in the paired
+`canonical_model` artifact. `review.complete_model_evidence` names that artifact
+kind and its exact SHA-256, also retaining access to model-wide header evidence.
+This enrichment is confined to the opt-in package; the shared drawing generator
+and its existing summary representation are unchanged.
+
+### Circuit, revision and persisted-job integration
+
+The existing circuit-only `saved-electrical-design-input-v1` contract remains
+unchanged. To request both circuit replay and optional review drawings, use
+`saved-electrical-design-input-v2` with both `circuit_design` and
+`review_drawings` keys in addition to the base fields. Each option is explicitly
+null or its existing path/SHA-256 reference. Unknown fields still fail. The
+drawing-only V2 and both previous V1 contracts retain their original required
+key sets; omitted/disabled drawing options do not change legacy outputs.
+
+The shared saved-input reader now loads drawing configuration for these opt-in
+versions. A drawing-enabled published delivery retains its exact configuration
+bytes at `drawing-inputs/config.json`, covered by the completion marker and input
+receipt. Saved-revision verification reconstructs all drawing/panel/SVG bytes
+from the committed canonical model and retained configuration, checks the view
+status and unadmitted source list, and retains the existing circuit replay,
+quantity, source-lineage and export checks. Rehashing altered drawings is not a
+substitute for this replay. No original configuration path is consulted.
+
+The persisted job runner preserves a supplied drawing option when compiling its
+circuit-enabled saved manifest. A view-only change reuses the completed provider
+proposal and reviewed circuit choice, while creating a fresh export attempt.
+The older uncertain-call, ownership, explicit-retry and directory-durability
+barriers remain unchanged.

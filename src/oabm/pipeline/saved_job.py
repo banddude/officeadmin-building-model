@@ -433,7 +433,8 @@ def run_saved_electrical_job(manifest_path, *, job_root, adapters=None):
             compiled=compile_circuit_review(run,decision,**kwargs,journal_path=directory/'attempts.jsonl')
             compiled_key=digest({'request':compiled.request.to_dict(),'decision_sha256':saved._sha(compiled.decision_bytes)})
             _bind(root,revision,'compiled',compiled_key)
-            downstream=saved._decode(upstream_data);downstream['version']=saved.CIRCUIT_VERSION
+            downstream=saved._decode(upstream_data)
+            downstream['version']=(saved.CIRCUIT_DRAWING_VERSION if 'review_drawings' in downstream else saved.CIRCUIT_VERSION)
             downstream['circuit_design']=_blob(root,compiled.request.to_json().encode())
             downstream['evidence_documents'].update({sha:_blob(root,data) for sha,data in compiled.evidence_documents.items()})
             sources=downstream['source_references'];identity=('reviewed-circuit-design',compiled.request.request_id)

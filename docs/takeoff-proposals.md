@@ -1,6 +1,6 @@
 # Source-bound takeoff proposal experiment
 
-This optional `oabm.proposals.takeoff` adapter extends the proposal boundary of
+The v2 optional `oabm.proposals.takeoff` adapter extends the proposal boundary of
 #98 with a narrow task: locate lighting marks within one supplied source region
 and propose a type from explicit allowed choices. It is a sidecar, not a new
 building model. It does not use the equipment-ranking request for detections.
@@ -12,7 +12,7 @@ helpers, canonical `stable_id` and `Provenance` are reused. Shared model,
 contracts, importer recognition and `dispatch_ranking` remain untouched.
 
 `run_takeoff_experiment(request, endpoint, adapters=..., images=...,
-experiment_reason=...)` requires explicit caller authorization for an experiment
+documents=..., experiment_reason=...)` requires explicit caller authorization for an experiment
 and a registered provider-neutral callable. There is no provider SDK, credential
 lookup, model download, network call or automatic retry in the module. The
 callable receives disposable request/image mappings and trusted provider/model
@@ -29,12 +29,22 @@ experiment does not establish a permanent task upgrade or prove that Luna fails.
   SHA-256, 1-based page, absolute MediaBox, page rotation, displayed point
   dimensions and full-page rendered dimensions. It uses the shared
   `page_display_transform`, including nonzero MediaBox origins and quarter turns.
-- `SourceImage` references one immutable PNG/JPEG by SHA-256 and exact crop bounds
-  in the displayed full-page raster. The runner checks bytes, format and decoded
-  dimensions before invoking the adapter. Renderer settings belong in the
-  caller's execution record. Render using the MediaBox, apply PDF rotation, and
-  disable non-source reviewer annotations. A CropBox/resized render needs an
-  explicit upstream transform; it cannot be passed as a matching MediaBox crop.
+- `render_source_image` reads immutable original PDF bytes, derives source facts
+  from their actual 1-based page, renders the MediaBox with the source quarter
+  turn, then crops integer raster edges without resizing. The fixed policy uses
+  PDFium RGB pixels, white background, no additional rotation, no annotations or
+  forms. `SourceImage` includes the exact PNG SHA-256 plus a `RenderManifest` with
+  policy/version, installed pypdfium2/PDFium versions, scale and a six-value
+  affine from local crop pixels to displayed bottom-origin points. The affine
+  must agree exactly with the source raster and crop metadata.
+- Hashes and manifests are claims until verified. Dispatch, saved-result
+  `validate_against`, and `unresolved_observations` all require `documents`
+  (exact PDF SHA-256 to immutable bytes) and `images` (image ID to bytes). They
+  recompute the document hash, parse actual page/MediaBox/rotation, rerender
+  through the fixed implementation, and compare every decoded RGB crop pixel.
+  Wrong source bytes, page, crop, raster dimensions, rotation, transform,
+  renderer version or changed/resized pixels refuse before source coordinates
+  can be exported. There is no caller-attested or portable verified-state flag.
 - `TakeoffRequest` binds the exact ordered images with roles `target`,
   `floor_context`, `legend`, `schedule`, `notes`; one target; allowed type/tag
   choices; editable confidence threshold; question and task/prompt/validator
@@ -49,12 +59,14 @@ experiment does not establish a permanent task upgrade or prove that Luna fails.
   confidence fail closed.
 - `TakeoffResult` binds request, raw output and configured endpoint. It always
   has `accepted=False` and `review_state="pending"`. Revalidate saved results
-  against the current request and endpoint. Output hashes provide content
-  integrity, not authenticated remote execution.
+  against the current request, endpoint and exact source/image bytes. Portable
+  decoding checks structure and content hashes only; it does not grant source
+  verification. Output hashes do not authenticate remote model execution.
 
 Boxes are `(x0,y0,x1,y1)` with positive area. Provider boxes use [0,1]
 normalized coordinates within the target crop, origin top-left, +Y down.
-`unresolved_observations()` maps them deterministically into full-page pixels
+`unresolved_observations(documents=..., images=...)` verifies the render binding
+and maps them deterministically through the manifest affine into full-page pixels
 and normalized coordinates (top-left), then displayed page points (bottom-left,
 +Y up). Every row retains crop bounds and source-to-display transform. These
 are source-page bounds, never registered building geometry or metre coordinates.
@@ -66,6 +78,41 @@ identity; independently localized or overlapping marks need explicit duplicate
 review. Exact repeated boxes within one response are refused. Raw output order
 is preserved and its fingerprint changes with order; exported rows sort by stable
 mark ID. Separate generated proposal IDs also bind request and raw-output fingerprints. No deduplication or review decision rewrites the raw proposals.
+
+## Trusted render boundary and compatibility
+
+The trusted boundary is this Python implementation, its installed PDFium runtime,
+and the caller's selection of original PDF bytes/source identity. The model
+adapter cannot supply a renderer, transform implementation, source-validation
+receipt or PDF bytes. It receives only verified image bytes and a disposable
+request. A self-consistent fabricated portable result still must pass a fresh
+render comparison at coordinate export. The check proves pixel equivalence to
+that exact PDF page/crop under the recorded render policy. It does not prove the
+historical process that created an equivalent PNG, authenticate document ownership
+or model execution, or verify the semantic classification.
+
+`pypdfium2` is already installed by the repository's `tables` extra used in CI;
+render verification fails closed when it is unavailable. PDFium calls in this
+component are serialized. Other PDFium use must run in a separate process rather
+than concurrently with this component. See the [renderer API and thread-safety
+contract](https://pypdfium2.readthedocs.io/en/stable/python_api.html).
+
+PDFs are limited to 128 MB each and 256 MB total. Full-page render work, including
+unique source/page/scale contexts, is limited to 64 million pixels per operation;
+individual crops retain the 16-million-pixel limit. Source pages rendered at the
+same scale are reused within one validation operation. Render caches never
+survive that operation or replace future source verification. Non-unit
+`/UserUnit`, encrypted/malformed PDFs, absent pages, unsupported policies, and
+renderer/source dimension disagreements fail closed. Different renderer versions
+must produce a new request; no stale receipt is silently accepted.
+
+The proposal envelope and validator are v2. V1 records have no enforceable render
+binding and are rejected by the active API. The previously frozen private
+46-proposal experiment remains byte-for-byte historical evidence, including its
+original renderer/context limitations. It is neither rewritten nor retroactively
+certified by this code fix. Any future verified experiment needs newly rendered
+inputs and a separately recorded request/result. Independent review decisions
+must continue to remain separate from those raw proposals.
 
 ## Uncertainty and review
 
@@ -116,7 +163,10 @@ or as independent ground truth.
 
 ## Verification and scope
 
-Synthetic tests cover strict decoding, source/image integrity, evidence
+Synthetic tests generate real independent two-page PDFs. They cover strict decoding,
+rerendered PDF/page/crop/rotation/resize/affine rejection (including self-consistent
+forged hashes and saved-result exports), actual offset-page pixel locations,
+source/image integrity, evidence
 membership, bounds/units, rotated offset-MediaBox pages, stable identity,
 provider mutation isolation, unknowns, stale results, duplicate boxes, budgets,
 and refusal of canonical state injection.

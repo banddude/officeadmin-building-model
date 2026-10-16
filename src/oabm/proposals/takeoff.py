@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import io
-from dataclasses import dataclass
+import math
+import threading
+from dataclasses import dataclass, replace
+from contextlib import closing
 from typing import Callable, Mapping
 
 from PIL import Image
+from pypdf import PdfReader
 
 from oabm.model import ContractError, Provenance, stable_id
 from oabm.importers.pdf_display import PdfPageDisplayTransform, page_display_transform
@@ -19,9 +23,10 @@ from .contracts import (
     fingerprint, integer, text,
 )
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 TASK = "locate_lighting_marks_in_source_region"
-VALIDATOR = "source-lighting-marks-v1"
+VALIDATOR = "source-lighting-marks-v2"
+_RENDER_LOCK = threading.Lock()
 MAX_ITEMS = 128
 MAX_IMAGES = 24
 MAX_IMAGE_PIXELS = 16_000_000
@@ -48,7 +53,7 @@ def _strings(values, label, *, maximum=32, empty=True):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SourcePage(Portable):
-    """Exact PDF revision and displayed page, before building registration."""
+    """Claimed PDF page facts; source bytes must be checked before use."""
     source_id: str
     document_sha256: str
     page: int
@@ -107,14 +112,172 @@ class SourcePage(Portable):
                          "document_sha256": self.document_sha256, "page": self.page}))
 
 
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RenderManifest(Portable):
+    """Reproducible render policy, never a trusted attestation by itself."""
+    policy: str
+    renderer_version: str
+    pdfium_version: str
+    scale: float
+    pixel_to_display_pt: tuple[float, float, float, float, float, float]
+
+    def __post_init__(self):
+        if self.policy != "pdfium-mediabox-rgb-no-annots-v1":
+            raise ContractError("unsupported takeoff render policy")
+        text(self.renderer_version, "pypdfium2 version")
+        text(self.pdfium_version, "PDFium version")
+        scale = _finite(self.scale, "render scale")
+        if not .1 <= scale <= 8:
+            raise ContractError("render scale must be between .1 and 8")
+        object.__setattr__(self, "scale", scale)
+        if not isinstance(self.pixel_to_display_pt, tuple) or len(self.pixel_to_display_pt) != 6:
+            raise ContractError("render requires a six-value crop-pixel affine")
+        object.__setattr__(self, "pixel_to_display_pt",
+                           tuple(_finite(v, "render affine") for v in self.pixel_to_display_pt))
+
+
+def _crop_affine(source, crop_px):
+    if not isinstance(crop_px, tuple) or len(crop_px) != 4:
+        raise ContractError("crop requires four pixel edges")
+    for edge in crop_px:
+        integer(edge, "crop pixel edge", minimum=0, maximum=100000)
+    sx, sy = source.width_pt/source.width_px, source.height_pt/source.height_px
+    return (sx, 0.0, 0.0, -sy, crop_px[0]*sx, source.height_pt-crop_px[1]*sy)
+
+
+def _renderer():
+    try:
+        import pypdfium2 as pdfium
+        from pypdfium2.version import PYPDFIUM_INFO, PDFIUM_INFO
+    except ImportError as exc:
+        raise ContractError("source rendering requires the optional tables dependency pypdfium2") from exc
+    return pdfium, str(PYPDFIUM_INFO), str(PDFIUM_INFO)
+
+
+def _render_page(document, *, source_id, page, scale, expected_source=None):
+    """Read source facts and render from the same immutable original PDF bytes."""
+    if not isinstance(document, bytes) or not 1 <= len(document) <= 128_000_000:
+        raise ContractError("source PDF must be immutable bytes within 128 MB")
+    integer(page, "source page", maximum=10000)
+    scale = _finite(scale, "render scale")
+    if not .1 <= scale <= 8:
+        raise ContractError("render scale must be between .1 and 8")
+    pdfium, wrapper_version, engine_version = _renderer()
+    try:
+        reader = PdfReader(io.BytesIO(document), strict=True)
+        if reader.is_encrypted or page > len(reader.pages):
+            raise ContractError("encrypted PDF or source page absent")
+        actual_page = reader.pages[page-1]
+        if _finite(actual_page.get("/UserUnit", 1), "PDF UserUnit") != 1:
+            raise ContractError("non-unit PDF UserUnit is unsupported")
+        display = page_display_transform(actual_page)
+        width = math.ceil(display.displayed_width_pt*scale)
+        height = math.ceil(display.displayed_height_pt*scale)
+        if width*height > 64_000_000:
+            raise ContractError("full-page render pixel budget exceeded")
+        source = SourcePage.capture(actual_page, source_id=source_id,
+            document_sha256=hashlib.sha256(document).hexdigest(), page=page,
+            width_px=width, height_px=height)
+        if expected_source is not None and source != expected_source:
+            raise ContractError("claimed PDF page metadata/rotation/raster differs from source")
+        # PDFium is not thread-safe. This serializes this component's calls;
+        # callers must isolate other PDFium use in a separate process.
+        with _RENDER_LOCK, pdfium.PdfDocument(document) as pdf:
+            with closing(pdf[page-1]) as rendered_page:
+                rendered_page.set_cropbox(*source.media_box_pt)
+                if any(abs(a-b) > .0001 for a,b in zip(
+                        rendered_page.get_size(), (source.width_pt, source.height_pt))):
+                    raise ContractError("renderer page size disagrees with source MediaBox/rotation")
+                bitmap = rendered_page.render(
+                    scale=scale, rotation=0, crop=(0,0,0,0), may_draw_forms=False,
+                    draw_annots=False, fill_color=(255,255,255,255),
+                    grayscale=False, optimize_mode=None, rev_byteorder=True)
+                try:
+                    image = bitmap.to_pil().convert("RGB")
+                finally:
+                    bitmap.close()
+        if image.size != (width, height):
+            image.close()
+            raise ContractError("renderer raster size disagrees with source transform")
+        return source, image, wrapper_version, engine_version
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError("source PDF cannot be rendered under the fixed policy") from exc
+
+
+def render_source_image(document: bytes, *, source_id: str, page: int, scale: float,
+                        crop_px: tuple[int, int, int, int], image_id: str, role: str):
+    """Produce a source reference and PNG from actual PDF bytes, with no resize."""
+    source, full, wrapper, engine = _render_page(
+        document, source_id=source_id, page=page, scale=scale)
+    try:
+        manifest = RenderManifest(policy="pdfium-mediabox-rgb-no-annots-v1",
+            renderer_version=wrapper, pdfium_version=engine, scale=scale,
+            pixel_to_display_pt=_crop_affine(source, crop_px))
+        # Validate crop before handing it to Pillow, which otherwise pads outside bounds.
+        reference = SourceImage(id=image_id, source=source, role=role, crop_px=crop_px,
+                                sha256="0"*64, render_manifest=manifest)
+        with full.crop(crop_px) as cropped:
+            buffer = io.BytesIO()
+            cropped.save(buffer, format="PNG")
+        payload = buffer.getvalue()
+        return replace(reference, sha256=hashlib.sha256(payload).hexdigest()), payload
+    finally:
+        full.close()
+
+
+def _validate_rendered_images(references, images, documents):
+    """Recompute actual renders; no manifest, object flag or saved hash grants trust."""
+    images, documents = dict(images), dict(documents)
+    if set(images) != {im.id for im in references}:
+        raise ContractError("image bytes must exactly cover supplied context")
+    expected_documents = {im.source.document_sha256 for im in references}
+    if set(documents) != expected_documents:
+        raise ContractError("exact source PDF bytes are required for every claimed document")
+    if any(not isinstance(data, bytes) for data in documents.values()):
+        raise ContractError("source PDFs must be immutable bytes")
+    if sum(map(len, documents.values())) > 256_000_000:
+        raise ContractError("source PDF input budget exceeded")
+    for sha, data in documents.items():
+        if hashlib.sha256(data).hexdigest() != sha:
+            raise ContractError("source PDF digest differs from supplied bytes")
+    keys = {(im.source, im.render_manifest.scale) for im in references}
+    if sum(src.width_px*src.height_px for src, _ in keys) > 64_000_000:
+        raise ContractError("total full-page render budget exceeded")
+    cache = {}
+    try:
+        for reference in references:
+            pixels = reference._decode_pixels(images[reference.id])
+            key = (reference.source, reference.render_manifest.scale)
+            if key not in cache:
+                cache[key] = _render_page(documents[reference.source.document_sha256],
+                    source_id=reference.source.source_id, page=reference.source.page,
+                    scale=reference.render_manifest.scale, expected_source=reference.source)
+            actual, full, wrapper, engine = cache[key]
+            if actual != reference.source:
+                raise ContractError("claimed PDF page metadata/rotation/raster differs from source")
+            manifest = reference.render_manifest
+            if (manifest.renderer_version, manifest.pdfium_version) != (wrapper, engine):
+                raise ContractError("render manifest engine version differs from active renderer")
+            with full.crop(reference.crop_px) as cropped:
+                if cropped.tobytes() != pixels:
+                    raise ContractError("image pixels differ from the claimed PDF page/crop render")
+    finally:
+        for _, image, _, _ in cache.values():
+            image.close()
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SourceImage(Portable):
-    """A rendered/cropped input; crop bounds use full-page top-left pixels."""
+    """Declared render/crop; rerender comparison establishes source binding."""
     id: str
     source: SourcePage
     role: str
     crop_px: tuple[int, int, int, int]
     sha256: str
+    render_manifest: RenderManifest
 
     def __post_init__(self):
         text(self.id, "image identity")
@@ -123,6 +286,8 @@ class SourceImage(Portable):
         if self.role not in ("target", "floor_context", "legend", "schedule", "notes"):
             raise ContractError("unsupported image context role")
         fingerprint(self.sha256, "rendered image digest")
+        if not isinstance(self.render_manifest, RenderManifest):
+            raise ContractError("image requires a typed render manifest")
         if not isinstance(self.crop_px, tuple) or len(self.crop_px) != 4:
             raise ContractError("crop requires four full-page pixel edges")
         for value in self.crop_px:
@@ -134,7 +299,14 @@ class SourceImage(Portable):
         if (x1 - x0) * (y1 - y0) > MAX_IMAGE_PIXELS:
             raise ContractError("rendered crop pixel budget exceeded")
 
-    def validate_bytes(self, payload: bytes):
+        if self.render_manifest.pixel_to_display_pt != _crop_affine(self.source, self.crop_px):
+            raise ContractError("render manifest affine disagrees with source/crop")
+
+    def validate_bytes(self, payload: bytes, *, document: bytes):
+        _validate_rendered_images((self,), {self.id: payload},
+                                  {self.source.document_sha256: document})
+
+    def _decode_pixels(self, payload: bytes):
         if not isinstance(payload, bytes) or len(payload) > 32_000_000:
             raise ContractError("image bytes exceed budget")
         if hashlib.sha256(payload).hexdigest() != self.sha256:
@@ -142,9 +314,9 @@ class SourceImage(Portable):
         try:
             with Image.open(io.BytesIO(payload)) as image:
                 x0, y0, x1, y1 = self.crop_px
-                if image.size != (x1 - x0, y1 - y0) or image.format not in ("PNG", "JPEG"):
+                if image.size != (x1 - x0, y1 - y0) or (image.format != "PNG" or image.mode != "RGB"):
                     raise ContractError("image dimensions/format differ from crop")
-                image.verify()
+                return image.tobytes()
         except (OSError, ValueError, Image.DecompressionBombError) as exc:
             raise ContractError("invalid bounded image") from exc
 
@@ -287,15 +459,17 @@ class TakeoffResult(Portable):
             raise ContractError("takeoff result binding mismatch")
         self.raw_output.validate_for(self.request)
 
-    def validate_against(self, request, endpoint):
+    def validate_against(self, request, endpoint, *, documents, images):
         current = TakeoffResult.from_dict(self.to_dict())
         if current.request != request or current.endpoint != endpoint:
             raise ContractError("stale takeoff request or configured endpoint")
+        _validate_rendered_images(current.request.images, images, documents)
         return current
 
-    def unresolved_observations(self):
+    def unresolved_observations(self, *, documents, images):
         """Return detached importer-compatible rows, without touching a model."""
         result = TakeoffResult.from_dict(self.to_dict())
+        _validate_rendered_images(result.request.images, images, documents)
         target = result.request.target
         page = target.source
         x0, y0, x1, y1 = target.crop_px
@@ -306,8 +480,9 @@ class TakeoffResult(Portable):
             normalized = (px[0]/page.width_px, px[1]/page.height_px,
                           px[2]/page.width_px, px[3]/page.height_px)
             # Existing PDF observations use displayed bottom-origin points.
-            pt = (normalized[0]*page.width_pt, (1-normalized[3])*page.height_pt,
-                  normalized[2]*page.width_pt, (1-normalized[1])*page.height_pt)
+            sx, _, _, sy, tx, ty = target.render_manifest.pixel_to_display_pt
+            pt = (sx*a*(x1-x0)+tx, sy*d*(y1-y0)+ty,
+                  sx*c*(x1-x0)+tx, sy*b*(y1-y0)+ty)
             identity = stable_id("source-mark", digest({
                 "source_id": page.source_id, "document_sha256": page.document_sha256,
                 "page": page.page, "bounds_pt": [round(v, 9) for v in pt],
@@ -328,6 +503,7 @@ class TakeoffResult(Portable):
                 "bounds_px": list(px), "bounds_normalized": list(normalized), "bounds_pt": list(pt),
                 "crop_bounds_px": list(target.crop_px),
                 "source_to_display_transform": _portable(page.display_transform),
+                "render_manifest": target.render_manifest.to_dict(),
                 "position_pt": {"x": (pt[0]+pt[2])/2, "y": (pt[1]+pt[3])/2},
                 "type_proposal": item.type_proposal, "fixture_tag": item.fixture_tag,
                 "confidence": item.confidence, "unknowns": reasons, "source_mark": item.source_mark,
@@ -339,7 +515,8 @@ class TakeoffResult(Portable):
                     attributes={"request_fingerprint": result.request_fingerprint,
                                 "output_fingerprint": result.output_fingerprint,
                                 "endpoint": _portable(result.endpoint),
-                                "source_document_sha256": page.document_sha256},
+                                "source_document_sha256": page.document_sha256,
+                                "render_manifest_fingerprint": digest(target.render_manifest.to_dict())},
                 ))],
             })
         return sorted(rows, key=lambda row: row["source_element_id"])
@@ -347,7 +524,8 @@ class TakeoffResult(Portable):
 
 def run_takeoff_experiment(
     request: TakeoffRequest, endpoint: Endpoint, *,
-    adapters: Mapping[str, Callable], images: Mapping[str, bytes], experiment_reason: str,
+    adapters: Mapping[str, Callable], images: Mapping[str, bytes],
+    documents: Mapping[str, bytes], experiment_reason: str,
 ) -> TakeoffResult:
     """Explicit caller-authorized vision experiment with no implicit fallback.
 
@@ -359,10 +537,8 @@ def run_takeoff_experiment(
     request = TakeoffRequest.from_dict(request.to_dict())
     endpoint = Endpoint(**_portable(endpoint))
     text(experiment_reason, "explicit experiment authorization", maximum=1024)
-    if set(images) != {im.id for im in request.images}:
-        raise ContractError("image bytes must exactly cover supplied context")
-    for im in request.images:
-        im.validate_bytes(images[im.id])
+    images = dict(images)
+    _validate_rendered_images(request.images, images, documents)
     adapter = adapters.get(endpoint.adapter_id)
     if not callable(adapter):
         raise ContractError("configured takeoff adapter is not registered")

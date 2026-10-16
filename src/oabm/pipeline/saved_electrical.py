@@ -126,6 +126,7 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         if manifest["coverage_report"] is not None:
             raise ContractError("coverage_report must explicitly be null")
         receipts = []
+        input_payloads = {}
         def read_ref(ref, label):
             if (not isinstance(ref, dict) or set(ref) != {"path", "sha256"}
                     or not isinstance(ref["path"], str) or not ref["path"].strip()
@@ -139,6 +140,7 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
             data = _read(path)
             if _sha(data) != ref["sha256"]:
                 raise ContractError("saved input hash mismatch: " + label)
+            input_payloads[label] = data
             receipts.append({"input": label, "sha256": _sha(data), "bytes": len(data)})
             return data
         def doc(key):
@@ -214,6 +216,21 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
             if identity != {"reference": refs[kind], "sha256": _sha(data), "bytes": len(data)}:
                 raise ContractError("runner artifact identity mismatch")
             _write(pending / filenames[kind], data)
+        if circuit_design is not None:
+            replay = pending / "circuit-inputs"
+            replay.mkdir(mode=0o700)
+            _write(replay / "base-model.json", input_payloads["model"])
+            _write(replay / "request.json", input_payloads["circuit_design"])
+            for label in ("decisions", "registrations"):
+                _write(replay / (label + ".json"), input_payloads[label])
+            _write(replay / "admitted-model.json", result.circuit_admitted_model_json.encode())
+            cited = {e.document_sha256 for e in circuit_design.evidence}
+            cited.update(e.document_sha256 for fact in assertion.assertions for e in fact.evidence)
+            if cited:
+                (replay / "evidence").mkdir(mode=0o700)
+            for identity in sorted(cited):
+                payload = evidence[identity] if identity in evidence else documents[identity]
+                _write(replay / "evidence" / (identity + ".bin"), payload)
         _write(pending / "completion-report.json", result.completion_json.encode())
         entries = []
         for path in sorted(pending.rglob("*")):

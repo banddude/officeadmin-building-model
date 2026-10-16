@@ -167,5 +167,5 @@ def leader_candidates(observation: Any, clusters: Sequence[Any], vectors: Sequen
                         and y0-2 <= end[1] <= y1+2
                         and math.dist(start, cluster.center_pt) >= 12):
                     hits.setdefault(cluster.geometry_key, set()).add(vector.element_id)
-    return ([c for c in clusters if c.geometry_key in hits],
+    return ([c for c in clusters if c.page == observation.page and c.geometry_key in hits],
             {key: {"method": "observed-leader-endpoints", "source_element_ids": sorted(ids)} for key,ids in sorted(hits.items())})

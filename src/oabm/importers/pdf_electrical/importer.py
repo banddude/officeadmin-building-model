@@ -8470,7 +8470,7 @@ def _recognize_lighting(
             "source_geometry_key": cluster.geometry_key,
             "shape_signature": cluster.shape_signature,
             "shape_score": shape_score,
-            "tag_is_primary_type_evidence": True,
+            "tag_is_primary_type_evidence": not bool(category_binding),
             "legend": {
                 "page": legend_entry.page,
                 "tag_source_element_id": legend_entry.label.element_id,
@@ -8553,7 +8553,7 @@ def _recognize_lighting(
                 attributes={
                     "source_text": tag_observation.text,
                     "fixture_tag": tag,
-                    "tag_is_primary_type_evidence": True,
+                    "tag_is_primary_type_evidence": not bool(category_binding),
                     "source_geometry_key": cluster.geometry_key,
                 },
             ),

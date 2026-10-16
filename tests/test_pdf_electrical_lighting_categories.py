@@ -85,6 +85,9 @@ def test_two_page_category_legend_confirms_only_observed_field_geometry(tmp_path
         assert lane['fixture_schedule']['source_page']==2
         assert lane['fixture_schedule']['quantity'] == ('999' if device.name=='Q-1' else '111')
         assert lane['lighting_recognition']['category_geometry']['expected_shape_score'] >= .75
+        assert lane['lighting_recognition']['tag_is_primary_type_evidence'] is False
+        tag_records=[p for p in device.provenance if p.method=='pdf-lighting-fixture-tag']
+        assert tag_records and all(p.attributes.get('tag_is_primary_type_evidence') is False for p in tag_records)
         records=[p for p in device.provenance if p.method=='pdf-lighting-legend-category']
         assert len(records)==1 and records[0].page==1
         assert not any(p.method=='pdf-lighting-legend-tag' for p in device.provenance)
@@ -177,3 +180,18 @@ def test_shared_observed_prototype_is_scored_once_without_dropping_tag_identity(
     winner, similarity, guard=api._lighting_shape_support(field,[*aliases,recessed])
     assert winner.tag=='A00' and similarity==1.0 and guard is None
     assert len(calls)==2 and len(set(calls))==2
+
+
+def test_leader_candidates_are_scoped_to_page_with_identical_geometry_keys():
+    from types import SimpleNamespace as Row
+    from oabm.importers.pdf_electrical.lighting_categories import leader_candidates
+    from oabm.importers.pdf_electrical.importer import PdfVectorPathObservation
+    clusters=[Row(page=page, geometry_key="same-absolute-points", bbox_pt=(140,495,155,505),
+                  center_pt=(147.5,500)) for page in (1,2)]
+    for page in (1,2):
+        observation=Row(page=page,x_pt=100,y_pt=400)
+        vector=PdfVectorPathObservation(element_id=f"p{page}:leader",page=page,
+            points_pt=((100,400),(143,500)),closed=False,source_kind="pdf-vector",metadata={})
+        hits,evidence=leader_candidates(observation,clusters,[vector])
+        assert [hit.page for hit in hits]==[page]
+        assert evidence["same-absolute-points"]["source_element_ids"]==[f"p{page}:leader"]

@@ -14,7 +14,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, get_args, get_origin, get_type_hints
 
-from oabm.model import BuildingModel
+from oabm.model import BuildingModel, SUPPORT_SCHEMA_VERSIONS
 from oabm.model.common import Entity
 from oabm.qa.confidence_review import (
     ConfidenceReviewManifest,
@@ -458,6 +458,10 @@ def build_review_bundle(
         ),
     }
     manifest = _decode_confidence_manifest(confidence_manifest)
+    if model.schema_version not in SUPPORT_SCHEMA_VERSIONS:
+        raise ValueError(
+            "review bundles require schema 1.3.0 or newer for canonical GLB node identities"
+        )
     model_sha = canonical_model_sha256(model)
     entities, serialized_entities = _canonical_entity_index(model)
     manifest_sha = _verify_confidence_manifest(model, manifest)

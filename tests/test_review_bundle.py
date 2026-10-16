@@ -31,6 +31,8 @@ from oabm.model import (
     Provenance,
     Size3,
     Wall,
+    SUPPORT_SCHEMA_VERSION,
+    upgrade_to_v1_4,
 )
 from oabm.qa import load_golden_cases, load_golden_model
 from oabm.qa.confidence_review import ReviewConfig, build_confidence_review
@@ -71,6 +73,7 @@ def _synthetic_model() -> BuildingModel:
     )
     return BuildingModel(
         model_id="model:review-bundle-synthetic",
+        schema_version=SUPPORT_SCHEMA_VERSION,
         levels=(level,),
         walls=(wall,),
         openings=(opening,),
@@ -244,7 +247,7 @@ def _build_golden_review_bundle(model: BuildingModel, tmp_path: Path, stem: str)
 def _synthetic_garage_model():
     golden_root = ROOT / "fixtures" / "golden" / "v1"
     case = next(case for case in load_golden_cases(golden_root) if case.name == "synthetic-garage")
-    return load_golden_model(case)
+    return upgrade_to_v1_4(load_golden_model(case))
 
 
 def test_bundle_accepts_unprefixed_conductor_ids(tmp_path: Path) -> None:
@@ -363,7 +366,7 @@ def test_rejects_removed_rendered_node_swapped_ids_and_changed_geometry(tmp_path
 def test_wire_route_must_be_owned_by_its_canonical_conductor(tmp_path: Path) -> None:
     golden_root = ROOT / "fixtures" / "golden" / "v1"
     case = next(case for case in load_golden_cases(golden_root) if case.name == "synthetic-garage")
-    rendered_model = load_golden_model(case)
+    rendered_model = upgrade_to_v1_4(load_golden_model(case))
     path = tmp_path / "garage-route-ownership.glb"
     to_glb(rendered_model, path)
     document = _parse_glb_document(path.read_bytes())

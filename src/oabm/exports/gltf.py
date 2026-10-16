@@ -49,6 +49,7 @@ from oabm.model import (
     ElectricalEquipment,
     Point3,
     Route,
+    SUPPORT_SCHEMA_VERSIONS,
     Slab,
     Space,
     Wall,
@@ -481,6 +482,7 @@ def _build_document(
 ) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
     """Return (glTF JSON dict, BIN chunk bytes, per-kind summary counts)."""
 
+    include_canonical_node_ids = model.schema_version in SUPPORT_SCHEMA_VERSIONS
     level_ids = {level.id for level in model.levels}
     level_heights: dict[str, float | None] = {
         level.id: level.height_m for level in model.levels
@@ -504,7 +506,7 @@ def _build_document(
     thickened_wall_count = 0
     for entity in model.walls:
         height_m, height_source = _wall_height(entity, level_heights)
-        extras = _extras(entity, "wall", entity.level_id)
+        extras = _extras(entity, "wall", entity.level_id, include_canonical_id=include_canonical_node_ids)
         extras["height_source"] = height_source
         _add_name(extras, entity)
         # The canonical wall token rides in extras on node and mesh; a
@@ -567,7 +569,7 @@ def _build_document(
                 "mode": 1,
             })
     for entity in model.slabs:
-        extras = _extras(entity, "slab", entity.level_id)
+        extras = _extras(entity, "slab", entity.level_id, include_canonical_id=include_canonical_node_ids)
         vertices, triangulation = _prism_vertices(
             entity.footprint.points,
             min(point.z for point in entity.footprint.points),
@@ -587,7 +589,7 @@ def _build_document(
             default=0.0,
         )
         base = max(base, slab_top.get(entity.level_id, base))
-        extras = _extras(entity, "space", entity.level_id)
+        extras = _extras(entity, "space", entity.level_id, include_canonical_id=include_canonical_node_ids)
         vertices, triangulation = _prism_vertices(
             entity.footprint.points,
             base,
@@ -609,6 +611,7 @@ def _build_document(
             entity,
             device_type,
             entity.level_id if entity.level_id in level_ids else None,
+            include_canonical_id=include_canonical_node_ids,
         )
         _add_name(extras, entity)
         if entity.id in options.dimmed_ids:
@@ -636,7 +639,7 @@ def _build_document(
         })
     # Independent box extents never use a device display fallback.
     for box in model.electrical_boxes:
-        extras = _extras(box, "electrical_box", box.level_id)
+        extras = _extras(box, "electrical_box", box.level_id, include_canonical_id=include_canonical_node_ids)
         extras.update(occupant_ids=list(box.occupant_ids), host_id=box.host_id,
                       mounting=box.mounting, product={"catalog_id": box.product.catalog_id,
                       "catalog_revision": box.product.catalog_revision, "product_id": box.product.product_id},
@@ -645,7 +648,7 @@ def _build_document(
              "material_key": ("other", not is_observed(box.provenance)),
              "extras": extras, "pose": box.pose})
     for component in model.support_components:
-        extras = _extras(component, "support_component", component.level_id)
+        extras = _extras(component, "support_component", component.level_id, include_canonical_id=include_canonical_node_ids)
         extras.update(assembly_id=component.assembly_id, category=component.category,
             component_type=component.component_type, geometry_basis=component.geometry_basis,
             product={"catalog_id": component.product.catalog_id, "catalog_revision": component.product.catalog_revision,
@@ -657,7 +660,7 @@ def _build_document(
         # One node per confirmed member, drawn once from its canonical pose
         # and size; the canonical id stays the node name and the kind and
         # material travel in extras, so no second structural object exists.
-        extras = _extras(entity, "structural_member", entity.level_id)
+        extras = _extras(entity, "structural_member", entity.level_id, include_canonical_id=include_canonical_node_ids)
         _add_name(extras, entity)
         extras["kind"] = entity.kind
         if entity.material is not None:
@@ -763,7 +766,7 @@ def _build_document(
     # their order, geometry, materials and extras.
     scene_root: list[int] = list(range(len(nodes)))
     for interface in model.support_interfaces:
-        extras=_extras(interface,"support_interface",interface.level_id)
+        extras=_extras(interface,"support_interface",interface.level_id,include_canonical_id=include_canonical_node_ids)
         extras.update(assembly_id=interface.assembly_id,host_id=interface.host_id,
                       actual_substrate=interface.substrate,component_ids=list(interface.component_ids))
         node={"name":interface.id,"translation":_yup_point(interface.pose.position),"extras":extras}
@@ -773,7 +776,7 @@ def _build_document(
     for assembly in model.support_assemblies:
         members=set((*assembly.component_ids,*assembly.interface_ids))
         children=[i for i,node in enumerate(nodes) if node.get("name") in members]
-        extras=_extras(assembly,"support_assembly",assembly.level_id)
+        extras=_extras(assembly,"support_assembly",assembly.level_id,include_canonical_id=include_canonical_node_ids)
         extras.update(supported_object_ids=list(assembly.supported_object_ids),component_ids=list(assembly.component_ids),
                       interface_ids=list(assembly.interface_ids),basis={"authority":assembly.basis.authority,
                       "revision":assembly.basis.revision,"rule_id":assembly.basis.rule_id},code_verification_performed=False)
@@ -841,7 +844,6 @@ def _build_document(
             "generator": "oabm exports.gltf",
             "extras": {
                 "canonical_model_id": model.model_id,
-                "canonical_model_sha256": hashlib.sha256(model.to_json(indent=None).encode("utf-8")).hexdigest(),
                 "canonical_up_axis": model.coordinate_system.up_axis,
                 "glTF_up_axis": "+Y",
             },
@@ -852,6 +854,10 @@ def _build_document(
         "meshes": meshes,
         "materials": materials,
     }
+    if model.schema_version in SUPPORT_SCHEMA_VERSIONS:
+        document["asset"]["extras"]["canonical_model_sha256"] = hashlib.sha256(
+            model.to_json(indent=None).encode("utf-8")
+        ).hexdigest()
     if any("extensions" in node for node in group_nodes):
         # Optional extension: never in extensionsRequired, so a viewer
         # without it still loads the file and simply shows the group.
@@ -1107,8 +1113,13 @@ def _derivation(provenance: tuple) -> str | list[str] | None:
     return values[0] if len(values) == 1 else values
 
 
-def _extras(entity: Any, canonical_type: str, level_id: str | None) -> dict[str, Any]:
-    extras: dict[str, Any] = {"canonical_type": canonical_type, "canonical_id": entity.id}
+def _extras(
+    entity: Any, canonical_type: str, level_id: str | None, *,
+    include_canonical_id: bool = True,
+) -> dict[str, Any]:
+    extras: dict[str, Any] = {"canonical_type": canonical_type}
+    if include_canonical_id:
+        extras["canonical_id"] = entity.id
     if level_id is not None:
         extras["level"] = level_id
     derivation = _derivation(entity.provenance)
@@ -1133,7 +1144,10 @@ def _add_name(extras: dict[str, Any], entity: Any) -> None:
 
 
 def _route_extras(model: BuildingModel, route: Route) -> dict[str, Any]:
-    extras = _extras(route, route.route_type, _route_level_id(model, route))
+    extras = _extras(
+        route, route.route_type, _route_level_id(model, route),
+        include_canonical_id=model.schema_version in SUPPORT_SCHEMA_VERSIONS,
+    )
     extras["raceway"] = route.route_type
     extras["length_m"] = round(_polyline_length(route.centerline.points), 6)
     if route.nominal_diameter_m is not None:

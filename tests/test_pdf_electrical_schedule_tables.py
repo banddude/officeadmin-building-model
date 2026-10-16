@@ -202,7 +202,8 @@ def test_location_qualifier_does_not_change_lighting_trade(tmp_path, heading):
     assert rows[(1, "Q-1")].fields["description"] == "WALL LIGHT"
 
 
-def test_decoy_heading_box_does_not_suppress_independent_legacy_columns(tmp_path):
+@pytest.mark.parametrize("enclosed_body", [False, True])
+def test_decoy_heading_box_and_enclosed_body_are_distinguished(tmp_path, enclosed_body):
     path = tmp_path / "decoy-box.pdf"
     _write_schedule(path, rows=[("Q-1", "WALL LIGHT")])
     # Replace the authored geometry with a two-cell heading box and separate
@@ -211,7 +212,8 @@ def test_decoy_heading_box_does_not_suppress_independent_legacy_columns(tmp_path
     reader = PdfReader(path)
     writer = PdfWriter()
     page = writer.add_page(reader.pages[0])
-    commands = ["40 730 410 30 re S", "400 730 m 400 760 l S",
+    outline = "40 660 410 100 re S" if enclosed_body else "40 730 410 30 re S"
+    commands = [outline, "40 730 m 450 730 l S", "400 730 m 400 760 l S",
                 "BT /F1 9 Tf 50 740 Td (LIGHTING FIXTURE SCHEDULE) Tj ET",
                 "BT /F1 9 Tf 50 710 Td (TAG) Tj ET",
                 "BT /F1 9 Tf 140 710 Td (DESCRIPTION) Tj ET",
@@ -227,7 +229,16 @@ def test_decoy_heading_box_does_not_suppress_independent_legacy_columns(tmp_path
     baseline, _, _, _ = _parse(document, [])
     assert baseline[(1, "Q-1")].fields["description"] == "WALL LIGHT"
     rows, claimed, unresolved, _ = _parse(document)
-    assert rows == baseline
     assert any(item["reason_code"] == "lighting_schedule_header_not_confirmed"
                for item in unresolved)
-    assert all(source_id in claimed for source_id in rows[(1, "Q-1")].source_element_ids)
+    if enclosed_body:
+        # Actual detected heading cells plus one undivided body cell. This
+        # geometry cannot distinguish a page frame from a merged schedule.
+        # Keep the conservative limitation explicit; do not infer columns.
+        assert len(tables[0]["rows"]) == 2
+        assert tables[0]["rows"][1][1] is None
+        assert not rows
+        assert set(baseline[(1, "Q-1")].source_element_ids) <= claimed
+    else:
+        assert rows == baseline
+        assert all(source_id in claimed for source_id in rows[(1, "Q-1")].source_element_ids)

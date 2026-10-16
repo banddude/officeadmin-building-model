@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import threading
+import weakref
 from types import MappingProxyType
 
 from oabm.model import BuildingModel, ContractError, CoordinateSystem, Provenance, RuleReference, stable_id
@@ -23,6 +25,17 @@ VALIDATOR = 'bounded-circuit-choices-v1'
 CONTEXT_ROLES = ('plan','legend','fixture_schedule','panel_schedule','notes','one_line','riser','detail','project_rules')
 PLACEMENT_KEYS = {'runs','documents','images','journal_paths','decisions','registrations','assertion_review','evidence_documents'}
 CircuitAdapterReply = SymbolAdapterReply  # Transport metadata/budget only; never SymbolOutput or its prompt.
+_JOURNAL_GUARD = threading.Lock()
+_JOURNAL_CLAIMS = weakref.WeakSet()
+
+
+def _fresh_journal(journal, *, claim=False):
+    # One immutable execution owns a journal. The reservation also closes the
+    # same-object concurrent-dispatch window before its durable start is written.
+    with _JOURNAL_GUARD:
+        if journal in _JOURNAL_CLAIMS or journal.receipts or AttemptJournal.read(journal.path):
+            raise ContractError('circuit dispatch requires a new empty attempt journal')
+        if claim:_JOURNAL_CLAIMS.add(journal)
 
 
 def _rows(values, cls, label, maximum=512):
@@ -514,12 +527,14 @@ def _invocation(request):
 def dispatch_circuit_proposal(request, policy, *, review_policy, model, review, placement, images, documents, policy_documents, adapters, journal):
     if not isinstance(request,CircuitProposalRequest) or not isinstance(policy,CircuitRoutingPolicy) or not isinstance(review_policy,CircuitReviewPolicy):raise ContractError('typed circuit task, routing and review policies required')
     if not isinstance(journal,AttemptJournal):raise ContractError('durable circuit attempt journal required')
+    _fresh_journal(journal)
     request=CircuitProposalRequest.from_dict(request.to_dict());policy=CircuitRoutingPolicy.from_dict(policy.to_dict())
     review_policy=CircuitReviewPolicy.from_dict(review_policy.to_dict())
     request.validate_inputs(model=model,review=review,placement=placement,policy=policy,review_policy=review_policy,
                             images=images,documents=documents,policy_documents=policy_documents)
     common=dict(attempt_id=stable_id('circuit-attempt',f'{journal.run_id}:{len(journal.receipts)}'),role=policy.role,
         endpoint=policy.endpoint,request_fingerprint=digest(_invocation(request)),policy_fingerprint=policy.fingerprint,reason=policy.mode+':circuit_primary')
+    _fresh_journal(journal,claim=True)
     start=AttemptReceipt(**common,phase='start',status='started',timestamp_utc=datetime.now(timezone.utc).isoformat())
     journal.append(start)
     reply=None;status='adapter_error';error=None

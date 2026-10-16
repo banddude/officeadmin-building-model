@@ -126,3 +126,105 @@ def test_existing_export_completion_marker_is_verified(tmp_path):
     with pytest.raises(job.SavedJobError,match='export completion binding mismatch'):
         run(path,adapter)
     assert len(calls)==1
+
+def revise(path,mutate):
+    raw=path.read_bytes();doc=json.loads(raw)
+    doc['parent_revision']=hashlib.sha256(raw).hexdigest()
+    mutate(doc);path.write_text(json.dumps(doc))
+    return doc
+
+def approve(path,source,report):
+    proposed=CircuitProposalRun.from_json(Path(report['circuit_run']['path']).read_text())
+    payload=decision(proposed,source).to_json().encode()
+    p=path.parent/'approved.json';p.write_bytes(payload)
+    revise(path,lambda doc:doc.update(review={'path':str(p),'sha256':hashlib.sha256(payload).hexdigest()}))
+
+def tree_bytes(root):
+    return {str(p.relative_to(root)):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+def test_failed_provider_requires_exact_retry_and_keeps_old_attempt(tmp_path):
+    from oabm.proposals.dispatch import AdapterAvailabilityError
+    path,source,calls,adapter=setup(tmp_path)
+    def limited(*a,**kw):
+        calls.append(kw);raise AdapterAvailabilityError('rate_limited')
+    first=run(path,limited)
+    assert first['status']=='blocked_provider_failure' and first['provider_status']=='rate_limited'
+    assert run(path,adapter)['status']=='blocked_provider_failure' and len(calls)==1
+    root=tmp_path/'jobs/synthetic-job'
+    old=next((root/'proposals').glob('*/'+first['proposal_attempt_id']))
+    frozen=tree_bytes(old)
+    revise(path,lambda d:d['retry_policy'].update(proposal_after='a-wrong',proposal_reason='Wrong prior attempt'))
+    assert run(path,adapter)['status']=='blocked_provider_failure' and len(calls)==1
+    revise(path,lambda d:d['retry_policy'].update(proposal_after=first['proposal_attempt_id'],proposal_reason='Caller approves one retry after known rate limit'))
+    second=run(path,adapter)
+    assert second['status']=='waiting_for_review' and len(calls)==2
+    assert second['proposal_attempt_id']!=first['proposal_attempt_id']
+    assert run(path,adapter)['proposal_reused'] and len(calls)==2
+    assert tree_bytes(old)==frozen
+
+def test_export_only_revision_reuses_reviewed_provider_input(tmp_path):
+    path,source,calls,adapter=setup(tmp_path)
+    pending=run(path,adapter);approve(path,source,pending)
+    first=run(path,adapter)
+    assert first['status']=='delivery_persisted'
+    old_model=(Path(first['delivery'])/'model.json').read_bytes()
+    upstream=Path(json.loads(path.read_text())['upstream']['path'])
+    document=json.loads(upstream.read_text());document['include_ifc']=not document['include_ifc']
+    upstream.write_text(json.dumps(document))
+    revise(path,lambda d:d['upstream'].update(sha256=hashlib.sha256(upstream.read_bytes()).hexdigest()))
+    second=run(path,adapter)
+    assert second['status']=='delivery_persisted' and len(calls)==1
+    assert second['proposal_reused'] and second['proposal_attempt_id']==first['proposal_attempt_id']
+    assert second['export_attempt_id']!=first['export_attempt_id'] and not second['export_reused']
+    assert (Path(second['delivery'])/'model.json').read_bytes()==old_model
+    assert (Path(second['delivery'])/'model.ifc').exists()==document['include_ifc']
+
+def test_missing_review_pauses_before_any_export_and_resumes(tmp_path):
+    path,source,calls,adapter=setup(tmp_path)
+    pending=run(path,adapter)
+    root=tmp_path/'jobs/synthetic-job'
+    assert pending['status']=='waiting_for_review' and not list((root/'exports').iterdir())
+    assert run(path,adapter)['status']=='waiting_for_review' and len(calls)==1
+    approve(path,source,pending)
+    result=run(path,adapter)
+    assert result['status']=='delivery_persisted' and len(calls)==1
+    assert result['proposal_reused'] and not result['code_compliance_verified']
+
+@pytest.mark.parametrize('corruption',['truncated','altered_terminal','extra_receipt'])
+def test_receipt_corruption_never_replays_provider(tmp_path,corruption):
+    path,source,calls,adapter=setup(tmp_path)
+    pending=run(path,adapter);p=Path(pending['circuit_journal']['path'])
+    lines=p.read_bytes().splitlines(keepends=True)
+    if corruption=='truncated':p.write_bytes(b'{invalid')
+    elif corruption=='extra_receipt':p.write_bytes(b''.join(lines)+lines[-1])
+    else:
+        rows=[json.loads(line) for line in lines]
+        rows[-1]['provider_request_id']='forged-request'
+        p.write_text(''.join(json.dumps(row)+'\n' for row in rows))
+    with pytest.raises(job.SavedJobError):run(path,adapter)
+    assert len(calls)==1
+
+def test_late_export_failure_requires_fresh_attempt_without_provider_replay(tmp_path,monkeypatch):
+    path,source,calls,adapter=setup(tmp_path)
+    pending=run(path,adapter);approve(path,source,pending)
+    original=job.saved._write
+    def fail(p,data):
+        if p.name=='scope-ledger.json':raise OSError('Synthetic full storage')
+        return original(p,data)
+    with monkeypatch.context() as patch:
+        patch.setattr(job.saved,'_write',fail)
+        failed=run(path,adapter)
+    assert failed['status']=='blocked_export_failure' and len(calls)==1
+    root=tmp_path/'jobs/synthetic-job'
+    old=next((root/'exports').glob('*/'+failed['export_attempt_id']))
+    frozen=tree_bytes(old)
+    assert list(old.rglob('model.json')) and not list(old.rglob('delivery/COMPLETED.json'))
+    assert run(path,adapter)['status']=='blocked_export_failure' and len(calls)==1
+    revise(path,lambda d:d['retry_policy'].update(export_after='a-wrong',export_reason='Wrong export prior'))
+    assert run(path,adapter)['status']=='blocked_export_failure' and len(calls)==1
+    revise(path,lambda d:d['retry_policy'].update(export_after=failed['export_attempt_id'],export_reason='Storage restored; caller approves fresh export'))
+    recovered=run(path,adapter)
+    assert recovered['status']=='delivery_persisted' and len(calls)==1
+    assert recovered['export_attempt_id']!=failed['export_attempt_id'] and recovered['proposal_reused']
+    assert tree_bytes(old)==frozen
+    assert run(path,adapter)['export_reused'] and len(calls)==1

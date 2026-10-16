@@ -264,6 +264,12 @@ def test_portable_scope_schema_matches_supported_and_rejected_claims():
         replace(e,image_id="legend") for e in c.evidence)) for c in good.claims))
     schema = symbol_scope_schema(request)
     jsonschema.Draft202012Validator.check_schema(schema)
+    assert "uniqueItems" not in json.dumps(schema)
+    duplicate = good.to_dict()
+    duplicate["claims"].append(duplicate["claims"][0])
+    jsonschema.validate(duplicate,schema)  # Provider schema is structural only.
+    with pytest.raises(ContractError, match="duplicate"):
+        SymbolScope.from_dict(duplicate)
     jsonschema.validate(good.to_dict(),schema)
     jsonschema.validate(SymbolScope(claims=()).to_dict(),schema)
     for update in ({"value":"base","alternate_id":"ALT-A"},

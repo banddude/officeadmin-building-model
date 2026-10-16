@@ -138,7 +138,7 @@ def symbol_scope_schema(request):
         "properties": {"dimension": {"enum": ["work_status", "bid_scope"]},
             "value": {"enum": list(WORK_STATUSES + BID_SCOPES)},
             "evidence": {"type": "array", "minItems": 1, "maxItems": 8,
-                         "uniqueItems": True, "items": evidence},
+                         "items": evidence},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "alternate_id": {"anyOf": [string, {"type": "null"}]}},
         "allOf": [
@@ -153,4 +153,4 @@ def symbol_scope_schema(request):
     return {"type": "object", "additionalProperties": False,
         "required": ["claims"], "properties": {
             "version": {"const": "1.0.0"},
-            "claims": {"type": "array", "maxItems": 16, "uniqueItems": True, "items": assertion}}}
+            "claims": {"type": "array", "maxItems": 16, "items": assertion}}}

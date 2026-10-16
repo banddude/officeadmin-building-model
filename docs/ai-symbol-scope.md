@@ -23,8 +23,9 @@ live extraction accuracy or verify that a quote was interpreted correctly.
   No confidence ranking chooses a winner.
 - `symbol_scope_schema(request)`: an optional JSON-schema property definition
   for a provider transport. Use it as the optional mark.scope property.
-  Strict typed parsing additionally checks bounds ordering, distinct evidence
-  and all source bindings.
+  Provider-facing schemas omit unsupported uniqueItems keywords. Strict typed
+  parsing additionally checks bounds ordering, distinct claims/evidence and
+  all source bindings.
 
 A caller's source-only extraction question should request explicit source scope
 quotes and their locations, preserve contradictory statements, and omit claims

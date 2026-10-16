@@ -151,6 +151,8 @@ def test_source_assertions_survive_raw_run_review_canonical_and_repeated_intake(
         assert all(p.page==2 and p.source_id=="synthetic:scope" and p.derivation=="inferred"
             and p.confidence==.4 and p.scope_paths==("attributes.pdf_electrical",) for p in records)
         assert all(p.attributes["document_sha256"] in args["documents"] for p in records)
+        assert all(p.source_element_id != row["source_mark_id"] and
+            p.attributes["target_source_mark_id"] == row["source_mark_id"] for p in records)
     repeated = materialize_reviewed_symbols(outcome.model, outcome.review, **args)
     assert repeated.model.to_json() == outcome.model.to_json()
 

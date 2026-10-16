@@ -507,11 +507,14 @@ def _entity(model, row, decision, registration):
                 source = image["source"]
                 scope_records.append(Provenance(
                     source_kind="ai-proposed", source_id=source["source_id"],
-                    page=source["page"], source_element_id=row["source_mark_id"],
+                    page=source["page"], source_element_id=stable_id("symbol-scope-evidence",
+                        digest({"source": source, "image_sha256": image["sha256"],
+                                "evidence": evidence.to_dict()})),
                     method="ai-symbol-source-scope-v1", derivation="inferred",
                     confidence=min(row["confidence"], claim.confidence),
                     scope_paths=("attributes.pdf_electrical",),
-                    attributes={"document_sha256": source["document_sha256"],
+                    attributes={"target_source_mark_id": row["source_mark_id"],
+                        "document_sha256": source["document_sha256"],
                         "image_sha256": image["sha256"], "image_id": image["id"],
                         "claim": claim.to_dict(), "evidence": evidence.to_dict(),
                         "request_fingerprint": row["request_fingerprint"],

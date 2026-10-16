@@ -11447,6 +11447,16 @@ class ElectricalPdfImporter:
                     "reason_code": "branch_geometry_rejected",
                     "reason": "circuit evidence touches a source-bound rejected branch"})
                 return
+            if any(entity.id in unresolved_branch_load_ids for entity in load_entities):
+                unresolved_circuits.append({
+                    "kind": "device_circuit_tag", "page": observation.page,
+                    "source_element_id": observation.element_id, "status": "unresolved",
+                    "source_text": observation.text, "method": method,
+                    "load_ids": [entity.id for entity in load_entities],
+                    "reason_code": "unresolved_branch_circuit",
+                    "reason": "load touches a source-bound branch with no circuit annotation",
+                })
+                return
             source_entity = recognized_panels[panel_tag]
             shared_raceway_group = (
                 stable_id(
@@ -11954,6 +11964,8 @@ class ElectricalPdfImporter:
         rejected_branch_vector_ids: set[str] = set()
         rejected_branch_load_ids: set[str] = set()
         rejected_branch_annotation_ids: set[str] = set()
+        unresolved_branch_vector_ids: set[str] = set()
+        unresolved_branch_load_ids: set[str] = set()
         if architecture_document is not None:
             from .branch_geometry import discriminate_branch_geometry
             source_vectors = {vector.element_id: vector for vector in vectors}
@@ -12008,6 +12020,7 @@ class ElectricalPdfImporter:
         # of silently attaching every run it happens to sit near.
         annotation_claim_counts: Counter[str] = Counter()
         for component in homerun_components:
+            has_annotation = False
             for observation in texts:
                 if (
                     observation.page != component[0].page
@@ -12026,6 +12039,21 @@ class ElectricalPdfImporter:
                     for vector in component
                 ) <= self.topology_annotation_radius_pt:
                     annotation_claim_counts[observation.element_id] += 1
+                    has_annotation = True
+            if architecture_document is not None and not has_annotation:
+                # Eligibility only excludes supported geometry conflicts. A
+                # positive wall claim elsewhere does not resolve this run's
+                # missing circuit intent. Preserve its no_panel_token outcome
+                # across direct-tag, named-text and topology materializers.
+                unresolved_branch_vector_ids.update(item.element_id for item in component)
+                page = component[0].page
+                for entity in devices:
+                    entity_page, x_pt, y_pt = entity_source_positions[entity.id]
+                    if entity_page == page and min(
+                        _point_path_distance_pt((x_pt, y_pt), vector)
+                        for vector in component
+                    ) <= self.topology_endpoint_radius_pt:
+                        unresolved_branch_load_ids.add(entity.id)
 
         for component in homerun_components:
             page = component[0].page
@@ -12402,6 +12430,12 @@ class ElectricalPdfImporter:
                 unresolved_circuits.append({**evidence, "status": "unresolved",
                     "reason_code": "branch_geometry_rejected"})
                 continue
+            if any(entity.id in unresolved_branch_load_ids for entity in load_entities):
+                unresolved_circuits.append({
+                    **evidence, "status": "unresolved",
+                    "reason_code": "unresolved_branch_circuit",
+                })
+                continue
 
             voltage_v, _ = _extract_voltage((observation.text,))
             poles_match = _POLES_RE.search(observation.text)
@@ -12520,6 +12554,13 @@ class ElectricalPdfImporter:
                     "attached_entity_ids": [], "status": "unresolved",
                     "reason": "branch_geometry_rejected"})
                 continue
+            if unresolved_branch_vector_ids.intersection(element_ids):
+                unresolved_topology.append({
+                    "page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": [], "status": "unresolved",
+                    "reason": "unresolved_branch_circuit",
+                })
+                continue
             wall_conflict = _wall_chain_conflict(
                 component,
                 wall_chains_by_page.get(page, ()),
@@ -12591,6 +12632,13 @@ class ElectricalPdfImporter:
                 unresolved_topology.append({"page": page, "source_element_ids": element_ids,
                     "attached_entity_ids": sorted(attached), "status": "unresolved",
                     "reason": "branch_geometry_rejected"})
+                continue
+            if unresolved_branch_load_ids.intersection(attached):
+                unresolved_topology.append({
+                    "page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": sorted(attached), "status": "unresolved",
+                    "reason": "unresolved_branch_circuit",
+                })
                 continue
 
             topology_row: dict[str, Any] = {

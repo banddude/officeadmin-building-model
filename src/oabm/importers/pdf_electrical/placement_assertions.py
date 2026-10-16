@@ -10,7 +10,7 @@ from typing import Mapping, Sequence
 from oabm.model import BuildingModel, ContractError, Provenance
 from oabm.proposals.contracts import Portable, digest, fingerprint, text, _finite
 from .symbol_stage import (SymbolDecision, SymbolRegistration, SymbolReview,
-                           build_symbol_review, materialize_reviewed_symbols)
+                           build_symbol_review, _materialize_verified)
 
 VERSION = "placement-assertions-v1"
 FIELDS = ("registration_xy", "level_elevation", "anchor", "elevation", "yaw", "entity_type")
@@ -386,11 +386,6 @@ def materialize_asserted_symbols(model, review: SymbolReview, *, runs, documents
     verified = build_symbol_review(runs, documents=documents, images=images, journal_paths=journal_paths)
     if review.to_dict() != verified.to_dict():
         raise ContractError("stale symbol review for placement assertions")
-    if (assertion_review.model_fingerprint != digest(model.to_dict())
-            or assertion_review.symbol_review_fingerprint != verified.fingerprint
-            or assertion_review.decisions_fingerprint != _records_digest(decisions)
-            or assertion_review.registrations_fingerprint != _records_digest(registrations)):
-        raise ContractError("stale placement assertion review binding")
     source_images = {}
     for run in runs:
         for image in run.request.images:
@@ -402,6 +397,20 @@ def materialize_asserted_symbols(model, review: SymbolReview, *, runs, documents
         if key in supplied and supplied[key] != value:
             raise ContractError("conflicting evidence document bytes")
         supplied[key] = value
+    return _materialize_asserted_verified(model, verified, decisions=decisions, registrations=registrations,
+        assertion_review=assertion_review, supplied=supplied, source_images=source_images)
+
+
+def _materialize_asserted_verified(model, verified, *, decisions, registrations, assertion_review,
+        supplied, source_images):
+    """Shared retained-review core; caller separately validates source pixels or retained lineage."""
+    _tuple(tuple(decisions), SymbolDecision, "symbol decisions")
+    _tuple(tuple(registrations), SymbolRegistration, "symbol registrations")
+    if (assertion_review.model_fingerprint != digest(model.to_dict())
+            or assertion_review.symbol_review_fingerprint != verified.fingerprint
+            or assertion_review.decisions_fingerprint != _records_digest(decisions)
+            or assertion_review.registrations_fingerprint != _records_digest(registrations)):
+        raise ContractError("stale placement assertion review binding")
     by_id = {row["proposal_id"]: row for row in verified.proposals}
     for a in assertion_review.assertions:
         row = by_id.get(a.proposal_id)
@@ -433,8 +442,7 @@ def materialize_asserted_symbols(model, review: SymbolReview, *, runs, documents
             report[index]["unresolved"].append(reason)
             gated[index] = replace(original, action="defer", duplicate_of=None,
                                    rationale="Placement assertions unresolved: " + reason)
-    outcome = materialize_reviewed_symbols(model, verified, runs=runs, documents=documents,
-        images=images, journal_paths=journal_paths, decisions=tuple(gated), registrations=registrations)
+    outcome = _materialize_verified(BuildingModel.from_dict(model.to_dict()), verified, tuple(gated), registrations)
     envelope = assertion_review.to_dict()
     entry = {"review":envelope, "fingerprint":assertion_review.fingerprint, "results":report,
              "requested_decisions":[d.to_dict() for d in sorted(decisions,key=lambda d:d.proposal_id)]}

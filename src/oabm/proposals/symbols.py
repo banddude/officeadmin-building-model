@@ -19,6 +19,7 @@ from .contracts import (
     digest, fingerprint, integer, text,
 )
 from .dispatch import AdapterAvailabilityError, _availability_reason
+from .symbol_scope import SymbolScope
 from .takeoff import SourceImage, _strings, _unit_box, _validate_rendered_images
 
 VERSION = "1.0.0"
@@ -183,8 +184,11 @@ class SymbolMark(Portable):
     source_mark: str
     evidence_image_ids: tuple[str, ...]
     unknowns: tuple[str, ...]
+    scope: SymbolScope | None = None
 
     def __post_init__(self):
+        if self.scope is not None and not isinstance(self.scope, SymbolScope):
+            raise ContractError("symbol scope requires typed source assertions")
         text(self.image_id, "symbol source image")
         if self.category not in CATEGORIES:
             raise ContractError("symbol category outside vocabulary")
@@ -218,6 +222,12 @@ class SymbolMark(Portable):
         if (self.category == "unknown" or self.type_proposal is None) and not self.unknowns:
             raise ContractError("unknown symbol/type needs an explicit reason")
 
+    def to_dict(self):
+        data = Portable.to_dict(self)
+        if self.scope is None:
+            data.pop("scope")  # Preserve historical raw outputs and mark IDs.
+        return data
+
     @property
     def geometry_kind(self):
         return "point" if self.anchor is not None else "linear"
@@ -226,6 +236,8 @@ class SymbolMark(Portable):
         if self.image_id not in request.target_image_ids:
             raise ContractError("symbol must originate in a target crop, not a legend/schedule")
         known = {im.id for im in request.images}
+        if self.scope is not None:
+            self.scope.validate_for(request)
         if set(self.evidence_image_ids)-known or self.image_id not in self.evidence_image_ids:
             raise ContractError("symbol evidence must cite its target and only supplied images")
         if self.type_proposal is not None and self.type_proposal not in request.allowed_types:
@@ -250,6 +262,11 @@ class SymbolOutput(Portable):
         keys = [digest(mark.to_dict()) for mark in self.marks]
         if len(keys) != len(set(keys)):
             raise ContractError("exact duplicate raw rows require a corrected bounded response")
+
+    def to_dict(self):
+        data = Portable.to_dict(self)
+        data["marks"] = [mark.to_dict() for mark in self.marks]
+        return data
 
     def validate_for(self, request):
         if set(self.scanned_image_ids) != set(request.target_image_ids):
@@ -492,8 +509,16 @@ class SymbolProposal(Portable):
     provenance: tuple[Provenance, ...]
     accepted: bool = False
     review_state: str = "pending"
+    scope: SymbolScope | None = None
+    scope_sources: tuple[SourceImage, ...] = ()
 
     def __post_init__(self):
+        if self.scope is not None and not isinstance(self.scope, SymbolScope):
+            raise ContractError("exported scope requires typed source assertions")
+        _array(self.scope_sources, SourceImage, "scope source images")
+        expected = () if self.scope is None else self.scope.evidence_image_ids
+        if tuple(sorted(im.id for im in self.scope_sources)) != expected:
+            raise ContractError("scope source images must exactly cover source assertions")
         if self.accepted is not False or self.review_state != "pending":
             raise ContractError("AI symbol proposals always remain pending/unaccepted")
         if self.category not in CATEGORIES or self.geometry_kind not in ("point","linear"):
@@ -536,6 +561,13 @@ class SymbolProposal(Portable):
             raise ContractError("symbol proposal provenance must retain its inferred source binding")
 
 
+    def to_dict(self):
+        data = Portable.to_dict(self)
+        if self.scope is None:
+            data.pop("scope")
+            data.pop("scope_sources")
+        return data
+
     @property
     def fingerprint(self):
         return digest(self.to_dict())
@@ -566,7 +598,8 @@ def _semantic_signature(output):
         records.append({"image_id":mark.image_id,"category":mark.category,
             "type":mark.type_proposal,"type_tag":mark.type_tag,"instance_label":mark.instance_label,
             "bounds":point(mark.bounds),"anchor":point(mark.anchor),
-            "polyline":tuple(point(p) for p in mark.polyline)})
+            "polyline":tuple(point(p) for p in mark.polyline),
+            "scope":None if mark.scope is None else mark.scope.to_dict()})
     return digest(sorted(records,key=digest))
 
 
@@ -800,7 +833,9 @@ class SymbolRun(Portable):
                 bounds_pt=bounds_pt,anchor_pt=anchor,polyline_pt=line,confidence=mark.confidence,
                 unknowns=tuple(dict.fromkeys(unknowns)),source_mark=mark.source_mark,
                 evidence_image_ids=mark.evidence_image_ids,request_fingerprint=request_fp,
-                result_fingerprint=result_fp,attempt_id=receipt.attempt_id,provenance=(provenance,)))
+                result_fingerprint=result_fp,attempt_id=receipt.attempt_id,provenance=(provenance,),
+                scope=mark.scope, scope_sources=tuple(images_by_id[key] for key in
+                    (() if mark.scope is None else mark.scope.evidence_image_ids))))
         return tuple(sorted(proposals,key=lambda p:p.proposal_id))
 
     def duplicate_candidates(self,*,images,documents,journal_path,overlap_threshold=.5):

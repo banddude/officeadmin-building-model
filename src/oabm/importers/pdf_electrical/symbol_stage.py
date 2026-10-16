@@ -273,7 +273,7 @@ def build_symbol_review(runs: Sequence, *, documents: Mapping[str, bytes],
         request_images, request_documents = _request_inputs(run.request, images, documents)
         proposals = run.proposals(documents=request_documents, images=request_images,
                                   journal_path=journal_paths[run.request.fingerprint])
-        rows.extend(_portable(p) for p in proposals)
+        rows.extend(p.to_dict() for p in proposals)
         # Retain the complete run request/output/attempt envelope for review;
         # no provider identity or empty-result completeness is inferred here.
         coverage.append({"run_fingerprint": run.fingerprint, "status": run.status,
@@ -493,6 +493,33 @@ def _entity(model, row, decision, registration):
         "remaining_unknowns": list(placement.remaining_unknowns),
         "physical_geometry_status": "anchor_only_dimensions_unknown",
         "hosting_status": "unresolved", "connectivity_status": "unresolved"}}
+    # Preserve source assertions independently of type/placement review. A type
+    # correction or resolved_unknowns entry cannot resolve contradictory scope.
+    if row.get("scope") is not None:
+        from oabm.proposals.symbol_scope import SymbolScope
+        scope = SymbolScope.from_dict(row["scope"])
+        attributes["pdf_electrical"] = scope.canonical_metadata()
+        sources = {image["id"]: image for image in row["scope_sources"]}
+        scope_records = []
+        for claim in scope.claims:
+            for evidence in claim.evidence:
+                image = sources[evidence.image_id]
+                source = image["source"]
+                scope_records.append(Provenance(
+                    source_kind="ai-proposed", source_id=source["source_id"],
+                    page=source["page"], source_element_id=stable_id("symbol-scope-evidence",
+                        digest({"source": source, "image_sha256": image["sha256"],
+                                "evidence": evidence.to_dict()})),
+                    method="ai-symbol-source-scope-v1", derivation="inferred",
+                    confidence=min(row["confidence"], claim.confidence),
+                    scope_paths=("attributes.pdf_electrical",),
+                    attributes={"target_source_mark_id": row["source_mark_id"],
+                        "document_sha256": source["document_sha256"],
+                        "image_sha256": image["sha256"], "image_id": image["id"],
+                        "claim": claim.to_dict(), "evidence": evidence.to_dict(),
+                        "request_fingerprint": row["request_fingerprint"],
+                        "result_fingerprint": row["result_fingerprint"]}))
+        source_provenance += tuple(scope_records)
     cls = ElectricalDevice if placement.entity_kind == "device" else ElectricalEquipment
     type_key = "device_type" if placement.entity_kind == "device" else "equipment_type"
     # Identity follows the native source-mark identity, never corrected pose/type.

@@ -69,9 +69,9 @@ class QuantityItem:
     provenance: tuple[Provenance, ...]
     confidence: float
     assembly_key: str | None = None
-    #: Caller-supplied bid group this line belongs to (for example
-    #: ``"ALTERNATES"``); ``None`` is the ungrouped base.  Set only when the
-    #: caller supplied ``groups`` to :func:`extract_quantities`.
+    #: Caller bid group or guarded AI source-scope inventory group.
+    #: ``None`` is the ungrouped base. AI reuse/alternates/unknown scope cannot
+    #: enter base merely because the caller omitted ``groups``.
     group: str | None = None
     quantity_provenance: tuple[Provenance, ...] | None = None
 
@@ -109,7 +109,7 @@ class TakeoffReport:
     length_unit: str = LENGTH_UNIT
     count_unit: str = COUNT_UNIT
     #: Sorted ``(name, matched_entity_count, item_line_count)`` triples, one
-    #: per caller-supplied group; ``None`` when no groups were supplied.
+    #: per caller or AI source-scope group; ``None`` for ungrouped reports.
     group_summary: tuple[tuple[str, int, int], ...] | None = None
     #: Distinct group ids that matched no quantity-bearing entity.  Always 0
     #: when no groups were supplied.
@@ -186,7 +186,13 @@ def extract_quantities(
     group yields separate lines — base lines first, then groups sorted by
     name.  An id may belong to at most one group (``ValueError`` otherwise);
     ids that match nothing are ignored and counted in the report.  Without
-    ``groups`` the report is byte-identical to the plain takeoff.
+    ``groups`` ordinary non-AI reports retain their existing bytes.
+
+    Reviewed AI symbols additionally retain work/bid/alternate scope in line
+    variants. Only explicit new+base may join ungrouped base. Reuse, removal,
+    N.I.C., alternates and unresolved/conflicting facts get identified inventory
+    groups, composed with any caller group. Contradictory source metadata fails
+    closed. These counts do not select alternates or authorize purchases.
     """
 
     if not isinstance(model, BuildingModel):
@@ -215,9 +221,31 @@ def extract_quantities(
         1 for member_id in group_owner if member_id not in groupable_ids
     )
 
+    # Reviewed AI marks carry source scope, not an implicit purchase instruction.
+    # Only explicit new+base joins base; every other state has an identified group.
+    ai_scopes = {}
+    for entity in (*model.electrical_devices, *model.electrical_equipment):
+        scope = _ai_symbol_scope(entity)
+        if scope is None:
+            continue
+        ai_scopes[entity.id] = scope
+        if scope.work_status != "new" or scope.bid_scope != "base":
+            labels = {"work_status": scope.work_status, "bid_scope": scope.bid_scope,
+                      "alternate_id": scope.alternate_id}
+            if entity.id in group_owner:
+                labels["caller_group"] = group_owner[entity.id]
+            group_owner[entity.id] = "ai-symbol-scope:" + json.dumps(
+                labels, sort_keys=True, separators=(",", ":"))
+    supplied_group_names = tuple(sorted(set(supplied_group_names) | set(group_owner.values())))
+
     route_by_id = {route.id: route for route in model.routes}
     contributions: list[_Contribution] = []
     warnings: list[QuantityWarning] = []
+    if ai_scopes:
+        warnings.append(QuantityWarning("ai_symbol_scope_inventory",
+            "AI symbol counts are source-scoped object inventory. Reuse, removal, N.I.C., "
+            "alternate and unresolved groups are not base purchases; no alternate is selected automatically.",
+            tuple(sorted(ai_scopes))))
 
     for route in sorted(model.routes, key=lambda item: item.id):
         selection = next((s for s in model.raceway_selections if s.route_id == route.id), None)
@@ -528,6 +556,31 @@ def _group_summary(
     )
 
 
+def _ai_symbol_scope(entity):
+    """Consume intake metadata only; no marker classifier or silent fallback."""
+    if "symbol_review" not in entity.attributes:
+        return None
+    from oabm.model import ContractError
+    from oabm.proposals.symbol_scope import SymbolScope
+    review = entity.attributes["symbol_review"]
+    try:
+        if not isinstance(review, dict) or not isinstance(review.get("proposal"), dict):
+            raise ContractError("missing AI symbol source proposal")
+        proposal = review["proposal"]
+        original = proposal.get("scope")
+        lane = entity.attributes.get("pdf_electrical")
+        if original is None:
+            if lane is not None:
+                raise ContractError("scope metadata without original AI assertions")
+            return SymbolScope(claims=())  # Old runs remain unknown, never new.
+        scope = SymbolScope.from_dict(original)
+        if not isinstance(lane, dict) or any(lane.get(k) != v for k, v in scope.canonical_metadata().items()):
+            raise ContractError("AI scope metadata contradicts original source assertions")
+        return scope
+    except ContractError as exc:
+        raise QuantityError(f"invalid AI symbol scope for {entity.id}: {exc}") from exc
+
+
 def _countable_entity_contribution(
     category: str,
     entity: ElectricalDevice | ElectricalEquipment,
@@ -536,7 +589,11 @@ def _countable_entity_contribution(
 ) -> _Contribution:
     item_type = entity.device_type if isinstance(entity, ElectricalDevice) else entity.equipment_type
     size = entity.size
-    return _contribution(
+    scope = _ai_symbol_scope(entity)
+    scope_variant = () if scope is None else (
+        ("work_status", scope.work_status), ("bid_scope", scope.bid_scope),
+        ("alternate_id", scope.alternate_id))
+    result = _contribution(
         category=category,
         item_type=item_type,
         quantity=1.0,
@@ -547,11 +604,18 @@ def _countable_entity_contribution(
             ("size_x_m", size.x if size is not None else None),
             ("size_y_m", size.y if size is not None else None),
             ("size_z_m", size.z if size is not None else None),
-        ),
+        ) + scope_variant,
         entities=(entity,),
         assembly_resolver=assembly_resolver,
         group=group,
     )
+
+    if scope is not None:
+        scope_confidence = [c.confidence for c in scope.claims]
+        scope_confidence.extend(p.confidence for p in entity.provenance if provenance_applies_to(
+            p, ("attributes.pdf_electrical", "attributes.symbol_review.proposal.scope")))
+        result = replace(result, confidence=min([result.confidence, *scope_confidence]))
+    return result
 
 
 def _contribution(

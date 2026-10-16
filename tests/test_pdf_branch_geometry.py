@@ -68,7 +68,7 @@ def test_long_and_dense_run_reaches_device_without_count_or_reach_cap(tmp_path, 
     result = evaluate(path)
     assert result.status == 'eligible'
     assert len(result.vector_ids) == segments
-    assert result.architecture_evidence_status == 'applied'
+    assert result.architecture_evidence_status == 'supplied_empty'
     model = ElectricalPdfImporter().import_document(extract_pdf(path))
     assert [c.circuit_number for c in model.circuits] == ['1']
     assert len(model.circuits[0].load_port_ids) == 1
@@ -99,7 +99,7 @@ def test_unclassified_architecture_is_disclosed_not_silently_certified(tmp_path)
     doc, arch, evidence, seeds, eligible = inputs(path)
     result = discriminate_branch_geometry(doc, seed_vector_ids=seeds, eligible_vector_ids=eligible)
     assert result.status == 'eligible'
-    assert result.architecture_evidence_status == 'unavailable_unclassified_architecture_not_excluded'
+    assert result.architecture_evidence_status == 'missing_handoff'
 
 
 @pytest.mark.parametrize('change,match', [('sha','sha256'), ('page','page'), ('ids','missing source'), ('frame','frame')])
@@ -195,3 +195,37 @@ def test_traversal_does_not_mutate_source_or_default_model(tmp_path):
         wall_evidence=evidence, architecture_document=arch)
     assert result.wall_evidence == evidence
     assert ElectricalPdfImporter().import_document(doc).to_json() == before
+
+
+@pytest.mark.parametrize('crossing', [False, True])
+def test_missing_and_empty_handoffs_distinct_without_changing_traversal(tmp_path, crossing):
+    path = sheet(tmp_path/'coverage-gap.pdf', crossing=crossing)
+    doc, arch, evidence, seeds, eligible = inputs(path)
+    assert not evidence.chains, 'actual architecture classifier supplies no wall claim'
+    missing = discriminate_branch_geometry(doc, seed_vector_ids=seeds, eligible_vector_ids=eligible)
+    empty = discriminate_branch_geometry(doc, seed_vector_ids=seeds, eligible_vector_ids=eligible,
+        wall_evidence=evidence, architecture_document=arch)
+    assert missing.architecture_evidence_status == 'missing_handoff'
+    assert empty.architecture_evidence_status == 'supplied_empty'
+    assert missing.wall_evidence is None and empty.wall_evidence == evidence
+    # The optional open wall-like stroke crosses the run but has no positive
+    # source classification. Empty evidence must not certify it as wiring.
+    assert missing.status == empty.status == 'eligible'
+    assert missing.reason_code is empty.reason_code is None
+    assert replace(empty, architecture_evidence_status='missing_handoff', wall_evidence=None) == missing
+    if crossing:
+        assert any(v.points_pt == ((300.,200.),(300.,500.)) for v in doc.vectors)
+
+
+@pytest.mark.parametrize('length,decision', [(350, 'unresolved'), (80, 'eligible')])
+def test_positive_handoff_status_is_not_a_clearance_or_coverage_verdict(tmp_path, length, decision):
+    path = sheet(tmp_path/'partial-coverage.pdf', wall=True, length=length)
+    doc, arch, evidence, seeds, eligible = inputs(path)
+    assert evidence.chains
+    result = discriminate_branch_geometry(doc, seed_vector_ids=seeds, eligible_vector_ids=eligible,
+        wall_evidence=evidence, architecture_document=arch)
+    assert result.architecture_evidence_status == 'supplied_positive'
+    assert result.status == decision
+    assert result.wall_evidence == evidence
+    assert bool(result.wall_chain_ids) == (decision == 'unresolved')
+    assert result.reason_code == ('enters_classified_wall_chain' if decision == 'unresolved' else None)

@@ -182,16 +182,25 @@ def test_shared_observed_prototype_is_scored_once_without_dropping_tag_identity(
     assert len(calls)==2 and len(set(calls))==2
 
 
-def test_leader_candidates_are_scoped_to_page_with_identical_geometry_keys():
-    from types import SimpleNamespace as Row
+def test_leader_candidates_are_scoped_to_page_with_identical_geometry_keys(tmp_path):
+    from pypdf import PdfReader
+    from oabm.importers.pdf_electrical import importer as api
     from oabm.importers.pdf_electrical.lighting_categories import leader_candidates
-    from oabm.importers.pdf_electrical.importer import PdfVectorPathObservation
-    clusters=[Row(page=page, geometry_key="same-absolute-points", bbox_pt=(140,495,155,505),
-                  center_pt=(147.5,500)) for page in (1,2)]
+    source=tmp_path/'leader-source.pdf';_source(source,mode='leader')
+    reader=PdfReader(source);writer=PdfWriter()
+    for _ in (1,2):
+        writer.add_page(reader.pages[0])
+    path=tmp_path/'identical-floor-pages.pdf';writer.write(path)
+    assert not path.with_suffix('.expected.json').exists()
+    document=api.extract_pdf(path)
+    clusters=[c for c in api._glyph_clusters(document,document.vectors)
+              if abs(c.center_pt[0]-149.5)<1 and abs(c.center_pt[1]-500.5)<1]
+    assert {c.page for c in clusters}=={1,2}
+    assert len({c.geometry_key for c in clusters})==1
     for page in (1,2):
-        observation=Row(page=page,x_pt=100,y_pt=400)
-        vector=PdfVectorPathObservation(element_id=f"p{page}:leader",page=page,
-            points_pt=((100,400),(143,500)),closed=False,source_kind="pdf-vector",metadata={})
-        hits,evidence=leader_candidates(observation,clusters,[vector])
+        observation=next(t for t in document.texts if t.page==page and t.text=='Q-1')
+        hits,evidence=leader_candidates(observation,clusters,document.vectors)
         assert [hit.page for hit in hits]==[page]
-        assert evidence["same-absolute-points"]["source_element_ids"]==[f"p{page}:leader"]
+        assert evidence[clusters[0].geometry_key]['source_element_ids']
+        assert all(source_id.startswith(f'p{page}:') for source_id in
+                   evidence[clusters[0].geometry_key]['source_element_ids'])

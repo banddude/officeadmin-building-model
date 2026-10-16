@@ -334,3 +334,109 @@ def test_two_actual_proposals_cannot_exchange_assertion_fingerprints(tmp_path):
     crossed=(replace(facts[0],proposal_id=second["proposal_id"]),*facts[1:])
     with pytest.raises(ContractError,match="association"):
         apply(model,review,args,crossed)
+
+
+@pytest.mark.parametrize("jitter",[0.,.001])
+def test_fitting_point_cannot_be_reused_as_independent_check(tmp_path,jitter):
+    model,review,args,facts=setup(tmp_path)
+    ev=next(f for f in facts if f.field=="anchor").evidence[0]
+    controls=tuple(RegistrationControl(source_pt=p,canonical_xy_m=q,independent_check=False)
+        for p,q in (((60,60),(7,8)),((80,60),(9,8)),((70,70),(8,9))))
+    reused=RegistrationControl(source_pt=(60+jitter,60),canonical_xy_m=(7+.1*jitter,8),independent_check=True)
+    changed=tuple(replace(f,role="source_observed",evidence=(replace(ev,bounds_pt=(50,50,100,90)),),
+                          controls=(*controls,reused),tolerance_m=.001)
+                  if f.field=="registration_xy" else f for f in facts)
+    outcome=apply(model,review,args,changed)
+    assert not outcome.model.electrical_devices
+    assert "reused_fit_control_as_independent_check" in outcome.model.attributes[
+        "placement_assertion_reviews"][0]["results"][0]["unresolved"]
+
+
+def duplicate_case(tmp_path):
+    model,_,args,facts=setup(tmp_path/"original")
+    _,_,_,output=fixture()
+    second=replace(output.marks[0],instance_label="duplicate-source-mark")
+    (tmp_path/"paired").mkdir()
+    result=run(tmp_path/"paired",output=replace(output,marks=(*output.marks,second)))
+    args={**args,"runs":(result,),"journal_paths":{result.request.fingerprint:tmp_path/"paired/attempts.jsonl"}}
+    review=build_symbol_review((result,),documents=args["documents"],images=args["images"],journal_paths=args["journal_paths"])
+    first,second=review.proposals
+    survivor=replace(args["decisions"][0],manifest_fingerprint=review.fingerprint,
+        proposal_id=first["proposal_id"],proposal_fingerprint=digest(first))
+    duplicate=replace(survivor,proposal_id=second["proposal_id"],proposal_fingerprint=digest(second),
+        action="duplicate",placement=None,duplicate_of=first["proposal_id"])
+    args["decisions"]=(duplicate,survivor)  # Dependency may precede survivor.
+    facts=tuple(replace(f,proposal_id=first["proposal_id"],proposal_fingerprint=digest(first)) for f in facts)
+    return model,review,args,facts
+
+
+def test_missing_survivor_height_propagates_duplicate_deferral_and_keeps_evidence(tmp_path):
+    model,review,args,facts=duplicate_case(tmp_path)
+    outcome=apply(model,review,args,tuple(f for f in facts if f.field!="elevation"))
+    assert not outcome.model.electrical_devices
+    assert {d["status"] for d in outcome.dispositions}=={"defer"}
+    entry=outcome.model.attributes["placement_assertion_reviews"][0]
+    assert sorted(d["action"] for d in entry["requested_decisions"])==["accept","duplicate"]
+    dependent=next(r for r in entry["results"] if r["requested_action"]=="duplicate")
+    assert any(r.startswith("duplicate_survivor_deferred:") for r in dependent["unresolved"])
+    assert outcome.review.to_json()==review.to_json()
+    assert next(d for d in entry["requested_decisions"] if d["action"]=="duplicate")["duplicate_of"]
+
+
+@pytest.mark.parametrize("kind",["wrong_survivor","stale_duplicate","duplicate_id","unacknowledged_unknown"])
+def test_group_deferral_does_not_mask_malformed_original_decisions(tmp_path,kind):
+    model,review,args,facts=duplicate_case(tmp_path)
+    duplicate,survivor=args["decisions"]
+    if kind=="wrong_survivor": duplicate=replace(duplicate,duplicate_of="absent")
+    elif kind=="stale_duplicate": duplicate=replace(duplicate,proposal_fingerprint="0"*64)
+    elif kind=="duplicate_id": args["decisions"]=(duplicate,survivor,survivor)
+    else: survivor=replace(survivor,placement=replace(survivor.placement,remaining_unknowns=()))
+    if kind!="duplicate_id":args["decisions"]=(duplicate,survivor)
+    before=model.to_json()
+    with pytest.raises(ContractError):
+        apply(model,review,args,tuple(f for f in facts if f.field!="elevation"))
+    assert model.to_json()==before
+
+
+def test_independent_registration_check_survives_three_fit_controls(tmp_path):
+    model,review,args,facts=setup(tmp_path)
+    ev=next(f for f in facts if f.field=="anchor").evidence[0]
+    controls=tuple(RegistrationControl(source_pt=p,canonical_xy_m=q,independent_check=c)
+        for p,q,c in (((60,60),(7,8),False),((80,60),(9,8),False),
+                      ((70,70),(8,9),False),((90,80),(10,10),True)))
+    changed=tuple(replace(f,role="source_observed",evidence=(replace(ev,bounds_pt=(50,50,100,90)),),
+                          controls=controls,tolerance_m=.001)
+                  if f.field=="registration_xy" else f for f in facts)
+    assert len(apply(model,review,args,changed).model.electrical_devices)==1
+
+
+@pytest.mark.parametrize("kind",["duplicate_fit","collinear_check","tolerance_collinear_check"])
+def test_registration_rejects_duplicate_fit_and_collinear_check_evidence(tmp_path,kind):
+    model,review,args,facts=setup(tmp_path)
+    ev=next(f for f in facts if f.field=="anchor").evidence[0]
+    controls=[RegistrationControl(source_pt=p,canonical_xy_m=q,independent_check=False)
+              for p,q in (((60,60),(7,8)),((80,60),(9,8)))]
+    if kind=="duplicate_fit":
+        controls.append(controls[0])
+        check=RegistrationControl(source_pt=(70,70),canonical_xy_m=(8,9),independent_check=True)
+        reason="duplicate_registration_fit_control"
+    else:
+        jitter=.001 if kind=="tolerance_collinear_check" else 0.
+        check=RegistrationControl(source_pt=(90,60+jitter),canonical_xy_m=(10,8+.1*jitter),independent_check=True)
+        reason="degenerate:registration_controls"
+    controls.append(check)
+    changed=tuple(replace(f,role="source_observed",evidence=(replace(ev,bounds_pt=(50,50,100,90)),),
+                          controls=tuple(controls),tolerance_m=.001)
+                  if f.field=="registration_xy" else f for f in facts)
+    result=apply(model,review,args,changed)
+    assert not result.model.electrical_devices
+    assert reason in result.model.attributes["placement_assertion_reviews"][0]["results"][0]["unresolved"]
+
+
+def test_complete_duplicate_survivor_still_admits_exactly_one_entity(tmp_path):
+    model,review,args,facts=duplicate_case(tmp_path)
+    result=apply(model,review,args,facts)
+    assert len(result.model.electrical_devices)==1
+    assert {d["status"] for d in result.dispositions}=={"accept","duplicate"}
+    ids={d["canonical_id"] for d in result.dispositions}
+    assert ids=={result.model.electrical_devices[0].id}

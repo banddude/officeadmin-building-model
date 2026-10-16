@@ -64,7 +64,10 @@ to the proposal's source page. Locator prose remains a reviewed assertion,
 not automatic semantic verification.
 
 Observed/measured registration needs two fitting controls plus an independent,
-non-collinear check, with explicit tolerance in metres. The actual affine
+non-collinear check, with explicit tolerance in metres. Fitting coordinates
+must be distinct; a fitting coordinate reused as a check is not independent.
+Distinctness and perpendicular separation are tested in metres against that
+explicit tolerance, in both transformed source and canonical control space. The actual affine
 recomputes residuals; controls must lie within the registration region.
 Project-defined/designed transforms are explicit authorized definitions,
 not measured claims. Any supplied controls are still checked.
@@ -110,7 +113,11 @@ executable synthetic example. Capture the review as follows:
 The envelope binds the exact canonical model, rebuilt source review, decisions
 and registrations. Stale source/model/proposal/evidence/decision bindings fail
 atomically. Missing, conflicting, unknown, diagram-only or incompatible required
-facts turn requested acceptance into a visible deferral. Acknowledging an
+facts turn requested acceptance into a visible deferral. Dependent duplicate
+decisions also defer when their accepted survivor is blocked by this gate; the
+original duplicate relation and reason remain recorded. Original malformed
+duplicate relations, duplicate decisions and unacknowledged acceptance unknowns
+still fail before gating rather than being repaired by a deferral. Acknowledging an
 original unknown does not waive these checks.
 
 Original requested decisions, assertions and reason codes are retained in

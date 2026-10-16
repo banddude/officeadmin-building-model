@@ -256,19 +256,7 @@ def _field_reasons(facts, decision, registration, model, canonical_datum_id):
                 "m11_m_per_pt","m12_m_per_pt","m21_m_per_pt","m22_m_per_pt","tx_m","ty_m"))
             if a.value != expected or a.reference_id != registration.fingerprint or a.basis != "displayed_bottom_pt_to_canonical_m":
                 reasons.append("registration_mismatch")
-            # Reflecting/shearing/scaling without evidence cannot be hidden by a frame label.
-            if a.role in ("source_observed", "field_measured"):
-                controls = a.controls
-                fits = [c for c in controls if not c.independent_check]
-                checks = [c for c in controls if c.independent_check]
-                if len(fits) < 2 or not checks or a.tolerance_m is None:
-                    reasons.append("missing:registration_controls")
-                else:
-                    points = [c.source_pt for c in controls]
-                    if not any(abs((q[0]-points[0][0])*(r[1]-points[0][1])-
-                                   (q[1]-points[0][1])*(r[0]-points[0][0])) > 1e-8
-                               for q in points[1:] for r in points[1:]):
-                        reasons.append("degenerate:registration_controls")
+            reasons.extend(_control_reasons(a, transform))
             for control in a.controls:
                 x0,y0,x1,y1 = registration.source_bbox_pt
                 if not (x0 <= control.source_pt[0] <= x1 and y0 <= control.source_pt[1] <= y1):
@@ -312,6 +300,65 @@ def _field_reasons(facts, decision, registration, model, canonical_datum_id):
     if registration.transform.z_m != level.elevation_m:
         reasons.append("registration_level_datum_mismatch")
     return sorted(set(reasons))
+
+
+def _control_reasons(assertion, transform):
+    """Check geometric independence in metres, using the caller's tolerance."""
+    fits = [c for c in assertion.controls if not c.independent_check]
+    checks = [c for c in assertion.controls if c.independent_check]
+    reasons = []
+    if assertion.role in ("source_observed", "field_measured") and (
+            len(fits) < 2 or not checks or assertion.tolerance_m is None):
+        reasons.append("missing:registration_controls")
+    if not assertion.controls or assertion.tolerance_m is None:
+        return reasons
+    tolerance = assertion.tolerance_m
+    def projected(c):
+        p = transform.apply(*c.source_pt)
+        return (p.x,p.y)
+    def distance(a,b):
+        return math.hypot(a[0]-b[0],a[1]-b[1])
+    def same(a,b):
+        return (distance(projected(a),projected(b)) <= tolerance or
+                distance(a.canonical_xy_m,b.canonical_xy_m) <= tolerance)
+    if any(same(a,b) for i,a in enumerate(fits) for b in fits[i+1:]):
+        reasons.append("duplicate_registration_fit_control")
+    if any(same(check,fit) for check in checks for fit in fits):
+        reasons.append("reused_fit_control_as_independent_check")
+    def off_line(point,a,b):
+        length=distance(a,b)
+        return length > tolerance and abs(
+            (b[0]-a[0])*(point[1]-a[1])-(b[1]-a[1])*(point[0]-a[0]))/length > tolerance
+    if assertion.role in ("source_observed", "field_measured") and checks and not all(
+            any(off_line(projected(check),projected(a),projected(b)) and
+                off_line(check.canonical_xy_m,a.canonical_xy_m,b.canonical_xy_m)
+                for i,a in enumerate(fits) for b in fits[i+1:])
+            for check in checks):
+        reasons.append("degenerate:registration_controls")
+    return reasons
+
+
+def _validate_original_decisions(decisions, review):
+    """Do not let a later safe deferral repair a malformed original intent graph."""
+    rows={r["proposal_id"]:r for r in review.proposals}
+    by_id={}
+    groups={key:group for group in review.duplicate_candidates for key in group}
+    for decision in decisions:
+        if decision.proposal_id in by_id:
+            raise ContractError("multiple decisions for one symbol")
+        row=rows.get(decision.proposal_id)
+        if row is None or decision.manifest_fingerprint != review.fingerprint or decision.proposal_fingerprint != digest(row):
+            raise ContractError("stale symbol review decision")
+        if decision.action == "accept" and set(row["unknowns"]) - (
+                set(decision.resolved_unknowns) | set(decision.placement.remaining_unknowns)):
+            raise ContractError("accepted symbol has unacknowledged unknowns")
+        by_id[decision.proposal_id]=decision
+    for decision in decisions:
+        if decision.action == "duplicate":
+            survivor=by_id.get(decision.duplicate_of)
+            if (decision.duplicate_of not in groups.get(decision.proposal_id, ()) or
+                    survivor is None or survivor.action != "accept"):
+                raise ContractError("duplicate decision needs an accepted candidate survivor")
 
 
 def materialize_asserted_symbols(model, review: SymbolReview, *, runs, documents,
@@ -361,6 +408,7 @@ def materialize_asserted_symbols(model, review: SymbolReview, *, runs, documents
         if row is None or a.proposal_fingerprint != digest(row):
             raise ContractError("stale per-device assertion association")
         _validate_evidence(a, supplied, source_images, row)
+    _validate_original_decisions(decisions, verified)
     reg_map = {r.fingerprint:r for r in registrations}
     report = []
     gated = []
@@ -377,6 +425,14 @@ def materialize_asserted_symbols(model, review: SymbolReview, *, runs, documents
         gated.append(replace(decision, action="defer", placement=None,
                              rationale="Placement assertions unresolved: " + ", ".join(reasons))
                      if reasons else decision)
+    blocked = {original.proposal_id for original, effective in zip(decisions, gated)
+               if original.action == "accept" and effective.action == "defer"}
+    for index, original in enumerate(decisions):
+        if original.action == "duplicate" and original.duplicate_of in blocked:
+            reason = "duplicate_survivor_deferred:" + original.duplicate_of
+            report[index]["unresolved"].append(reason)
+            gated[index] = replace(original, action="defer", duplicate_of=None,
+                                   rationale="Placement assertions unresolved: " + reason)
     outcome = materialize_reviewed_symbols(model, verified, runs=runs, documents=documents,
         images=images, journal_paths=journal_paths, decisions=tuple(gated), registrations=registrations)
     envelope = assertion_review.to_dict()

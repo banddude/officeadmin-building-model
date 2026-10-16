@@ -105,3 +105,22 @@ def test_optional_scope_hook_cannot_override_geometry_or_require_historical_scop
     Draft202012Validator(schema).validate(output.to_dict())
     extension["properties"].clear()
     assert mark["properties"]["scope"] == saved
+
+
+def test_strict_transport_omits_unsupported_unique_items_but_domain_rejects_duplicates():
+    request, _, _, output = fixture()
+    schema = symbol_output_schema(request)
+    def visit(value):
+        if isinstance(value, dict):
+            assert "uniqueItems" not in value
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+    visit(schema)
+    raw = output.to_dict()
+    raw["scanned_image_ids"] = ["field", "field"]
+    Draft202012Validator(schema).validate(raw)
+    with pytest.raises(ContractError):
+        SymbolOutput.from_dict(raw)

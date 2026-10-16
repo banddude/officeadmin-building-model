@@ -219,3 +219,30 @@ def test_cross_sheet_schedule_cannot_override_symbol_mismatch(tmp_path):
     model = ElectricalPdfImporter().import_pdf(path)
     assert len([device for device in model.electrical_devices if device.device_type == "luminaire"]) == 4
     assert "lighting_fixture_symbol_mismatch" in model.to_json()
+
+
+@pytest.mark.parametrize("reference", [
+    "FOR EXTERIOR LIGHTING SEE FIXTURE SCHEDULE ON E9.2",
+    "SEE EXTERIOR LIGHTING FIXTURE SCHEDULE ON E9.2",
+    "SEE FIXTURE SCHEDULE ON E9.2 FOR EXTERIOR LIGHTING",
+    "FOR BUILDING B SEE LIGHTING FIXTURE SCHEDULE ON E9.2",
+])
+def test_scoped_reference_has_no_page_wide_authority(reference):
+    texts = _case(titles=("LIGHTING FIXTURE SCHEDULE",)*2,
+                  descriptions=("INTERIOR WALL LIGHT", "EXTERIOR WALL LIGHT"),
+                  references=(reference,))
+    rows, bases, problems = _resolve(texts)
+    assert (1, "A") not in rows and (1, "A") not in bases
+    assert len(problems[0]["candidate_schedules"]) == 2
+    ref = problems[0]["reference_outcomes"][0]
+    assert ref["applicability_qualifiers"]
+    assert ref["applicability_status"] == "unresolved"
+    assert ref["source_text"] == reference
+    assert ref["source_element_id"] == "p1:reference0"
+
+
+def test_architectural_lighting_schedule_retains_explicit_lighting_scope():
+    rows, bases, problems = _resolve(_case(titles=("ARCHITECTURAL LIGHTING FIXTURE SCHEDULE",)))
+    assert not problems
+    assert rows[(1, "A")].fields["description"] == "WALL LIGHT"
+    assert bases[(1, "A")]["tier"] == "document_unique_exact_tag"

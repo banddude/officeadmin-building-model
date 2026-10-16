@@ -6974,7 +6974,11 @@ def _lighting_heading_kind(observation: PdfTextObservation) -> str | None:
         r"(?:(?:EQUIPMENT|SERVICE)\s+)?(?:ROOMS?|AREAS?|SPACES?)\b",
         "", normalized,
     )
-    if set(discipline_text.split()) & {"PLUMBING", "MECHANICAL", "HVAC", "SANITARY", "ARCHITECTURAL", "STRUCTURAL"}:
+    if set(discipline_text.split()) & {"PLUMBING", "MECHANICAL", "HVAC", "SANITARY"}:
+        return None
+    if words & {"ARCHITECTURAL", "STRUCTURAL"} and not words & {
+        "LIGHT", "LIGHTING", "LUMINAIRE", "LUMINAIRES",
+    }:
         return None
     if discipline_text != normalized and not words & {
         "LIGHT", "LIGHTING", "LUMINAIRE", "LUMINAIRES",

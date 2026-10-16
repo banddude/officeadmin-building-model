@@ -77,6 +77,19 @@ def resolve_schedule_associations(
             continue
         if re.search(r"\b(?:ARCHITECTURAL|STRUCTURAL|PLUMBING|SANITARY)\s+(?:FIXTURE\s+)?SCHEDULE\b", item.text, re.I):
             continue
+        cue = _REFERENCE.search(item.text)
+        assert cue is not None
+        prefix = item.text[:cue.start()].strip(" :,-")
+        # The page does not prove which individual fixture a location-, phase-,
+        # or condition-qualified note covers. Preserve that uncertainty rather
+        # than granting a qualified reference page-wide authority.
+        qualifiers = []
+        if prefix and not re.fullmatch(r"(?:NOTE\s*)?\d*[.)]?", prefix, re.I):
+            qualifiers.append(prefix)
+        qualifiers.extend(match.group(0) for match in re.finditer(
+            r"\b(?:INTERIOR|EXTERIOR|BUILDING|FLOOR|LEVEL|ROOM|AREA|ZONE|PHASE|WING|EXCEPT|ONLY|FOR|IF)\b",
+            item.text[cue.end():], re.I,
+        ))
         identifiers = _SHEET.findall(item.text.upper())
         targets = set()
         if identifiers:
@@ -91,7 +104,9 @@ def resolve_schedule_associations(
         references[item.page].append({"source_element_id": item.element_id,
                                       "source_text": item.text,
                                       "candidate_schedule_pages": sorted(targets),
-                                      "unmatched_sheet_ids": sorted(set(identifiers) - set(aliases))})
+                                      "unmatched_sheet_ids": sorted(set(identifiers) - set(aliases)),
+                                      "applicability_qualifiers": qualifiers,
+                                      "applicability_status": "unresolved" if qualifiers else "unqualified_page_reference"})
     rows_by_tag: dict[str, list[Any]] = defaultdict(list)
     for (_, tag), row in sorted(schedules.items()):
         rows_by_tag[tag].append(row)
@@ -113,7 +128,7 @@ def resolve_schedule_associations(
             continue
         candidates = rows_by_tag.get(tag, [])
         targets = {target for ref in refs for target in ref["candidate_schedule_pages"]}
-        bad_ref = bool(refs) and (any(len(ref["candidate_schedule_pages"]) != 1 or ref["unmatched_sheet_ids"] for ref in refs) or len(targets) != 1)
+        bad_ref = bool(refs) and (any(len(ref["candidate_schedule_pages"]) != 1 or ref["unmatched_sheet_ids"] or ref["applicability_qualifiers"] for ref in refs) or len(targets) != 1)
         eligible = []
         outcomes = []
         for row in candidates:

@@ -474,12 +474,16 @@ def _entity(model, row, decision, registration):
                                z=level.elevation_m + placement.height_above_level_m),
                 rotation=Quaternion(z=math.sin(placement.yaw_radians / 2),
                                     w=math.cos(placement.yaw_radians / 2)))
-    source_provenance = tuple(Provenance(**{**p,
-                              "attributes": {**p.get("attributes", {}),
-                                             "source_document_sha256": row["document_sha256"]},
-                              "scope_paths": tuple(p["scope_paths"])
-                                           if p.get("scope_paths") is not None else None})
-                              for p in row["provenance"])
+    source_records = []
+    for record in row["provenance"]:
+        fields = copy.deepcopy(record)
+        derivation = fields.pop("derivation")  # Preserve the supplied class; never guess one.
+        fields["scope_paths"] = (tuple(fields["scope_paths"])
+                                 if fields.get("scope_paths") is not None else None)
+        fields["attributes"] = {**fields.get("attributes", {}),
+                                "source_document_sha256": row["document_sha256"]}
+        source_records.append(Provenance(derivation=derivation, **fields))
+    source_provenance = tuple(source_records)
     review_provenance = Provenance(source_kind="symbol-review", source_id=decision.reviewer_id,
         source_element_id=row["source_mark_id"], page=row["page"], method="explicit-symbol-review-v1",
         confidence=row["confidence"], derivation=decision.reviewer_derivation,

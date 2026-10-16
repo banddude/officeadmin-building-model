@@ -656,3 +656,19 @@ def test_nonempty_disk_journal_is_rejected_even_when_in_memory_receipts_are_empt
         assert len(calls) == 1
         assert candidate.path.read_bytes() == saved_bytes
     assert original.path.read_bytes() == saved_bytes
+
+
+def test_source_provenance_reconstruction_preserves_explicit_class_scope_and_attributes():
+    source = row()
+    source["provenance"][0].update(scope_paths=["device_type"], method="synthetic-source-reader")
+    source["provenance"][0]["attributes"]["independent_evidence"] = {"source_token": "glyph-a"}
+    manifest = review(source)
+    result = apply(manifest)
+    record = result.model.electrical_devices[0].provenance[0]
+    assert record.derivation == "inferred"
+    assert record.scope_paths == ("device_type",)
+    assert record.method == "synthetic-source-reader"
+    assert record.attributes == {"independent_evidence": {"source_token": "glyph-a"},
+                                 "source_document_sha256": "a"*64}
+    record.attributes["independent_evidence"]["source_token"] = "changed"
+    assert manifest.proposals[0]["provenance"][0]["attributes"]["independent_evidence"]["source_token"] == "glyph-a"

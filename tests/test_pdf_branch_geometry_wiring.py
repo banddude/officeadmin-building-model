@@ -90,3 +90,27 @@ def test_empty_and_missing_page_handoffs_preserve_helper_vocabulary(tmp_path):
     assert {(row['page'],row['architecture_evidence_status']) for row in checks}=={
         (1,'supplied_empty'),(2,'missing_handoff')}
     assert all(row['status']=='eligible' for row in checks)
+
+
+def test_rejected_branch_cannot_be_rescued_by_legacy_named_text_link(tmp_path):
+    path=sheet(tmp_path/'named-text-link.pdf',wall=True)
+    reader=PdfReader(path);writer=PdfWriter();page=writer.add_page(reader.pages[0])
+    data=page.get_contents().get_data()
+    assert b'(LP-1)' in data
+    stream=DecodedStreamObject()
+    stream.set_data(data.replace(b'(LP-1)',b'(PANEL LP CIRCUIT 1 EVSE-1)'))
+    page[NameObject('/Contents')]=writer._add_object(stream);writer.write(path)
+    assert not path.with_suffix('.expected.json').exists()
+    doc,arch,evidence,_,_=inputs(path)
+    legacy=ElectricalPdfImporter().import_document(doc,wall_evidence=evidence)
+    assert len(legacy.circuits)==1 and len(legacy.ports)==2
+    assert any(p.method=='pdf-circuit-text-link' for p in legacy.circuits[0].provenance)
+    guarded=ElectricalPdfImporter().import_document(doc,wall_evidence=evidence,architecture_document=arch)
+    assert not guarded.circuits and not guarded.ports
+    lane=guarded.attributes['pdf_electrical']
+    assert any(row.get('reason_code')=='enters_classified_wall_chain'
+               for row in lane['branch_geometry_checks'])
+    misses=[row for row in lane['unresolved_circuits']
+            if row.get('method')=='pdf-circuit-text-link']
+    assert len(misses)==1 and misses[0]['reason_code']=='branch_geometry_rejected'
+    assert misses[0]['load_ids']==[guarded.electrical_devices[0].id]

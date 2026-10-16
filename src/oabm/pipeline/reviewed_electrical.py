@@ -84,7 +84,7 @@ def deliver_reviewed_electrical(
     decisions, registrations, assertion_review, evidence_documents,
     scope_policy: ScopePolicy, proposal_groups, canonical_groups,
     review_config: ReviewConfig, source_references, artifact_references,
-    glb_options, include_ifc, coverage_report,
+    glb_options, include_ifc, coverage_report, circuit_design=None,
 ):
     """Replay saved trusted inputs and return immutable in-memory payloads.
 
@@ -121,7 +121,13 @@ def deliver_reviewed_electrical(
             raise ContractError("coverage contract not integrated; explicitly pass coverage_report=None")
         if not isinstance(include_ifc,bool) or not isinstance(glb_options,Mapping):
             raise ContractError("explicit IFC choice and GLB options required")
+        if circuit_design is not None:
+            from .reviewed_circuit_design import ReviewedCircuitRequest
+            if not isinstance(circuit_design,ReviewedCircuitRequest):raise ContractError("typed reviewed circuit request required")
+            circuit_design=ReviewedCircuitRequest.from_dict(circuit_design.to_dict())
+            report["stages"]["circuit_design"]={"status":"not_run"}
         expected=set(KINDS)|({"ifc"} if include_ifc else set())
+        if circuit_design is not None:expected.add("circuit_design")
         if not isinstance(artifact_references,Mapping) or set(artifact_references)!=expected:
             raise ContractError("artifact references must exactly cover requested outputs")
         refs=dict(artifact_references)
@@ -161,6 +167,8 @@ def deliver_reviewed_electrical(
             "review_fingerprints":"existing typed review fingerprint algorithms"}
         passed()
 
+        if circuit_design is not None:
+            report["input_bindings"]["circuit_design_fingerprint"]=circuit_design.fingerprint
         stage="source_review"
         verified=build_symbol_review(runs,documents=documents,images=images,journal_paths=journal_paths)
         if verified.to_dict()!=review.to_dict():
@@ -178,6 +186,20 @@ def deliver_reviewed_electrical(
             images=images,journal_paths=journal_paths,decisions=decisions,registrations=registrations,
             assertion_review=assertion_review,evidence_documents=evidence_documents)
         canonical=outcome.model
+        design_report=None
+        if circuit_design is not None:
+            stage="circuit_design"
+            from .reviewed_circuit_design import apply_reviewed_circuit_design
+            canonical,design_report=apply_reviewed_circuit_design(canonical,request=circuit_design,
+                base_model=model,review=verified,assertion_review=assertion_review,
+                dispositions=outcome.dispositions,evidence_documents=evidence_documents)
+            design_report["request"]=circuit_design.to_dict()
+            put("circuit_design",_json(design_report).encode())
+            report["circuit_design"]=design_report
+            report["unresolved"].extend({"code":reason,"request_id":circuit_design.request_id} for reason in design_report["reasons"])
+            report["unresolved"].append({"code":"preliminary_design_engineering_capacity_and_supports_unverified"})
+            passed()
+            stage="placement_intake"
         model_json=canonical.to_json(indent=None)
         put("canonical_model",model_json.encode())
         report["canonical_output_sha256"]=canonical_model_sha256(canonical)
@@ -196,6 +218,8 @@ def deliver_reviewed_electrical(
             "missing_dimensions":[e.id for e in electrical if e.size is None],
             "missing_host":[e.id for e in electrical if getattr(e,"host_id",None) is None],
             "connectivity":"not_evaluated","routing":"not_requested","engineering":"not_requested"}
+        if design_report is not None:
+            report["physical_completeness"].update(routing=design_report["status"],engineering="not_performed")
         report["field_roles"]=[]
         for entity in electrical:
             for provenance in entity.provenance:
@@ -219,6 +243,8 @@ def deliver_reviewed_electrical(
 
         stage="quantities"
         resolved={name:set(ids) for name,ids in cg.items()}
+        if design_report is not None:
+            resolved.setdefault(circuit_design.inventory_group,set()).update(design_report["quantity_entity_ids"])
         by_proposal={d["proposal_id"]:d for d in outcome.dispositions}
         group_pending=[]
         for name,ids in pg.items():

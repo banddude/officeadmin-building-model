@@ -30,7 +30,7 @@ class ReviewedLoadPort(Portable):
                     isinstance(v, bool) or not isinstance(v, (int,float)) or not math.isfinite(v) for v in values):
                 raise ContractError("explicit finite port offset and direction required")
             object.__setattr__(self, name, tuple(float(v) for v in values))
-        if math.hypot(*self.direction) == 0:
+        if not math.isfinite(math.hypot(*self.direction)) or math.hypot(*self.direction) == 0:
             raise ContractError("port direction cannot be zero")
 
 

@@ -231,6 +231,9 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
             for identity in sorted(cited):
                 payload = evidence[identity] if identity in evidence else documents[identity]
                 _write(replay / "evidence" / (identity + ".bin"), payload)
+            if cited:
+                _sync_dir(replay / "evidence")
+            _sync_dir(replay)
         _write(pending / "completion-report.json", result.completion_json.encode())
         entries = []
         for path in sorted(pending.rglob("*")):

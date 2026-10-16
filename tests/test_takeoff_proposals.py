@@ -477,3 +477,73 @@ def test_render_requires_actual_valid_page_and_supported_user_unit():
     with pytest.raises(ContractError,match="UserUnit"):
         render_source_image(buf.getvalue(),source_id="synthetic:bad",page=1,scale=2,
                             crop_px=(0,0,10,10),image_id="bad",role="target")
+
+
+@pytest.mark.parametrize(
+    "width,height,scale,x_edge,y_edge,raster,ink",
+    [
+        (100.25,80.375,2.0,49.9,30.0,(201,161),(0,100,101,161)),
+        (100.25,80.375,1.37,50.2,30.6,(138,111),(0,68,70,111)),
+        (157.375,93.125,.73,80.8,41.09,(115,68),(0,37,60,68)),
+    ],
+)
+def test_fractional_renderer_landmarks_and_cropped_coordinate_export(
+    width,height,scale,x_edge,y_edge,raster,ink,
+):
+    from PIL import ImageChops
+    writer=PdfWriter()
+    page=writer.add_blank_page(width=width,height=height)
+    stream=DecodedStreamObject()
+    # Independently located source landmark, anchored to raw PDF origin.
+    # Its actual raster bounds below distinguish page/raster extent mapping
+    # from reciprocal requested scale, including interior pixel boundaries.
+    stream.set_data(f"0 0 0 rg 0 0 {x_edge} {y_edge} re f".encode())
+    page[NameObject("/Contents")]=writer._add_object(stream)
+    buffer=io.BytesIO();writer.write(buffer)
+    document=buffer.getvalue()
+    W,H=raster
+    full,payload=render_source_image(document,source_id="synthetic:fractional",
+        page=1,scale=scale,crop_px=(0,0,W,H),image_id="legend",role="legend")
+    with Image.open(io.BytesIO(payload)) as image:
+        assert image.size == raster
+        # Measured pixels of actual PDFium output, not a generated expected image.
+        assert ImageChops.invert(image).getbbox() == ink
+    crop=(17,23,W-5,H-7)
+    target,cropped_payload=render_source_image(document,source_id="synthetic:fractional",
+        page=1,scale=scale,crop_px=crop,image_id="field",role="target")
+    with Image.open(io.BytesIO(cropped_payload)) as image:
+        measured=ImageChops.invert(image).getbbox()
+    assert measured == (0,ink[1]-23,ink[2]-17,H-7-23)
+    cw,ch=crop[2]-crop[0],crop[3]-crop[1]
+    request=TakeoffRequest(
+        version=VERSION,task=TASK,validator_version=VALIDATOR,prompt_version="fractional-landmark-v1",
+        question="Return the visible bounds of this synthetic geometric landmark.",
+        images=(target,full),target_image_id="field",allowed_types=("luminaire",),
+        allowed_tags=(),confidence_threshold=.9)
+    output=TakeoffOutput(version=VERSION,items=(ProposedMark(
+        bounds=(measured[0]/cw,measured[1]/ch,measured[2]/cw,measured[3]/ch),
+        type_proposal=None,fixture_tag=None,confidence=.5,
+        source_mark="Visible black rectangle clipped at the crop left/bottom edges.",
+        evidence_image_ids=("field",),unknowns=("Geometry regression only; type unknown.",)),
+    ),coverage_notes=("Synthetic rendered landmark, no lighting acceptance claim.",))
+    images={"field":cropped_payload,"legend":payload}
+    documents={hashlib.sha256(document).hexdigest():document}
+    result=run_takeoff_experiment(request,
+        Endpoint(adapter_id="fake",provider_id="synthetic",model_alias="fake"),
+        images=images,documents=documents,
+        adapters={"fake":lambda *args,**kwargs:output.to_dict()},experiment_reason="geometry regression")
+    row,=result.unresolved_observations(images=images,documents=documents)
+    assert row["bounds_px"] == pytest.approx((17,ink[1],ink[2],H-7))
+    # The right/top ink edges may cover a partial terminal pixel. Their
+    # source-space overshoot stays strictly within one rendered pixel.
+    x_right,y_top=row["bounds_pt"][2:]
+    assert x_edge <= x_right < x_edge+width/W
+    assert y_edge <= y_top < y_edge+height/H
+    # Reciprocal requested scale would fail this landmark-derived bound.
+    assert ink[2]/scale > x_edge+width/W
+    assert row["bounds_pt"][:2] == pytest.approx((17*width/W,7*height/H))
+    sx,_,_,sy,tx,ty=target.render_manifest.pixel_to_display_pt
+    # Crop-local edges map to the same displayed points as the full raster.
+    assert (tx,ty) == pytest.approx((17*width/W,height-23*height/H))
+    assert sx*(W-17)+tx == pytest.approx(width)
+    assert sy*(H-23)+ty == pytest.approx(0)

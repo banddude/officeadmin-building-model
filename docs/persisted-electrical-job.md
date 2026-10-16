@@ -10,7 +10,7 @@ The exact version is `persisted-electrical-job-v1`. A job manifest contains `ver
 
 The first revision has no parent. Each later revision names the SHA256 of an existing committed job manifest. Raw inputs are privately snapshotted into immutable content-addressed blobs. A committed revision can resume without consulting changed original inputs. New inputs require a new revision and hash. No arbitrary model attributes are interpreted as filesystem references or executable adapter names.
 
-The private job root holds immutable revision snapshots, execution-key bindings, proposal attempts, export attempts, and per-invocation session results. POSIX advisory locking prevents concurrent callers from advancing the same job. This is a single-host runner, not a distributed task queue.
+The private job root holds immutable revision snapshots, execution-key bindings, proposal attempts, export attempts, and per-invocation session results. POSIX advisory locking prevents concurrent callers from advancing the same job. Every newly created directory entry, including ancestors, is synced in its parent before transport. A failed barrier stops execution; resumed creation re-syncs the existing anchor and its parent. This is a single-host runner, not a distributed task queue.
 
 ## Waiting, recovery, and retries
 
@@ -19,6 +19,8 @@ With null settings and null circuit review, the runner validates the existing sa
 A later immutable revision may supply downstream settings. Their complete typed routing/review policies and authority documents remain mandatory before provider dispatch; review and compilation keep their existing exact binding requirements. A circuit review reference without circuit settings is rejected. Malformed references and supplied invalid settings are rejected even for partial jobs.
 
 A completed provider attempt is reused across missing-review pauses and export-only revisions when its complete request and task framing remain identical. A durable terminal receipt can reconstruct a missing parsed checkpoint. Missing or unfinished terminal receipts leave the call in doubt; the runner blocks and never automatically repeats that external call.
+
+A missing stage HEAD pointer is treated as new work only when the stage directory is completely empty. Prior artifacts without a pointer block execution and remain unchanged; they never authorize another provider call or export.
 
 Known provider failures require a new immutable revision with `retry_policy.proposal_after` naming the exact prior attempt and a nonempty `proposal_reason`. Dispatch also requires `allow_dispatch=true`. A failed export similarly requires `export_after` and `export_reason`; recovery invokes the existing publisher under a fresh attempt ID and preserves the failed attempt. Export failure does not repeat a completed proposal.
 

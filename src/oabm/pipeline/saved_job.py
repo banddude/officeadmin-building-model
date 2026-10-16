@@ -66,7 +66,19 @@ def _require(condition,reason):
 
 
 def _directory(path):
-    path.mkdir(mode=0o700,parents=True,exist_ok=True)
+    # Persist every new ancestor entry before a transport can become possible.
+    # Re-sync the existing anchor too: a prior creation may have stopped when
+    # syncing its parent, before any child directory or provider call existed.
+    missing=[];anchor=path
+    while not anchor.exists():
+        _require(not anchor.is_symlink(),'symlink job directory refused')
+        missing.append(anchor);anchor=anchor.parent
+    _require(not anchor.is_symlink() and anchor.is_dir(),'job directory anchor must be ordinary')
+    saved._sync_dir(anchor);saved._sync_dir(anchor.parent)
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700,exist_ok=True)
+        _require(not directory.is_symlink() and directory.is_dir(),'job directories must be ordinary private directories')
+        saved._sync_dir(directory);saved._sync_dir(directory.parent)
     _require(not path.is_symlink() and path.is_dir(),'job directories must be ordinary private directories')
     _require(path.stat().st_mode & 0o077 == 0,'job directory permissions must be private')
 
@@ -225,7 +237,10 @@ def _bind(root,revision,label,key):
 
 def _head(stage):
     path=stage/'HEAD.json'
-    if not path.exists():return None
+    if not path.exists():
+        _require(not any(stage.iterdir()),
+                 'stage ownership pointer missing while prior artifacts exist')
+        return None
     value=_read_json(path)
     _require(set(value)=={'version','attempt_id'} and value['version']==VERSION,'invalid stage pointer')
     return _safe_id(value['attempt_id'])

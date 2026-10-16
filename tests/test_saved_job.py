@@ -330,3 +330,60 @@ def test_no_eligible_devices_with_valid_settings_still_waits(tmp_path):
     assert {'eligibility','source_port','approved_profile','placement'}<={r['field'] for r in result['missing_inputs']}
     root=tmp_path/'jobs/synthetic-job'
     assert not list((root/'proposals').iterdir()) and not list((root/'exports').iterdir())
+
+@pytest.mark.parametrize('first',['completed','in_doubt','failed'])
+def test_lost_stage_pointer_blocks_without_touching_attempts(tmp_path,first):
+    from oabm.proposals.dispatch import AdapterAvailabilityError
+    path,source,calls,adapter=setup(tmp_path)
+    def initial(*a,**kw):
+        if first=='completed':return adapter(*a,**kw)
+        calls.append(kw)
+        if first=='in_doubt':raise Crash()
+        raise AdapterAvailabilityError('rate_limited')
+    if first=='in_doubt':
+        with pytest.raises(Crash):run(path,initial)
+    else:run(path,initial)
+    head=next((tmp_path/'jobs/synthetic-job/proposals').glob('*/HEAD.json'))
+    attempt=head.parent/json.loads(head.read_bytes())['attempt_id']
+    frozen=tree_bytes(attempt)
+    head.rename(tmp_path/'retained-head.json')
+    with pytest.raises(job.SavedJobError,match='ownership pointer missing'):run(path,adapter)
+    assert len(calls)==1 and tree_bytes(attempt)==frozen
+    assert len(list(head.parent.glob('a-*')))==1 and not head.exists()
+
+def test_lost_export_pointer_does_not_republish(tmp_path,monkeypatch):
+    path,source,calls,adapter=setup(tmp_path)
+    pending=run(path,adapter);approve(path,source,pending)
+    first=run(path,adapter)
+    attempt=Path(first['delivery']).parents[2];frozen=tree_bytes(attempt)
+    head=attempt.parent/'HEAD.json';head.rename(tmp_path/'retained-export-head.json')
+    exports=[]
+    def forbidden(*a,**kw):exports.append(True);raise AssertionError('No new publisher call')
+    monkeypatch.setattr(job.saved,'persist_saved_electrical',forbidden)
+    with pytest.raises(job.SavedJobError,match='ownership pointer missing'):run(path,adapter)
+    assert len(calls)==1 and not exports and tree_bytes(attempt)==frozen
+
+@pytest.mark.parametrize('failure_at',['ancestor','proposal_parent'])
+def test_directory_sync_failure_stops_transport_and_resume_repairs_barriers(tmp_path,monkeypatch,failure_at):
+    path,source,calls,adapter=setup(tmp_path)
+    job_root=tmp_path/'new-parent/deep/jobs';root=job_root/'synthetic-job'
+    original=job.saved._sync_dir;observed=[];failed=[]
+    def sync(p):
+        p=Path(p);observed.append(p)
+        target=(p==job_root.parent.parent) if failure_at=='ancestor' else (
+            p==root/'proposals' and p.is_dir() and any(p.iterdir()))
+        if target and not failed:
+            failed.append(p);raise OSError('Synthetic directory sync refusal')
+        return original(p)
+    def invoke():
+        return job.run_saved_electrical_job(path,job_root=job_root,adapters={'vision_sol':adapter}).report
+    with monkeypatch.context() as patch:
+        patch.setattr(job.saved,'_sync_dir',sync)
+        with pytest.raises(job.SavedJobError,match='Synthetic directory sync refusal'):invoke()
+        assert failed and not calls
+        result=invoke()
+    assert result['status']=='waiting_for_review' and len(calls)==1
+    assert observed.count(failed[0])>=2
+    for p in (tmp_path,job_root.parent.parent,job_root.parent,job_root,root,root/'proposals'):
+        assert p in observed
+    assert all(p.stat().st_mode & 0o077==0 for p in (job_root.parent.parent,job_root.parent,job_root,root))

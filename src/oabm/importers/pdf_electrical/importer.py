@@ -7135,6 +7135,7 @@ def _detect_lighting_fixture_schedules(
         tables = [table for table in table_evidence
                   if table.get("heading_element_id") == heading.element_id]
         if tables:
+            claimed_before_table = set(claimed_text_ids)
             # Even unresolved table cells remain schedule evidence, never field
             # labels that can independently promote the table's own geometry.
             page_text_ids = {item.element_id for item in texts
@@ -7161,17 +7162,11 @@ def _detect_lighting_fixture_schedules(
                 # Confirmed/ambiguous schedule headers and malformed body
                 # cells must never fall back to guessed columns.
                 continue
-            # Mere containment in a ruled box does not associate a schedule.
-            # Retain its unresolved evidence, and admit only independently
-            # observed native headers/rows outside that unconfirmed box.
-            bounds = tables[0].get("bbox_pt", ())
-            if len(bounds) != 4:
-                continue
-            claimed_text_ids.update(
-                item.element_id for item in texts if item.page == heading.page
-                and bounds[0] <= item.x_pt <= bounds[2]
-                and bounds[1] <= item.y_pt <= bounds[3]
-            )
+            # Zero confirmed cell-header rows do not invalidate independent
+            # native column observations, even inside an enclosing page frame.
+            # Retain the frame diagnostic; the legacy parser does not split
+            # merged callbacks or attach derived cells.
+            claimed_text_ids = claimed_before_table
         header_candidates = [
             observation
             for observation in texts

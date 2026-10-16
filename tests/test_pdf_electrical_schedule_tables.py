@@ -232,13 +232,33 @@ def test_decoy_heading_box_and_enclosed_body_are_distinguished(tmp_path, enclose
     assert any(item["reason_code"] == "lighting_schedule_header_not_confirmed"
                for item in unresolved)
     if enclosed_body:
-        # Actual detected heading cells plus one undivided body cell. This
-        # geometry cannot distinguish a page frame from a merged schedule.
-        # Keep the conservative limitation explicit; do not infer columns.
         assert len(tables[0]["rows"]) == 2
         assert tables[0]["rows"][1][1] is None
-        assert not rows
-        assert set(baseline[(1, "Q-1")].source_element_ids) <= claimed
-    else:
-        assert rows == baseline
-        assert all(source_id in claimed for source_id in rows[(1, "Q-1")].source_element_ids)
+    assert rows == baseline
+    assert not rows[(1, "Q-1")].cell_evidence
+    assert all(source_id in claimed for source_id in rows[(1, "Q-1")].source_element_ids)
+
+
+def test_zero_header_frame_does_not_split_merged_native_callbacks(tmp_path):
+    path = tmp_path / "merged-frame.pdf"
+    _write_schedule(path, rows=[("Q-1", "WALL LIGHT")])
+    from pypdf import PdfReader
+    reader = PdfReader(path)
+    writer = PdfWriter()
+    page = writer.add_page(reader.pages[0])
+    commands = ["40 660 410 100 re S", "40 730 m 450 730 l S",
+                "400 730 m 400 760 l S",
+                "BT /F1 9 Tf 50 740 Td (LIGHTING FIXTURE SCHEDULE) Tj ET",
+                "BT /F1 9 Tf 50 710 Td (TAG) Tj 90 0 Td (DESCRIPTION) Tj ET",
+                "BT /F1 9 Tf 50 690 Td (Q-1) Tj 90 0 Td (WALL LIGHT) Tj ET"]
+    content = DecodedStreamObject()
+    content.set_data("\n".join(commands).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    writer.write(path)
+    document = extract_pdf(path)
+    assert len(document.page_provenance[1]["lighting_schedule_tables"]) == 1
+    assert len(document.texts) == 3
+    assert not _parse(document, [])[0]
+    rows, _, unresolved, _ = _parse(document)
+    assert not rows
+    assert any(item.get("header_candidate_count") == 0 for item in unresolved)

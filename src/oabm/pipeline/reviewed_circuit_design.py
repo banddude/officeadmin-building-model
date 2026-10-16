@@ -120,7 +120,8 @@ def apply_reviewed_circuit_design(model, *, request, base_model, review, asserti
     for evidence in request.evidence:
         payload = evidence_documents.get(evidence.document_sha256)
         if (evidence.kind != "project_decision" or evidence.provenance.derivation != "user"
-                or not isinstance(payload,bytes) or hashlib.sha256(payload).hexdigest() != evidence.document_sha256):
+                or not isinstance(payload,bytes) or not 1 <= len(payload) <= 128_000_000
+                or hashlib.sha256(payload).hexdigest() != evidence.document_sha256):
             raise ContractError("design requires exact user-decision evidence bytes")
     equipment = next((e for e in model.electrical_equipment if e.id == request.equipment_id),None)
     if equipment is None:reasons.append("source_equipment_unavailable")
@@ -128,8 +129,10 @@ def apply_reviewed_circuit_design(model, *, request, base_model, review, asserti
     elif equipment.level_id is None:reasons.append("source_equipment_level_unknown")
     source = next((p for p in model.ports if p.id == request.source_port_id),None)
     if source is None:reasons.append("source_port_unavailable")
-    elif source.owner_id != request.equipment_id or source.role != "source" or source.domain != "electrical":
+    elif (request.equipment_id is not None and source.owner_id != request.equipment_id) or source.role != "source" or source.domain != "electrical":
         raise ContractError("source port identity/owner/role/domain mismatch")
+    if source is not None and not math.isfinite(math.hypot(source.direction.x,source.direction.y,source.direction.z)):
+        raise ContractError("source port direction must have finite magnitude")
     if any(c.source_port_id in {p.id for p in model.ports if p.owner_id == request.equipment_id} for c in model.circuits):
         reasons.append("existing_panel_circuiting_requires_reconciliation")
     if request.groups is None:reasons.append("missing_circuit_groups")
@@ -147,7 +150,7 @@ def apply_reviewed_circuit_design(model, *, request, base_model, review, asserti
             mapped[proposal] = identity
             if devices[identity].level_id is None:reasons.append("selected_device_level_unknown:"+proposal)
     port_specs = {p.proposal_id:p for p in request.load_ports}
-    if set(port_specs)-selected:raise ContractError("load port supplied for unselected proposal")
+    if request.groups is not None and set(port_specs)-selected:raise ContractError("load port supplied for unselected proposal")
     reasons.extend("missing_load_port:"+p for p in sorted(selected-set(port_specs)))
     if reasons:return model,report
     provenance = Provenance(source_kind="reviewed-circuit-design",source_id=request.request_id,

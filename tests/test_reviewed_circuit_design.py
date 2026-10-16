@@ -1,0 +1,191 @@
+"""Independent drawn source marks -> admitted placements -> explicit design graph."""
+from dataclasses import asdict,replace
+import hashlib,io,json
+from pathlib import Path
+import subprocess,sys
+from unittest.mock import patch
+
+import pytest
+from pypdf import PdfReader,PdfWriter
+from pypdf.generic import DecodedStreamObject,NameObject
+
+from oabm.model import (BuildingModel,ElectricalEquipment,Port,Pose,Point3,Vector3,Provenance,
+    RuleReference,Obstacle,Box3D,Size3,ContractError)
+from oabm.importers.pdf_electrical.symbol_stage import build_symbol_review,SymbolDecision
+from oabm.importers.pdf_electrical.placement_assertions import PlacementAssertionReview,PlacementEvidence
+from oabm.proposals.contracts import digest
+from oabm.routing import RoutingOptions
+from oabm.pipeline.reviewed_circuit_design import ReviewedCircuitRequest,ReviewedLoadPort,VERSION
+from oabm.pipeline.reviewed_electrical import deliver_reviewed_electrical,ReviewedElectricalDeliveryError
+from oabm.pipeline.saved_electrical import persist_saved_electrical,CIRCUIT_VERSION
+from test_reviewed_electrical_pipeline import inputs
+import test_symbol_proposals as symbols
+import test_takeoff_proposals as takeoff
+
+
+def drawn_source():
+    reader=PdfReader(io.BytesIO(takeoff.source_pdf()))
+    writer=PdfWriter();writer.append(reader)
+    page=writer.pages[1]
+    content=page.get_contents().get_data()+b'\n0 0 0 RG 1 w 106 30 8 8 re S 126 62 8 8 re S\n'
+    stream=DecodedStreamObject();stream.set_data(content);page[NameObject('/Contents')]=writer._add_object(stream)
+    buffer=io.BytesIO();writer.write(buffer);return buffer.getvalue()
+
+
+def case(tmp_path,*,height=1.2,blocked=False,select_deferred=False):
+    document=drawn_source()
+    with patch.object(takeoff,'source_pdf',lambda *a,**kw:document),patch.object(symbols,'source_pdf',lambda *a,**kw:document):
+        model,old,args=inputs(tmp_path/'initial',include_ifc=True)
+        request,images,documents,output=symbols.fixture()
+        second=replace(output.marks[0],bounds=(.55,.65,.65,.75),anchor=(.6,.7),instance_label='drawn-square-b',source_mark='Square centered at source point 110,34.')
+        third=replace(output.marks[0],bounds=(.75,.25,.85,.35),anchor=(.8,.3),instance_label='drawn-square-c',source_mark='Square centered at source point 130,66.')
+        (tmp_path/'batch').mkdir()
+        run=symbols.run(tmp_path/'batch',request=request,images=images,documents=documents,output=replace(output,marks=(*output.marks,second,third)))
+    journals={request.fingerprint:tmp_path/'batch/attempts.jsonl'}
+    review=build_symbol_review((run,),documents=documents,images=images,journal_paths=journals)
+    old_decision=args['decisions'][0];old_facts=args['assertion_review'].assertions
+    decisions=[];facts=[];selected=[];deferred=[]
+    for row in review.proposals:
+        if row['anchor_pt'][0]>120:
+            decisions.append(SymbolDecision(manifest_fingerprint=review.fingerprint,proposal_id=row['proposal_id'],
+                proposal_fingerprint=digest(row),reviewer_id='synthetic-reviewer',reviewer_derivation='user',
+                rationale='Height and physical product association remain unresolved.',action='defer'))
+            deferred.append(row['proposal_id']);continue
+        selected.append(row['proposal_id'])
+        h=height if row['anchor_pt'][0]<100 else 1.2
+        decisions.append(replace(old_decision,manifest_fingerprint=review.fingerprint,proposal_id=row['proposal_id'],
+            proposal_fingerprint=digest(row),placement=replace(old_decision.placement,anchor_pt=tuple(row['anchor_pt']),height_above_level_m=h)))
+        for fact in old_facts:
+            fact=replace(fact,assertion_id=row['proposal_id']+':'+fact.field,proposal_id=row['proposal_id'],proposal_fingerprint=digest(row))
+            if fact.field=='anchor':fact=replace(fact,value=tuple(row['anchor_pt']),evidence=(replace(fact.evidence[0],bounds_pt=tuple(row['bounds_pt'])),))
+            if fact.field=='elevation':fact=replace(fact,value=h)
+            facts.append(fact)
+    prov=(Provenance(source_kind='synthetic',source_id='fixture:supplied-panel',derivation='observed',confidence=.75),)
+    panel=ElectricalEquipment(id='equipment:supplied-panel',equipment_type='panelboard',level_id='floor',
+        pose=Pose(position=Point3(x=1.,y=1.,z=4.2)),provenance=prov)
+    source=Port(id='port:supplied-source',owner_id=panel.id,domain='electrical',role='source',pose=panel.pose,
+        direction=Vector3(x=1.,y=0.,z=0.),provenance=prov)
+    obstacles=() if not blocked else (Obstacle(id='obstacle:source-blocked',obstacle_type='hard',
+        geometry=Box3D(pose=source.pose,size=Size3(x=2.,y=2.,z=2.))),)
+    model=BuildingModel.from_dict(replace(model,electrical_equipment=(panel,),ports=(source,),obstacles=obstacles).to_dict())
+    prior=args['assertion_review']
+    assertion=PlacementAssertionReview.capture(model,review,decisions=tuple(decisions),registrations=args['registrations'],
+        canonical_datum_id=prior.canonical_datum_id,reviewer_id=prior.reviewer_id,reviewer_derivation='user',
+        rationale='Explicit synthetic placement assertions.',assertions=tuple(facts))
+    payload=b'{"design":"preliminary synthetic circuit grouping and connector offsets","engineering":"not verified"}'
+    sha=hashlib.sha256(payload).hexdigest()
+    evidence=PlacementEvidence(source_id='fixture:design-decision',document_sha256=sha,kind='project_decision',
+        locator='Synthetic project decision record.',provenance=Provenance(source_kind='project-design',source_id='fixture:design-decision',derivation='user',confidence=.8))
+    chosen=tuple(sorted(selected+deferred if select_deferred else selected))
+    design=ReviewedCircuitRequest.capture(model,review,assertion,request_id='design:explicit-fixture',
+        equipment_id=panel.id,source_port_id=source.id,groups=tuple((p,) for p in chosen),
+        load_ports=tuple(ReviewedLoadPort(id='port:designed-load-'+str(i),proposal_id=p,
+            offset_canonical_m=(0.,0.,0.),direction=(-1.,0.,0.)) for i,p in enumerate(chosen)),
+        rules={'max_devices_per_circuit':1,'assumed_voltage_v':48.,'assumed_poles':2,'route_type':'pvc',
+            'nominal_diameter_m':.03,'conductor_material':'copper','conductor_size':'10 AWG',
+            'insulated_conductor_count':3,'include_ground':True},
+        routing_controls=asdict(RoutingOptions(bend_penalty_m=.4,max_bends=8,port_stub_m=0.,clearance_m=.02,
+            search_margin_m=.5,corridor_tolerance_m=.03,bundle_alignment_tolerance_m=.02,
+            preferred_corridor_discount=0.,surface_path_discount=0.,glazed_wall_penalty=7.,soft_obstacle_penalty_factor=4.,
+            vertical_cost_factor=1.,coordinate_precision=9)),
+        rule_references=(RuleReference(authority='Synthetic project design',revision='r1',rule_id='fixture.explicit'),),
+        evidence=(evidence,),reviewer_id='synthetic-designer',rationale='Explicit preliminary fixture design; capacity and compliance unresolved.',
+        inventory_group='designed-graph')
+    args.update(runs=(run,),documents=documents,images=images,journal_paths=journals,decisions=tuple(decisions),
+        assertion_review=assertion,evidence_documents={**args['evidence_documents'],sha:payload},
+        proposal_groups={'source-inventory':tuple(r['proposal_id'] for r in review.proposals)},canonical_groups={'supplied-panel':(panel.id,)})
+    args['artifact_references']={**args['artifact_references'],'circuit_design':'synthetic/circuit-design.json'}
+    args['source_references'].update({('synthetic','fixture:supplied-panel'):'evidence/panel',
+        ('reviewed-circuit-design',design.request_id):'evidence/design',('user-override',model.model_id):'evidence/groups',
+        ('router',model.model_id):'evidence/router'})
+    return model,review,args,design
+
+
+def deliver(value,**changes):
+    model,review,args,design=value
+    return deliver_reviewed_electrical(model,review,**{**args,'circuit_design':design,**changes})
+
+
+def save_inputs(path,value):
+    path.mkdir(parents=True)
+    model,review,args,design=value
+    def put(name,value):
+        data=value if isinstance(value,bytes) else json.dumps(value,sort_keys=True).encode()
+        p=path/name;p.write_bytes(data);return {'path':name,'sha256':hashlib.sha256(data).hexdigest()}
+    doc={'version':CIRCUIT_VERSION,'delivery_id':args['delivery_id'],'model':put('base.json',model.to_dict()),
+        'review':put('review.json',review.to_dict()),'circuit_design':put('design.json',design.to_dict())}
+    for key in ('runs','decisions','registrations'):doc[key]=put(key+'.json',[r.to_dict() for r in args[key]])
+    for key in ('assertion_review','scope_policy','review_config'):doc[key]=put(key+'.json',args[key].to_dict())
+    for key in ('documents','images','evidence_documents'):
+        doc[key]={identity:put(key+str(i),data) for i,(identity,data) in enumerate(args[key].items())}
+    doc['journals']={identity:put('journal'+str(i),Path(p).read_bytes()) for i,(identity,p) in enumerate(args['journal_paths'].items())}
+    doc['source_references']=[{'source_kind':k,'source_id':s,'reference':v} for (k,s),v in args['source_references'].items()]
+    for key in ('proposal_groups','canonical_groups','glb_options','include_ifc','coverage_report'):doc[key]=args[key]
+    manifest=path/'inputs.json';manifest.write_text(json.dumps(doc));return manifest
+
+
+def test_explicit_supplied_panel_ports_rules_and_hand_computed_lengths(tmp_path):
+    value=case(tmp_path);before=value[0].to_json();result=deliver(value)
+    assert value[0].to_json()==before
+    assert result.completion['counts']['dispositions']=={'accept':2,'defer':1}
+    assert len(result.model.circuits)==2 and len(result.model.routes)==2 and len(result.model.conductors)==4
+    assert result.model.electrical_equipment==value[0].electrical_equipment
+    assert 'placement' not in result.model.electrical_equipment[0].attributes
+    assert next(p for p in result.model.ports if p.id=='port:supplied-source')==value[0].ports[0]
+    assert all(c.voltage_v==48. and c.poles==2 and c.load_va is None for c in result.model.circuits)
+    assert all(r.route_type=='pvc' and r.nominal_diameter_m==.03 for r in result.model.routes)
+    assert all(c.size=='10 AWG' for c in result.model.conductors)
+    quantity=json.loads(result.artifacts['quantities'])
+    assert sum(r['quantity'] for r in quantity['items'] if r['category']=='route_length')==pytest.approx(30.)
+    assert sum(r['quantity'] for r in quantity['items'] if r['category']=='conductor_length')==pytest.approx(120.)
+    assert all(r['group']=='designed-graph' for r in quantity['items'] if r['category'] in ('route_length','conductor_length','fitting'))
+    assert all(r['geometry_status']=='inferred' and r['design_status']=='user-directed' for r in quantity['items'] if r['category']=='route_length')
+    assert not result.completion['circuit_design']['buildable'] and not any(result.completion['claims'].values())
+    assert result.completion['source_coverage']['status']=='unavailable'
+    assert all(p.direction==Vector3(x=-1.,y=0.,z=0.) for p in result.model.ports if p.role=='load')
+
+
+def test_actual_saved_entrypoint_repeat_ifc_and_reviewed_recomputation(tmp_path):
+    value=case(tmp_path/'source');manifest=save_inputs(tmp_path/'saved',value)
+    first=subprocess.run([sys.executable,'-m','oabm.pipeline.saved_electrical',str(manifest),
+        '--output-root',str(tmp_path/'out'),'--run-id','a'],capture_output=True,text=True)
+    assert first.returncode==0,first.stderr
+    a=Path(first.stdout.strip());b=persist_saved_electrical(manifest,output_root=tmp_path/'out',run_id='b')
+    assert (a/'model.json').read_bytes()==(b/'model.json').read_bytes()
+    assert (a/'quantities.json').read_bytes()==(b/'quantities.json').read_bytes()
+    from oabm.ifc.adapter import from_ifc
+    restored=from_ifc(a/'model.ifc');original=BuildingModel.from_json((a/'model.json').read_text())
+    assert {r.id for r in restored.routes}=={r.id for r in original.routes}
+    assert all(c.attributes['design']['source_observed'] is False for c in restored.circuits)
+    changed=case(tmp_path/'changed-source',height=2.2)
+    moved=persist_saved_electrical(save_inputs(tmp_path/'changed-inputs',changed),output_root=tmp_path/'out',run_id='changed')
+    new=BuildingModel.from_json((moved/'model.json').read_text())
+    assert {d.id for d in new.electrical_devices}=={d.id for d in original.electrical_devices}
+    assert {r.id for r in new.routes}=={r.id for r in original.routes}
+    quantities=json.loads((moved/'quantities.json').read_bytes())
+    assert sum(r['quantity'] for r in quantities['items'] if r['category']=='route_length')==pytest.approx(31.)
+    assert (moved/'model.json').read_bytes()!=(a/'model.json').read_bytes()
+    for final in (a,b,moved):
+        marker=json.loads((final/'COMPLETED.json').read_bytes())
+        for row in marker['files']:
+            data=(final/row['path']).read_bytes();assert len(data)==row['bytes'] and hashlib.sha256(data).hexdigest()==row['sha256']
+
+
+@pytest.mark.parametrize('change,reason',[
+    ({'rules':None},'missing_circuit_rules'),({'routing_controls':None},'missing_routing_controls'),
+    ({'source_port_id':None},'source_port_unavailable'),({'load_ports':()},'missing_load_port:'),
+    ({'evidence':()},'missing_design_decision_evidence'),({'rule_references':()},'missing_design_rule_references')])
+def test_missing_inputs_defer_without_partial_graph(tmp_path,change,reason):
+    value=case(tmp_path);result=deliver(value,circuit_design=replace(value[3],**change))
+    assert not result.model.routes and not result.model.circuits and not result.model.conductors
+    assert result.model.ports==value[0].ports
+    assert any(r.startswith(reason) for r in result.completion['circuit_design']['reasons'])
+    assert result.completion['delivery_ready']
+
+
+def test_deferred_selected_proposal_and_failed_route_are_atomic(tmp_path):
+    for name,params in [('selected',{'select_deferred':True}),('blocked',{'blocked':True})]:
+        value=case(tmp_path/name,**params);result=deliver(value)
+        assert result.model.ports==value[0].ports and not result.model.circuits and not result.model.routes
+        assert not result.completion['circuit_design']['created_ids']
+        assert result.completion['circuit_design']['status']=='deferred'

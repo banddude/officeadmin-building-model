@@ -156,3 +156,24 @@ def test_several_matching_field_glyphs_stay_unresolved_even_at_different_distanc
     model=ElectricalPdfImporter().import_pdf(path)
     assert 'Q-1' not in {device.name for device in _fixtures(model)}
     assert 'lighting_fixture_tag_association_ambiguous' in model.to_json()
+
+
+def test_shared_observed_prototype_is_scored_once_without_dropping_tag_identity(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from oabm.importers.pdf_electrical import importer as api
+    from oabm.importers.pdf_electrical.lighting_categories import detect_category_legends
+    path=tmp_path/'shared-prototype.pdf';_source(path)
+    document=api.extract_pdf(path)
+    clusters=[c for c in api._glyph_clusters(document, document.vectors) if api._is_glyph_cluster(c)]
+    entries, _, _, _, _=detect_category_legends(texts=document.texts,clusters=clusters,excluded_text_ids=set())
+    surface=next(e for e in entries[1] if 'SURFACE' in e.label.text)
+    recessed=next(e for e in entries[1] if 'RECESSED' in e.label.text)
+    field=next(c for c in clusters if abs(c.center_pt[0]-149.5)<1 and abs(c.center_pt[1]-500.5)<1)
+    aliases=[replace(surface,tag=f'A{i:02}') for i in range(10)]
+    calls=[];original=api._cluster_match_score
+    def score(candidate,prototype):
+        calls.append(id(prototype));return original(candidate,prototype)
+    monkeypatch.setattr(api,'_cluster_match_score',score)
+    winner, similarity, guard=api._lighting_shape_support(field,[*aliases,recessed])
+    assert winner.tag=='A00' and similarity==1.0 and guard is None
+    assert len(calls)==2 and len(set(calls))==2

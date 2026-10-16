@@ -7886,12 +7886,19 @@ def _lighting_shape_support(
         return None, None, None
     candidate_class = _cluster_shape_class(cluster)
     ranked = []
+    scores_by_prototype: dict[int, tuple[float, dict[str, Any] | None]] = {}
     for entry in eligible:
-        score, guard = _lighting_shape_class_guard(
-            _cluster_match_score(cluster, entry.prototype),
-            candidate_class=candidate_class,
-            prototype=entry.prototype,
-        )
+        # Schedule tags can share the exact same observed category prototype.
+        # Score that object once, while retaining every semantic entry and its
+        # original ranking/provenance. No approximate shape-key equivalence.
+        prototype_key = id(entry.prototype)
+        if prototype_key not in scores_by_prototype:
+            scores_by_prototype[prototype_key] = _lighting_shape_class_guard(
+                _cluster_match_score(cluster, entry.prototype),
+                candidate_class=candidate_class,
+                prototype=entry.prototype,
+            )
+        score, guard = scores_by_prototype[prototype_key]
         ranked.append((score, guard, entry))
     ranked.sort(
         key=lambda item: (

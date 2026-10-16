@@ -636,6 +636,7 @@ class _LightingScheduleRow:
     fields: Mapping[str, str]
     source_element_ids: tuple[str, ...]
     source_texts: tuple[str, ...]
+    cell_evidence: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1498,6 +1499,18 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                         },
                     )
                 )
+
+    from .schedule_tables import extract_schedule_tables
+
+    schedule_tables = extract_schedule_tables(
+        pdf_path, texts=texts,
+        headings=[item for item in texts
+                  if _lighting_heading_kind(item) == "fixture_schedule"],
+    )
+    for page, tables in schedule_tables.items():
+        page_provenance[page] = {
+            **page_provenance[page], "lighting_schedule_tables": tables,
+        }
 
     return PdfElectricalDocument(
         source_id=resolved_source_id,
@@ -2618,6 +2631,12 @@ _LIGHTING_SCHEDULE_HEADER_ALIASES: Mapping[str, str] = {
     "MFR": "manufacturer",
     "MODEL": "model",
     "CATALOG": "model",
+    "LOCATION": "location",
+    "LAMP WATTAGE": "lamp_wattage",
+    "FINISH COLOR": "finish_color",
+    "QUANTITY": "quantity",
+    "QTY": "quantity",
+    "NOTES": "notes",
 }
 
 
@@ -6948,6 +6967,19 @@ def _normalize_lighting_tag(value: str) -> str | None:
 def _lighting_heading_kind(observation: PdfTextObservation) -> str | None:
     normalized = _normalize_legend_alias(observation.text)
     words = set(normalized.split())
+    # A named room qualifies the location, not the drawing discipline. Keep
+    # explicit trade headings excluded, including mixed/ambiguous headings.
+    discipline_text = re.sub(
+        r"\b(?:PLUMBING|MECHANICAL|HVAC|SANITARY)\s+"
+        r"(?:(?:EQUIPMENT|SERVICE)\s+)?(?:ROOMS?|AREAS?|SPACES?)\b",
+        "", normalized,
+    )
+    if set(discipline_text.split()) & {"PLUMBING", "MECHANICAL", "HVAC", "SANITARY"}:
+        return None
+    if discipline_text != normalized and not words & {
+        "LIGHT", "LIGHTING", "LUMINAIRE", "LUMINAIRES",
+    }:
+        return None  # A room qualifier alone cannot establish the trade.
     has_lighting_cue = bool(
         words
         & {
@@ -6973,8 +7005,113 @@ def _lighting_schedule_header_key(value: str) -> str | None:
     return _LIGHTING_SCHEDULE_HEADER_ALIASES.get(normalized)
 
 
+def _lighting_rows_from_ruled_tables(
+    heading: PdfTextObservation,
+    tables: Sequence[Mapping[str, Any]],
+    texts: Sequence[PdfTextObservation],
+) -> tuple[list[_LightingScheduleRow], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read only source-bound cells; retain ambiguity rather than reflow text."""
+    parsed: list[_LightingScheduleRow] = []
+    metadata: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    native = {item.element_id: item for item in texts if item.page == heading.page}
+
+    def reject(reason: str, row_index: int | None = None) -> None:
+        problem: dict[str, Any] = {
+            "kind": "lighting_fixture_schedule", "page": heading.page,
+            "source_element_id": heading.element_id,
+            "status": "unresolved_lighting_schedule", "reason_code": reason,
+        }
+        if row_index is not None:
+            problem["table_row_index"] = row_index
+        unresolved.append(problem)
+
+    if len(tables) != 1 or tables[0].get("reason_code"):
+        reject("lighting_schedule_table_boundary_ambiguous")
+        return parsed, metadata, unresolved
+    table = tables[0]
+    rows = table.get("rows", ())
+    header_candidates = []
+    for index, cells in enumerate(rows):
+        keys = [_lighting_schedule_header_key(str(cell.get("text", "")))
+                if cell else None for cell in cells]
+        if "tag" in keys and "description" in keys:
+            header_candidates.append((index, keys))
+    if len(header_candidates) != 1:
+        reject("lighting_schedule_header_not_confirmed")
+        unresolved[-1].update({
+            "header_candidate_count": len(header_candidates),
+            "table_element_id": table.get("element_id"),
+            "bbox_pt": table.get("bbox_pt"),
+        })
+        return parsed, metadata, unresolved
+    header_index, keys = header_candidates[0]
+    known = [key for key in keys if key is not None]
+    if len(known) != len(set(known)):
+        reject("lighting_schedule_header_conflict")
+        return parsed, metadata, unresolved
+
+    def bound_cell(cell: Mapping[str, Any]) -> bool:
+        value = " ".join(str(cell.get("text", "")).split())
+        if not value:
+            return True  # An observed empty cell asserts no value.
+        source_ids = cell.get("source_element_ids", ())
+        if len(source_ids) != 1 or source_ids[0] not in native:
+            return False
+        source = native[source_ids[0]]
+        bbox = cell.get("bbox_pt", ())
+        return (len(bbox) == 4 and all(math.isfinite(float(v)) for v in bbox)
+                and bbox[0] < bbox[2] and bbox[1] < bbox[3]
+                and bbox[1] - 1 <= source.y_pt <= bbox[3] + 1
+                and value in " ".join(source.text.split()))
+
+    header_cells = rows[header_index]
+    if any(cell is None or not bound_cell(cell) for cell in header_cells):
+        reject("lighting_schedule_cell_source_unresolved", header_index)
+        return parsed, metadata, unresolved
+    for row_index in range(header_index + 1, len(rows)):
+        cells = rows[row_index]
+        if not any(cell and str(cell.get("text", "")).strip() for cell in cells):
+            continue
+        if len(cells) != len(keys) or any(cell is None for cell in cells):
+            reject("lighting_schedule_merged_body_cell", row_index)
+            continue
+        if any(not bound_cell(cell) for cell in cells):
+            reject("lighting_schedule_cell_source_unresolved", row_index)
+            continue
+        fields = {key: " ".join(str(cell.get("text", "")).split())
+                  for key, cell in zip(keys, cells)
+                  if key is not None and str(cell.get("text", "")).strip()}
+        tag = _normalize_lighting_tag(fields.get("tag", ""))
+        if tag is None or not fields.get("description"):
+            reject("lighting_schedule_row_not_confirmed", row_index)
+            continue
+        fields["tag"] = tag
+        source_ids = tuple(sorted({source_id for cell in cells
+                                   for source_id in cell.get("source_element_ids", ())}))
+        evidence = tuple({**dict(cell), "field": key}
+                         for key, cell in zip(keys, cells) if key is not None)
+        parsed.append(_LightingScheduleRow(
+            page=heading.page, tag=tag, fields=dict(sorted(fields.items())),
+            source_element_ids=source_ids,
+            source_texts=tuple(native[source_id].text for source_id in source_ids),
+            cell_evidence=evidence,
+        ))
+    metadata.append({
+        "page": heading.page, "method": "lighting-fixture-schedule-ruled-cells",
+        "heading_element_id": heading.element_id, "heading_text": heading.text,
+        "table_element_id": table.get("element_id"),
+        "bbox_pt": table.get("bbox_pt"),
+        "header_element_ids": sorted({source_id for cell in header_cells
+                                      for source_id in cell.get("source_element_ids", ())}),
+        "row_count": len(parsed),
+    })
+    return parsed, metadata, unresolved
+
+
 def _detect_lighting_fixture_schedules(
     texts: Sequence[PdfTextObservation],
+    *, table_evidence: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[
     dict[tuple[int, str], _LightingScheduleRow],
     set[str],
@@ -6995,11 +7132,46 @@ def _detect_lighting_fixture_schedules(
     unresolved: list[dict[str, Any]] = []
 
     for heading in headings:
+        tables = [table for table in table_evidence
+                  if table.get("heading_element_id") == heading.element_id]
+        if tables:
+            claimed_before_table = set(claimed_text_ids)
+            # Even unresolved table cells remain schedule evidence, never field
+            # labels that can independently promote the table's own geometry.
+            page_text_ids = {item.element_id for item in texts
+                             if item.page == heading.page}
+            claimed_text_ids.update(
+                source_id for table in tables for cells in table.get("rows", ())
+                for cell in cells if cell
+                for source_id in cell.get("source_element_ids", ())
+                if source_id in page_text_ids
+            )
+            parsed_rows, metadata, problems = _lighting_rows_from_ruled_tables(
+                heading, tables, texts,
+            )
+            unresolved.extend(problems)
+            schedule_metadata.extend(metadata)
+            for row in parsed_rows:
+                rows_by_key.setdefault((row.page, row.tag), []).append(row)
+                claimed_text_ids.update(row.source_element_ids)
+            independent_columns_possible = (
+                len(tables) == 1 and len(problems) == 1
+                and problems[0].get("header_candidate_count") == 0
+            )
+            if not independent_columns_possible:
+                # Confirmed/ambiguous schedule headers and malformed body
+                # cells must never fall back to guessed columns.
+                continue
+            # Zero confirmed cell-header rows do not invalidate independent
+            # native column observations, even inside an enclosing page frame.
+            # Retain the frame diagnostic; the legacy parser does not split
+            # merged callbacks or attach derived cells.
+            claimed_text_ids = claimed_before_table
         header_candidates = [
             observation
             for observation in texts
             if observation.page == heading.page
-            and observation.element_id != heading.element_id
+            and observation.element_id not in claimed_text_ids
             and 0.0 < heading.y_pt - observation.y_pt <= _LIGHTING_HEADER_MAX_GAP_PT
             and _lighting_schedule_header_key(observation.text) is not None
         ]
@@ -7095,7 +7267,7 @@ def _detect_lighting_fixture_schedules(
                 and min_x <= observation.x_pt <= max_x
                 and abs(observation.y_pt - tag_cell.y_pt)
                 <= _LIGHTING_ROW_Y_TOLERANCE_PT
-                and observation.element_id != heading.element_id
+                and observation.element_id not in claimed_text_ids
             ]
             if tag_cell not in row_cells:
                 row_cells.append(tag_cell)
@@ -7193,10 +7365,21 @@ def _detect_lighting_fixture_schedules(
                 }
             )
             continue
-        resolved[key] = sorted(
+        first = sorted(
             rows,
             key=lambda item: (item.source_element_ids, item.source_texts),
         )[0]
+        # Repeated identical rows agree semantically, but every observed source
+        # remains evidence. Conflicting rows above never resolve by ordering.
+        cells = {str(cell["element_id"]): cell
+                 for row in rows for cell in row.cell_evidence}
+        resolved[key] = replace(
+            first,
+            source_element_ids=tuple(sorted({source_id for row in rows
+                                             for source_id in row.source_element_ids})),
+            source_texts=tuple(sorted({text for row in rows for text in row.source_texts})),
+            cell_evidence=tuple(cells[cell_id] for cell_id in sorted(cells)),
+        )
 
     return resolved, claimed_text_ids, unresolved, schedule_metadata
 
@@ -7788,6 +7971,8 @@ def _lighting_schedule_attributes(row: _LightingScheduleRow) -> dict[str, Any]:
         match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*(?:W|WATT|WATTS)?\b", wattage, re.I)
         if match:
             attributes["wattage_w"] = float(match.group(1))
+    if row.cell_evidence:
+        attributes["derived_cells"] = [dict(cell) for cell in row.cell_evidence]
     attributes["source_page"] = row.page
     attributes["source_element_ids"] = list(row.source_element_ids)
     return attributes
@@ -7816,7 +8001,12 @@ def _recognize_lighting(
         schedule_text_ids,
         schedule_unresolved,
         schedule_metadata,
-    ) = _detect_lighting_fixture_schedules(texts)
+    ) = _detect_lighting_fixture_schedules(
+        texts, table_evidence=tuple(
+            table for page in sorted(document.page_provenance)
+            for table in document.page_provenance[page].get("lighting_schedule_tables", ())
+        ),
+    )
     (
         legend_entries_by_page,
         prototype_keys,

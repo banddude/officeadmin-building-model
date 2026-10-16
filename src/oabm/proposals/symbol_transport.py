@@ -58,7 +58,7 @@ def symbol_output_schema(request: SymbolRequest, *,
     return {"type": "object", "properties": {
         "version": {"type": "string", "enum": [request.version]},
         "marks": {"type": "array", "items": mark, "maxItems": 256},
-        "scanned_image_ids": {"type": "array", "items": {"type": "string", "enum": list(request.target_image_ids)}, "uniqueItems": True},
+        "scanned_image_ids": {"type": "array", "items": {"type": "string", "enum": list(request.target_image_ids)}},
         "coverage_notes": {"type": "array", "items": {"type": "string"}},
     }, "required": ["version", "marks", "scanned_image_ids", "coverage_notes"], "additionalProperties": False}
 

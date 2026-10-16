@@ -31,3 +31,7 @@ historical responses remain schema-readable. The hook caller owns scope-schema
 and parser compatibility, including normalized citation bounds. Providers that
 require every property in `required` should omit this hook until an explicitly
 supported nullable scope contract is available.
+
+The default transport schema omits `uniqueItems`, which strict provider response
+formats reject. Duplicate scanned targets remain invalid in `SymbolOutput`;
+schema acceptance never replaces domain validation.

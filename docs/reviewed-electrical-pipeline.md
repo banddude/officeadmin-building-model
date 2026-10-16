@@ -218,3 +218,22 @@ exact hashes; the persistence marker covers all additional files. A requested
 generation error or even a late SVG write failure prevents the full directory
 from being published. Existing version reservations, failure receipts, ancestor
 syncs and no-overwrite/no-delete behavior remain unchanged.
+
+SVG view identifiers must satisfy the XML 1.0 character ranges. Forbidden control
+characters, surrogates and U+FFFE/U+FFFF fail saved-input decoding. Valid tab,
+newline and carriage-return characters are encoded as attribute character
+references, preserving exact identities instead of letting XML normalize them
+to spaces. The final generated SVG is parsed before being returned, and its
+`data-view-id` must roundtrip exactly; invalid canonical label text also fails
+the requested delivery before publication.
+
+The opt-in drawing JSON enriches each `source_index` entry with the complete
+canonical owner's provenance records, preserving optional `scope_paths`, absent
+legacy derivation fields, nested provenance attributes and designed/observed
+placement roles. `provenance_owner_collection` identifies where those qualifiers
+apply; they describe the canonical owner, not the whole view or an arithmetic
+subtotal. Geometry and entity attributes remain authoritative in the paired
+`canonical_model` artifact. `review.complete_model_evidence` names that artifact
+kind and its exact SHA-256, also retaining access to model-wide header evidence.
+This enrichment is confined to the opt-in package; the shared drawing generator
+and its existing summary representation are unchanged.

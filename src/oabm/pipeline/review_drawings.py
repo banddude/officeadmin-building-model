@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 import html
 import json
 import math
+import xml.etree.ElementTree as ET
 
 from oabm.model import ContractError
 from oabm.proposals.contracts import Portable, digest, text
@@ -27,6 +28,19 @@ def _finite(value, label, *, positive=False):
     return float(value)
 
 
+def _xml_identifier(value):
+    # XML 1.0 Char production. Attribute whitespace remains valid, but must be
+    # encoded as character references to preserve the exact caller identity.
+    if any(not (ord(c) in (9, 10, 13) or 0x20 <= ord(c) <= 0xD7FF
+                or 0xE000 <= ord(c) <= 0xFFFD or 0x10000 <= ord(c) <= 0x10FFFF)
+           for c in value):
+        raise ContractError("review view ID contains a forbidden XML character")
+
+
+def _xml_attribute(value):
+    return html.escape(value).replace("\t", "&#9;").replace("\n", "&#10;").replace("\r", "&#13;")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ReviewPlan(Portable):
     id: str
@@ -43,6 +57,7 @@ class ReviewPlan(Portable):
 
     def __post_init__(self):
         text(self.id, "review view ID")
+        _xml_identifier(self.id)
         text(self.level_id, "review level ID")
         if not isinstance(self.bounds_m, tuple) or len(self.bounds_m) != 4:
             raise ContractError("explicit four-coordinate plan bounds required")
@@ -96,14 +111,20 @@ def _svg(view, config):
     body = view_to_svg(view, pixels_per_model_unit=config.pixels_per_model_unit,
                        text_height_m=paper_text_height_m(view.scale))
     body = body[body.index(">", body.index("<svg "))+1:body.rindex("</svg>")]
-    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.6f} {height+64:.6f}" data-review-status="incomplete" data-view-id="{html.escape(view.id)}" data-view-type="plan">\n'
+    svg = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.6f} {height+64:.6f}" data-review-status="incomplete" data-view-id="{_xml_attribute(view.id)}" data-view-type="plan">\n'
         f'<rect width="{width:.6f}" height="64" fill="white"/>\n'
         f'<text x="12" y="22" font-size="16" fill="black">{html.escape(BANNER)}</text>\n'
         f'<text x="12" y="45" font-size="12" fill="black">{html.escape(view.title.split(" | ", 1)[-1])}; supplied model facts only</text>\n'
         f'<defs><clipPath id="review-window"><rect width="{view.bounds.width*config.pixels_per_model_unit:.6f}" height="{height:.6f}"/></clipPath></defs>\n'
         '<g transform="translate(0 64)" clip-path="url(#review-window)">'
         + body + '</g>\n</svg>\n').encode()
+    # Existing drawing text may originate in arbitrary canonical labels. Fail
+    # closed if any such value makes the final artifact invalid XML, too.
+    parsed = ET.fromstring(svg)
+    if parsed.attrib.get("data-view-id") != view.id:
+        raise ContractError("rendered SVG changed the requested view identity")
+    return svg
 
 
 def generate_review_drawings(model, config):
@@ -159,7 +180,20 @@ def generate_review_drawings(model, config):
         "unassigned_circuit_ids": [r.circuit.id for r in facts.unassigned_circuits],
         "views": visibility, "no_plan_views_requested": not bool(config.plans),
         "no_canonical_levels": not bool(model.levels)}
-    payloads["drawing_set"] = json.dumps({"review": status, "drawing_set": drawing.to_dict()},
+    drawing_document = drawing.to_dict()
+    canonical_document = model.to_dict()
+    owners = {row["id"]: (collection, row)
+              for collection, rows in canonical_document.items() if isinstance(rows, list)
+              for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)}
+    for entry in drawing_document["source_index"]:
+        collection, owner = owners[entry["canonical_id"]]
+        # Preserve canonical owner encoding, including optional scope qualifiers,
+        # derivation omissions, arbitrary provenance attributes and design roles.
+        entry["provenance"] = owner.get("provenance", [])
+        entry["provenance_owner_collection"] = collection
+    status["source_index_semantics"] = "canonical owner-relative confidence and complete provenance records; geometry and entity attributes remain in canonical_model"
+    status["complete_model_evidence"] = {"artifact_kind": "canonical_model", "sha256": before}
+    payloads["drawing_set"] = json.dumps({"review": status, "drawing_set": drawing_document},
         sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     if before != canonical_model_sha256(model):
         raise ContractError("review drawing generation mutated canonical model")

@@ -318,3 +318,72 @@ def test_multiple_views_keep_identity_mapping_without_using_ids_as_paths(tmp_pat
     assert [r["view_id"] for r in report["review_drawings"]["views"]]==["../not-a-path","z-view"]
     assert ET.fromstring((final/"review-plan-001.svg").read_bytes()).attrib["data-view-id"]=="../not-a-path"
     assert not (final.parent/"not-a-path").exists()
+
+
+@pytest.mark.parametrize("identity",["view:\x00bad","view:\x01bad","view:\ufffebad","view:\uffffbad","view:\ud800bad"])
+def test_saved_forbidden_xml_view_identifiers_never_publish(identity,tmp_path):
+    from oabm.pipeline.saved_electrical import persist_saved_electrical,SavedDeliveryError
+    # Feed the malformed value through saved JSON, not only the Python constructor.
+    manifest=saved_manifest(tmp_path/"saved",case(tmp_path/"source"),config())
+    cfg_path=manifest.parent/"drawing-config.json"
+    document=json.loads(cfg_path.read_bytes());document["plans"][0]["id"]=identity
+    cfg_path.write_text(json.dumps(document))
+    request=json.loads(manifest.read_bytes())
+    request["review_drawings"]["sha256"]=hashlib.sha256(cfg_path.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(request))
+    with pytest.raises(SavedDeliveryError) as error:
+        persist_saved_electrical(manifest,output_root=tmp_path/"out",run_id="invalid-xml")
+    assert error.value.stage=="load_inputs"
+    assert not (tmp_path/"out/invalid-xml/delivery").exists()
+    assert not list((tmp_path/"out/invalid-xml").rglob("COMPLETED.json"))
+
+
+def test_saved_svg_attribute_whitespace_preserves_distinct_exact_ids(tmp_path):
+    from oabm.pipeline.saved_electrical import persist_saved_electrical
+    cfg=config()
+    identities=("view:\tmark","view:\nmark","view:\rmark","view: mark",'view:<a> & "quoted"')
+    cfg=replace(cfg,plans=tuple(replace(cfg.plans[0],id=i) for i in identities))
+    manifest=saved_manifest(tmp_path/"saved",case(tmp_path/"source"),cfg)
+    final=persist_saved_electrical(manifest,output_root=tmp_path/"out",run_id="identities")
+    report=checked_persistence(final)
+    parsed=[]
+    for identity in identities:
+        row=report["artifacts"]["review_plan:"+identity]
+        actual=ET.fromstring(Path(row["reference"]).read_bytes()).attrib["data-view-id"]
+        assert actual==identity
+        parsed.append(actual)
+    assert len(set(parsed))==len(identities)
+
+
+def test_saved_drawing_index_retains_full_owner_qualified_provenance(tmp_path):
+    from oabm.pipeline.saved_electrical import persist_saved_electrical
+    model,review,args=case(tmp_path/"source")
+    scoped=Provenance(source_kind="synthetic",source_id="fixture:load-qualified",
+        derivation="inferred",confidence=.25,scope_paths=("load_va",),
+        attributes={"basis":"explicit supplied load-only review", "nested":{"unknowns":["load"]}})
+    circuit=replace(model.circuits[0],provenance=(scoped,))
+    model=BuildingModel.from_dict(replace(model,circuits=(circuit,)).to_dict())
+    prior=args["assertion_review"]
+    args["assertion_review"]=PlacementAssertionReview.capture(model,review,
+        decisions=args["decisions"],registrations=args["registrations"],
+        canonical_datum_id=prior.canonical_datum_id,reviewer_id=prior.reviewer_id,
+        reviewer_derivation=prior.reviewer_derivation,rationale=prior.rationale,assertions=prior.assertions)
+    args["source_references"][(scoped.source_kind,scoped.source_id)]="evidence/load-qualified"
+    manifest=saved_manifest(tmp_path/"saved",(model,review,args),config())
+    final=persist_saved_electrical(manifest,output_root=tmp_path/"out",run_id="qualified")
+    completion=checked_persistence(final)
+    canonical=json.loads((final/"model.json").read_bytes())
+    drawing=json.loads((final/"drawing-set.json").read_bytes())
+    index={r["canonical_id"]:r for r in drawing["drawing_set"]["source_index"]}
+    for collection in ("electrical_devices","electrical_equipment","circuits"):
+        for owner in canonical[collection]:
+            assert index[owner["id"]]["provenance"]==owner["provenance"]
+            assert index[owner["id"]]["provenance_owner_collection"]==collection
+    load=index[circuit.id]["provenance"][0]
+    assert load["scope_paths"]==["load_va"] and load["attributes"]==scoped.attributes
+    entity=next(d for d in canonical["electrical_devices"] if d["id"]!="device:base-ceiling")
+    height=next(p for p in index[entity["id"]]["provenance"]
+                if p["source_kind"]=="placement-assertion-review" and p["source_element_id"]=="elevation")
+    assert height["attributes"]["role"]=="designed" and height["scope_paths"]==["pose.position.z"]
+    assert drawing["review"]["complete_model_evidence"]=={
+        "artifact_kind":"canonical_model","sha256":completion["canonical_output_sha256"]}

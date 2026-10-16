@@ -621,3 +621,38 @@ def test_distinct_target_batches_send_complete_declared_context_without_other_ta
     assert len(calls) == 2
     assert set(calls[0][1]["images"]) == {"field", "legend", "notes", "schedule"}
     assert set(calls[1][1]["images"]) == {"second-field", "legend", "notes", "schedule"}
+
+
+def test_reused_journal_is_rejected_before_second_provider_call_without_receipt_changes(tmp_path):
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review
+    req, policy, adapters, documents, images, journal, calls, _ = symbol_source_fixture(tmp_path)
+    with journal:
+        extract_symbol_review([req], policy, adapters=adapters, documents=documents,
+            images=images, journals={req.fingerprint: journal})
+        original_bytes = journal.path.read_bytes()
+        original_receipts = journal.receipts
+        with pytest.raises(ContractError, match="empty attempt journals"):
+            extract_symbol_review([req], policy, adapters=adapters, documents=documents,
+                images=images, journals={req.fingerprint: journal})
+        assert len(calls) == 1
+        assert journal.path.read_bytes() == original_bytes
+        assert journal.receipts == original_receipts
+
+
+def test_nonempty_disk_journal_is_rejected_even_when_in_memory_receipts_are_empty(tmp_path):
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review
+    from oabm.proposals.symbols import AttemptJournal
+    req, policy, adapters, documents, images, original, calls, _ = symbol_source_fixture(tmp_path)
+    with original:
+        extract_symbol_review([req], policy, adapters=adapters, documents=documents,
+            images=images, journals={req.fingerprint: original})
+    saved_bytes = original.path.read_bytes()
+    with AttemptJournal.create(tmp_path / "externally-populated.jsonl") as candidate:
+        candidate.path.write_bytes(saved_bytes)
+        assert candidate.receipts == ()
+        with pytest.raises(ContractError, match="empty attempt journals"):
+            extract_symbol_review([req], policy, adapters=adapters, documents=documents,
+                images=images, journals={req.fingerprint: candidate})
+        assert len(calls) == 1
+        assert candidate.path.read_bytes() == saved_bytes
+    assert original.path.read_bytes() == saved_bytes

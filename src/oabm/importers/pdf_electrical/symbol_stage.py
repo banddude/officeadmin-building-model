@@ -316,6 +316,10 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
     journal_paths = {key: journal.path for key, journal in journals.items()}
     if len({Path(path).resolve() for path in journal_paths.values()}) != len(checked):
         raise ContractError("each source request requires its own attempt journal")
+    # Check every journal before any provider call. Existing receipt recovery
+    # belongs to saved-run verification, never an implicit fresh dispatch.
+    if any(journal.receipts or AttemptJournal.read(journal.path) for journal in journals.values()):
+        raise ContractError("fresh symbol extraction requires empty attempt journals")
     runs = []
     for request in checked:
         request_images, request_documents = _request_inputs(request, images, documents)

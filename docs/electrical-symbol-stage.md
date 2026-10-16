@@ -49,6 +49,8 @@ records and caller-selected trusted journal paths keyed by request fingerprint.
 Both building and consuming a manifest reverify source pixels through
 `SymbolRun.proposals`, including equality with the persisted attempt receipts and raw
 response in that journal. Each journal file contains exactly one run, including its escalation attempts.
+Fresh extraction refuses any journal with existing in-memory or persisted
+receipts, preserving saved-run verification as a separate operation.
 Batch extraction rejects shared or incomplete journal mappings before calling
 a provider. Each request receives its entire declared image/document context from
 the batch union, without undeclared target tiles belonging only to another request.

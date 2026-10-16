@@ -10060,11 +10060,13 @@ class ElectricalPdfImporter:
         source_id: str | None = None,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
         wall_evidence: SourceWallEvidence | None = None,
+        architecture_document: Any | None = None,
     ) -> BuildingModel:
         return self.import_document(
             extract_pdf(path, source_id=source_id),
             page_transforms=page_transforms,
             wall_evidence=wall_evidence,
+            architecture_document=architecture_document,
         )
 
     def import_document(
@@ -10074,9 +10076,15 @@ class ElectricalPdfImporter:
         page_transforms: Mapping[int, PageTransformInput] | None = None,
         page_type_filters: Mapping[int, frozenset[str]] | None = None,
         wall_evidence: SourceWallEvidence | None = None,
+        architecture_document: Any | None = None,
     ) -> BuildingModel:
         if wall_evidence is not None:
             _validate_wall_evidence_binding(document, wall_evidence)
+        if architecture_document is not None:
+            if wall_evidence is None:
+                raise ElectricalPdfError("architecture extraction requires source wall evidence")
+            from .branch_geometry import _bound_wall_evidence
+            _bound_wall_evidence(document, wall_evidence, architecture_document)
         wall_chains_by_page = _wall_chains_by_page(wall_evidence)
         transforms, region_transforms, has_explicit_registration = _resolve_page_transforms(
             document,
@@ -11318,6 +11326,13 @@ class ElectricalPdfImporter:
             confidence: float,
             branch_vector_ids: Sequence[str] = (),
         ) -> None:
+            if (observation.element_id in rejected_branch_annotation_ids
+                    or any(entity.id in rejected_branch_load_ids for entity in load_entities)):
+                unresolved_circuits.append({"kind": "device_circuit_tag", "page": observation.page,
+                    "source_element_id": observation.element_id, "status": "unresolved",
+                    "reason_code": "branch_geometry_rejected",
+                    "reason": "circuit evidence touches a source-bound rejected branch"})
+                return
             source_entity = recognized_panels[panel_tag]
             shared_raceway_group = (
                 stable_id(
@@ -11819,6 +11834,60 @@ class ElectricalPdfImporter:
             )
         ]
 
+        # Evaluate all source-bound branches before materializing ANY circuit.
+        # Otherwise an earlier direct/eligible path could rescue a later rejected run.
+        branch_geometry_diagnostics: list[dict[str, Any]] = []
+        rejected_branch_vector_ids: set[str] = set()
+        rejected_branch_load_ids: set[str] = set()
+        rejected_branch_annotation_ids: set[str] = set()
+        if architecture_document is not None:
+            from .branch_geometry import discriminate_branch_geometry
+            source_vectors = {vector.element_id: vector for vector in vectors}
+            checked_components = []
+            for component in homerun_components:
+                page = component[0].page
+                seeds = tuple(arrow.element_id for arrow in homerun_arrowheads
+                    if arrow.page == page and any(_paths_touch(arrow, vector,
+                        tolerance_pt=snap_tolerance_pt) for vector in component))
+                result = discriminate_branch_geometry(
+                    document, seed_vector_ids=seeds,
+                    eligible_vector_ids=tuple(vector.element_id for vector in circuit_vectors),
+                    own_symbol_outline_ids=tuple(vector.element_id for vector in
+                        component_own_symbol_outlines(component) if vector.closed),
+                    wall_evidence=wall_evidence if wall_evidence.page_number == page else None,
+                    architecture_document=architecture_document,
+                    snap_tolerance_pt=snap_tolerance_pt,
+                )
+                row = {"page": result.page, "source_id": result.source_id,
+                    "status": result.status, "reason_code": result.reason_code,
+                    "source_element_ids": list(result.vector_ids),
+                    "arrowhead_ids": list(result.arrowhead_ids),
+                    "wall_chain_ids": list(result.wall_chain_ids),
+                    "wall_evidence_element_ids": list(result.wall_source_element_ids),
+                    "architecture_evidence_status": result.architecture_evidence_status}
+                branch_geometry_diagnostics.append(row)
+                complete = [source_vectors[key] for key in result.vector_ids]
+                if result.status == "eligible":
+                    checked_components.append(complete)
+                    continue
+                rejected_branch_vector_ids.update(result.vector_ids)
+                for entity in devices:
+                    entity_page, x_pt, y_pt = entity_source_positions[entity.id]
+                    if entity_page == page and complete and min(
+                        _point_path_distance_pt((x_pt,y_pt), vector) for vector in complete
+                    ) <= self.topology_endpoint_radius_pt:
+                        rejected_branch_load_ids.add(entity.id)
+                for observation in texts:
+                    if observation.page == page and complete and min(
+                        _point_path_distance_pt((observation.x_pt,observation.y_pt),vector)
+                        for vector in complete
+                    ) <= self.topology_annotation_radius_pt:
+                        rejected_branch_annotation_ids.add(observation.element_id)
+                unresolved_circuits.append({**row, "kind": "homerun",
+                    "source_element_id": result.arrowhead_ids[0],
+                    "reason": "source-bound branch geometry rejected; alternative passes cannot rescue it"})
+            homerun_components = checked_components
+
         # One annotation cannot circuit two disconnected branch runs. Count how
         # many components each annotation is in range of first, so an
         # annotation claimed by more than one fails closed as ambiguous instead
@@ -11922,7 +11991,7 @@ class ElectricalPdfImporter:
                         "reason": (
                             "branch run contacts positively classified "
                             "architectural wall evidence "
-                            f"({wall_conflict.evidence_kind} classifier "
+                            f"({wall_evidence.evidence_kind} classifier "
                             f"{wall_evidence.classifier} v{wall_evidence.classifier_version}, "
                             + (
                                 "open chain"
@@ -12214,6 +12283,12 @@ class ElectricalPdfImporter:
                 unresolved_circuits.append(evidence)
                 continue
 
+            if (observation.element_id in rejected_branch_annotation_ids
+                    or any(entity.id in rejected_branch_load_ids for entity in load_entities)):
+                unresolved_circuits.append({**evidence, "status": "unresolved",
+                    "reason_code": "branch_geometry_rejected"})
+                continue
+
             voltage_v, _ = _extract_voltage((observation.text,))
             poles_match = _POLES_RE.search(observation.text)
             phase_match = _PHASE_RE.search(observation.text)
@@ -12326,6 +12401,11 @@ class ElectricalPdfImporter:
         ):
             page = component[0].page
             element_ids = sorted(item.element_id for item in component)
+            if rejected_branch_vector_ids.intersection(element_ids):
+                unresolved_topology.append({"page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": [], "status": "unresolved",
+                    "reason": "branch_geometry_rejected"})
+                continue
             wall_conflict = _wall_chain_conflict(
                 component,
                 wall_chains_by_page.get(page, ()),
@@ -12392,6 +12472,11 @@ class ElectricalPdfImporter:
                         attached[nearby[0][1].id] = nearby[0][1]
 
             if not attached:
+                continue
+            if rejected_branch_load_ids.intersection(attached):
+                unresolved_topology.append({"page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": sorted(attached), "status": "unresolved",
+                    "reason": "branch_geometry_rejected"})
                 continue
 
             topology_row: dict[str, Any] = {
@@ -13042,6 +13127,8 @@ class ElectricalPdfImporter:
                             str(item["source_element_id"]),
                         ),
                     ),
+                    **({"branch_geometry_checks": branch_geometry_diagnostics}
+                       if architecture_document is not None else {}),
                     "branch_wall_evidence": (
                         {
                             "status": "applied",
@@ -13106,12 +13193,14 @@ def import_pdf(
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
+    architecture_document: Any | None = None,
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_pdf(
         path,
         source_id=source_id,
         page_transforms=page_transforms,
         wall_evidence=wall_evidence,
+        architecture_document=architecture_document,
     )
 
 
@@ -13122,11 +13211,13 @@ def import_document(
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
+    architecture_document: Any | None = None,
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_document(
         document,
         page_transforms=page_transforms,
         wall_evidence=wall_evidence,
+        architecture_document=architecture_document,
     )
 
 

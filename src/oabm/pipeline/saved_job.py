@@ -284,6 +284,10 @@ def _export(root,revision,manifest,retry):
         output=directory/'published'/previous/'delivery'
         if output.is_dir() and not (output.parent/'failure.json').exists():
             model,report,sources,metadata=_verify_delivery(output)
+            marker={'version':VERSION,'delivery_marker_sha256':saved._sha(saved._read(output/'COMPLETED.json'))}
+            if (directory/'COMPLETED.json').exists():
+                _require(_read_json(directory/'COMPLETED.json')==marker,'export completion binding mismatch')
+            else:_json(directory/'COMPLETED.json',marker)
             return output,report,{'export_attempt_id':previous,'export_reused':True}
         if retry['export_after']!=previous:return None,None,{'status':'blocked_export_failure','export_attempt_id':previous}
     identity,directory=_new_attempt(stage,key,revision,previous,retry['export_reason'] if previous else None)

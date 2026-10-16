@@ -386,7 +386,7 @@ def _materialize_verified(model, review, decisions, registrations):
     entry = {"manifest": review.to_dict(),
              "decisions": [d.to_dict() for _, d in sorted(decision_map.items())],
              "registrations": [r.to_dict() for _, r in sorted(registration_map.items())],
-             "dispositions": dispositions}
+             "dispositions": copy.deepcopy(dispositions)}
     if entry not in history:
         history.append(entry)
     attributes = copy.deepcopy(model.attributes)

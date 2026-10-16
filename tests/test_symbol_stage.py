@@ -521,3 +521,15 @@ def test_incompatible_history_is_not_overwritten():
     with pytest.raises(ContractError, match="incompatible content"):
         apply(target=target)
     assert target.attributes["ai_symbol_stage_runs"] == "caller-owned content"
+
+
+def test_returned_disposition_mutation_cannot_rewrite_audit_or_break_replay():
+    manifest = review()
+    result = apply(manifest)
+    original = result.model.to_json()
+    result.dispositions[0]["status"] = "forged"
+    result.dispositions[0]["canonical_id"] = "forged:id"
+    assert result.model.to_json() == original
+    replay = apply(manifest, target=result.model)
+    assert replay.model == result.model
+    assert replay.dispositions[0]["status"] == "accept"

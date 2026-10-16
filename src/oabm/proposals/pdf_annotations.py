@@ -10,10 +10,75 @@ import io
 from numbers import Integral
 
 from pypdf import PdfReader
-from pypdf.generic import ArrayObject, DictionaryObject, StreamObject
+from pypdf.generic import (ArrayObject, DictionaryObject, StreamObject,
+                           ContentStream, IndirectObject, NameObject)
 
 from oabm.model import ContractError
 from .contracts import _finite, integer
+
+
+def _appearance_optional_content(appearance):
+    """Bounded appearance/resource inspection without changing layer visibility."""
+    seen, active = set(), set()
+    nodes = 0
+    decoded_bytes = 0
+
+    def walk(value, *, depth=0, content=False, glyphs=False):
+        nonlocal nodes, decoded_bytes
+        nodes += 1
+        if depth > 32 or nodes > 4096:
+            raise ContractError('annotation appearance resource inspection budget exceeded')
+        if isinstance(value, IndirectObject):
+            value = value.get_object()
+        if isinstance(value, NameObject):
+            return value in ('/OC', '/OCG', '/OCMD')
+        if not isinstance(value, (DictionaryObject, list, tuple, ArrayObject)):
+            return False
+        key = id(value)
+        if key in active:
+            raise ContractError('cyclic annotation appearance resource graph')
+        if key in seen:
+            return False
+        active.add(key)
+        try:
+            if isinstance(value, DictionaryObject):
+                if '/OC' in value or value.get('/Type') in ('/OCG', '/OCMD'):
+                    return True
+                # Parse actual appearance/form/pattern/Type3 glyph content only;
+                # binary image/font resources are traversed but not tokenized.
+                is_content = isinstance(value, StreamObject) and (
+                    content or value.get('/Subtype') == '/Form' or value.get('/PatternType') == 1)
+                if is_content:
+                    data = value.get_data()
+                    decoded_bytes += len(data)
+                    if decoded_bytes > 8_000_000:
+                        raise ContractError('annotation appearance decoded content budget exceeded')
+                    reference = getattr(value, 'indirect_reference', None)
+                    operations = ContentStream(value, getattr(reference, 'pdf', None)).operations
+                    if len(operations) > 100000:
+                        raise ContractError('annotation appearance operator budget exceeded')
+                    for operands, _operator in operations:
+                        if walk(operands, depth=depth+1):
+                            return True
+                for name, child in value.items():
+                    if walk(child, depth=depth+1, content=glyphs,
+                            glyphs=name == '/CharProcs'):
+                        return True
+            else:
+                for child in value:
+                    if walk(child, depth=depth+1, content=content, glyphs=glyphs):
+                        return True
+            seen.add(key)
+            return False
+        finally:
+            active.remove(key)
+
+    try:
+        return walk(appearance, content=True)
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError('annotation appearance resources cannot be inspected') from exc
 
 
 def page_annotation_inventory(page):
@@ -48,7 +113,8 @@ def page_annotation_inventory(page):
                            'raw_rect_pt': list(rect),
                            'normal_appearance_sha256': hashlib.sha256(appearance_bytes).hexdigest() if appearance_bytes is not None else None,
                            'normal_appearance_nonempty': bool(appearance_bytes),
-                           'optional_content': '/OC' in annot})
+                           'optional_content': '/OC' in annot or (
+                               isinstance(normal, StreamObject) and _appearance_optional_content(normal))})
         return tuple(result)
     except ContractError:
         raise

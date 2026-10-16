@@ -201,3 +201,9 @@ crop. Existing frozen requests/results retain their original serialization and
 remain historical observations over their original view. Reconciliation is a
 separate source-bound review layer; new captures have new policies and hashes.
 No annotation contents are promoted to canonical facts by rendering alone.
+
+Optional-content refusal inspects the bounded appearance/resource graph, not
+only the annotation dictionary: marked-content `/OC` tags, nested forms,
+patterns, Type3 glyph resources and soft-mask resources are inspected. Cycles,
+unparseable content and inspection limits refuse explicitly. Binary image/font
+streams are not tokenized as content. Layer visibility is never forced ON.

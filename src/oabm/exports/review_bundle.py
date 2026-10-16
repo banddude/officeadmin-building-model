@@ -92,6 +92,106 @@ def canonical_model_sha256(model: BuildingModel) -> str:
     return _sha256(model.to_json(indent=None).encode("utf-8"))
 
 
+_GLB_OPTION_DEFAULTS: dict[str, Any] = {
+    "reference_planes": False,
+    "reference_floor_alpha": 0.25,
+    "reference_ceiling_alpha": 0.08,
+    "reference_margin_m": 0.5,
+    "dimmed_ids": (),
+    "dimmed_alpha": 0.3,
+    "dimmed_color": (0.62, 0.62, 0.62),
+    "emphasized_ids": (),
+    "groups": None,
+    "hidden_groups": (),
+    "glazed_outline": False,
+    "min_display_wall_thickness_m": None,
+}
+
+
+def _string_sequence(value: Any, label: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        raise ValueError(f"{label} must be a finite array of strings")
+    if any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"{label} must contain non-empty strings")
+    return tuple(sorted(set(value)))
+
+
+def _normalize_glb_options(
+    value: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Normalize exporter settings to deterministic call args and JSON facts."""
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise TypeError("glb_options must be an object of to_glb keyword options")
+    unknown = set(value) - set(_GLB_OPTION_DEFAULTS)
+    if unknown:
+        raise ValueError(f"unknown GLB export options: {sorted(unknown)}")
+    options = dict(_GLB_OPTION_DEFAULTS)
+    options.update(value)
+
+    for name in ("reference_planes", "glazed_outline"):
+        if not isinstance(options[name], bool):
+            raise ValueError(f"GLB option {name} must be a boolean")
+    for name in (
+        "reference_floor_alpha", "reference_ceiling_alpha", "reference_margin_m",
+        "dimmed_alpha",
+    ):
+        item = options[name]
+        if (
+            not isinstance(item, (int, float)) or isinstance(item, bool)
+            or not math.isfinite(item)
+        ):
+            raise ValueError(f"GLB option {name} must be a finite number")
+    thickness = options["min_display_wall_thickness_m"]
+    if thickness is not None and (
+        not isinstance(thickness, (int, float)) or isinstance(thickness, bool)
+        or not math.isfinite(thickness) or thickness <= 0.0
+    ):
+        raise ValueError("min_display_wall_thickness_m must be positive and finite or None")
+
+    options["dimmed_ids"] = _string_sequence(options["dimmed_ids"], "dimmed_ids")
+    options["emphasized_ids"] = _string_sequence(options["emphasized_ids"], "emphasized_ids")
+    options["hidden_groups"] = _string_sequence(options["hidden_groups"], "hidden_groups")
+    color = options["dimmed_color"]
+    if (
+        not isinstance(color, (list, tuple)) or len(color) != 3
+        or any(
+            not isinstance(item, (int, float)) or isinstance(item, bool)
+            or not math.isfinite(item)
+            for item in color
+        )
+    ):
+        raise ValueError("dimmed_color must contain three finite numeric channels")
+    options["dimmed_color"] = tuple(color)
+
+    groups = options["groups"]
+    if groups is not None:
+        if not isinstance(groups, Mapping):
+            raise ValueError("groups must be an object mapping names to id arrays or None")
+        normalized_groups: dict[str, tuple[str, ...]] = {}
+        for name, ids in groups.items():
+            if not isinstance(name, str) or not name:
+                raise ValueError("group names must be non-empty strings")
+            normalized_groups[name] = _string_sequence(ids, f"groups[{name!r}]")
+        options["groups"] = dict(sorted(normalized_groups.items()))
+        if not options["groups"]:
+            options["groups"] = None
+
+    portable = {
+        name: (
+            {group: list(ids) for group, ids in options[name].items()}
+            if name == "groups" and options[name] is not None
+            else list(options[name])
+            if name in {"dimmed_ids", "emphasized_ids", "hidden_groups", "dimmed_color"}
+            else options[name]
+        )
+        for name in sorted(options)
+    }
+    _canonical_json_bytes(portable)
+    return options, portable
+
+
 def _decode_confidence_manifest(
     value: ConfidenceReviewManifest | Mapping[str, Any] | str | bytes,
 ) -> ConfidenceReviewManifest:
@@ -236,18 +336,60 @@ def _node_index(
             and "#route:" in name
             and isinstance(extras.get("route_id"), str)
         )
-        if is_wire:
-            collection, _ = entities[identity]
-            if collection != "conductors":
-                raise ValueError(f"GLB wire node {index} canonical_id is not a conductor")
-            if extras["route_id"] not in route_ids:
+        collection, entity = entities[identity]
+        if collection == "conductors":
+            if not is_wire:
+                raise ValueError(f"GLB conductor node {index} is missing its route-bound wire identity")
+            route_id = extras["route_id"]
+            if route_id not in route_ids:
                 raise ValueError(f"GLB wire node {index} references an unknown route_id")
+            if route_id not in entity.route_ids:
+                raise ValueError(
+                    f"GLB wire node {index} maps conductor {identity!r} to a route it does not carry"
+                )
+            prefix = f"{identity}#route:{route_id.removeprefix('route:')}#"
+            if not name.startswith(prefix) or not name[len(prefix):].isdigit():
+                raise ValueError(f"GLB wire node {index} name does not match its canonical conductor/route")
+        elif is_wire:
+            raise ValueError(f"GLB wire node {index} canonical_id is not a conductor")
         previous = by_id.get(identity, [])
         if previous and (not is_wire or not all(node_is_wire.get(identity, False) for _ in previous)):
             raise ValueError(f"duplicate GLB canonical_id {identity!r}")
         by_id.setdefault(identity, []).append(index)
         node_is_wire[identity] = is_wire
     return by_id
+
+
+def _verify_expected_rendered_nodes(
+    model: BuildingModel, node_indices: Mapping[str, list[int]],
+) -> None:
+    """Require every exporter-supported canonical entity and wire instance."""
+    expected: dict[str, int] = {}
+    for collection in (
+        model.walls, model.slabs, model.spaces, model.electrical_devices,
+        model.electrical_equipment, model.electrical_boxes, model.support_components,
+        model.structural_members, model.routes, model.support_interfaces,
+        model.support_assemblies,
+    ):
+        for entity in collection:
+            expected[entity.id] = 1
+    for conductor in model.conductors:
+        wire_count = conductor.count * len(conductor.route_ids)
+        if wire_count:
+            expected[conductor.id] = wire_count
+    observed = {identity: len(indices) for identity, indices in node_indices.items()}
+    if observed != expected:
+        missing = sorted(set(expected) - set(observed))
+        unexpected = sorted(set(observed) - set(expected))
+        wrong_counts = {
+            identity: {"expected": expected[identity], "actual": observed[identity]}
+            for identity in sorted(set(expected) & set(observed))
+            if expected[identity] != observed[identity]
+        }
+        raise ValueError(
+            "GLB canonical node coverage does not match exporter-supported model entities "
+            f"(missing={missing}, unexpected={unexpected}, wrong_counts={wrong_counts})"
+        )
 
 
 def _source_reference_rows(
@@ -286,6 +428,7 @@ def build_review_bundle(
     confidence_reference: str,
     source_reference_mapping_reference: str,
     source_references: Mapping[tuple[str, str], str],
+    glb_options: Mapping[str, Any] | None = None,
 ) -> ReviewBundle:
     """Bind canonical review facts to a verified GLB and caller artifact refs.
 
@@ -308,6 +451,10 @@ def build_review_bundle(
     model_sha = canonical_model_sha256(model)
     entities, serialized_entities = _canonical_entity_index(model)
     manifest_sha = _verify_confidence_manifest(model, manifest)
+    export_args, export_options = _normalize_glb_options(glb_options)
+    from oabm.exports.gltf import build_glb_bytes
+
+    trusted_glb_bytes = build_glb_bytes(model, **export_args)
     glb_document = _parse_glb_document(glb_bytes)
     asset_extras = glb_document["asset"].get("extras", {})
     if not isinstance(asset_extras, Mapping):
@@ -318,6 +465,9 @@ def build_review_bundle(
         raise ValueError("GLB canonical_model_sha256 is stale or mismatched")
 
     node_indices = _node_index(glb_document, entities)
+    _verify_expected_rendered_nodes(model, node_indices)
+    if glb_bytes != trusted_glb_bytes:
+        raise ValueError("GLB bytes do not match the trusted canonical export and supplied display options")
     used_sources: set[tuple[str, str]] = set()
     for item in manifest.items:
         for identity in item.entity_ids:
@@ -377,6 +527,7 @@ def build_review_bundle(
             "glb": {
                 "reference": refs["glb"],
                 "sha256": _sha256(glb_bytes),
+                "export_options": export_options,
             },
             "confidence_review": {
                 "reference": refs["confidence"],
@@ -449,7 +600,7 @@ def _validate_bundle_document(document: Any) -> None:
         raise ValueError("review bundle artifacts are incomplete or contain unknown keys")
     expected_artifact_keys = {
         "canonical_model": {"reference", "model_id", "sha256"},
-        "glb": {"reference", "sha256"},
+        "glb": {"reference", "sha256", "export_options"},
         "confidence_review": {"reference", "sha256"},
         "source_reference_mapping": {"reference", "sha256", "items"},
     }
@@ -462,6 +613,12 @@ def _validate_bundle_document(document: Any) -> None:
             _reference(artifact.get("model_id"), "canonical model_id")
         if not isinstance(artifact.get("sha256"), str) or not _SHA256_RE.fullmatch(artifact["sha256"]):
             raise ValueError(f"review bundle artifact {name!r} has an invalid SHA-256 identity")
+    glb_export_options = artifacts["glb"]["export_options"]
+    if not isinstance(glb_export_options, Mapping):
+        raise ValueError("GLB export options must be a JSON object")
+    _, normalized_export_options = _normalize_glb_options(glb_export_options)
+    if dict(glb_export_options) != normalized_export_options:
+        raise ValueError("GLB export options must be complete and normalized")
     source_items = artifacts["source_reference_mapping"]["items"]
     if not isinstance(source_items, (list, tuple)):
         raise ValueError("source reference mapping items must be an array")

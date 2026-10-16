@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from oabm.exports import to_glb
+from oabm.exports.gltf import build_glb_bytes
+from oabm.exports.review_bundle import _canonical_entity_index, _node_index, _parse_glb_document
 from oabm.exports.review_bundle import (
     ReviewBundle,
     build_review_bundle,
@@ -79,7 +81,9 @@ def _artifacts(model: BuildingModel, tmp_path: Path):
     return glb_path.read_bytes(), manifest
 
 
-def _build(model: BuildingModel, glb_bytes: bytes, manifest, *, source_references=None):
+def _build(
+    model: BuildingModel, glb_bytes: bytes, manifest, *, source_references=None, glb_options=None,
+):
     return build_review_bundle(
         model,
         glb_bytes=glb_bytes,
@@ -92,6 +96,7 @@ def _build(model: BuildingModel, glb_bytes: bytes, manifest, *, source_reference
             {("synthetic_plan", "plan-a"): "fixtures/synthetic/plan-a.pdf"}
             if source_references is None else source_references
         ),
+        glb_options=glb_options,
     )
 
 
@@ -116,6 +121,17 @@ def _rewrite_glb(payload: bytes, mutate) -> bytes:
         encoded.extend(chunk)
     struct.pack_into("<I", encoded, 8, len(encoded))
     return bytes(encoded)
+
+
+def _mutate_glb_binary(payload: bytes) -> bytes:
+    json_length, json_kind = struct.unpack_from("<II", payload, 12)
+    assert json_kind == 0x4E4F534A
+    bin_header = 20 + json_length
+    bin_length, bin_kind = struct.unpack_from("<II", payload, bin_header)
+    assert bin_kind == 0x004E4942 and bin_length > 0
+    mutated = bytearray(payload)
+    mutated[bin_header + 8] ^= 0x01
+    return bytes(mutated)
 
 
 def test_bundle_joins_current_review_and_canonical_source_confidence(tmp_path: Path) -> None:
@@ -258,6 +274,78 @@ def test_rejects_a_stale_confidence_review_manifest(tmp_path: Path) -> None:
         _build(model, glb_bytes, stale_document)
 
 
+
+def test_build_glb_bytes_matches_exporter_and_explicit_display_reexport(tmp_path: Path) -> None:
+    model = _synthetic_model()
+    canonical_identity = canonical_model_sha256(model)
+    default_bytes = build_glb_bytes(model)
+    path = tmp_path / "from-to-glb.glb"
+    to_glb(model, path)
+    assert default_bytes == path.read_bytes()
+
+    manifest = build_confidence_review(model, ReviewConfig(confidence_threshold=0.8))
+    display_bytes = build_glb_bytes(model, min_display_wall_thickness_m=0.2)
+    assert display_bytes != default_bytes
+    assert canonical_model_sha256(model) == canonical_identity
+    bundle = _build(
+        model, display_bytes, manifest,
+        glb_options={"min_display_wall_thickness_m": 0.2},
+    ).to_dict()
+    assert bundle["artifacts"]["canonical_model"]["sha256"] == canonical_identity
+    assert bundle["artifacts"]["glb"]["export_options"]["min_display_wall_thickness_m"] == 0.2
+
+
+def test_rejects_removed_rendered_node_swapped_ids_and_changed_geometry(tmp_path: Path) -> None:
+    model = _synthetic_model()
+    second_wall = replace(
+        model.walls[0],
+        id="wall:review-2",
+        centerline=Polyline3D(points=(Point3(x=0.0, y=1.0, z=0.0), Point3(x=2.0, y=1.0, z=0.0))),
+    )
+    model = replace(model, walls=(model.walls[0], second_wall))
+    glb_bytes, manifest = _artifacts(model, tmp_path)
+
+    def remove_expected_wall(document):
+        document["nodes"] = [
+            node for node in document["nodes"]
+            if node.get("extras", {}).get("canonical_id") != "wall:review"
+        ]
+
+    def swap_wall_ids(document):
+        first = next(node for node in document["nodes"] if node.get("extras", {}).get("canonical_id") == "wall:review")
+        second = next(node for node in document["nodes"] if node.get("extras", {}).get("canonical_id") == "wall:review-2")
+        first["extras"]["canonical_id"], second["extras"]["canonical_id"] = (
+            second["extras"]["canonical_id"], first["extras"]["canonical_id"],
+        )
+
+    with pytest.raises(ValueError, match="canonical node coverage"):
+        _build(model, _rewrite_glb(glb_bytes, remove_expected_wall), manifest)
+    for forged in (
+        _rewrite_glb(glb_bytes, swap_wall_ids),
+        _mutate_glb_binary(glb_bytes),
+    ):
+        with pytest.raises(ValueError, match="trusted canonical export"):
+            _build(model, forged, manifest)
+
+
+def test_wire_route_must_be_owned_by_its_canonical_conductor(tmp_path: Path) -> None:
+    golden_root = ROOT / "fixtures" / "golden" / "v1"
+    case = next(case for case in load_golden_cases(golden_root) if case.name == "synthetic-garage")
+    rendered_model = load_golden_model(case)
+    path = tmp_path / "garage-route-ownership.glb"
+    to_glb(rendered_model, path)
+    document = _parse_glb_document(path.read_bytes())
+
+    conductor = rendered_model.conductors[0]
+    detached_model = replace(
+        rendered_model,
+        conductors=(replace(conductor, route_ids=()), *rendered_model.conductors[1:]),
+    )
+    entities, _ = _canonical_entity_index(detached_model)
+    with pytest.raises(ValueError, match="route it does not carry"):
+        _node_index(document, entities)
+
+
 def test_rejects_missing_unknown_and_duplicate_glb_canonical_ids(tmp_path: Path) -> None:
     model = _synthetic_model()
     glb_bytes, manifest = _artifacts(model, tmp_path)
@@ -283,7 +371,7 @@ def test_rejects_missing_unknown_and_duplicate_glb_canonical_ids(tmp_path: Path)
 
 
 
-def test_review_facts_come_from_canonical_data_not_glb_extras(tmp_path: Path) -> None:
+def test_rejects_self_asserted_glb_review_summaries(tmp_path: Path) -> None:
     model = _synthetic_model()
     glb_bytes, manifest = _artifacts(model, tmp_path)
 
@@ -296,14 +384,8 @@ def test_review_facts_come_from_canonical_data_not_glb_extras(tmp_path: Path) ->
             "confidence": 0.01,
         }]
 
-    bundle = _build(model, _rewrite_glb(glb_bytes, misleading_summary), manifest).to_dict()
-    wall = next(
-        item["entities"][0]
-        for item in bundle["items"]
-        if item["item_id"] == "review:entity:wall:review"
-    )
-    assert wall["confidence"] == 0.95
-    assert wall["provenance"][0]["confidence"] == 0.45
+    with pytest.raises(ValueError, match="trusted canonical export"):
+        _build(model, _rewrite_glb(glb_bytes, misleading_summary), manifest)
 
 
 def test_rejects_unresolved_or_unused_source_references(tmp_path: Path) -> None:

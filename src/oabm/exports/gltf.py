@@ -266,7 +266,8 @@ def to_glb(
     hidden_groups: Iterable[str] = (),
     glazed_outline: bool = False,
     min_display_wall_thickness_m: float | None = None,
-) -> dict[str, Any]:
+    _return_payload: bool = False,
+) -> dict[str, Any] | bytes:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
 
     The export is a deterministic derived view: walls, slabs, space floor
@@ -420,6 +421,8 @@ def to_glb(
     chunks[0] = struct.pack("<III", _GLB_MAGIC, _GLB_VERSION, total)
 
     payload = b"".join(chunks)
+    if _return_payload:
+        return payload
     target = Path(path)
     target.write_bytes(payload)
     return {
@@ -431,6 +434,21 @@ def to_glb(
         "buffer_bytes": len(binary),
         **summary_counts,
     }
+
+
+def build_glb_bytes(model: BuildingModel, **options: Any) -> bytes:
+    """Return the exact deterministic GLB payload without writing a file.
+
+    This uses the same option validation, geometry builder, and encoder as
+    to_glb. It is intended for consumers that must verify an artifact against
+    the canonical model and explicit display options.
+    """
+    if "_return_payload" in options:
+        raise TypeError("_return_payload is reserved for the exporter")
+    payload = to_glb(model, Path(), _return_payload=True, **options)
+    if not isinstance(payload, bytes):
+        raise RuntimeError("internal GLB payload build did not return bytes")
+    return payload
 
 
 def _build_document(

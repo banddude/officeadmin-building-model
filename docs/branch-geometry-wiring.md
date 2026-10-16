@@ -17,7 +17,9 @@ annotation identities also block direct-tag, text-link and topology materializer
 The rejection sets are complete before materialization begins, so processing order
 does not let a different path rescue a rejected component.
 
-The discriminator's `architecture_evidence_status` is copied verbatim. Eligibility
+The discriminator's `architecture_evidence_status` is copied verbatim:
+`missing_handoff`, `supplied_empty`, or `supplied_positive`. None establishes
+complete architectural coverage. Eligibility
 is only absence of a supported rejection; it does not establish full architecture
 coverage or authorize circuit construction on its own. A single wall handoff covers
 its specified page. Branches on other pages retain the helper's unavailable status.

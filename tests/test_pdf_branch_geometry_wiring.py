@@ -41,6 +41,7 @@ def test_interior_wall_crossing_cannot_be_rescued_by_direct_device_tag(tmp_path)
     lane=model.attributes['pdf_electrical']
     check=lane['branch_geometry_checks'][0]
     assert check['reason_code']=='enters_classified_wall_chain'
+    assert check['architecture_evidence_status']=='supplied_positive'
     assert check['wall_chain_ids'] and check['wall_evidence_element_ids']
     assert any(row.get('reason_code')=='branch_geometry_rejected' for row in lane['unresolved_circuits'])
     assert any(row.get('reason')=='branch_geometry_rejected' for row in lane['unresolved_topology'])
@@ -69,3 +70,23 @@ def test_invalid_architecture_handoff_fails_before_materialization(tmp_path,chan
         evidence=None
     with pytest.raises((WallEvidenceHandoffError,ValueError)):
         ElectricalPdfImporter().import_document(doc,wall_evidence=evidence,architecture_document=arch)
+
+
+def test_empty_and_missing_page_handoffs_preserve_helper_vocabulary(tmp_path):
+    path=sheet(tmp_path/'two-pages.pdf')
+    reader=PdfReader(path);writer=PdfWriter()
+    for number in (1,2):
+        page=writer.add_page(reader.pages[0])
+        if number==2:
+            stream=DecodedStreamObject()
+            stream.set_data(page.get_contents().get_data().replace(b'EVSE-1',b'EVSE-2')
+                            .replace(b'PANEL LP 120/208V 3PH',b'SECOND FLOOR'))
+            page[NameObject('/Contents')]=writer._add_object(stream)
+    writer.write(path)
+    doc,arch,evidence,_,_=inputs(path)
+    evidence=replace(evidence,chains=())
+    model=ElectricalPdfImporter().import_document(doc,wall_evidence=evidence,architecture_document=arch)
+    checks=model.attributes['pdf_electrical']['branch_geometry_checks']
+    assert {(row['page'],row['architecture_evidence_status']) for row in checks}=={
+        (1,'supplied_empty'),(2,'missing_handoff')}
+    assert all(row['status']=='eligible' for row in checks)

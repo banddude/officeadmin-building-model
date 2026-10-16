@@ -42,10 +42,30 @@ PDF revision. Callers with custom IDs must retain/re-extract the byte-bound sour
 rather than manufacture a matching ID.
 
 `eligible` means only that this boundary found no supported semantic rejection.
-It is not observed connectivity or a safe-to-materialize instruction. With no
-wall handoff, `architecture_evidence_status` explicitly discloses that
-unclassified architecture has not been excluded. An empty handoff can likewise
-classify nothing; its presence never proves full sheet coverage.
+It is not observed connectivity or a safe-to-materialize instruction.
+`architecture_evidence_status` has exactly this vocabulary:
+
+| Value | Supplied evidence |
+| --- | --- |
+| `missing_handoff` | No `SourceWallEvidence` was supplied. |
+| `supplied_empty` | A validated handoff was supplied, but its `chains` tuple is empty. |
+| `supplied_positive` | A validated handoff carries at least one positively classified wall chain. |
+
+None proves full-sheet or branch-local classification coverage. In particular,
+`supplied_empty` does not establish an architecture-free sheet, and
+`supplied_positive` may coexist with unclassified architecture elsewhere.
+Positive evidence can produce either an eligible run away from its classified
+walls or an unresolved run contacting them. A missing or empty handoff can leave
+unclassified wall-like linework eligible at this geometry boundary; consumers
+must retain that uncertainty and the existing materialization checks.
+
+Migration from PR #306: the former `applied` value is split into
+`supplied_empty` and `supplied_positive`; the former
+`unavailable_unclassified_architecture_not_excluded` value becomes
+`missing_handoff`. These are diagnostic vocabulary changes only. Traversal
+`status` (`eligible`/`unresolved`), reason codes, component membership and source
+binding rules do not change. Consumers must not treat any evidence-status value
+as permission to materialize a circuit or as completion of #76/#72.
 
 ## Integration instructions
 

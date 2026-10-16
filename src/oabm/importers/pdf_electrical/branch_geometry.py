@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Sequence
+from typing import Literal, Sequence
 
 from ..pdf_wall_evidence import SourceWallEvidence, WallEvidenceHandoffError
 from .importer import (
@@ -28,7 +28,10 @@ class BranchGeometryResult:
     arrowhead_ids: tuple[str, ...]
     wall_chain_ids: tuple[str, ...]
     wall_source_element_ids: tuple[str, ...]
-    architecture_evidence_status: str
+    # Evidence availability only; none of these states proves sheet coverage.
+    architecture_evidence_status: Literal[
+        "missing_handoff", "supplied_empty", "supplied_positive"
+    ]
     wall_evidence: SourceWallEvidence | None
 
 
@@ -159,6 +162,7 @@ def discriminate_branch_geometry(
         'unresolved' if reason else 'eligible', reason, document.source_id, page,
         tuple(sorted(v.element_id for v in component)),
         tuple(v.element_id for v in seeds), tuple(sorted(chain_ids)), tuple(sorted(source_ids)),
-        'applied' if wall_evidence is not None else 'unavailable_unclassified_architecture_not_excluded',
+        ('missing_handoff' if wall_evidence is None else
+         'supplied_positive' if wall_evidence.chains else 'supplied_empty'),
         wall_evidence,
     )

@@ -6974,7 +6974,7 @@ def _lighting_heading_kind(observation: PdfTextObservation) -> str | None:
         r"(?:(?:EQUIPMENT|SERVICE)\s+)?(?:ROOMS?|AREAS?|SPACES?)\b",
         "", normalized,
     )
-    if set(discipline_text.split()) & {"PLUMBING", "MECHANICAL", "HVAC", "SANITARY"}:
+    if set(discipline_text.split()) & {"PLUMBING", "MECHANICAL", "HVAC", "SANITARY", "ARCHITECTURAL", "STRUCTURAL"}:
         return None
     if discipline_text != normalized and not words & {
         "LIGHT", "LIGHTING", "LUMINAIRE", "LUMINAIRES",
@@ -8019,6 +8019,14 @@ def _recognize_lighting(
         excluded_text_ids=set(schedule_text_ids),
     )
 
+    from .schedule_applicability import resolve_schedule_associations
+
+    applicable_schedules, schedule_associations, association_unresolved = resolve_schedule_associations(
+        texts=texts, schedules=schedules, metadata=schedule_metadata,
+        problems=schedule_unresolved,
+        excluded_text_ids=set(schedule_text_ids) | set(legend_text_ids),
+        normalize_tag=_normalize_lighting_tag,
+    )
     claimed_text_ids = set(schedule_text_ids) | set(legend_text_ids)
     claimed_vector_ids = {
         element_id
@@ -8030,6 +8038,7 @@ def _recognize_lighting(
     unresolved: list[dict[str, Any]] = [
         *schedule_unresolved,
         *legend_unresolved,
+        *association_unresolved,
     ]
     candidates: dict[str, _EntityCandidate] = {}
 
@@ -8143,9 +8152,9 @@ def _recognize_lighting(
         switch_entries_by_page[page] = switch_entries_by_page[reference.legend_page]
         applied_references[page] = reference
 
-    fixture_tags_by_page: dict[int, set[str]] = {
-        page: set(tags) for page, tags in schedule_tags_by_page.items()
-    }
+    fixture_tags_by_page: dict[int, set[str]] = {}
+    for page, tag in applicable_schedules:
+        fixture_tags_by_page.setdefault(page, set()).add(tag)
     for page, entries in fixture_entries_by_page.items():
         fixture_tags_by_page.setdefault(page, set()).update(
             entry.tag for entry in entries
@@ -8306,7 +8315,8 @@ def _recognize_lighting(
             fixture_entries_by_page.get(cluster.page, ()),
             tag=tag,
         )
-        schedule_row = schedules.get((cluster.page, tag))
+        schedule_row = applicable_schedules.get((cluster.page, tag))
+        schedule_association = schedule_associations.get((cluster.page, tag))
 
         # A schedule enriches a confirmed fixture but never proves one: a
         # schedule-known letter beside arbitrary small geometry is exactly what
@@ -8385,6 +8395,8 @@ def _recognize_lighting(
             recognition["fixture_schedule"] = _lighting_schedule_attributes(
                 schedule_row
             )
+            if schedule_association and schedule_association["tier"] != "same_sheet":
+                recognition["fixture_schedule"]["association"] = schedule_association
 
         candidate = _EntityCandidate(
             key=f"p{cluster.page}:lighting:{cluster.geometry_key}",
@@ -8475,6 +8487,14 @@ def _recognize_lighting(
                     )
                 )
 
+        if schedule_association and schedule_association["tier"] != "same_sheet":
+            candidate.provenance.append(_provenance(
+                document, element_id=tag_observation.element_id,
+                page=tag_observation.page, method="pdf-lighting-schedule-association",
+                confidence=float(schedule_association["confidence"]),
+                derivation=str(schedule_association["derivation"]),
+                attributes=schedule_association,
+            ))
         candidates[candidate.key] = candidate
         matched_vector_ids.update(cluster.source_element_ids)
         claimed_vector_ids.update(cluster.source_element_ids)
@@ -8842,6 +8862,13 @@ def _recognize_lighting(
             }
         ),
     }
+    cross_sheet_associations = [
+        {"fixture_tag": tag, **basis}
+        for (_page, tag), basis in sorted(schedule_associations.items())
+        if basis["tier"] != "same_sheet"
+    ]
+    if cross_sheet_associations:
+        recognition_summary["schedule_associations"] = cross_sheet_associations
     if references or reference_misses:
         recognition_summary["legend_references"] = [
             {"page": reference.page, "legend_page": reference.legend_page,

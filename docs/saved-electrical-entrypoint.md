@@ -13,7 +13,10 @@ installed command, shared CLI change or runtime dependency. The Python API is
 `persist_saved_electrical(manifest_path, output_root=..., run_id=...)`. Success
 returns the published delivery directory; CLI success prints that path and exits
 zero. Failure exits nonzero. The API raises `SavedDeliveryError` with
-`attempt_directory`, `stage` and the original exception as its cause. An already
+`attempt_directory`, `stage` and the original exception as its cause. Setup
+failures are included: after reservation the module attempts a failure receipt;
+before reservation the reported attempt path may not exist, and no receipt is
+written into a path this invocation does not own. An already
 reserved run ID raises `FileExistsError` before any files in that attempt change.
 
 ## Explicit manifest
@@ -71,7 +74,10 @@ report/bundle bytes; canonical content is unchanged for identical saved inputs.
 
 ## Atomic publication and retries
 
-The output root is created if needed. `run_id` is a fresh 1-80 character label
+The output root is created if needed. After exclusive attempt reservation, the
+output root and every containing ancestor through the filesystem root are
+synced before input loading. This persists each new directory link and also
+covers a root left by an earlier interrupted or failed setup. `run_id` is a fresh 1-80 character label
 using ASCII letters, digits, underscores and hyphens, starting with a letter or
 digit. The module exclusively creates its run directory. Concurrent callers
 using the same label cannot both reserve it. It never overwrites or deletes an

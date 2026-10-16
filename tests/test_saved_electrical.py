@@ -279,3 +279,85 @@ def test_interrupted_attempt_remains_reserved_and_new_version_recovers(source, t
         saved.persist_saved_electrical(source, output_root=tmp_path, run_id="interrupted")
     verify(saved.persist_saved_electrical(source, output_root=tmp_path, run_id="after-interrupt"))
     assert snapshot(attempt) == before
+
+
+def test_new_output_ancestors_are_synced_before_computation(source, tmp_path, monkeypatch):
+    root = tmp_path / "new-parent" / "new-child" / "outputs"
+    calls = []
+    original = saved._sync_dir
+    def record(path):
+        calls.append(path)
+        original(path)
+    compute = saved.deliver_reviewed_electrical
+    def check(*args, **kwargs):
+        assert calls[:4] == [root, root.parent, root.parent.parent, tmp_path]
+        return compute(*args, **kwargs)
+    monkeypatch.setattr(saved, "_sync_dir", record)
+    monkeypatch.setattr(saved, "deliver_reviewed_electrical", check)
+    verify(saved.persist_saved_electrical(source, output_root=root, run_id="nested"))
+
+
+@pytest.mark.parametrize("failure_at", ["root", "new-parent", "anchor"])
+def test_output_ancestor_sync_failure_has_typed_receipt_and_preserves_reservation(source, tmp_path, monkeypatch, failure_at):
+    root = tmp_path / "new-parent" / "outputs"
+    target = {"root": root, "new-parent": root.parent, "anchor": tmp_path}[failure_at]
+    original = saved._sync_dir
+    def fail(path):
+        if path == target:
+            raise OSError("synthetic ancestor sync failure")
+        original(path)
+    with monkeypatch.context() as patch:
+        patch.setattr(saved, "_sync_dir", fail)
+        with pytest.raises(saved.SavedDeliveryError) as error:
+            saved.persist_saved_electrical(source, output_root=root, run_id="reserved")
+    assert error.value.stage == "sync_output_root"
+    assert isinstance(error.value.__cause__, OSError)
+    attempt = root / "reserved"
+    failure = json.loads((attempt / "failure.json").read_bytes())
+    assert failure["stage"] == "sync_output_root" and failure["state"] == "failed"
+    assert not (attempt / "delivery").exists()
+    before = snapshot(attempt)
+    with pytest.raises(FileExistsError):
+        saved.persist_saved_electrical(source, output_root=root, run_id="reserved")
+    assert snapshot(attempt) == before
+    verify(saved.persist_saved_electrical(source, output_root=root, run_id="recovery"))
+
+
+def test_root_creation_failure_is_typed_without_writing_to_unowned_attempt(source, tmp_path):
+    blocked = tmp_path / "ordinary-file"
+    blocked.write_bytes(b"preserve")
+    with pytest.raises(saved.SavedDeliveryError) as error:
+        saved.persist_saved_electrical(source, output_root=blocked / "root", run_id="unreserved")
+    assert error.value.stage == "prepare_output_root"
+    assert isinstance(error.value.__cause__, OSError)
+    assert blocked.read_bytes() == b"preserve"
+
+
+def test_existing_root_from_failed_setup_still_syncs_entire_containing_chain(source, tmp_path, monkeypatch):
+    root = tmp_path / "previously-created" / "outputs"
+    root.mkdir(parents=True)
+    calls = []
+    original = saved._sync_dir
+    def record(path):
+        calls.append(path)
+        original(path)
+    monkeypatch.setattr(saved, "_sync_dir", record)
+    verify(saved.persist_saved_electrical(source, output_root=root, run_id="fresh"))
+    chain = [root, *root.parents]
+    assert calls[:len(chain)] == chain
+
+
+def test_pending_directory_setup_failure_is_inside_typed_envelope(source, tmp_path, monkeypatch):
+    original = Path.mkdir
+    def fail(path, *args, **kwargs):
+        if path.name == ".pending":
+            raise OSError("synthetic pending mkdir failure")
+        return original(path, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "mkdir", fail)
+        with pytest.raises(saved.SavedDeliveryError) as error:
+            saved.persist_saved_electrical(source, output_root=tmp_path, run_id="setup")
+    assert error.value.stage == "prepare_attempt"
+    failure = json.loads((tmp_path / "setup/failure.json").read_bytes())
+    assert failure["stage"] == "prepare_attempt" and not failure["directory_committed"]
+    assert not (tmp_path / "setup/delivery").exists()

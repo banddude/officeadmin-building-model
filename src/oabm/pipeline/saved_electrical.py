@@ -93,17 +93,27 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
     if not isinstance(run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", run_id) is None:
         raise ContractError("run ID must be 1-80 ASCII letters, digits, underscores or hyphens")
     root = Path(output_root).resolve()
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
     attempt = root / run_id
-    attempt.mkdir(mode=0o700)  # atomic exclusive reservation, including concurrent callers
-    _sync_dir(root)
     pending = attempt / ".pending"
-    pending.mkdir(mode=0o700)
-    stage = "load_inputs"
+    stage = "prepare_output_root"
+    reserved = False
     committed = False
     try:
+        # Sync the whole containing chain after reservation. A directory that
+        # already exists may have been left by a failed earlier attempt before
+        # its parent link was synced; existence alone does not prove durability.
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stage = "reserve_attempt"
+        attempt.mkdir(mode=0o700)  # exclusive reservation, including concurrent callers
+        reserved = True
+        stage = "sync_output_root"
+        for directory in (root, *root.parents):
+            _sync_dir(directory)
+        stage = "prepare_attempt"
+        pending.mkdir(mode=0o700)
         _write(attempt / "attempt.json", _json({"version": VERSION, "run_id": run_id,
             "state": "reserved", "completion_rule": "delivery/COMPLETED.json plus verified file hashes"}))
+        stage = "load_inputs"
         manifest_path = Path(manifest_path).absolute()
         manifest_bytes = _read(manifest_path)
         manifest = _decode(manifest_bytes)
@@ -208,6 +218,8 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         _sync_dir(attempt)
         return final
     except Exception as exc:
+        if stage == "reserve_attempt" and isinstance(exc, FileExistsError) and not reserved:
+            raise  # never write a receipt into an attempt owned by another caller
         # Never remove partial bytes; no success marker is visible in delivery/.
         # If rename already committed, a directory-fsync failure is reported as
         # durability unknown, not as an uncommitted or safe-to-overwrite attempt.
@@ -215,11 +227,12 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
                    "stage": stage, "error_type": type(exc).__name__, "directory_committed": committed}
         if isinstance(exc, ReviewedElectricalDeliveryError):
             failure["runner_completion"] = exc.completion
-        try:
-            _write(attempt / "failure.json", _json(failure))
-            _sync_dir(attempt)
-        except OSError:
-            pass  # original failure remains the cause, e.g. exhausted storage
+        if reserved:
+            try:
+                _write(attempt / "failure.json", _json(failure))
+                _sync_dir(attempt)
+            except OSError:
+                pass  # original failure remains the cause, e.g. exhausted storage
         raise SavedDeliveryError(attempt, stage, exc) from exc
 
 

@@ -96,3 +96,22 @@ Tests create deliveries through the actual saved entrypoint using the existing
 independent synthetic fixtures. Source changes are fresh rendered PDFs with new
 saved stub receipts; reviewed pose changes use newly captured valid assertions.
 Intentionally corrupted snapshots are used only for negative rejection tests.
+
+Comparability additionally checks the retained placement review's
+`model_fingerprint` on each side. That typed-review fingerprint and the runner's
+base canonical JSON digest use distinct algorithms: both pairs must match across
+revisions, and they are never equated to each other. Copying a report digest
+cannot hide contradictory retained base-review evidence.
+
+Input receipts require their exact format/version, a valid manifest digest,
+unique named records, and every scalar saved-input record. Document/evidence
+identity digests must agree with their receipt hashes. Current source PDFs and
+images are checked against retained run identities/image digests; cited placement
+evidence requires a document receipt; journal rows must exactly bind the copied
+journal files and request identities. Original scalar JSON bytes and original
+pixels are not copied into the delivery, so unavailable content checks are not
+claimed. A receipt is internal consistency evidence, not external authenticity.
+
+Filesystem inventory uses entry types without following links. Only regular
+manifest files and the directories required to contain them are supported;
+FIFOs, sockets, devices, symlinks and unlisted directories are refused.

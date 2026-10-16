@@ -5,6 +5,7 @@ import argparse
 from collections import Counter
 from dataclasses import dataclass
 import json
+import stat
 from pathlib import Path, PurePosixPath
 import sys
 
@@ -18,6 +19,7 @@ from oabm.exports.review_bundle import build_review_bundle, canonical_model_sha2
 from oabm.importers.pdf_electrical.symbol_stage import SymbolReview
 from oabm.importers.pdf_electrical.placement_assertions import PlacementAssertionReview
 from oabm.proposals.symbols import SymbolRun, AttemptJournal
+from oabm.proposals.contracts import fingerprint
 from .saved_electrical import VERSION as INPUT_VERSION, FILES, _read, _decode, _sha
 from .reviewed_electrical import KINDS, STAGES, VERSION as RUNNER_VERSION
 
@@ -83,12 +85,20 @@ def _load(directory):
         _require(isinstance(row["bytes"], int) and not isinstance(row["bytes"], bool)
                  and row["bytes"] == len(data) and row["sha256"] == _sha(data), "manifest file hash/size mismatch")
         payloads[name] = data
-    actual = set()
+    actual, directories = set(), set()
     for path in root.rglob("*"):
-        _require(not path.is_symlink(), "symlink payload refused")
-        if path.is_file():
-            actual.add(path.relative_to(root).as_posix())
-    _require(actual == set(payloads) | {"COMPLETED.json"}, "manifest does not cover the full published file set")
+        mode = path.lstat().st_mode
+        _require(not stat.S_ISLNK(mode), "symlink payload refused")
+        name = path.relative_to(root).as_posix()
+        if stat.S_ISREG(mode):
+            actual.add(name)
+        elif stat.S_ISDIR(mode):
+            directories.add(name)
+        else:
+            raise ContractError("unsupported filesystem entry in delivery")
+    expected_directories = {str(parent) for name in payloads for parent in PurePosixPath(name).parents if str(parent) != "."}
+    _require(actual == set(payloads) | {"COMPLETED.json"} and directories == expected_directories,
+             "manifest does not cover the full published file set")
     _require(_read(root / "COMPLETED.json") == marker_bytes, "completion marker changed during read")
     report = _decode(payloads["completion-report.json"])
     _require(report.get("version") == RUNNER_VERSION and report.get("delivery_ready") is True
@@ -149,7 +159,50 @@ def _load(directory):
     current = {SymbolRun.from_dict(i["run"]).request.fingerprint: SymbolRun.from_dict(i["run"])
                for i in review.coverage}
     receipts = _decode(payloads["input-receipt.json"])
-    journal_records = {r["input"][len("journals/"):]: r for r in receipts["files"] if r["input"].startswith("journals/")}
+    _require(isinstance(receipts, dict) and set(receipts) == {"version", "manifest_sha256", "files"}
+             and receipts["version"] == INPUT_VERSION and isinstance(receipts["files"], list),
+             "unsupported input receipt format")
+    fingerprint(receipts["manifest_sha256"], "original input manifest digest")
+    scalar_inputs = {"model", "review", "runs", "decisions", "registrations", "assertion_review", "scope_policy", "review_config"}
+    prefixes = {"documents", "images", "evidence_documents", "journals"}
+    receipt_rows = {}
+    for row in receipts["files"]:
+        _require(isinstance(row, dict) and set(row) == {"input", "sha256", "bytes"}, "invalid input receipt row")
+        label = row["input"]
+        _require(isinstance(label, str) and bool(label) and label not in receipt_rows, "duplicate or invalid input receipt identity")
+        fingerprint(row["sha256"], "input receipt digest")
+        _require(isinstance(row["bytes"], int) and not isinstance(row["bytes"], bool) and row["bytes"] >= 0,
+                 "invalid input receipt byte size")
+        if label not in scalar_inputs:
+            prefix, separator, identity = label.partition("/")
+            _require(separator and prefix in prefixes and bool(identity), "unsupported input receipt identity")
+            if prefix in ("documents", "evidence_documents", "journals"):
+                fingerprint(identity, "input receipt identity digest")
+            if prefix in ("documents", "evidence_documents"):
+                _require(row["sha256"] == identity, "input receipt contradicts source document digest")
+        elif row["bytes"] == 0:
+            raise ContractError("empty scalar input receipt")
+        receipt_rows[label] = row
+    _require(scalar_inputs <= receipt_rows.keys(), "missing required scalar input receipts")
+    current_images = {}
+    for run in current.values():
+        for image in run.request.images:
+            _require(image.id not in current_images or current_images[image.id] == image.sha256,
+                     "contradictory current source image identity")
+            current_images[image.id] = image.sha256
+            row = receipt_rows.get("documents/" + image.source.document_sha256)
+            _require(row is not None and row["sha256"] == image.source.document_sha256 and row["bytes"] > 0,
+                     "missing or contradictory current PDF receipt")
+    for identity, expected in current_images.items():
+        row = receipt_rows.get("images/" + identity)
+        _require(row is not None and row["sha256"] == expected and row["bytes"] > 0,
+                 "missing or contradictory current image receipt")
+    for fact in assertion.assertions:
+        for evidence in fact.evidence:
+            identity = evidence.document_sha256
+            _require("documents/" + identity in receipt_rows or "evidence_documents/" + identity in receipt_rows,
+                     "missing placement evidence document receipt")
+    journal_records = {label[len("journals/"):]: row for label, row in receipt_rows.items() if label.startswith("journals/")}
     _require(set(current) == set(journal_records), "journal request receipt mismatch")
     journal_names = {"journals/" + str(i) + ".jsonl" for i in range(len(current))}
     _require({n for n in payloads if n.startswith("journals/")} == journal_names, "journal file set mismatch")
@@ -193,7 +246,8 @@ def _load(directory):
     _require(all(_read(root / name) == data for name, data in payloads.items())
              and _read(root / "COMPLETED.json") == marker_bytes, "delivery changed during validation")
     return model, report, tuple(sorted(sources)), {"directory": str(root), "completion_marker_sha256": _sha(marker_bytes),
-        "canonical_model_sha256": model_sha, "verified_files": len(payloads)}
+        "canonical_model_sha256": model_sha, "verified_files": len(payloads),
+        "retained_review_base_fingerprint": assertion.model_fingerprint}
 
 
 def compare_saved_reviews(base_directory, target_directory):
@@ -207,6 +261,8 @@ def compare_saved_reviews(base_directory, target_directory):
         _require(base.schema_version == target.schema_version, "different canonical schema versions")
         _require(br["input_bindings"]["base_model_canonical_json_sha256"] == tr["input_bindings"]["base_model_canonical_json_sha256"],
                  "different review base snapshots; this consumer only compares reviews of one saved base")
+        _require(bi["retained_review_base_fingerprint"] == ti["retained_review_base_fingerprint"],
+                 "different review base fingerprints in retained placement evidence")
         diff = build_revision_diff(base, target)
         def limits(report):
             return {k: report[k] for k in ("claims", "source_coverage", "physical_completeness", "quantity_eligibility", "unresolved")}

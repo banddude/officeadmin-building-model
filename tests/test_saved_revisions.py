@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from oabm.model import BuildingModel, ContractError
+from oabm.model import BuildingModel, ContractError, ElectricalDevice, Pose, Point3
 from oabm.importers.pdf_electrical.symbol_stage import SymbolDecision,SymbolRegistration,SymbolReview
 from oabm.importers.pdf_electrical.placement_assertions import PlacementAssertionReview
 from oabm.pipeline.saved_electrical import persist_saved_electrical
@@ -22,7 +22,7 @@ def original_source(tmp_path_factory):
     return source.__wrapped__(tmp_path_factory)
 
 
-def variant(source_path,path,*,height=None,model_id=None,frame=None,schema=None):
+def variant(source_path,path,*,height=None,model_id=None,frame=None,schema=None,extra_base=False):
     path.mkdir(parents=True)
     def configure(manifest):
         def read(key):return json.loads(Path(manifest[key]["path"]).read_bytes())
@@ -38,6 +38,11 @@ def variant(source_path,path,*,height=None,model_id=None,frame=None,schema=None)
         if height is not None:
             decisions=tuple(replace(d,placement=replace(d.placement,height_above_level_m=height)) for d in decisions)
             facts=tuple(replace(f,value=height) if f.field=="elevation" else f for f in facts)
+        if extra_base:
+            extra=ElectricalDevice(id="device:additional-base",device_type="luminaire",level_id=model.levels[0].id,
+                pose=Pose(position=Point3(x=1.,y=1.,z=4.)))
+            model=replace(model,electrical_devices=(*model.electrical_devices,extra))
+            manifest["canonical_groups"]={"explicit-base-addition":[extra.id]}
         if model_id is not None:model=replace(model,model_id=model_id)
         if schema is not None:model=replace(model,schema_version=schema)
         if frame is not None:
@@ -192,4 +197,54 @@ def test_rehashed_glb_tampering_still_refused(original_source,tmp_path):
     report=json.loads((b/"completion-report.json").read_bytes())
     report["artifacts"]["glb"].update(sha256=hashlib.sha256(payload).hexdigest(),bytes=len(payload))
     (b/"completion-report.json").write_text(json.dumps(report));rehash_marker(b)
+    with pytest.raises(ContractError):compare_saved_reviews(a,b)
+
+
+def test_retained_base_fingerprints_refuse_rehashed_report_lineage_forgery(original_source,tmp_path):
+    a,b=pair(original_source,tmp_path,extra_base=True)
+    with pytest.raises(ContractError,match="different review base"):
+        compare_saved_reviews(a,b)
+    first=json.loads((a/"completion-report.json").read_bytes())
+    second=json.loads((b/"completion-report.json").read_bytes())
+    second["input_bindings"]["base_model_canonical_json_sha256"]=first["input_bindings"]["base_model_canonical_json_sha256"]
+    (b/"completion-report.json").write_text(json.dumps(second));rehash_marker(b)
+    before=snapshot(tmp_path)
+    with pytest.raises(ContractError,match="retained placement evidence"):
+        compare_saved_reviews(a,b)
+    process=subprocess.run([sys.executable,"-m","oabm.pipeline.saved_revisions",str(a),str(b)],capture_output=True,text=True)
+    assert process.returncode==1 and not process.stdout
+    assert snapshot(tmp_path)==before
+
+
+@pytest.mark.parametrize("change",["headers_missing","version","manifest_digest","scalar_missing","scalar_duplicate",
+    "journal_duplicate","pdf_digest","image_digest","evidence_digest","pdf_missing","image_missing","bad_size","unknown_input"])
+def test_complete_unique_source_bound_receipt_required(original_source,tmp_path,change):
+    a,b=pair(original_source,tmp_path)
+    receipt=json.loads((b/"input-receipt.json").read_bytes())
+    if change=="headers_missing":receipt={"files":[r for r in receipt["files"] if r["input"].startswith("journals/")]}
+    elif change=="version":receipt["version"]="unsupported"
+    elif change=="manifest_digest":receipt["manifest_sha256"]="not-a-digest"
+    elif change=="scalar_missing":receipt["files"]=[r for r in receipt["files"] if r["input"]!="model"]
+    elif change in ("scalar_duplicate","journal_duplicate"):
+        row=next(r for r in receipt["files"] if (r["input"]=="model" if change=="scalar_duplicate"
+                 else r["input"].startswith("journals/")))
+        receipt["files"].insert(0,dict(row))
+    elif change in ("pdf_digest","image_digest","evidence_digest"):
+        prefix={"pdf_digest":"documents/","image_digest":"images/","evidence_digest":"evidence_documents/"}[change]
+        next(r for r in receipt["files"] if r["input"].startswith(prefix))["sha256"]="0"*64
+    elif change in ("pdf_missing","image_missing"):
+        prefix="documents/" if change=="pdf_missing" else "images/"
+        receipt["files"]=[r for r in receipt["files"] if not r["input"].startswith(prefix)]
+    elif change=="bad_size":receipt["files"][0]["bytes"]=True
+    else:receipt["files"].append({"input":"unsupported/name","sha256":"0"*64,"bytes":1})
+    (b/"input-receipt.json").write_text(json.dumps(receipt));rehash_marker(b)
+    with pytest.raises(ContractError):compare_saved_reviews(a,b)
+
+
+@pytest.mark.parametrize("kind",["fifo","empty_directory"])
+def test_unlisted_non_payload_entries_refused(original_source,tmp_path,kind):
+    import os
+    a,b=pair(original_source,tmp_path)
+    if kind=="fifo":os.mkfifo(b/"unlisted-pipe")
+    else:(b/"unlisted-empty-directory").mkdir()
     with pytest.raises(ContractError):compare_saved_reviews(a,b)

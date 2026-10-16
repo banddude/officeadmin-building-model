@@ -10,7 +10,7 @@ from oabm.importers.pdf_architecture.importer import _explicit_drawing_title, cl
 
 
 def _source(path, title, *, sheet="A1.01", label="SHEET NAME", number_label="SHEET NUMBER",
-            label_x=810, duplicate_label=False, unlabeled=False, rule=True, body_column=False, bottom_rule=False):
+            label_x=810, duplicate_label=False, unlabeled=False, rule=True, body_column=False, bottom_rule=False, competing_cell=False):
     writer = PdfWriter();page = writer.add_blank_page(width=1000, height=700)
     font = DictionaryObject({NameObject("/Type"):NameObject("/Font"),
         NameObject("/Subtype"):NameObject("/Type1"), NameObject("/BaseFont"):NameObject("/Helvetica"), NameObject("/Encoding"):NameObject("/WinAnsiEncoding")})
@@ -24,6 +24,7 @@ def _source(path, title, *, sheet="A1.01", label="SHEET NAME", number_label="SHE
         text(180,250,"ROOM: BEDROOM"),"100 180 300 200 re S","109 189 282 182 re S"]
     if body_column:commands.append(text(715,155,"DUCT NOTES",10))
     if unlabeled:
+        if competing_cell:commands.extend(("800 110 m 990 110 l S",text(810,120,"SECOND FLOOR PLAN",12)))
         if bottom_rule:commands.append("800 70 m 990 70 l S")
         if rule:commands.append("800 130 m 990 130 l S")
         commands.extend((text(810,155,"NOT FOR CONSTRUCTION",6),text(810,100,title,12),text(810,20,sheet,32)))
@@ -125,3 +126,9 @@ def test_combined_plan_details_preserves_floor_component_while_notes_do_not(tmp_
     assert classify_page(document.pages[0]).kind==role
     model=import_observations(document)
     assert bool(model.walls)==(role=="architectural_plan")
+
+
+def test_competing_occupied_ruled_cells_do_not_supply_an_explicit_title(tmp_path):
+    page=extract_pdf(_source(tmp_path/'competing-cells.pdf',"FIRST FLOOR FRAMING PLAN",
+        unlabeled=True,competing_cell=True)).pages[0]
+    assert _explicit_drawing_title(page) is None

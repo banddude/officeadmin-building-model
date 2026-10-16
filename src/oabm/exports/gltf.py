@@ -35,6 +35,7 @@ Design notes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import struct
@@ -798,6 +799,7 @@ def _build_document(
             "generator": "oabm exports.gltf",
             "extras": {
                 "canonical_model_id": model.model_id,
+                "canonical_model_sha256": hashlib.sha256(model.to_json(indent=None).encode("utf-8")).hexdigest(),
                 "canonical_up_axis": model.coordinate_system.up_axis,
                 "glTF_up_axis": "+Y",
             },
@@ -1064,7 +1066,7 @@ def _derivation(provenance: tuple) -> str | list[str] | None:
 
 
 def _extras(entity: Any, canonical_type: str, level_id: str | None) -> dict[str, Any]:
-    extras: dict[str, Any] = {"canonical_type": canonical_type}
+    extras: dict[str, Any] = {"canonical_type": canonical_type, "canonical_id": entity.id}
     if level_id is not None:
         extras["level"] = level_id
     derivation = _derivation(entity.provenance)

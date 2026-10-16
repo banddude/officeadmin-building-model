@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import struct
@@ -9,12 +10,17 @@ from pathlib import Path
 import pytest
 
 from oabm.exports import to_glb
+from oabm.ifc import to_ifc
+from oabm.quantities import extract_quantities
 from oabm.exports.gltf import _plan_is_convex, _prism_vertices, to_glb as to_glb_impl
 from oabm.model import (
     BuildingModel,
+    BoxSelectionOutcome,
+    CatalogProduct,
     Ceiling,
     Circuit,
     Conductor,
+    ElectricalBox,
     ElectricalDevice,
     ElectricalEquipment,
     Level,
@@ -25,10 +31,18 @@ from oabm.model import (
     Pose,
     Provenance,
     Route,
+    RuleReference,
+    Size3,
     Slab,
+    StructuralMember,
+    SupportAssembly,
+    SupportComponent,
+    SupportInterface,
+    SupportSelectionOutcome,
     Space,
     Vector3,
     Wall,
+    upgrade_to_v1_4,
 )
 from oabm.qa import load_golden_cases, load_golden_model
 
@@ -136,6 +150,126 @@ def test_node_counts_and_names_per_kind(tmp_path: Path) -> None:
     # Every exported node carries geometry.
     assert all(node["mesh"] is not None for node in parsed["gltf"]["nodes"])
 
+
+
+def test_canonical_id_extras_cover_every_rendered_entity_collection(tmp_path: Path) -> None:
+    model = upgrade_to_v1_4(_golden_garage())
+    level = model.levels[0]
+    device = model.electrical_devices[0]
+    wall = model.walls[0]
+    route = model.routes[0]
+    product = CatalogProduct(
+        catalog_id="synthetic-catalog", catalog_revision="1", product_id="box",
+    )
+    box = ElectricalBox(
+        id="electrical-box:identity",
+        intent_id="box-intent:identity",
+        box_type="device_box",
+        pose=Pose(position=device.pose.position),
+        size=Size3(x=0.3, y=0.2, z=0.2),
+        level_id=level.id,
+        host_id=device.host_id or wall.id,
+        mounting="surface",
+        occupant_ids=(device.id,),
+        product=product,
+    )
+    box_outcome = BoxSelectionOutcome(
+        id="box-outcome:identity",
+        intent_id=box.intent_id,
+        occupant_ids=box.occupant_ids,
+        status="selected",
+        selected_box_id=box.id,
+        requested_product=box.product,
+    )
+    basis = RuleReference(authority="synthetic", revision="1", rule_id="support-rule")
+    assembly = SupportAssembly(
+        id="support-assembly:identity",
+        intent_id="support-intent:identity",
+        assembly_type="strut",
+        level_id=level.id,
+        supported_object_ids=(route.id,),
+        component_ids=("support-component:identity",),
+        interface_ids=("support-interface:identity",),
+        basis=basis,
+    )
+    component = SupportComponent(
+        id="support-component:identity",
+        assembly_id=assembly.id,
+        part_key="part:identity",
+        level_id=level.id,
+        category="support",
+        component_type="strut",
+        product=CatalogProduct(
+            catalog_id="synthetic-catalog", catalog_revision="1", product_id="strut",
+        ),
+        pose=Pose(position=Point3(x=3.0, y=1.0, z=2.0)),
+        size=Size3(x=0.1, y=0.1, z=0.4),
+    )
+    interface = SupportInterface(
+        id="support-interface:identity",
+        assembly_id=assembly.id,
+        interface_key="interface:identity",
+        level_id=level.id,
+        host_id=wall.id,
+        substrate="steel",
+        pose=Pose(position=component.pose.position),
+        component_ids=(component.id,),
+    )
+    support_outcome = SupportSelectionOutcome(
+        id="support-outcome:identity",
+        intent_id=assembly.intent_id,
+        supported_object_ids=assembly.supported_object_ids,
+        status="selected",
+        selected_assembly_id=assembly.id,
+        requested_level_id=level.id,
+        requested_basis=basis,
+    )
+    member = StructuralMember(
+        id="structural-member:identity",
+        kind="beam",
+        level_id=level.id,
+        pose=Pose(position=Point3(x=2.0, y=1.0, z=2.5)),
+        size=Size3(x=0.2, y=0.2, z=1.0),
+    )
+    model = replace(
+        model,
+        electrical_boxes=(box,),
+        box_selection_outcomes=(box_outcome,),
+        support_assemblies=(assembly,),
+        support_components=(component,),
+        support_interfaces=(interface,),
+        support_selection_outcomes=(support_outcome,),
+        structural_members=(member,),
+    )
+
+    target = tmp_path / "all-canonical-ids.glb"
+    to_glb(model, target)
+    gltf = _parse_glb(target)["gltf"]
+    nodes = gltf["nodes"]
+    primary_ids = {
+        entity.id
+        for collection in (
+            model.walls, model.slabs, model.spaces, model.electrical_devices,
+            model.electrical_equipment, model.electrical_boxes, model.support_components,
+            model.structural_members, model.routes, model.support_interfaces,
+            model.support_assemblies,
+        )
+        for entity in collection
+    }
+    conductor_ids = {item.id for item in model.conductors}
+    canonical_nodes = [node for node in nodes if "canonical_type" in node.get("extras", {})]
+    assert {node["extras"]["canonical_id"] for node in canonical_nodes} == primary_ids
+    assert all(node["name"] == node["extras"]["canonical_id"] for node in canonical_nodes)
+    wire_nodes = [
+        node for node in nodes
+        if node.get("name", "").startswith("conductor:") and "#route:" in node.get("name", "")
+    ]
+    assert {node["extras"]["canonical_id"] for node in wire_nodes} == conductor_ids
+    assert all(node["extras"]["canonical_id"] in conductor_ids for node in wire_nodes)
+    assert gltf["asset"]["extras"]["canonical_model_id"] == model.model_id
+    assert gltf["asset"]["extras"]["canonical_model_sha256"] == hashlib.sha256(
+        model.to_json(indent=None).encode("utf-8")
+    ).hexdigest()
 
 def test_buffer_lengths_match_accessors(tmp_path: Path) -> None:
     parsed = _parse_glb(_export_garage(tmp_path))
@@ -2308,6 +2442,25 @@ def test_display_thickness_leaves_the_canonical_model_alone(tmp_path: Path) -> N
     # The export is a derived view: the wall keeps the thickness the model
     # honestly knows, so the takeoff keeps computing from 0.001 m.
     assert model.walls[0].thickness_m == 0.001
+
+
+def test_display_thickness_reexport_preserves_canonical_ifc_and_quantities(tmp_path: Path) -> None:
+    model = replace(_thin_wall_model(thickness_m=0.001), name="Synthetic thickness model")
+    canonical_before = model.to_json(indent=None)
+    quantities_before = extract_quantities(model).to_json(indent=None)
+    before_ifc = tmp_path / "before.ifc"
+    to_ifc(model, before_ifc)
+    ifc_bytes_before = before_ifc.read_bytes()
+
+    to_glb(
+        model, tmp_path / "display.glb", min_display_wall_thickness_m=0.1,
+    )
+
+    assert model.to_json(indent=None) == canonical_before
+    assert extract_quantities(model).to_json(indent=None) == quantities_before
+    after_ifc = tmp_path / "after.ifc"
+    to_ifc(model, after_ifc)
+    assert after_ifc.read_bytes() == ifc_bytes_before
 
 
 def test_wall_at_or_above_the_minimum_is_drawn_unchanged(tmp_path: Path) -> None:

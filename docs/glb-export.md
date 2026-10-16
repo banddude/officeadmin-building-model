@@ -3,8 +3,11 @@
 `oabm.exports.gltf.to_glb(model, path)` writes the canonical model as a binary
 glTF 2.0 file that imports into Blender natively. The export is a derived view:
 walls, slabs, space floor plates, devices, electrical equipment and conduit
-routes become meshes, and every node carries its canonical identity in its name
-and provenance in `extras`.
+routes become meshes. Canonical entity nodes keep their existing names and
+carry the actual entity ID as `extras.canonical_id`; provenance stays in
+`extras`. The asset extras include `canonical_model_id` and
+`canonical_model_sha256`, the SHA-256 of the canonical model's compact
+sorted-key JSON serialization.
 
 Geometry whose provenance derivation (or scope status) reads
 `inferred`/`proposed` gets a semi-transparent material, so generated geometry
@@ -255,7 +258,11 @@ while the option is on; with the option `None` (the default) the export is
 byte-identical and the key is absent. This ruling applies to the viewer and
 stops there: IFC consumers treat any solid as a measurement and the file
 carries no chrome to explain itself, so IFC gets real representation
-coverage through the #84 line instead of display fictions. The OA
+coverage through the #84 line instead of display fictions. Changing the
+display-thickness value changes the GLB mesh and requires a re-export from
+the canonical model. A future viewer control must request that re-export;
+it must not mutate canonical dimensions or pretend to resize a saved mesh.
+The OA
 production element panel still needs to surface the three disclosure keys
 on its side; that work is tracked in the follow-up issue linked from #88.
 `spikes/display_thickness_evidence/` renders the evidence image and the

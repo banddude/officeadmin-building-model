@@ -5,7 +5,6 @@ The caller registers transport adapters and owns orchestration and review.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -29,6 +28,50 @@ CATEGORIES = ("luminaire", "switch", "dimmer", "detector", "fan",
               "receptacle", "equipment", "linear_symbol", "unknown")
 MAX_MARKS = 256
 MAX_RAW_BYTES = 400000
+RESOURCE_SPLIT_REQUIRED = (
+    "split target regions or use explicit transport batches while preserving every "
+    "applicable context image for the stage; never silently omit context"
+)
+CHEAPER_DISABLED = (
+    "qualified_cheaper is disabled: current evidence is insufficient for task/category/"
+    "context/target composition coverage; use strong_baseline"
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SymbolResourceLimits(Portable):
+    """Explicit batch limits; these never authorize silently discarding context."""
+    max_total_pixels: int = 64_000_000
+    max_total_image_bytes: int = 64_000_000
+
+    def __post_init__(self):
+        # The verifier already limits total full-page work to 64M pixels.
+        # Callers can lower this batch ceiling to match their actual transport.
+        integer(self.max_total_pixels, "symbol aggregate pixel limit", maximum=64_000_000)
+        integer(self.max_total_image_bytes, "symbol aggregate image byte limit", maximum=256_000_000)
+
+    def validate_manifest(self, references):
+        total = sum((im.crop_px[2]-im.crop_px[0]) * (im.crop_px[3]-im.crop_px[1])
+                    for im in references)
+        if total > self.max_total_pixels:
+            raise ContractError(
+                f"symbol batch pixels {total} exceed configured limit "
+                f"{self.max_total_pixels}; {RESOURCE_SPLIT_REQUIRED}")
+
+    def validate_bytes(self, images):
+        if any(not isinstance(payload, bytes) for payload in images.values()):
+            raise ContractError("symbol image inputs must be immutable bytes")
+        total = sum(map(len, images.values()))
+        if total > self.max_total_image_bytes:
+            raise ContractError(
+                f"symbol batch image bytes {total} exceed configured limit "
+                f"{self.max_total_image_bytes}; {RESOURCE_SPLIT_REQUIRED}")
+
+
+def _validate_symbol_inputs(request, images, documents):
+    request.resource_limits.validate_manifest(request.images)
+    request.resource_limits.validate_bytes(images)
+    _validate_rendered_images(request.images, images, documents)
 
 
 def _point(value, label):
@@ -77,6 +120,7 @@ class SymbolRequest(Portable):
     contexts: tuple[SymbolContext, ...]
     allowed_types: tuple[str, ...]
     confidence_threshold: float
+    resource_limits: SymbolResourceLimits = SymbolResourceLimits()
 
     def __post_init__(self):
         if (self.version, self.task, self.validator_version) != (VERSION, TASK, VALIDATOR):
@@ -85,11 +129,16 @@ class SymbolRequest(Portable):
         text(self.question, "symbol question", maximum=8192)
         _array(self.images, SourceImage, "symbol images")
         if not 1 <= len(self.images) <= 24:
-            raise ContractError("symbol image budget exceeded")
+            raise ContractError(f"symbol image count exceeds per-batch contract; {RESOURCE_SPLIT_REQUIRED}")
+        if not isinstance(self.resource_limits, SymbolResourceLimits):
+            raise ContractError("symbol request needs typed explicit resource limits")
+        self.resource_limits.validate_manifest(self.images)
         images = {im.id: im for im in self.images}
         if len(images) != len(self.images):
             raise ContractError("duplicate symbol image identity")
-        _strings(self.target_image_ids, "target images", maximum=12, empty=False)
+        _strings(self.target_image_ids, "target images", maximum=24, empty=False)
+        if len(self.target_image_ids) > 12:
+            raise ContractError(f"symbol target count exceeds per-batch contract; {RESOURCE_SPLIT_REQUIRED}")
         if set(self.target_image_ids) != {im.id for im in self.images if im.role == "target"}:
             raise ContractError("target image IDs must exactly cover target crops")
         _array(self.contexts, SymbolContext, "context coverage")
@@ -110,7 +159,7 @@ class SymbolRequest(Portable):
 
     @property
     def task_signature(self):
-        # Qualification transfers only within the exact task framing, not images.
+        # Experimental framing digest only; it never authorizes cheaper routing.
         return digest({"version": self.version, "task": self.task,
             "validator": self.validator_version, "prompt_version": self.prompt_version,
             "question": self.question, "allowed_types": sorted(self.allowed_types),
@@ -240,8 +289,8 @@ class SymbolRoutingPolicy(Portable):
             raise ContractError("symbol routing requires existing RoutingConfig")
         if self.mode not in ("strong_baseline", "qualified_cheaper", "diagnostic"):
             raise ContractError("unsupported symbol routing mode")
-        if self.mode == "qualified_cheaper" and (self.expected_strong_model_id is None or self.expected_cheap_model_id is None):
-            raise ContractError("qualified cheaper routing requires explicit expected model identities")
+        if self.mode == "qualified_cheaper":
+            raise ContractError(CHEAPER_DISABLED)
         fallback = self.strong_availability_fallback
         if fallback is not None:
             if not isinstance(fallback,Endpoint):
@@ -595,11 +644,10 @@ class SymbolQualification(Portable):
         return cls(**data,content_fingerprint=digest(_portable(data)))
 
     def validate_for(self,request,policy):
-        if (self.config != policy.config or policy.expected_strong_model_id != self.expected_strong_model_id
-                or policy.expected_cheap_model_id != self.expected_cheap_model_id
-                or request.task_signature != self.cases[0].request.task_signature
-                or not all(c.passes for c in self.cases)):
-            raise ContractError("missing, failing or stale measured symbol qualification")
+        # A small paired record is an auditable experiment, not evidence of
+        # task/category/context/target-composition coverage for routing.
+        raise ContractError(CHEAPER_DISABLED)
+
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -683,16 +731,23 @@ class SymbolRun(Portable):
         if self.selected_attempt_id is None: return None
         return SymbolOutput.from_json(self.attempts[-1].raw_output)
 
-    def validate_against(self,request,policy,*,images,documents):
+    def _verify_journal(self, journal_path):
+        # The path comes from the trusted caller, never the portable run or model.
+        if AttemptJournal.read(journal_path) != self.attempts:
+            raise ContractError("symbol run receipts differ from the trusted local journal")
+
+    def validate_against(self,request,policy,*,images,documents,journal_path):
         current=SymbolRun.from_dict(self.to_dict())
         if current.request != request or current.policy != policy:
             raise ContractError("saved symbol run is stale")
-        _validate_rendered_images(current.request.images,images,documents)
+        current._verify_journal(journal_path)
+        _validate_symbol_inputs(current.request,images,documents)
         return current
 
-    def proposals(self,*,images,documents):
+    def proposals(self,*,images,documents,journal_path):
         result=SymbolRun.from_dict(self.to_dict())
-        _validate_rendered_images(result.request.images,images,documents)
+        result._verify_journal(journal_path)
+        _validate_symbol_inputs(result.request,images,documents)
         if result.status != "completed":
             return ()
         images_by_id={im.id:im for im in result.request.images}
@@ -748,10 +803,10 @@ class SymbolRun(Portable):
                 result_fingerprint=result_fp,attempt_id=receipt.attempt_id,provenance=(provenance,)))
         return tuple(sorted(proposals,key=lambda p:p.proposal_id))
 
-    def duplicate_candidates(self,*,images,documents,overlap_threshold=.5):
+    def duplicate_candidates(self,*,images,documents,journal_path,overlap_threshold=.5):
         threshold=_confidence(overlap_threshold)
         if threshold == 0: raise ContractError("duplicate overlap threshold must be positive")
-        proposals=self.proposals(images=images,documents=documents)
+        proposals=self.proposals(images=images,documents=documents,journal_path=journal_path)
         result=[]
         for index,a in enumerate(proposals):
             for b in proposals[index+1:]:
@@ -844,7 +899,7 @@ def dispatch_symbols(request,policy,*,adapters,images,documents,journal,qualific
         qualification.validate_for(request,policy)
     elif qualification is not None:
         raise ContractError("qualification cannot silently change strong/diagnostic routing")
-    _validate_rendered_images(request.images,images,documents)
+    _validate_symbol_inputs(request,images,documents)
     role={"strong_baseline":"vision_sol","qualified_cheaper":"vision_luna",
           "diagnostic":"diagnostic_astra"}[policy.mode]
     attempts=list(_attempt(request,policy,role,f"{policy.mode}:primary",
@@ -877,12 +932,12 @@ class SymbolBenchmarkCase(Portable):
 
 def measure_symbol_qualification(cases,*,config,expected_strong_model_id,expected_cheap_model_id,
                                  adapters,images_by_case,documents_by_case,journal):
-    """Measure explicit paired calibration; never pass reference labels to adapters.
+    """Capture paired experiments; never authorize cheaper routing or pass labels to adapters.
 
     This strict first gate requires identical semantic/reference geometry after
     rounding normalized coordinates to .001, with complete one-to-one inventory.
-    Live model capability is established only by genuine adapters and independent
-    reference labels. Fake CI trials prove dispatch/gating mechanics only.
+    Current records do not establish task/category/context/target coverage.
+    Qualified-cheaper routing remains disabled even when an experiment passes.
     """
     if not isinstance(journal,AttemptJournal):
         raise ContractError("symbol calibration requires a durable AttemptJournal")
@@ -901,7 +956,7 @@ def measure_symbol_qualification(cases,*,config,expected_strong_model_id,expecte
     frozen_images={case.id:dict(images_by_case[case.id]) for case in cases}
     frozen_documents={case.id:dict(documents_by_case[case.id]) for case in cases}
     for case in cases:
-        _validate_rendered_images(case.request.images,frozen_images[case.id],frozen_documents[case.id])
+        _validate_symbol_inputs(case.request,frozen_images[case.id],frozen_documents[case.id])
     strong={}
     for case in cases:
         _,receipt=_attempt(case.request,policy,"vision_sol","qualification:strong_baseline",

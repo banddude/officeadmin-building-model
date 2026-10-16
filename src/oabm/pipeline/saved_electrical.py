@@ -19,6 +19,7 @@ from oabm.qa.confidence_review import ReviewConfig
 from .reviewed_electrical import KINDS, deliver_reviewed_electrical, ReviewedElectricalDeliveryError
 
 VERSION = "saved-electrical-input-v1"
+CIRCUIT_VERSION = "saved-electrical-design-input-v1"
 FILES = {"canonical_model": "model.json", "quantities": "quantities.json",
          "scope_ledger": "scope-ledger.json", "confidence_review": "confidence-review.json",
          "source_map": "source-map.json", "glb": "model.glb",
@@ -117,8 +118,11 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         manifest_path = Path(manifest_path).absolute()
         manifest_bytes = _read(manifest_path)
         manifest = _decode(manifest_bytes)
-        if not isinstance(manifest, dict) or set(manifest) != REQUIRED or manifest["version"] != VERSION:
-            raise ContractError("saved input manifest requires exact v1 keys")
+        if not isinstance(manifest,dict):raise ContractError("saved input manifest must be an object")
+        version=manifest.get("version")
+        expected=REQUIRED | ({"circuit_design"} if version==CIRCUIT_VERSION else set())
+        if version not in (VERSION,CIRCUIT_VERSION) or set(manifest)!=expected:
+            raise ContractError("saved input manifest requires exact versioned keys")
         if manifest["coverage_report"] is not None:
             raise ContractError("coverage_report must explicitly be null")
         receipts = []
@@ -157,6 +161,10 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         assertion = PlacementAssertionReview.from_dict(doc("assertion_review"))
         policy = ScopePolicy.from_dict(doc("scope_policy"))
         config = ReviewConfig.from_dict(doc("review_config"))
+        circuit_design=None
+        if version==CIRCUIT_VERSION and manifest["circuit_design"] is not None:
+            from .reviewed_circuit_design import ReviewedCircuitRequest
+            circuit_design=ReviewedCircuitRequest.from_dict(doc("circuit_design"))
         documents, images, evidence = buffers("documents"), buffers("images"), buffers("evidence_documents")
         journals = buffers("journals")
         journal_dir = pending / "journals"
@@ -181,8 +189,12 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         if not isinstance(manifest["include_ifc"], bool):
             raise ContractError("include_ifc must be explicit boolean")
         kinds = tuple(KINDS) + (("ifc",) if manifest["include_ifc"] else ())
+        filenames=dict(FILES)
+        if circuit_design is not None:
+            kinds+=("circuit_design",)
+            filenames["circuit_design"]="circuit-design.json"
         final = attempt / "delivery"
-        refs = {k: str(final / FILES[k]) for k in kinds}
+        refs = {k: str(final / filenames[k]) for k in kinds}
         _write(pending / "input-receipt.json", _json({"version": VERSION,
             "manifest_sha256": _sha(manifest_bytes), "files": receipts}))
         stage = "compute_delivery"
@@ -192,7 +204,7 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
             evidence_documents=evidence, scope_policy=policy,
             proposal_groups=manifest["proposal_groups"], canonical_groups=manifest["canonical_groups"],
             review_config=config, source_references=registry, artifact_references=refs,
-            glb_options=manifest["glb_options"], include_ifc=manifest["include_ifc"], coverage_report=None)
+            glb_options=manifest["glb_options"], include_ifc=manifest["include_ifc"], coverage_report=None,circuit_design=circuit_design)
         stage = "persist_delivery"
         if set(result.artifacts) != set(kinds) or result.completion["delivery_ready"] is not True:
             raise ContractError("runner returned an incomplete payload set")
@@ -201,7 +213,7 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
             identity = result.completion["artifacts"][kind]
             if identity != {"reference": refs[kind], "sha256": _sha(data), "bytes": len(data)}:
                 raise ContractError("runner artifact identity mismatch")
-            _write(pending / FILES[kind], data)
+            _write(pending / filenames[kind], data)
         _write(pending / "completion-report.json", result.completion_json.encode())
         entries = []
         for path in sorted(pending.rglob("*")):

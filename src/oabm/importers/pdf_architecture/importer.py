@@ -434,9 +434,37 @@ def _construction_title_and_sheet_mark(page: PdfPageObservation) -> bool:
     )
 
 
+def _explicit_drawing_role(title: str | None) -> str | None:
+    """Interpret the drawing's own title, never a cross-reference in its notes."""
+    if title is None:
+        return None
+    title = title.replace("_", " ")
+    if re.search(r"\b(?:SEE|REFER|REFERENCE|REFERENCES)\b", title):
+        return None
+    if re.search(r"\b(?:ELECTRICAL|POWER|LIGHTING)\b.*\bPLANS?\b", title):
+        return "electrical"
+    # A named floor-plan component can share a sheet with a separate roof,
+    # site or detail drawing. Keep those sheets for region-level handling.
+    # FLOOR FRAMING PLAN does not contain an independent FLOOR PLAN component.
+    if re.search(r"\bFLOOR\s+PLANS?\b", title):
+        return "architectural_plan"
+    if (_NON_FLOOR_PLAN_TITLE_RE.search(title)
+            or re.search(r"\b(?:FRAMING|GRADING|DRAINAGE)\s+PLANS?\b", title)
+            or re.fullmatch(r"(?:COVER(?: SHEET| PAGE)?|(?:DRAWING|SHEET) INDEX|INDEX(?: SHEET)?|"
+                            r"(?:(?:GENERAL|STRUCTURAL|ELECTRICAL|ARCHITECTURAL) )?NOTES?|"
+                            r"WALL PARTITION TYPES(?: EXTERIOR)?(?: INTERIOR)?)", title)):
+        return "other"
+    if re.search(r"\b(?:DETAILS?|MILLWORK|ELEVATIONS?|SECTIONS?|SCHEDULES?)\b", title):
+        return "other"
+    if _FLOOR_TITLE_RE.fullmatch(title):
+        return "architectural_plan"
+    return None
+
+
 def classify_page(page: PdfPageObservation) -> SheetClassification:
     drawing_title = _explicit_drawing_title(page)
-    if drawing_title and re.search(r"\b(?:DETAILS?|MILLWORK|INTERIOR ELEVATIONS?)\b", drawing_title):
+    drawing_role = _explicit_drawing_role(drawing_title)
+    if drawing_role == "other":
         return SheetClassification("other", 0.95, 0, 0)
     text = "\n".join(item.text.upper() for item in page.texts)
     architectural_score = 0
@@ -462,6 +490,9 @@ def classify_page(page: PdfPageObservation) -> SheetClassification:
     ):
         if phrase in text:
             electrical_score += weight
+
+    if drawing_role is not None:
+        return SheetClassification(drawing_role, 0.95, architectural_score, electrical_score)
 
     # A-series construction plans often carry an electrical coordination note
     # or a power-plan reference in their legend. Treat the drawing title and
@@ -491,22 +522,27 @@ def classify_page(page: PdfPageObservation) -> SheetClassification:
     return SheetClassification("other", 0.5, architectural_score, electrical_score)
 
 
-def _explicit_drawing_title(page: PdfPageObservation) -> str | None:
+def _explicit_drawing_title(
+    page: PdfPageObservation, *, evidence: dict[str, object] | None = None,
+) -> str | None:
     """Read a ruled title-block drawing title when the source provides one."""
 
     markers = [
         item for item in page.texts
-        if _clean_text(item.text).upper() in {"DRAWING TITLE:", "SHEET TITLE:"}
+        if re.fullmatch(r"(?:DRAWING TITLE|SHEET TITLE|SHEET NAME)\s*:?", _clean_text(item.text).upper())
         and item.center_pt[0] >= 0.70 * page.width_pt
         and item.center_pt[1] <= 0.30 * page.height_pt
     ]
+    if not markers:
+        return _unlabeled_ruled_drawing_title(page, evidence=evidence)
     if len(markers) != 1:
         return None
     marker = markers[0]
+    local_left = max(0.70 * page.width_pt, marker.bbox_pt[0] - 2 * (marker.font_size_pt or 0))
     sheet_markers = [
         item for item in page.texts
-        if _clean_text(item.text).upper() in {"SHEET NO:", "SHEET NUMBER:"}
-        and item.center_pt[0] >= 0.70 * page.width_pt
+        if re.fullmatch(r"(?:SHEET NO|SHEET NUMBER)\s*:?", _clean_text(item.text).upper())
+        and item.center_pt[0] >= local_left
         and item.center_pt[1] < marker.center_pt[1]
     ]
     lower_y = max(
@@ -516,7 +552,7 @@ def _explicit_drawing_title(page: PdfPageObservation) -> str | None:
     title_lines = [
         item for item in page.texts
         if item.element_id != marker.element_id
-        and item.center_pt[0] >= 0.70 * page.width_pt
+        and item.center_pt[0] >= local_left
         and lower_y < item.center_pt[1] < marker.center_pt[1]
     ]
     if not title_lines:
@@ -529,10 +565,83 @@ def _explicit_drawing_title(page: PdfPageObservation) -> str | None:
     if len(sizes) == len(title_lines) and max(sizes) >= 1.5 * min(sizes):
         title_lines = [item for item in title_lines
                        if item.font_size_pt >= 0.9 * max(sizes)]
+    if evidence is not None:
+        evidence.update({
+            "method": "labeled_title_compartment",
+            "title_label_source_element_id": marker.element_id,
+            "sheet_label_source_element_ids": sorted(item.element_id for item in sheet_markers),
+            "source_element_ids": sorted(item.element_id for item in title_lines),
+            "source_texts": [item.text for item in title_lines],
+        })
     return " ".join(
         _clean_text(item.text).upper()
         for item in sorted(title_lines, key=lambda value: (-value.center_pt[1], value.center_pt[0]))
     )
+
+
+def _unlabeled_ruled_drawing_title(
+    page: PdfPageObservation, *, evidence: dict[str, object] | None = None,
+) -> str | None:
+    """Read an unlabeled title only in a ruled compartment above a sheet mark.
+
+    Sheet identity anchors the compartment; its prefix never supplies a role.
+    Require one large printed mark, a local spanning rule, and known title
+    fonts. Missing/competing anchors leave the title unresolved.
+    """
+    marks = [item for item in page.texts
+             if re.fullmatch(r"[A-Z]{1,3}[-.]?\d+(?:[.-]\d+)*", _clean_text(item.text).upper())
+             and item.center_pt[0] >= .85 * page.width_pt
+             and item.center_pt[1] <= .15 * page.height_pt
+             and item.font_size_pt is not None]
+    if len(marks) != 1:
+        return None
+    mark = marks[0]
+    rules = [line for line in page.lines
+             if abs(line.start_pt[1] - line.end_pt[1]) <= _VECTOR_AXIS_TOLERANCE_PT
+             and min(line.start_pt[0], line.end_pt[0]) >= .70 * page.width_pt
+             and min(line.start_pt[0], line.end_pt[0]) <= mark.center_pt[0]
+             <= max(line.start_pt[0], line.end_pt[0])
+             and abs(line.end_pt[0] - line.start_pt[0]) >= .04 * page.width_pt
+             and mark.bbox_pt[3] < line.start_pt[1]
+             <= mark.center_pt[1] + .15 * page.height_pt]
+    if not rules:
+        return None
+    # The first rule can be the *bottom* of a title cell, leaving an empty
+    # gap above the sheet number. Inspect bounded adjacent cells; competing
+    # occupied cells remain unresolved instead of selecting by sheet prefix.
+    rule_levels = sorted({line.start_pt[1] for line in rules})
+    cells = []
+    bottom = mark.bbox_pt[3]
+    for top in rule_levels:
+        top_rules = [line for line in rules if abs(line.start_pt[1] - top) <= _VECTOR_AXIS_TOLERANCE_PT]
+        left = min(min(line.start_pt[0], line.end_pt[0]) for line in top_rules)
+        right = max(max(line.start_pt[0], line.end_pt[0]) for line in top_rules)
+        cell_lines = [item for item in page.texts if item.element_id != mark.element_id
+                      and left <= item.center_pt[0] <= right
+                      and bottom < item.center_pt[1] < top]
+        if cell_lines:
+            cells.append((cell_lines, top_rules))
+        bottom = top
+    if len(cells) != 1:
+        return None
+    lines, rules = cells[0]
+    if not lines or any(item.font_size_pt is None for item in lines):
+        return None
+    largest = max(item.font_size_pt for item in lines)
+    if mark.font_size_pt < 1.5 * largest:
+        return None
+    if largest >= 1.5 * min(item.font_size_pt for item in lines):
+        lines = [item for item in lines if item.font_size_pt >= .9 * largest]
+    lines.sort(key=lambda item: (-item.center_pt[1], item.center_pt[0]))
+    if evidence is not None:
+        evidence.update({
+            "method": "ruled_title_compartment_above_sheet_mark",
+            "sheet_mark_source_element_id": mark.element_id,
+            "rule_source_element_ids": sorted(line.element_id for line in rules),
+            "source_element_ids": sorted(item.element_id for item in lines),
+            "source_texts": [item.text for item in lines],
+        })
+    return " ".join(_clean_text(item.text).upper() for item in lines)
 
 
 def _scale_candidates(page: PdfPageObservation) -> list[tuple[float, str, str]]:
@@ -8746,6 +8855,13 @@ def import_observations(
             "architectural_score": classification.architectural_score,
             "electrical_score": classification.electrical_score,
         }
+        title_evidence: dict[str, object] = {}
+        explicit_title = _explicit_drawing_title(page, evidence=title_evidence)
+        if explicit_title is not None:
+            page_record["explicit_drawing_title"] = explicit_title
+            page_record["drawing_role_evidence"] = title_evidence
+            if _explicit_drawing_role(explicit_title) == "other":
+                page_record["floor_plan_exclusion_reason"] = "explicit_non_floor_drawing_title"
         excluded_level_examples = [
             {
                 "source_element_id": item.element_id,

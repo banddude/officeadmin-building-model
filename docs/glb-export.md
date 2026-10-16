@@ -97,7 +97,9 @@ route points of routes assigned via their start port's owner) plus
 `reference_margin_m` (default 0.5 m). Both are double-sided two-triangle
 quads in a light neutral grey, translucent BLEND materials whose alphas are
 the `reference_floor_alpha` (default 0.25) and `reference_ceiling_alpha`
-(default 0.08) parameters. A level with no drawn content gets no plane.
+(default 0.08) parameters. All alpha values and dimmed color channels must
+be finite normalized values in the inclusive range [0, 1]. A level with no
+drawn content gets no plane.
 
 Node names are `reference:floor#<level_id>` and
 `reference:ceiling#<level_id>`. Extras carry `reference_plane`, `canonical:

@@ -143,6 +143,11 @@ def _normalize_glb_options(
             or not math.isfinite(item)
         ):
             raise ValueError(f"GLB option {name} must be a finite number")
+        if (
+            name in {"reference_floor_alpha", "reference_ceiling_alpha", "dimmed_alpha"}
+            and not 0.0 <= item <= 1.0
+        ):
+            raise ValueError(f"GLB option {name} must be a normalized value in [0, 1]")
     thickness = options["min_display_wall_thickness_m"]
     if thickness is not None and (
         not isinstance(thickness, (int, float)) or isinstance(thickness, bool)
@@ -163,6 +168,8 @@ def _normalize_glb_options(
         )
     ):
         raise ValueError("dimmed_color must contain three finite numeric channels")
+    if any(not 0.0 <= item <= 1.0 for item in color):
+        raise ValueError("dimmed_color channels must be normalized values in [0, 1]")
     options["dimmed_color"] = tuple(color)
 
     groups = options["groups"]
@@ -347,7 +354,10 @@ def _node_index(
                 raise ValueError(
                     f"GLB wire node {index} maps conductor {identity!r} to a route it does not carry"
                 )
-            prefix = f"{identity}#route:{route_id.removeprefix('route:')}#"
+            wire_identity = (
+                identity if identity.startswith("conductor:") else f"conductor:{identity}"
+            )
+            prefix = f"{wire_identity}#route:{route_id.removeprefix('route:')}#"
             if not name.startswith(prefix) or not name[len(prefix):].isdigit():
                 raise ValueError(f"GLB wire node {index} name does not match its canonical conductor/route")
         elif is_wire:
@@ -374,7 +384,7 @@ def _verify_expected_rendered_nodes(
         for entity in collection:
             expected[entity.id] = 1
     for conductor in model.conductors:
-        wire_count = conductor.count * len(conductor.route_ids)
+        wire_count = conductor.count * len(dict.fromkeys(conductor.route_ids))
         if wire_count:
             expected[conductor.id] = wire_count
     observed = {identity: len(indices) for identity, indices in node_indices.items()}

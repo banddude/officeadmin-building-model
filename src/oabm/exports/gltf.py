@@ -356,6 +356,30 @@ def to_glb(
 
     owner_of: dict[str, str] = {}
     normalized_groups: list[tuple[str, frozenset[str]]] = []
+    for option_name, option_value in (
+        ("reference_floor_alpha", reference_floor_alpha),
+        ("reference_ceiling_alpha", reference_ceiling_alpha),
+        ("dimmed_alpha", dimmed_alpha),
+    ):
+        if (
+            isinstance(option_value, bool)
+            or not isinstance(option_value, (int, float))
+            or not math.isfinite(option_value)
+            or not 0.0 <= option_value <= 1.0
+        ):
+            raise ValueError(f"{option_name} must be a finite normalized value in [0, 1]")
+    if (
+        not isinstance(dimmed_color, (tuple, list))
+        or len(dimmed_color) != 3
+        or any(
+            isinstance(channel, bool)
+            or not isinstance(channel, (int, float))
+            or not math.isfinite(channel)
+            or not 0.0 <= channel <= 1.0
+            for channel in dimmed_color
+        )
+    ):
+        raise ValueError("dimmed_color must contain three finite normalized channels in [0, 1]")
     if min_display_wall_thickness_m is not None and (
         isinstance(min_display_wall_thickness_m, bool)
         or not isinstance(min_display_wall_thickness_m, (int, float))

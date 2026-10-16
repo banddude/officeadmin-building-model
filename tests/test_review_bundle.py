@@ -10,9 +10,12 @@ import pytest
 
 from oabm.exports import to_glb
 from oabm.exports.gltf import build_glb_bytes
-from oabm.exports.review_bundle import _canonical_entity_index, _node_index, _parse_glb_document
 from oabm.exports.review_bundle import (
     ReviewBundle,
+    _canonical_entity_index,
+    _node_index,
+    _parse_glb_document,
+    _verify_expected_rendered_nodes,
     build_review_bundle,
     canonical_model_sha256,
 )
@@ -203,27 +206,10 @@ def test_bundle_json_roundtrip_and_identity_are_deterministic(tmp_path: Path) ->
 
 
 
-def test_bundle_accepts_one_to_many_conductor_wire_nodes(tmp_path: Path) -> None:
-    golden_root = ROOT / "fixtures" / "golden" / "v1"
-    case = next(case for case in load_golden_cases(golden_root) if case.name == "synthetic-garage")
-    model = load_golden_model(case)
-    model = replace(
-        model,
-        conductors=(replace(model.conductors[0], count=2), *model.conductors[1:]),
-    )
-    glb_path = tmp_path / "garage.glb"
+def _build_golden_review_bundle(model: BuildingModel, tmp_path: Path, stem: str):
+    glb_path = tmp_path / f"{stem}.glb"
     to_glb(model, glb_path)
     glb_bytes = glb_path.read_bytes()
-    json_length, _ = struct.unpack_from("<II", glb_bytes, 12)
-    gltf = json.loads(glb_bytes[20:20 + json_length])
-    wires = [
-        node for node in gltf["nodes"]
-        if node.get("name", "").startswith("conductor:")
-        and "#route:" in node.get("name", "")
-    ]
-    wire_ids = [node["extras"]["canonical_id"] for node in wires]
-    assert wires and len(wire_ids) > len(set(wire_ids))
-
     manifest = build_confidence_review(model, ReviewConfig(confidence_threshold=0.95))
     entities = {
         entity.id: entity
@@ -252,7 +238,53 @@ def test_bundle_accepts_one_to_many_conductor_wire_nodes(tmp_path: Path) -> None
         source_reference_mapping_reference="fixtures/synthetic/garage-source-map.json",
         source_references=source_references,
     )
+    return glb_bytes, bundle
+
+
+def _synthetic_garage_model():
+    golden_root = ROOT / "fixtures" / "golden" / "v1"
+    case = next(case for case in load_golden_cases(golden_root) if case.name == "synthetic-garage")
+    return load_golden_model(case)
+
+
+def test_bundle_accepts_unprefixed_conductor_ids(tmp_path: Path) -> None:
+    model = _synthetic_garage_model()
+    conductor = model.conductors[0]
+    model = replace(
+        model,
+        conductors=(replace(conductor, count=2, id="wire1"), *model.conductors[1:]),
+    )
+    glb_bytes, bundle = _build_golden_review_bundle(model, tmp_path, "garage-unprefixed-wire")
+
+    document = _parse_glb_document(glb_bytes)
+    wires = [
+        node for node in document["nodes"]
+        if node.get("extras", {}).get("canonical_id") == "wire1"
+    ]
+    assert len(wires) == 2
+    assert all(node["name"].startswith("conductor:wire1#route:") for node in wires)
     assert ReviewBundle.from_dict(bundle.to_dict()).to_json() == bundle.to_json()
+
+
+def test_rendered_coverage_deduplicates_repeated_conductor_route_ids(tmp_path: Path) -> None:
+    model = _synthetic_garage_model()
+    conductor = model.conductors[0]
+    repeated_routes = (*conductor.route_ids, *conductor.route_ids)
+    model = replace(
+        model,
+        conductors=(replace(conductor, count=2, route_ids=repeated_routes), *model.conductors[1:]),
+    )
+    path = tmp_path / "garage-duplicate-route-membership.glb"
+    to_glb(model, path)
+
+    document = _parse_glb_document(path.read_bytes())
+    entities, _ = _canonical_entity_index(model)
+    node_indices = _node_index(document, entities)
+    _verify_expected_rendered_nodes(model, node_indices)
+    actual_conductor = model.conductors[0]
+    assert len(node_indices[conductor.id]) == (
+        actual_conductor.count * len(set(actual_conductor.route_ids))
+    )
 
 def test_rejects_glb_from_a_different_canonical_snapshot(tmp_path: Path) -> None:
     model = _synthetic_model()
@@ -386,6 +418,29 @@ def test_rejects_self_asserted_glb_review_summaries(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="trusted canonical export"):
         _build(model, _rewrite_glb(glb_bytes, misleading_summary), manifest)
+
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [
+        ("reference_floor_alpha", 2.0),
+        ("reference_ceiling_alpha", -0.1),
+        ("dimmed_alpha", 1.1),
+        ("dimmed_color", (-0.1, 0.5, 0.5)),
+        ("dimmed_color", (0.5, 0.5, 1.01)),
+    ],
+)
+def test_glb_export_and_bundle_reject_out_of_range_material_factors(
+    tmp_path: Path, option: str, value,
+) -> None:
+    model = _synthetic_model()
+    glb_bytes, manifest = _artifacts(model, tmp_path)
+
+    with pytest.raises(ValueError, match="normalized"):
+        to_glb(model, tmp_path / "invalid-options.glb", **{option: value})
+    with pytest.raises(ValueError, match="normalized"):
+        _build(model, glb_bytes, manifest, glb_options={option: value})
 
 
 def test_rejects_unresolved_or_unused_source_references(tmp_path: Path) -> None:

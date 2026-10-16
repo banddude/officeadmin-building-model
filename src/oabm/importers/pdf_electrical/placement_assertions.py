@@ -404,6 +404,8 @@ def materialize_asserted_symbols(model, review: SymbolReview, *, runs, documents
 def _materialize_asserted_verified(model, verified, *, decisions, registrations, assertion_review,
         supplied, source_images):
     """Shared retained-review core; caller separately validates source pixels or retained lineage."""
+    _tuple(tuple(decisions), SymbolDecision, "symbol decisions")
+    _tuple(tuple(registrations), SymbolRegistration, "symbol registrations")
     if (assertion_review.model_fingerprint != digest(model.to_dict())
             or assertion_review.symbol_review_fingerprint != verified.fingerprint
             or assertion_review.decisions_fingerprint != _records_digest(decisions)

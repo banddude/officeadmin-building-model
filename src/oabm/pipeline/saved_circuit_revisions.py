@@ -66,8 +66,12 @@ def verify_circuit_revision(model, report, review, assertion, payloads, receipts
         evidence[identity] = data
     decisions = tuple(SymbolDecision.from_dict(row) for row in _decode(payloads["circuit-inputs/decisions.json"]))
     registrations = tuple(SymbolRegistration.from_dict(row) for row in _decode(payloads["circuit-inputs/registrations.json"]))
-    source_images = {image.id:image for item in review.coverage
-                     for image in SymbolRun.from_dict(item["run"]).request.images}
+    source_images = {}
+    for item in review.coverage:
+        for image in SymbolRun.from_dict(item["run"]).request.images:
+            require(image.id not in source_images or source_images[image.id] == image,
+                    "contradictory retained circuit source image")
+            source_images[image.id] = image
     placement = _materialize_asserted_verified(base, review, decisions=decisions, registrations=registrations,
         assertion_review=assertion, supplied=evidence, source_images=source_images)
     require(placement.model.to_json(indent=None) == admitted.to_json(indent=None)
@@ -77,6 +81,15 @@ def verify_circuit_revision(model, report, review, assertion, payloads, receipts
     expected_report.update(request=request.to_dict(), admitted_model_sha256=_sha(payloads[ADMITTED]))
     require(expected.to_json(indent=None) == model.to_json(indent=None), "circuit replay differs from canonical graph")
     require(expected_report == design, "circuit replay differs from design report")
+    require(report["physical_completeness"]["routing"] == design["status"]
+            and report["physical_completeness"]["engineering"] == "not_performed",
+            "circuit physical limits contradict replay")
+    groups = report["quantity_eligibility"]["group_bindings"]["resolved"]
+    require(request.inventory_group in groups and set(design["quantity_entity_ids"]) <= set(groups[request.inventory_group]),
+            "circuit inventory group contradicts request")
+    require({"code":"preliminary_design_engineering_capacity_and_supports_unverified"} in report["unresolved"]
+            and all({"code":reason,"request_id":request.request_id} in report["unresolved"] for reason in design["reasons"]),
+            "circuit unresolved limits contradict replay")
     return {"request_fingerprint":request.fingerprint, "request":request.to_dict(),
             "status":design["status"], "reasons":design["reasons"],
             "admitted_model_sha256":design["admitted_model_sha256"],

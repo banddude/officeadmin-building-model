@@ -18,6 +18,7 @@ from pypdf import PdfReader
 
 from oabm.model import ContractError, Provenance, stable_id
 from oabm.importers.pdf_display import PdfPageDisplayTransform, page_display_transform
+from .pdf_annotations import require_printable_appearances
 from .contracts import (
     Endpoint, Portable, _array, _finite, _portable, budget, digest,
     fingerprint, integer, text,
@@ -26,6 +27,8 @@ from .contracts import (
 VERSION = "2.0.0"
 TASK = "locate_lighting_marks_in_source_region"
 VALIDATOR = "source-lighting-marks-v2"
+LEGACY_RENDER_POLICY = "pdfium-mediabox-rgb-no-annots-v1"
+PRINT_RENDER_POLICY = "pdfium-mediabox-rgb-print-annots-v2"
 _RENDER_LOCK = threading.Lock()
 MAX_ITEMS = 128
 MAX_IMAGES = 24
@@ -123,7 +126,7 @@ class RenderManifest(Portable):
     pixel_to_display_pt: tuple[float, float, float, float, float, float]
 
     def __post_init__(self):
-        if self.policy != "pdfium-mediabox-rgb-no-annots-v1":
+        if self.policy not in (LEGACY_RENDER_POLICY, PRINT_RENDER_POLICY):
             raise ContractError("unsupported takeoff render policy")
         text(self.renderer_version, "pypdfium2 version")
         text(self.pdfium_version, "PDFium version")
@@ -155,7 +158,8 @@ def _renderer():
     return pdfium, str(PYPDFIUM_INFO), str(PDFIUM_INFO)
 
 
-def _render_page(document, *, source_id, page, scale, expected_source=None):
+def _render_page(document, *, source_id, page, scale, expected_source=None,
+                 policy=PRINT_RENDER_POLICY):
     """Read source facts and render from the same immutable original PDF bytes."""
     if not isinstance(document, bytes) or not 1 <= len(document) <= 128_000_000:
         raise ContractError("source PDF must be immutable bytes within 128 MB")
@@ -163,6 +167,8 @@ def _render_page(document, *, source_id, page, scale, expected_source=None):
     scale = _finite(scale, "render scale")
     if not .1 <= scale <= 8:
         raise ContractError("render scale must be between .1 and 8")
+    if policy not in (LEGACY_RENDER_POLICY, PRINT_RENDER_POLICY):
+        raise ContractError("unsupported takeoff render policy")
     pdfium, wrapper_version, engine_version = _renderer()
     try:
         reader = PdfReader(io.BytesIO(document), strict=True)
@@ -171,6 +177,8 @@ def _render_page(document, *, source_id, page, scale, expected_source=None):
         actual_page = reader.pages[page-1]
         if _finite(actual_page.get("/UserUnit", 1), "PDF UserUnit") != 1:
             raise ContractError("non-unit PDF UserUnit is unsupported")
+        if policy == PRINT_RENDER_POLICY:
+            require_printable_appearances(actual_page)
         display = page_display_transform(actual_page)
         width = math.ceil(display.displayed_width_pt*scale)
         height = math.ceil(display.displayed_height_pt*scale)
@@ -191,8 +199,9 @@ def _render_page(document, *, source_id, page, scale, expected_source=None):
                     raise ContractError("renderer page size disagrees with source MediaBox/rotation")
                 bitmap = rendered_page.render(
                     scale=scale, rotation=0, crop=(0,0,0,0), may_draw_forms=False,
-                    draw_annots=False, fill_color=(255,255,255,255),
-                    grayscale=False, optimize_mode=None, rev_byteorder=True)
+                    draw_annots=policy == PRINT_RENDER_POLICY, fill_color=(255,255,255,255),
+                    grayscale=False, optimize_mode="print" if policy == PRINT_RENDER_POLICY else None,
+                    rev_byteorder=True)
                 try:
                     image = bitmap.to_pil().convert("RGB")
                 finally:
@@ -213,7 +222,7 @@ def render_source_image(document: bytes, *, source_id: str, page: int, scale: fl
     source, full, wrapper, engine = _render_page(
         document, source_id=source_id, page=page, scale=scale)
     try:
-        manifest = RenderManifest(policy="pdfium-mediabox-rgb-no-annots-v1",
+        manifest = RenderManifest(policy=PRINT_RENDER_POLICY,
             renderer_version=wrapper, pdfium_version=engine, scale=scale,
             pixel_to_display_pt=_crop_affine(source, crop_px))
         # Validate crop before handing it to Pillow, which otherwise pads outside bounds.
@@ -243,18 +252,19 @@ def _validate_rendered_images(references, images, documents):
     for sha, data in documents.items():
         if hashlib.sha256(data).hexdigest() != sha:
             raise ContractError("source PDF digest differs from supplied bytes")
-    keys = {(im.source, im.render_manifest.scale) for im in references}
-    if sum(src.width_px*src.height_px for src, _ in keys) > 64_000_000:
+    keys = {(im.source, im.render_manifest.scale, im.render_manifest.policy) for im in references}
+    if sum(src.width_px*src.height_px for src, _, _ in keys) > 64_000_000:
         raise ContractError("total full-page render budget exceeded")
     cache = {}
     try:
         for reference in references:
             pixels = reference._decode_pixels(images[reference.id])
-            key = (reference.source, reference.render_manifest.scale)
+            key = (reference.source, reference.render_manifest.scale, reference.render_manifest.policy)
             if key not in cache:
                 cache[key] = _render_page(documents[reference.source.document_sha256],
                     source_id=reference.source.source_id, page=reference.source.page,
-                    scale=reference.render_manifest.scale, expected_source=reference.source)
+                    scale=reference.render_manifest.scale, expected_source=reference.source,
+                    policy=reference.render_manifest.policy)
             actual, full, wrapper, engine = cache[key]
             if actual != reference.source:
                 raise ContractError("claimed PDF page metadata/rotation/raster differs from source")

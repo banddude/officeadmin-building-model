@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: '24'
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev,tables,registration]'
+      - run: python -m pip install -e '.[dev,tables,registration,cad]'
       - run: python -m compileall -q src tests
       - name: Report runner parallelism
         run: |

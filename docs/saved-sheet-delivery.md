@@ -73,6 +73,15 @@ attempt while reusing already-completed provider work when its inputs are unchan
 Old deliveries remain immutable. A caller is responsible for preserving the
 trusted completion/manifest roots; hashes alone are not signatures.
 
+DXF replay selects only the fixed `oabm.sheet-dxf` exporter profiles `1.0.0`
+and `1.0.1` from the already hash-bound retained companion and requires the
+same installed ezdxf version. The corrected `1.0.1` default declares the
+non-plot viewport infrastructure layer; `1.0.0` reproduces historical bytes
+only for validation. No saved configuration or completion contract changes.
+Profile selection never replaces the exact comparisons of DXF, companion,
+receipt and ZIP, and it neither rewrites old deliveries nor accepts an unknown
+version. New deliveries always use the corrected exporter.
+
 ## Dependencies and consumption boundary
 
 SVG uses no external rasterizer. DXF explicitly requires the existing optional

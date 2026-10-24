@@ -35,7 +35,8 @@ no rotation, and **Layout** plot type (not fit-to-page). There is no configured
 printer driver. A CAD client/printer may still impose hardware margins.
 Modelspace is intentionally empty; this is a physical drawing sheet, not 1:1
 BIM geometry. The automatically generated paperspace viewport is infrastructure,
-not model content. Model view scale is applied only by the existing composer:
+not model content; its `VIEWPORTS` layer is explicitly declared non-plot. Model
+view scale is applied only by the existing composer:
 one model metre at 1:50 is exactly 20 paper millimetres. The adapter maps
 `(x, y)` to `(x, paper_height - y)` for bottom-left CAD coordinates.
 
@@ -85,6 +86,19 @@ reverification and may legitimately change bytes.
 Every returned DXF is parsed and audited after serialization; any audit repair
 or error fails the export. Tests independently inspect the layout, native
 entities, styles, coordinates, all source mappings, and empty modelspace.
+The raw serialized tag-stream regression also checks that entity layer
+references resolve to the LAYER table and that `VIEWPORTS` has plot flag zero;
+ezdxf's audit alone does not detect an undeclared entity layer.
+
+The companion exporter version is now `1.0.1`. This bookkeeping correction
+changes DXF bytes and handles, not canonical geometry, composition or source
+identity. Public exports always use the corrected profile. A private `1.0.0`
+profile exists only for exact validation of earlier saved deliveries, which
+remain immutable; it preserves their historical undeclared viewport layer
+rather than silently repairing or relabeling their bytes. Saved replay requires
+the retained, hash-bound companion's supported exporter and matching ezdxf
+versions, then compares every regenerated artifact byte-for-byte. Unknown or
+mismatched profiles and rehashed stale/mixed exports fail closed.
 
 ## Fail-closed scope and remaining QA
 

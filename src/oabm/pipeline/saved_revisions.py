@@ -256,8 +256,31 @@ def _load(directory):
                  and report["input_bindings"]["review_drawings_fingerprint"] == _sha(_json(drawing_config.to_dict()).encode()),
                  "retained drawing configuration binding mismatch")
         from .review_drawings import generate_review_drawings
+        from .review_sheet_delivery import ReviewSheetDeliveryConfig
+        dxf_versions = None
+        if isinstance(drawing_config, ReviewSheetDeliveryConfig):
+            dxf_versions = {}
+            for sheet in drawing_config.sheets:
+                if "dxf" not in sheet.formats:
+                    continue
+                # These retained companions already passed completion-manifest
+                # and artifact hash/size binding above. Select only a fixed
+                # profile; exact regenerated files/companions/ZIP still follow.
+                import ezdxf
+                from oabm.drawings.sheet_dxf import _REPLAY_VERSIONS
+                key = "physical_sheet:" + sheet.paper.id + ":dxf"
+                companion = _decode(payloads[filenames[key + ":map"]])
+                _require(isinstance(companion, dict)
+                         and companion.get("kind") == "oabm.sheet-dxf"
+                         and isinstance(companion.get("version"), str)
+                         and companion["version"] in _REPLAY_VERSIONS
+                         and companion.get("ezdxf_version") == ezdxf.__version__
+                         and companion.get("dxf_sha256") == _sha(payloads[filenames[key]]),
+                         "drawing/model replay mismatch: unsupported or mismatched saved DXF exporter profile")
+                dxf_versions[sheet.paper.id] = companion["version"]
         drawing_payloads, drawing_status = generate_review_drawings(model, drawing_config,
-            source_proposals_not_admitted=[dict(d) for d in report["dispositions"] if d["canonical_id"] is None])
+            source_proposals_not_admitted=[dict(d) for d in report["dispositions"] if d["canonical_id"] is None],
+            _dxf_replay_versions=dxf_versions)
         drawing_status["source_proposals_not_admitted"] = [dict(d) for d in report["dispositions"] if d["canonical_id"] is None]
         _require(drawing_status == report["review_drawings"]
                  and set(drawing_payloads) == set(drawing_config.artifact_kinds)

@@ -43,6 +43,85 @@ def read(artifact):
     return ezdxf.read(io.StringIO(artifact.dxf.decode('utf-8')))
 
 
+def test_raw_layer_references_are_declared_and_viewport_layer_does_not_plot():
+    # Inspect the returned tag stream before any library can repair or supply
+    # defaults. ezdxf's readback audit does not flag an undeclared entity layer.
+    artifact = export()
+    assert artifact.manifest()['version'] == '1.0.1'
+    lines = artifact.dxf.decode('utf-8').splitlines()
+    assert len(lines) % 2 == 0
+    records = []
+    for code, value in zip(lines[::2], lines[1::2]):
+        tag = (int(code), value)
+        if tag[0] == 0:
+            records.append([])
+        records[-1].append(tag)
+
+    section = table = None
+    layers, references, viewports = {}, set(), []
+    for record in records:
+        tags = dict(record)
+        kind = tags[0]
+        if kind == 'SECTION':
+            section = tags[2]
+        elif kind == 'ENDSEC':
+            section = None
+        elif section == 'TABLES':
+            if kind == 'TABLE':
+                table = tags[2]
+            elif kind == 'ENDTAB':
+                table = None
+            elif table == 'LAYER' and kind == 'LAYER':
+                assert tags[2] not in layers
+                layers[tags[2]] = tags
+        elif section in {'ENTITIES', 'BLOCKS'}:
+            if 8 in tags:
+                references.add(tags[8])
+            if kind == 'VIEWPORT':
+                viewports.append(tags)
+
+    assert references <= layers.keys(), references - layers.keys()
+    assert len(viewports) == 1
+    assert viewports[0][8] == 'VIEWPORTS'
+    assert layers['VIEWPORTS'][290] == '0'  # Explicit non-plot infrastructure.
+
+
+def test_legacy_replay_profile_preserves_geometry_and_source_companion():
+    from oabm.drawings.sheet_dxf import _sheet_to_dxf
+    legacy = _sheet_to_dxf(*inputs(), version='1.0.0')
+    current = export()
+    assert 'VIEWPORTS' not in read(legacy).layers
+    assert read(current).layers.get('VIEWPORTS').dxf.plot == 0
+    old_map, new_map = legacy.manifest(), current.manifest()
+    assert old_map.pop('version') == '1.0.0'
+    assert new_map.pop('version') == '1.0.1'
+    assert old_map.pop('dxf_sha256') != new_map.pop('dxf_sha256')
+    for mapping in (old_map, new_map):
+        for entry in mapping['entities']:
+            entry.pop('handle')
+    assert old_map == new_map
+    def graphics(artifact):
+        return [
+            (entity.dxftype(), {k: v for k, v in entity.dxf.all_existing_dxf_attribs().items()
+                               if k not in {'handle', 'owner'}},
+             list(entity.get_points()) if entity.dxftype() == 'LWPOLYLINE' else None)
+            for entity in read(artifact).layouts.get('Layout1')
+        ]
+    assert graphics(legacy) == graphics(current)
+    with pytest.raises(ValueError, match='unsupported DXF exporter version'):
+        _sheet_to_dxf(*inputs(), version='unrecognized')
+
+
+@pytest.mark.skipif(ezdxf.__version__ != '1.4.5', reason='historical bytes are bound to ezdxf 1.4.5')
+def test_legacy_profile_matches_actual_pre_fix_bytes():
+    from oabm.drawings.sheet_dxf import _sheet_to_dxf
+    # Recorded from these synthetic inputs on unmodified e5f7540b, before the
+    # viewport fix. Do not rebaseline by regenerating with the replay profile.
+    legacy = _sheet_to_dxf(*inputs(), version='1.0.0')
+    assert hashlib.sha256(legacy.dxf).hexdigest() == '27a67358b9d0b4a920fe0dc5dd1b58fcdc9af66b2f7407ac45d5303d2f637995'
+    assert hashlib.sha256(legacy.manifest_json.encode()).hexdigest() == '1dc8aa2e9ce193311db236f95b1faf929dfaa89d4c6fe062676c6d6c31aff16a'
+
+
 def test_exact_paper_layout_units_scale_geometry_and_sources():
     drawing, spec, placements = inputs()
     before = drawing.to_json()

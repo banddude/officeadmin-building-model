@@ -144,7 +144,7 @@ def review_drawing_filenames(config):
     return names
 
 
-def generate_review_drawings(model, config, *, source_proposals_not_admitted=()):
+def generate_review_drawings(model, config, *, source_proposals_not_admitted=(), _dxf_replay_versions=None):
     """Return supplemental bytes and an honest visibility/coverage report."""
     from .review_sheet_delivery import ReviewSheetDeliveryConfig, generate_sheet_delivery
     if not isinstance(config, (ReviewDrawingConfig, ReviewSheetDeliveryConfig)):
@@ -221,7 +221,8 @@ def generate_review_drawings(model, config, *, source_proposals_not_admitted=())
     payloads["drawing_set"] = json.dumps({"review": status, "drawing_set": drawing_document},
         sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     if sheet_config is not None:
-        payloads.update(generate_sheet_delivery(drawing, sheet_config, payloads, status))
+        payloads.update(generate_sheet_delivery(drawing, sheet_config, payloads, status,
+            _dxf_replay_versions=_dxf_replay_versions))
     if before != canonical_model_sha256(model):
         raise ContractError("review drawing generation mutated canonical model")
     return payloads, status

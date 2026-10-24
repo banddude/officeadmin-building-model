@@ -81,6 +81,67 @@ def test_saved_sheet_archive_replays_and_keeps_full_sources(source,tmp_path):
     assert package.read_bytes()==(second/package.name).read_bytes()
 
 
+def _persist_dxf_profile(source, tmp_path, monkeypatch, version):
+    from oabm.drawings import sheet_dxf
+    # Simulate the earlier writer only while creating the immutable delivery;
+    # validation then runs with the normal, corrected default exporter.
+    with monkeypatch.context() as patch:
+        patch.setattr(sheet_dxf, "sheet_to_dxf", lambda *args:
+            sheet_dxf._sheet_to_dxf(*args, version=version))
+        return persist(source, tmp_path)
+
+
+@pytest.mark.parametrize("version", ["1.0.0", "1.0.1"])
+def test_saved_dxf_profiles_replay_exact_bytes_without_rewriting(source,tmp_path,monkeypatch,version):
+    final=_persist_dxf_profile(source,tmp_path,monkeypatch,version)
+    assert read(final/"physical-sheet-001.dxf.json")["version"] == version
+    frozen=tree_bytes(final)
+    _load(final)
+    assert tree_bytes(final) == frozen
+
+
+def _rewrite_artifact_and_hashes(final, name, data):
+    path=final/name
+    path.write_bytes(data)
+    report=read(final/"completion-report.json")
+    for row in report["artifacts"].values():
+        if row["reference"] == str(path):
+            row.update(sha256=sha(data),bytes=len(data))
+    write(final/"completion-report.json",report)
+    rehash(final)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("version", "unknown"), ("version", None), ("version", {}),
+    ("kind", "other-dxf"), ("ezdxf_version", "0.0.0"), ("dxf_sha256", "0"*64),
+])
+def test_saved_dxf_unknown_or_mismatched_profiles_fail_closed(source,tmp_path,field,value):
+    final=persist(source,tmp_path)
+    name="physical-sheet-001.dxf.json"
+    companion=read(final/name);companion[field]=value
+    _rewrite_artifact_and_hashes(final,name,json.dumps(companion,indent=2,sort_keys=True).encode())
+    with pytest.raises(ContractError,match="saved DXF exporter profile"):
+        _load(final)
+
+
+@pytest.mark.parametrize("version", ["1.0.0", "1.0.1"])
+@pytest.mark.parametrize("mutation", ["profile", "geometry"])
+def test_saved_dxf_rehashed_profile_or_geometry_changes_still_fail_replay(source,tmp_path,monkeypatch,version,mutation):
+    final=_persist_dxf_profile(source,tmp_path,monkeypatch,version)
+    name="physical-sheet-001.dxf.json"
+    companion=read(final/name)
+    if mutation == "profile":
+        companion["version"] = "1.0.1" if version == "1.0.0" else "1.0.0"
+    else:
+        dxf_name="physical-sheet-001.dxf"
+        data=(final/dxf_name).read_bytes()+b"stale"
+        _rewrite_artifact_and_hashes(final,dxf_name,data)
+        companion["dxf_sha256"] = sha(data)
+    _rewrite_artifact_and_hashes(final,name,json.dumps(companion,indent=2,sort_keys=True).encode())
+    with pytest.raises(ContractError,match="drawing/model replay mismatch"):
+        _load(final)
+
+
 @pytest.mark.parametrize("target",["physical-sheet-001.svg", "physical-sheet-001.dxf", "physical-sheet-001.svg.json", "generated-sheet-sources.zip", "sheet-delivery.json"])
 def test_rehashed_tampered_exports_refused(source,tmp_path,target):
     final=persist(source,tmp_path)

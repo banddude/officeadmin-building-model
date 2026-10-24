@@ -21,6 +21,8 @@ _PATTERNS = {"solid": "CONTINUOUS", "dash": "OABM_DASH", "dot": "OABM_DOT"}
 _COLORS = {"space": 0x666666, "obstacle": 0x666666, "constraint": 0x990000}
 _FONT = "DejaVuSansMono.ttf"
 _TEXT_HEIGHT = 2.5
+_EXPORT_VERSION = "1.0.1"
+_REPLAY_VERSIONS = frozenset({"1.0.0", _EXPORT_VERSION})
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,13 @@ def sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vie
     Title/revision require a reserved titleblock; arbitrary metadata remains in
     the lossless companion snapshot, not silently rendered as annotations.
     """
+    return _sheet_to_dxf(drawing_set, spec, placements, version=_EXPORT_VERSION)
+
+
+def _sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[ViewPlacement, ...], *, version: str) -> SheetDxf:
+    """Fixed serialization profiles; 1.0.0 exists only for saved-byte replay."""
+    if version not in _REPLAY_VERSIONS:
+        raise ValueError("unsupported DXF exporter version")
     sheet = compose_sheet(drawing_set, spec, placements).to_dict()
     if (spec.title or spec.revision) and not spec.titleblock_height_mm:
         raise ValueError("sheet title/revision require a reserved titleblock")
@@ -119,6 +128,10 @@ def sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vie
     doc.linetypes.new("OABM_DASH", dxfattribs={"description": "3 mm dash / 1.5 mm gap", "pattern": [4.5, 3, -1.5]})
     doc.linetypes.new("OABM_DOT", dxfattribs={"description": "dot / 1 mm gap", "pattern": [1, 0, -1]})
     doc.styles.new("OABM_TEXT", dxfattribs={"font": _FONT})
+    if version == _EXPORT_VERSION:
+        # page_setup creates the main paperspace VIEWPORT on this layer but
+        # does not declare it. Infrastructure must resolve and must not plot.
+        doc.layers.new("VIEWPORTS", dxfattribs={"plot": False})
     layout = doc.layouts.get("Layout1")
     layout.page_setup(size=(spec.width_mm, spec.height_mm), margins=(0, 0, 0, 0), units="mm", scale=(1, 1), name="OABM", device="")
     layout.dxf_layout.dxf.plot_type = 5  # Layout, not extents/fit-to-page.
@@ -254,7 +267,7 @@ def sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vie
     audit = readback.audit()
     if audit.errors or audit.fixes or len(readback.modelspace()):
         raise ValueError("serialized DXF failed readback audit")
-    manifest = {"kind": "oabm.sheet-dxf", "version": "1.0.0", "dxf_sha256": hashlib.sha256(dxf).hexdigest(),
+    manifest = {"kind": "oabm.sheet-dxf", "version": version, "dxf_sha256": hashlib.sha256(dxf).hexdigest(),
                 "ezdxf_version": ezdxf.__version__, "layout": "Layout1", "length_unit": "mm", "plot_scale": [1, 1],
                 "coordinate_system": "bottom-left,+x-right,+y-up", "font": _FONT, "text_height_mm": _TEXT_HEIGHT,
                 "layers": layer_map, "entities": entries, "composition": sheet,

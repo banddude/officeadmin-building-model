@@ -130,7 +130,7 @@ def _lower_glyphs(drawing, config):
     return replace(drawing, views=tuple(views)), joins
 
 
-def generate_sheet_delivery(drawing, config, payloads, status):
+def generate_sheet_delivery(drawing, config, payloads, status, *, _dxf_replay_versions=None):
     """Return a deterministic, self-describing generated-source archive and files."""
     from oabm.drawings.sheet_svg import render_sheet_svg
     lowered, joins = _lower_glyphs(drawing, config)
@@ -143,8 +143,12 @@ def generate_sheet_delivery(drawing, config, payloads, status):
                 rendered = render_sheet_svg(lowered, sheet.paper, sheet.placements)
                 data = rendered.svg.encode()
             else:
-                from oabm.drawings.sheet_dxf import sheet_to_dxf
-                rendered = sheet_to_dxf(lowered, sheet.paper, sheet.placements)
+                from oabm.drawings.sheet_dxf import sheet_to_dxf, _sheet_to_dxf
+                if _dxf_replay_versions is None:
+                    rendered = sheet_to_dxf(lowered, sheet.paper, sheet.placements)
+                else:
+                    rendered = _sheet_to_dxf(lowered, sheet.paper, sheet.placements,
+                        version=_dxf_replay_versions[sheet.paper.id])
                 data = rendered.dxf
             output[key] = data
             output[key + ":map"] = rendered.manifest_json.encode()

@@ -155,8 +155,8 @@ def load_saved_electrical_inputs(manifest_path, *, journal_directory):
         circuit_design=ReviewedCircuitRequest.from_dict(doc("circuit_design"))
     drawing_config = None
     if version in (DRAWING_VERSION,CIRCUIT_DRAWING_VERSION) and manifest["review_drawings"] is not None:
-        from .review_drawings import ReviewDrawingConfig
-        drawing_config = ReviewDrawingConfig.from_dict(doc("review_drawings"))
+        from .review_drawings import read_review_drawing_config
+        drawing_config = read_review_drawing_config(doc("review_drawings"))
     documents, images, evidence = buffers("documents"), buffers("images"), buffers("evidence_documents")
     journals = buffers("journals")
     journal_dir = Path(journal_directory)
@@ -243,9 +243,8 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
             filenames["circuit_design"]="circuit-design.json"
         if drawing_config is not None:
             kinds += drawing_config.artifact_kinds
-            filenames.update(drawing_set="drawing-set.json", panel_facts="panel-facts.json")
-            for index, plan in enumerate(sorted(drawing_config.plans, key=lambda p: p.id), 1):
-                filenames["review_plan:" + plan.id] = f"review-plan-{index:03d}.svg"
+            from .review_drawings import review_drawing_filenames
+            filenames.update(review_drawing_filenames(drawing_config))
         final = attempt / "delivery"
         refs = {k: str(final / filenames[k]) for k in kinds}
         _write(pending / "input-receipt.json", _json({"version": VERSION,

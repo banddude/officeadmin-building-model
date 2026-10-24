@@ -127,11 +127,32 @@ def _svg(view, config):
     return svg
 
 
-def generate_review_drawings(model, config):
+def read_review_drawing_config(document):
+    """Dispatch only explicit versions; legacy serialization remains unchanged."""
+    from .review_sheet_delivery import ReviewSheetDeliveryConfig, VERSION as SHEET_VERSION
+    cls = ReviewSheetDeliveryConfig if isinstance(document, dict) and document.get("version") == SHEET_VERSION else ReviewDrawingConfig
+    return cls.from_dict(document)
+
+
+def review_drawing_filenames(config):
+    names = {"drawing_set": "drawing-set.json", "panel_facts": "panel-facts.json"}
+    for index, plan in enumerate(sorted(config.plans, key=lambda p: p.id), 1):
+        names["review_plan:" + plan.id] = f"review-plan-{index:03d}.svg"
+    from .review_sheet_delivery import ReviewSheetDeliveryConfig
+    if isinstance(config, ReviewSheetDeliveryConfig):
+        names.update(config.sheet_filenames)
+    return names
+
+
+def generate_review_drawings(model, config, *, source_proposals_not_admitted=()):
     """Return supplemental bytes and an honest visibility/coverage report."""
-    if not isinstance(config, ReviewDrawingConfig):
+    from .review_sheet_delivery import ReviewSheetDeliveryConfig, generate_sheet_delivery
+    if not isinstance(config, (ReviewDrawingConfig, ReviewSheetDeliveryConfig)):
         raise ContractError("typed review drawing configuration required")
-    config = ReviewDrawingConfig.from_dict(config.to_dict())
+    config = read_review_drawing_config(config.to_dict())
+    sheet_config = config if isinstance(config, ReviewSheetDeliveryConfig) else None
+    if sheet_config is not None:
+        config = sheet_config.drawings
     before = canonical_model_sha256(model)
     levels = {level.id: level for level in model.levels}
     if any(p.level_id not in levels for p in config.plans):
@@ -193,8 +214,14 @@ def generate_review_drawings(model, config):
         entry["provenance_owner_collection"] = collection
     status["source_index_semantics"] = "canonical owner-relative confidence and complete provenance records; geometry and entity attributes remain in canonical_model"
     status["complete_model_evidence"] = {"artifact_kind": "canonical_model", "sha256": before}
+    if sheet_config is not None:
+        status["sheet_delivery_version"] = sheet_config.version
+        status["sheet_config_fingerprint"] = digest(sheet_config.to_dict())
+        status["source_proposals_not_admitted"] = list(source_proposals_not_admitted)
     payloads["drawing_set"] = json.dumps({"review": status, "drawing_set": drawing_document},
         sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    if sheet_config is not None:
+        payloads.update(generate_sheet_delivery(drawing, sheet_config, payloads, status))
     if before != canonical_model_sha256(model):
         raise ContractError("review drawing generation mutated canonical model")
     return payloads, status

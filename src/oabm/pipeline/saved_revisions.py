@@ -125,13 +125,11 @@ def _load(directory):
     drawing_config = None
     drawing_paths = set()
     if drawing_enabled:
-        from .review_drawings import ReviewDrawingConfig
+        from .review_drawings import read_review_drawing_config, review_drawing_filenames
         drawing_paths.add("drawing-inputs/config.json")
-        drawing_config = ReviewDrawingConfig.from_dict(_decode(payloads["drawing-inputs/config.json"]))
+        drawing_config = read_review_drawing_config(_decode(payloads["drawing-inputs/config.json"]))
         kinds.update(drawing_config.artifact_kinds)
-        filenames.update(drawing_set="drawing-set.json", panel_facts="panel-facts.json")
-        for index, plan in enumerate(sorted(drawing_config.plans, key=lambda p: p.id), 1):
-            filenames["review_plan:" + plan.id] = f"review-plan-{index:03d}.svg"
+        filenames.update(review_drawing_filenames(drawing_config))
     _require(set(artifacts) == kinds and report["requested_outputs"] == sorted(kinds), "unsupported artifact request set")
     expected_paths = {filenames[k] for k in kinds} | circuit_paths | drawing_paths | {"completion-report.json", "input-receipt.json"}
     _require(all(n in expected_paths or (n.startswith("journals/") and n.endswith(".jsonl")) for n in payloads),
@@ -258,7 +256,8 @@ def _load(directory):
                  and report["input_bindings"]["review_drawings_fingerprint"] == _sha(_json(drawing_config.to_dict()).encode()),
                  "retained drawing configuration binding mismatch")
         from .review_drawings import generate_review_drawings
-        drawing_payloads, drawing_status = generate_review_drawings(model, drawing_config)
+        drawing_payloads, drawing_status = generate_review_drawings(model, drawing_config,
+            source_proposals_not_admitted=[dict(d) for d in report["dispositions"] if d["canonical_id"] is None])
         drawing_status["source_proposals_not_admitted"] = [dict(d) for d in report["dispositions"] if d["canonical_id"] is None]
         _require(drawing_status == report["review_drawings"]
                  and set(drawing_payloads) == set(drawing_config.artifact_kinds)

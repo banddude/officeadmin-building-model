@@ -130,10 +130,11 @@ def deliver_reviewed_electrical(
         expected=set(KINDS)|({"ifc"} if include_ifc else set())
         if circuit_design is not None:expected.add("circuit_design")
         if review_drawings is not None:
-            from .review_drawings import ReviewDrawingConfig
-            if not isinstance(review_drawings, ReviewDrawingConfig):
+            from .review_drawings import ReviewDrawingConfig, read_review_drawing_config
+            from .review_sheet_delivery import ReviewSheetDeliveryConfig
+            if not isinstance(review_drawings, (ReviewDrawingConfig, ReviewSheetDeliveryConfig)):
                 raise ContractError("typed review drawing configuration required")
-            review_drawings=ReviewDrawingConfig.from_dict(review_drawings.to_dict())
+            review_drawings=read_review_drawing_config(review_drawings.to_dict())
             report["stages"]["review_drawings"]={"status":"not_run"}
         if review_drawings is not None:
             expected.update(review_drawings.artifact_kinds)
@@ -327,7 +328,8 @@ def deliver_reviewed_electrical(
         if review_drawings is not None:
             stage="review_drawings"
             from .review_drawings import generate_review_drawings
-            drawing_payloads,drawing_status=generate_review_drawings(canonical,review_drawings)
+            drawing_payloads,drawing_status=generate_review_drawings(canonical,review_drawings,
+                source_proposals_not_admitted=[dict(d) for d in outcome.dispositions if d["canonical_id"] is None])
             for kind,data in drawing_payloads.items():
                 put(kind,data)
             drawing_status["source_proposals_not_admitted"]=[dict(d) for d in outcome.dispositions

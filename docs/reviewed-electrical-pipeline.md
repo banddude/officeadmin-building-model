@@ -262,3 +262,9 @@ circuit-enabled saved manifest. A view-only change reuses the completed provider
 proposal and reviewed circuit choice, while creating a fresh export attempt.
 The older uncertain-call, ownership, explicit-retry and directory-durability
 barriers remain unchanged.
+
+### Optional physical-sheet artifact package
+
+See [Saved physical-sheet delivery](saved-sheet-delivery.md) for the explicit
+versioned paper/glyph configuration, SVG/DXF maps, deterministic generated-source
+ZIP and replay checks. This does not change legacy outputs or upload to OfficeAdmin.

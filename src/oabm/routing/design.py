@@ -52,6 +52,53 @@ class CircuitDesignRules:
         }
 
 
+def _design_metadata(circuit: Circuit) -> dict[str, object] | None:
+    """Return an object-valued optional design marker, without coercion."""
+
+    marker = circuit.attributes.get("design")
+    return marker if isinstance(marker, dict) else None
+
+
+def _managed_design_metadata(
+    circuit: Circuit, equipment_id: str,
+) -> dict[str, object] | None:
+    """Recognize this producer's records without claiming arbitrary JSON.
+
+    ``attributes.design`` is an open JSON extension point in the canonical
+    contract. Non-object markers and dicts that merely name this equipment are
+    preserved as unrelated metadata. The generated status/origin/observation
+    signature distinguishes this producer's ownership record; fields needed
+    for idempotence or history are checked only when those paths use them.
+    """
+
+    marker = _design_metadata(circuit)
+    if (
+        marker is not None
+        and marker.get("equipment_id") == equipment_id
+        and marker.get("status") == "designed"
+        and marker.get("origin") in ("system-design", "user-override")
+        and marker.get("source_observed") is False
+    ):
+        return marker
+    return None
+
+
+def _design_device_ids(metadata: dict[str, object], circuit_id: str) -> tuple[str, ...]:
+    """Read the saved group only where replay/history requires it."""
+
+    device_ids = metadata.get("device_ids")
+    if (
+        not isinstance(device_ids, list)
+        or not device_ids
+        or any(not isinstance(device_id, str) for device_id in device_ids)
+        or len(set(device_ids)) != len(device_ids)
+    ):
+        raise PlacementError(
+            f"existing circuit {circuit_id} lacks valid device_ids for design history"
+        )
+    return tuple(device_ids)
+
+
 def propose_architectural_electrical_design(
     model: BuildingModel, *, rules: CircuitDesignRules | None = None,
 ) -> tuple[BuildingModel, tuple[EquipmentPlacementProposal, ...]]:
@@ -185,12 +232,16 @@ def design_proposed_circuits(
             for start in range(0, len(ordered), rules.max_devices_per_circuit)
         )
 
-    prior = tuple(item for item in model.circuits if (
-        item.attributes.get("design", {}).get("equipment_id") == equipment_id
-    ))
+    prior_designs: dict[str, dict[str, object]] = {}
+    for item in model.circuits:
+        design = _managed_design_metadata(item, equipment_id)
+        if design is not None:
+            prior_designs[item.id] = design
+    prior = tuple(item for item in model.circuits if item.id in prior_designs)
     if user_input_id is not None and any(
-        item.attributes.get("design", {}).get("user_input_id") == user_input_id
-        and item.attributes.get("design", {}).get("equipment_id") != equipment_id
+        (marker := _design_metadata(item)) is not None
+        and marker.get("user_input_id") == user_input_id
+        and marker.get("equipment_id") != equipment_id
         for item in model.circuits
     ):
         raise PlacementError("user_input_id already belongs to another circuit design")
@@ -204,16 +255,16 @@ def design_proposed_circuits(
         raise PlacementError("historical user_input_id cannot be reused for circuit groups")
     reused_decisions = tuple(item for item in prior if (
         user_input_id is not None
-        and item.attributes.get("design", {}).get("user_input_id") == user_input_id
+        and prior_designs[item.id].get("user_input_id") == user_input_id
     ))
     if reused_decisions:
         prior_groups = tuple(
-            tuple(item.attributes["design"]["device_ids"])
+            _design_device_ids(prior_designs[item.id], item.id)
             for item in sorted(reused_decisions, key=lambda circuit: int(circuit.circuit_number or 0))
         )
         if (len(reused_decisions) == len(prior)
                 and prior_groups == groups
-                and all(item.attributes["design"]["rules"] == rules.to_dict()
+                and all(prior_designs[item.id].get("rules") == rules.to_dict()
                         for item in reused_decisions)):
             return model
         raise PlacementError("one user_input_id cannot describe conflicting circuit groups")
@@ -231,7 +282,12 @@ def design_proposed_circuits(
     ) for item in model.circuits):
         raise PlacementError("a selected device already belongs to another circuit")
     for item in prior:
-        old_decision = item.attributes.get("design", {}).get("user_input_id")
+        design = prior_designs[item.id]
+        old_decision = design.get("user_input_id")
+        if old_decision is not None and not isinstance(old_decision, str):
+            raise PlacementError(
+                f"existing circuit {item.id} has invalid user_input_id for design history"
+            )
         if old_decision and not any(
             isinstance(row, dict) and row.get("user_input_id") == old_decision
             for row in decision_history
@@ -239,8 +295,8 @@ def design_proposed_circuits(
             decision_history = [*decision_history, {
                 "user_input_id": old_decision,
                 "equipment_id": equipment_id,
-                "device_ids": item.attributes["design"]["device_ids"],
-                "rules": item.attributes["design"]["rules"],
+                "device_ids": list(_design_device_ids(design, item.id)),
+                "rules": design.get("rules"),
             }]
     base = replace(
         model,

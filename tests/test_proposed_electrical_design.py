@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -13,12 +14,14 @@ from oabm.drawings import generate_drawing_set
 from oabm.ifc import to_ifc
 from oabm.importers.pdf_electrical import ElectricalPdfImporter, extract_pdf
 from oabm.model import (
-    Box3D, BuildingModel, ElectricalDevice, Level, Obstacle, Opening, Point3, Polygon3D,
-    Polyline3D, Pose, Size3, Space, Vector3, Wall,
+    Box3D, BuildingModel, Circuit, ElectricalDevice, ElectricalEquipment, Level,
+    Obstacle, Opening, Point3, Polygon3D, Polyline3D, Port, Pose, Size3, Space,
+    Vector3, Wall,
 )
 from oabm.quantities import extract_quantities
 from oabm.routing import (
-    PlacementError, apply_equipment_proposal, design_proposed_circuits,
+    CircuitDesignRules, NoRouteError, PlacementError, RoutingOptions,
+    apply_equipment_proposal, design_proposed_circuits,
     propose_architectural_electrical_design, propose_equipment_placement,
     set_user_equipment_placement,
 )
@@ -72,6 +75,213 @@ def _proposal(model: BuildingModel):
         name="LP-DESIGN", level_id="level:one",
         served_device_ids=tuple(item.id for item in model.electrical_devices),
     )
+
+
+def _explicit_design_inputs(*, design_marker: object, include_third_device: bool = False):
+    """Tiny canonical reviewed source/load setup; it supplies every design input."""
+
+    panel = ElectricalEquipment(
+        id="equipment:reviewed-panel", equipment_type="panelboard",
+        pose=Pose(position=Point3(x=0, y=0, z=0)),
+    )
+    unrelated_panel = ElectricalEquipment(
+        id="equipment:unrelated-panel", equipment_type="panelboard",
+        pose=Pose(position=Point3(x=0, y=2, z=0)),
+    )
+    positions = (("device:load-a", (2, 0, 0)), ("device:load-b", (4, 0, 0)))
+    if include_third_device:
+        positions = (*positions, ("device:load-c", (5, 1, 0)))
+    devices = tuple(ElectricalDevice(
+        id=identity, device_type="receptacle_duplex",
+        pose=Pose(position=Point3(x=coordinates[0], y=coordinates[1], z=coordinates[2])),
+    ) for identity, coordinates in positions)
+    other_device = ElectricalDevice(
+        id="device:unrelated", device_type="receptacle_duplex",
+        pose=Pose(position=Point3(x=0, y=3, z=0)),
+    )
+
+    def port(identity: str, owner_id: str, role: str, coordinates: tuple[int, int, int],
+             direction: tuple[int, int, int]) -> Port:
+        return Port(
+            id=identity, owner_id=owner_id, domain="electrical", role=role,
+            pose=Pose(position=Point3(x=coordinates[0], y=coordinates[1], z=coordinates[2])),
+            direction=Vector3(x=direction[0], y=direction[1], z=direction[2]),
+        )
+
+    ports = (
+        port("port:reviewed-source", panel.id, "source", (0, 0, 0), (1, 0, 0)),
+        *(port(f"port:{identity}", identity, "load", coordinates, (-1, 0, 0))
+          for identity, coordinates in positions),
+        port("port:unrelated-source", unrelated_panel.id, "source", (0, 2, 0), (1, 0, 0)),
+        port("port:unrelated-load", other_device.id, "load", (0, 3, 0), (-1, 0, 0)),
+    )
+    unrelated = Circuit(
+        id="circuit:unrelated", source_port_id="port:unrelated-source",
+        load_port_ids=("port:unrelated-load",), circuit_number="U-1",
+        attributes={"design": design_marker, "legacy_payload": {"ordered": [2, 1]}},
+    )
+    model = BuildingModel(
+        model_id="model:explicit-design-marker-regression",
+        electrical_equipment=(panel, unrelated_panel),
+        electrical_devices=(*devices, other_device), ports=ports, circuits=(unrelated,),
+    )
+    # Exercise the same canonical JSON boundary a caller uses; the unusual marker
+    # remains valid JSON metadata and is not coerced into a design-record object.
+    model = BuildingModel.from_dict(model.to_dict())
+    device_ids = tuple(identity for identity, _ in positions)
+    rules = CircuitDesignRules(
+        max_devices_per_circuit=3, assumed_voltage_v=277.0, assumed_poles=1,
+        route_type="emt", nominal_diameter_m=0.0254, conductor_material="copper",
+        conductor_size="10 AWG", insulated_conductor_count=3, include_ground=False,
+    )
+    routing_options = RoutingOptions(
+        bend_penalty_m=0.4, max_bends=8, port_stub_m=0.0, clearance_m=0.02,
+        search_margin_m=0.5, corridor_tolerance_m=0.03,
+        bundle_alignment_tolerance_m=0.02, preferred_corridor_discount=0.0,
+        surface_path_discount=0.0, glazed_wall_penalty=7.0,
+        soft_obstacle_penalty_factor=4.0, vertical_cost_factor=1.0,
+        coordinate_precision=9,
+    )
+    kwargs = {
+        "equipment_id": panel.id,
+        "device_ids": device_ids,
+        "rules": rules,
+        "user_groups": (device_ids,),
+        "user_input_id": "decision:explicit-marker-regression",
+        "source_port_id": "port:reviewed-source",
+        "load_port_ids": {identity: f"port:{identity}" for identity in device_ids},
+        "routing_options": routing_options,
+    }
+    return model, kwargs, unrelated
+
+
+@pytest.mark.parametrize("design_marker", [None, "legacy marker", ["legacy", {"v": 1}]])
+def test_explicit_design_preserves_non_object_unrelated_design_markers(design_marker) -> None:
+    model, kwargs, unrelated = _explicit_design_inputs(design_marker=design_marker)
+    input_bytes = model.to_json()
+
+    designed = design_proposed_circuits(model, **kwargs)
+
+    assert model.to_json() == input_bytes
+    assert designed.electrical_equipment == model.electrical_equipment
+    assert {item.id: item for item in designed.ports} == {
+        item.id: item for item in model.ports
+    }  # explicit source and load ports are reused without edits
+    preserved = next(item for item in designed.circuits if item.id == unrelated.id)
+    assert preserved == unrelated
+    assert preserved.attributes == unrelated.attributes
+    assert preserved.attributes["design"] == design_marker
+    assert len(designed.routes) == 2
+    created = next(item for item in designed.circuits if item.id != unrelated.id)
+    # This legitimate producer-owned dictionary is the receipt used for stable
+    # idempotence; malformed/non-object optional metadata above is not ownership.
+    assert created.attributes["design"]["equipment_id"] == kwargs["equipment_id"]
+    assert created.attributes["design"]["source_observed"] is False
+    assert design_proposed_circuits(designed, **kwargs) is designed
+    assert model.to_json() == input_bytes
+
+
+def test_explicit_design_partial_route_failure_leaves_input_unchanged(monkeypatch) -> None:
+    marker = ["leave", {"these": "bytes"}]
+    model, kwargs, unrelated = _explicit_design_inputs(
+        design_marker=marker, include_third_device=True,
+    )
+    input_bytes = model.to_json()
+    blocked_controls = replace(kwargs["routing_options"], max_bends=0)
+    routing_design = import_module("oabm.routing.design")
+    route_attempts = []
+    route_between_ports = routing_design.route_between_ports
+
+    def record_attempt(*args, **route_kwargs):
+        route_attempts.append((args[1], args[2]))
+        return route_between_ports(*args, **route_kwargs)
+
+    monkeypatch.setattr(routing_design, "route_between_ports", record_attempt)
+
+    with pytest.raises(NoRouteError, match="bends"):
+        design_proposed_circuits(
+            model, **{**kwargs, "routing_options": blocked_controls},
+        )
+
+    assert route_attempts == [
+        ("port:reviewed-source", "port:device:load-a"),
+        ("port:device:load-a", "port:device:load-b"),
+        ("port:device:load-b", "port:device:load-c"),
+    ]
+    assert model.to_json() == input_bytes
+    assert model.circuits == (unrelated,)
+    assert unrelated.attributes == {
+        "design": marker, "legacy_payload": {"ordered": [2, 1]},
+    }
+
+
+def test_equipment_id_only_dict_is_not_treated_as_a_managed_design_receipt() -> None:
+    marker = {"equipment_id": "equipment:reviewed-panel", "manual_note": "keep"}
+    model, kwargs, unrelated = _explicit_design_inputs(design_marker=marker)
+    input_bytes = model.to_json()
+
+    designed = design_proposed_circuits(model, **kwargs)
+
+    assert model.to_json() == input_bytes
+    preserved = next(item for item in designed.circuits if item.id == unrelated.id)
+    assert preserved == unrelated
+    assert preserved.attributes["design"] == marker
+
+
+def test_legacy_managed_design_without_user_input_id_can_be_replaced() -> None:
+    source_model, kwargs, unrelated = _explicit_design_inputs(design_marker=None)
+    initial = design_proposed_circuits(source_model, **kwargs)
+    generated = next(item for item in initial.circuits if item.id != unrelated.id)
+    old_marker = {
+        key: value for key, value in generated.attributes["design"].items()
+        if key != "user_input_id"
+    }
+    legacy_circuit = replace(generated, attributes={"design": old_marker})
+    legacy = replace(initial, circuits=tuple(
+        legacy_circuit if item.id == generated.id else item
+        for item in initial.circuits
+    ))
+    legacy = BuildingModel.from_dict(legacy.to_dict())
+    input_bytes = legacy.to_json()
+    device_a, device_b = kwargs["device_ids"]
+    replacement_kwargs = {
+        **kwargs,
+        "user_groups": ((device_a,), (device_b,)),
+        "user_input_id": "decision:replacement-after-legacy-record",
+    }
+
+    replaced = design_proposed_circuits(legacy, **replacement_kwargs)
+
+    assert legacy.to_json() == input_bytes
+    assert len(replaced.circuits) == 3
+    assert sum(item.id != unrelated.id for item in replaced.circuits) == 2
+    assert all(
+        item.attributes["design"]["user_input_id"] == replacement_kwargs["user_input_id"]
+        for item in replaced.circuits if item.id != unrelated.id
+    )
+
+
+def test_damaged_managed_design_record_is_not_silently_replaced() -> None:
+    source_model, kwargs, unrelated = _explicit_design_inputs(design_marker=None)
+    designed = design_proposed_circuits(source_model, **kwargs)
+    generated = next(item for item in designed.circuits if item.id != unrelated.id)
+    marker = {**generated.attributes["design"], "rules": {}}
+    damaged_circuit = replace(generated, attributes={"design": marker})
+    damaged = replace(designed, circuits=tuple(
+        damaged_circuit if item.id == generated.id else item
+        for item in designed.circuits
+    ))
+    damaged = BuildingModel.from_dict(damaged.to_dict())
+    input_bytes = damaged.to_json()
+
+    with pytest.raises(PlacementError, match="conflicting circuit groups"):
+        design_proposed_circuits(damaged, **kwargs)
+
+    assert damaged.to_json() == input_bytes
+    damaged_marker = next(
+        item for item in damaged.circuits if item.id == generated.id
+    ).attributes["design"]
+    assert damaged_marker["rules"] == {}
 
 
 def test_source_pdf_without_panel_keeps_observed_circuits_empty(tmp_path: Path) -> None:

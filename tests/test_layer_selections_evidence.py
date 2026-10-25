@@ -27,15 +27,13 @@ def test_evidence_render_exists_and_reports_the_selections(tmp_path: Path) -> No
     assert all_ids["hidden_ids"] == [] and all_ids["ghosted_ids"] == []
     assert resolutions["preset:all"]["summary"]["dimmed"] == 0
 
-    # Phase 1 only: lighting hidden, architecture ghosted, and the
-    # unsupported architecture ghosts are named, not silently advertised.
+    # Phase 1 only: lighting hidden and all six architectural members receive
+    # an actual ghost material in the GLB.
     phase = resolutions["preset:phase-1"]["resolution"]
     assert phase["hidden_ids"] == ["device:one-em"]
     assert len(phase["ghosted_ids"]) == 6
-    assert resolutions["preset:phase-1"]["summary"]["dimmed"] == 1  # the glazed wall
-    assert set(resolutions["preset:phase-1"]["unsupported_ghost_ids"]) == {
-        "wall:one-a", "wall:two-a", "slab:one", "slab:two", "space:one",
-    }
+    assert resolutions["preset:phase-1"]["summary"]["dimmed"] == 6
+    assert resolutions["preset:phase-1"]["unsupported_ghost_ids"] == []
 
     # Power ghosted: the ghosted route carries its three wires with it.
     ghost = resolutions["preset:ghost-power"]

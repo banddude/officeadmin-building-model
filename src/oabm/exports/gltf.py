@@ -289,14 +289,16 @@ def to_glb(
       something to be read against in the viewer. The planes span the level's
       plan bounding box plus ``reference_margin_m``; the two alphas set their
       translucency. Levels with no drawn content get no plane.
-    - ``dimmed_ids`` lists canonical device, equipment or route ids the
-      caller wants drawn in a grey translucent style shaped by
+    - ``dimmed_ids`` lists canonical wall, slab, space, device, equipment or
+      route ids the caller wants drawn in a grey translucent style shaped by
       ``dimmed_color`` and ``dimmed_alpha``. A dimmed route dims its drawn
       conductor wires with it, so a ghosted conduit never hides fully
       opaque conductors inside itself; the summary reports how many wires
-      were dimmed as ``dimmed_conductor_wires`` while any are. Which ids to
-      dim, and why, is the caller's decision; ids that match nothing are
-      ignored.
+      were dimmed as ``dimmed_conductor_wires`` while any are. Glazed walls
+      retain the glass colour and take only the caller's alpha when lower
+      than the glass alpha. Physical boxes and support records have no ghost
+      style today. Which ids to dim, and why, is the caller's decision; ids
+      that match nothing are ignored.
     - ``emphasized_ids`` lists canonical device, equipment or route ids the
       caller wants drawn opaque in their normal class colour, whatever their
       provenance, so new work reads in full colour while ``dimmed_ids`` ids
@@ -542,6 +544,10 @@ def _build_document(
                 material_key: tuple[Any, ...] = ("dimmed", _GLAZED_MATERIAL)
             else:
                 material_key = (_GLAZED_MATERIAL,)
+        elif entity.id in options.dimmed_ids:
+            dimmed_count += 1
+            extras["display"] = _DIMMED_DISPLAY
+            material_key = ("dimmed", "wall")
         else:
             material_key = ("wall", _is_derived(entity.provenance, entity.attributes))
         add({
@@ -577,10 +583,16 @@ def _build_document(
         )
         if triangulation == "fan-fallback":
             extras["triangulation"] = triangulation
+        if entity.id in options.dimmed_ids:
+            dimmed_count += 1
+            extras["display"] = _DIMMED_DISPLAY
+            material_key: tuple[Any, ...] = ("dimmed", "slab")
+        else:
+            material_key = ("slab", _is_derived(entity.provenance, entity.attributes))
         add({
             "name": entity.id,
             "vertices": vertices,
-            "material_key": ("slab", _is_derived(entity.provenance, entity.attributes)),
+            "material_key": material_key,
             "extras": extras,
         })
     for entity in model.spaces:
@@ -597,10 +609,16 @@ def _build_document(
         )
         if triangulation == "fan-fallback":
             extras["triangulation"] = triangulation
+        if entity.id in options.dimmed_ids:
+            dimmed_count += 1
+            extras["display"] = _DIMMED_DISPLAY
+            material_key: tuple[Any, ...] = ("dimmed", "space")
+        else:
+            material_key = ("space", _is_derived(entity.provenance, entity.attributes))
         add({
             "name": entity.id,
             "vertices": vertices,
-            "material_key": ("space", _is_derived(entity.provenance, entity.attributes)),
+            "material_key": material_key,
             "extras": extras,
         })
     for entity in (*model.electrical_devices, *model.electrical_equipment):

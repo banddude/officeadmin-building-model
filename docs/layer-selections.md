@@ -92,15 +92,15 @@ to the exporter's existing caller-supplied grouping and visibility boundary:
   through the ratified `KHR_node_visibility` extension (used, never
   required);
 - ghosted ids passed as `dimmed_ids`, so supported kinds actually render
-  ghosted (translucent): electrical devices, electrical equipment and
-  routes, where a dimmed route dims the conductor wires drawn inside it
-  too, so the conduit ghosts whole; a glazed wall takes the dim only as a
-  lower alpha;
+  ghosted (translucent): walls, slabs, spaces, electrical devices,
+  electrical equipment and routes. A dimmed route dims the conductor wires
+  drawn inside it too, so the conduit ghosts whole; glazed walls keep their
+  glass colour and take only the lower caller alpha;
 - `unsupported_ghost_ids` names every ghosted id whose kind has no ghost
-  style today (plain walls, slabs, space plates, physical boxes, support
-  components, interfaces and assemblies). They stay in the ghosted group
-  but draw at normal appearance, and the caller must surface the report
-  instead of presenting them as ghosted.
+  style today (physical boxes, support components, interfaces and
+  assemblies). They stay in the ghosted group but draw at normal appearance,
+  and the caller must surface the report instead of presenting them as
+  ghosted.
 
 The adapter adds no new exporter features and does not change the exporter;
 with no plan passed, `to_glb` output is byte-identical to its previous
@@ -129,5 +129,6 @@ permutation property directly, on the resolver and on actual GLB bytes.
 
 Not delivered here, by scope: the OA production viewer control panel,
 automatic system/trade recognition from a plan, IFC presentation of layers,
-per-layer CAD export, ghost styles for architecture kinds, and any real
-panel-recognition gate change. File follow-ups per slice against #237/#227.
+per-layer CAD export, ghost styles for physical boxes and support records, and
+any real panel-recognition gate change. File follow-ups per slice against
+#237/#227.

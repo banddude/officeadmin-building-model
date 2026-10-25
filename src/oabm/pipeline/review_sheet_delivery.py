@@ -133,6 +133,8 @@ def _lower_glyphs(drawing, config):
 def generate_sheet_delivery(drawing, config, payloads, status, *, _dxf_replay_versions=None):
     """Return a deterministic, self-describing generated-source archive and files."""
     from oabm.drawings.sheet_svg import render_sheet_svg
+    from .sheet_coherence import validate_sheet_inputs
+    validate_sheet_inputs(drawing, config, payloads, status)
     lowered, joins = _lower_glyphs(drawing, config)
     output = {}
     filenames = config.sheet_filenames

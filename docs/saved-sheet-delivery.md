@@ -94,3 +94,23 @@ The genuine archive can be consumed through an application's existing authorized
 artifact upload/download flow. This implementation performs no app upload,
 changes no MIME/security/visibility policy, and does not expand the strict
 OfficeAdmin review-bundle contract. App acceptance is a separate step.
+
+## Coherent packaging inputs
+
+The reusable `generate_sheet_delivery` boundary validates its independently
+supplied drawing object, drawing JSON, panel-facts JSON, configuration and review
+status before rendering. It rejects conflicting canonical-model bindings, stale
+sheet/titleblock configuration, a drawing document that differs from the typed
+geometry/metadata/schedules, and panel facts that disagree with those schedules.
+Diagnostics begin with `sheet input coherence:` and identify the conflicting
+input. Regenerate the drawing, facts and configuration from the same intended
+snapshot rather than changing a hash to suppress a mismatch.
+
+Formatting and JSON object-key order are not revision changes. Canonical owner
+provenance keeps its extra scope/attribute fields and accepted optional defaults;
+validation does not strip or rewrite those supplied bytes. Valid packages keep
+existing versions and byte serialization. This is an input agreement check, not
+proof that a caller-supplied hash is authentic or a fresh canonical snapshot.
+Saved delivery reuse still performs the stronger retained-model regeneration and
+exact-byte comparisons described above. No canonical mutation, source quantity
+measurement, automatic titleblock update or permit-readiness claim is added.

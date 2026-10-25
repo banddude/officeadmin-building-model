@@ -72,6 +72,17 @@ Callers own the hint list. Pass only earlier runs on the same routing plane, cli
 - **Length acceptance.** Aligned route pieces preserve each conductor's path length. With near-aligned shared centerlines, a conductor may change only through a recorded connector or collapse bounded by the stated 25 mm snap tolerance per shared segment. Each adjustment records its coordinates and signed length delta in provenance; the report totals the conductor delta. Review the reported delta with the takeoff before using the result.
 - **Default untouched.** Router output and quantities are byte-identical when the function is not called.
 
+Whole-route product selections and selection outcomes, including unresolved
+outcomes, retain their original routes with reason
+`whole_route_product_binding_requires_reselection`. Routes named by support
+assemblies or support-selection outcomes retain their identity with reason
+`support_binding_requires_reselection` (the product reason takes precedence
+when both apply). The eligible overlap union is recalculated, so unrelated
+unbound routes can still consolidate. No product or support decision is dropped
+or copied to a new trunk. Explicit topology-aware re-selection remains separate
+work. This guard does not establish conductor compatibility, fill, ampacity,
+support loading, or code compliance.
+
 ## Bend limits and fitting decisions
 
 `RoutingOptions` controls bend penalty, maximum bend count, port-stub length, clearances, search margin, soft preferences, and the glazed-wall penalty (default 4.0, must be positive). These are algorithm controls, not a replacement for canonical model fields.

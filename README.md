@@ -38,8 +38,11 @@ See [Exact-product route fittings](docs/route-fitting-selection-contract.md)
 for the opt-in contract 1.5 catalog-pair selection, unresolved cases, and
 derived consumer/replay boundaries.
 See [Preset-driven wall assemblies](docs/building-assembly-wall-producer-v1.md)
-for the opt-in 1.6 straight timber-wall slice, opening-aware framing/drywall,
-GLB previews and component quantities. Populated assemblies are explicitly
+for opt-in 1.6 opening-aware timber framing and drywall. Separately selected
+[door/window inserts](docs/building-assembly-opening-inserts-v1.md) and
+[suspended ceilings](docs/building-assembly-suspended-ceiling-producer-v1.md)
+add physical frames, leaf/pane geometry, T runners, tiles and hanger wires.
+GLB previews and quantities share those canonical physical component IDs. Populated assemblies are explicitly
 refused by routing, IFC, drawings and unsupported QA consumers until those
 lanes implement physical-component semantics. This is not full-room framing
 and does not automate engineering decisions.

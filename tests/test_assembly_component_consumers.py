@@ -6,6 +6,7 @@ import json
 import math
 import struct
 from dataclasses import replace
+from collections import Counter
 
 import pytest
 
@@ -35,8 +36,10 @@ from oabm.model import (
     Provenance,
     Quaternion,
     Size3,
+    Space,
     Vector3,
     WireSweep,
+    compute_assembly_input_digest,
     compute_assembly_digests,
     stable_assembly_component_id,
     upgrade_to_v1_6,
@@ -74,6 +77,23 @@ def _positions(gltf, binary, node):
     start = view.get("byteOffset", 0) + gltf.get("accessors", [])[primitive["attributes"]["POSITION"]].get("byteOffset", 0)
     return [struct.unpack_from("<3f", binary, start + 12 * index)
             for index in range(position_accessor["count"])], primitive
+
+
+def _world_positions(gltf, binary, node):
+    """Decode actual mesh positions and apply the node's glTF Y-up transform."""
+    positions, primitive = _positions(gltf, binary, node)
+    sx, sy, sz = node.get("scale", (1.0, 1.0, 1.0))
+    qx, qy, qz, qw = node.get("rotation", (0.0, 0.0, 0.0, 1.0))
+    tx, ty, tz = node.get("translation", (0.0, 0.0, 0.0))
+    result = []
+    for x, y, z in positions:
+        x, y, z = x * sx, y * sy, z * sz
+        result.append((
+            (1 - 2 * (qy*qy + qz*qz)) * x + 2 * (qx*qy - qz*qw) * y + 2 * (qx*qz + qy*qw) * z + tx,
+            2 * (qx*qy + qz*qw) * x + (1 - 2 * (qx*qx + qz*qz)) * y + 2 * (qy*qz - qx*qw) * z + ty,
+            2 * (qx*qz - qy*qw) * x + 2 * (qy*qz + qx*qw) * y + (1 - 2 * (qx*qx + qy*qy)) * z + tz,
+        ))
+    return result, primitive
 
 
 def _valid_wall_with_door_and_window():
@@ -471,12 +491,112 @@ def test_glb_and_quantities_include_ceiling_runner_and_hanger_wire_geometry():
     model = upgrade_to_v1_6(source)
     model = replace(model, building_assemblies=(assignment,), assembly_components=parts)
 
-    gltf, binary = _read_glb(build_glb_bytes(model))
+    payload = build_glb_bytes(model)
+    assert payload == build_glb_bytes(model)
+    gltf, binary = _read_glb(payload)
     nodes = {node["name"]: node for node in gltf["nodes"]}
     assert {runner.id, hanger.id} <= set(nodes)
     for component in parts:
         positions, primitive = _positions(gltf, binary, nodes[component.id])
         assert len(positions) >= 8 and "indices" in primitive
+
+    # The selected source Slab is the physical deck, not an extra assembly
+    # component. Its canonical footprint is the top face and thickness runs
+    # down. Decode the emitted meshes (including glTF node transforms) in the
+    # actual +Y-up frame and verify the wire cap ends on the slab underside.
+    slab_nodes = [node for node in gltf["nodes"] if node.get("name") == slab.id]
+    assert len(slab_nodes) == 1
+    deck_positions, _ = _world_positions(gltf, binary, slab_nodes[0])
+    deck_heights = [point[1] for point in deck_positions]
+    deck_top_y = max(deck_heights)
+    deck_underside_y = min(deck_heights)
+    assert deck_top_y == pytest.approx(3.0, abs=1e-6)
+    assert deck_underside_y == pytest.approx(2.8, abs=1e-6)
+    wire_positions, _ = _world_positions(gltf, binary, nodes[hanger.id])
+    wire_top_ring = [point for point in wire_positions
+                     if abs(point[1] - deck_underside_y) <= 1e-6]
+    assert wire_top_ring
+    wire_top_center_yup = tuple(
+        math.fsum(point[axis] for point in wire_top_ring) / len(wire_top_ring)
+        for axis in range(3)
+    )
+    assert wire_top_center_yup == pytest.approx((top.x, top.z, -top.y), abs=1e-6)
+
+    space = Space(
+        id="space:under-deck", level_id="level:main",
+        footprint=Polygon3D(points=(
+            Point3(x=0, y=0, z=0), Point3(x=4, y=0, z=0),
+            Point3(x=4, y=3, z=0), Point3(x=0, y=3, z=0),
+        )),
+    )
+    space_model = replace(model, spaces=(space,))
+    space_gltf, space_binary = _read_glb(build_glb_bytes(space_model))
+    space_node = {node["name"]: node for node in space_gltf["nodes"]}[space.id]
+    space_positions, _ = _world_positions(space_gltf, space_binary, space_node)
+    assert min(point[1] for point in space_positions) == pytest.approx(0.0, abs=1e-6)
+    assert max(point[1] for point in space_positions) == pytest.approx(0.02, abs=1e-6)
+
+    floor_slab = Slab(
+        id="slab:floor", level_id="level:main",
+        footprint=Polygon3D(points=(
+            Point3(x=0, y=0, z=0), Point3(x=4, y=0, z=0),
+            Point3(x=4, y=3, z=0), Point3(x=0, y=3, z=0),
+        )),
+        thickness_m=.1, provenance=provenance,
+    )
+    floor_source = replace(source, slabs=(slab, floor_slab))
+    floor_assignment = _assembly(
+        floor_source, parts, kind="suspended_ceiling", host_id="ceiling:grid",
+        assembly_id="assembly:ceiling", deck_id=slab.id, params=(),
+    )
+    floor_model = replace(
+        upgrade_to_v1_6(floor_source), building_assemblies=(floor_assignment,),
+        assembly_components=parts, spaces=(space,),
+    )
+    floor_gltf, floor_binary = _read_glb(build_glb_bytes(floor_model))
+    floor_nodes = {node["name"]: node for node in floor_gltf["nodes"]}
+    floor_positions, _ = _world_positions(
+        floor_gltf, floor_binary, floor_nodes[floor_slab.id]
+    )
+    assert min(point[1] for point in floor_positions) == pytest.approx(0.0, abs=1e-6)
+    assert max(point[1] for point in floor_positions) == pytest.approx(0.1, abs=1e-6)
+    floor_space_positions, _ = _world_positions(
+        floor_gltf, floor_binary, floor_nodes[space.id]
+    )
+    assert min(point[1] for point in floor_space_positions) == pytest.approx(0.1, abs=1e-6)
+    assert max(point[1] for point in floor_space_positions) == pytest.approx(0.12, abs=1e-6)
+
+    # An explicit empty 1.6 upgrade is not a ceiling assembly and retains its
+    # legacy upward slab preview instead of opting in to the new deck rule.
+    empty_upgrade_gltf, empty_upgrade_binary = _read_glb(
+        build_glb_bytes(upgrade_to_v1_6(replace(source, spaces=(space,))))
+    )
+    empty_upgrade_nodes = {node["name"]: node for node in empty_upgrade_gltf["nodes"]}
+    old_slab_positions, _ = _world_positions(
+        empty_upgrade_gltf, empty_upgrade_binary, empty_upgrade_nodes[slab.id]
+    )
+    old_slab_heights = [point[1] for point in old_slab_positions]
+    assert min(old_slab_heights) == pytest.approx(3.0, abs=1e-6)
+    assert max(old_slab_heights) == pytest.approx(3.2, abs=1e-6)
+    old_space_positions, _ = _world_positions(
+        empty_upgrade_gltf, empty_upgrade_binary, empty_upgrade_nodes[space.id]
+    )
+    assert min(point[1] for point in old_space_positions) == pytest.approx(3.2, abs=1e-6)
+    assert max(point[1] for point in old_space_positions) == pytest.approx(3.22, abs=1e-6)
+
+    sloped_footprint = Polygon3D(points=(
+        Point3(x=0, y=0, z=3), Point3(x=4, y=0, z=3),
+        Point3(x=4, y=3, z=3.1), Point3(x=0, y=3, z=3),
+    ))
+    sloped_slab = replace(slab, footprint=sloped_footprint)
+    sloped_source = replace(source, slabs=(sloped_slab,))
+    sloped_assignment = replace(
+        assignment,
+        input_digest=compute_assembly_input_digest(sloped_source, assignment),
+    )
+    with pytest.raises(ContractError, match="Slab deck footprint must be horizontal"):
+        replace(model, slabs=(sloped_slab,), building_assemblies=(sloped_assignment,))
+
     wire = next(item for item in extract_quantities(model).items
                 if item.category == "assembly_component_length" and
                 hanger.id in item.source_entity_ids)
@@ -519,7 +639,7 @@ def test_stable_wall_producer_fixture_flows_to_glb_and_quantities():
 
     model = synthetic_two_opening_wall_assembly()
     assert model.schema_version == "1.6.0"
-    assert len(model.assembly_components) == 51
+    assert len(model.assembly_components) == 56
     assembly = model.building_assemblies[0]
     assert assembly.assembly_kind == "wall"
     assert assembly.host_representation == "aggregate_host"
@@ -540,10 +660,39 @@ def test_stable_wall_producer_fixture_flows_to_glb_and_quantities():
     component_ids = {component.id for component in model.assembly_components}
     assert assembly.host_id not in nodes
     assert component_ids <= set(nodes)
-    assert len([node for node in gltf["nodes"] if node["name"] in component_ids]) == 51
-    assert len(gltf["meshes"]) == 51
+    assert len([node for node in gltf["nodes"] if node["name"] in component_ids]) == 56
+    assert len(gltf["meshes"]) == 56
     assert all(_positions(gltf, binary, nodes[component_id])[0]
                for component_id in component_ids)
+    framing = {
+        component.id: next((record.attributes for record in component.provenance
+                           if record.attributes and record.attributes.get("framing_role")), {})
+        for component in model.assembly_components
+    }
+    roles = Counter(row.get("framing_role") for row in framing.values())
+    assert roles["king"] == roles["jack"] == roles["header_ply"] == 4
+    assert roles["header_spacer"] == 2
+    for component in model.assembly_components:
+        role = framing[component.id].get("framing_role")
+        if role not in {"king", "jack"}:
+            continue
+        emitted, _ = _world_positions(gltf, binary, nodes[component.id])
+        assert min(point[1] for point in emitted) == pytest.approx(.0381, abs=1e-6)
+        expected_top = 2.4384 - 2 * .0381 if role == "king" else 2.032
+        assert max(point[1] for point in emitted) == pytest.approx(expected_top, abs=1e-6)
+        assert nodes[component.id]["extras"]["part_key"] == component.part_key
+    for opening in model.openings:
+        jacks = [key for key, row in framing.items()
+                 if row.get("framing_role") == "jack" and row.get("opening_id") == opening.id]
+        plies = [key for key, row in framing.items()
+                 if row.get("framing_role") == "header_ply" and row.get("opening_id") == opening.id]
+        assert len(jacks) == len(plies) == 2
+        for jack_id in jacks:
+            jack_points, _ = _world_positions(gltf, binary, nodes[jack_id])
+            for ply_id in plies:
+                ply_points, _ = _world_positions(gltf, binary, nodes[ply_id])
+                assert max(point[1] for point in jack_points) == pytest.approx(
+                    min(point[1] for point in ply_points), abs=1e-6)
 
     report = extract_quantities(model)
     categories = {item.category for item in report.items}

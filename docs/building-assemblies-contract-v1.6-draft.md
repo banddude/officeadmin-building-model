@@ -5,7 +5,10 @@ slice of [issue #356](https://github.com/banddude/officeadmin-building-model/iss
 The historical draft filename is retained for stable links. A separate
 [straight timber-wall producer](building-assembly-wall-producer-v1.md) resolves
 versioned defaults and creates framing/drywall around rectangular opening
-voids. GLB and quantities support the physical records; unsupported consumers
+voids. Separate [insert](building-assembly-opening-inserts-v1.md) and
+[ceiling](building-assembly-suspended-ceiling-producer-v1.md) producers add
+simple door/window parts and a supported rectangular grid layout below an
+existing Slab. GLB and quantities support the physical records; unsupported consumers
 refuse populated assemblies. This is not a complete building/electrical workflow.
 
 ## Decision captured in the candidate
@@ -137,13 +140,17 @@ implementation, not this model collection.
 The geometry kernel is reused for strict outline validation and shared
 quaternion/wire-bound calculations. The separate first wall producer includes
 a finite immutable preset catalog/default resolver, framed opening voids and
-drywall. GLB and quantities support owned components and suppress duplicate
+drywall. Additional finite catalogs resolve explicit door/fixed-window inserts
+and suspended-ceiling T runners, tiles and straight hanger wires. Perimeter
+support hardware, tee connector tabs and hanger anchors remain unmodeled;
+geometry contact does not establish engineering approval.
+GLB and quantities support owned components and suppress duplicate
 aggregate-host physical output. GLB checks the total assembly vertex budget
 before mesh creation and rejects coordinates that cannot preserve the supported
 geometry within its declared float32 precision tolerance.
 
 Not implemented: plan/importer/AI recognition; full-room corners/joins;
-metal-stud, opening-insert, ceiling/T-bar/tile/hanger or deck producers;
+metal-stud presets or a generated-deck producer;
 assembly route-domain adaptation and route invalidation; component-aware IFC,
 drawings, revision-diff, confidence-review or review bundles; automatic
 penetration logic or construction/engineering approval. Unsupported output

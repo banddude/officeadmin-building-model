@@ -12,7 +12,12 @@ import pytest
 from oabm.exports import to_glb
 from oabm.ifc import to_ifc
 from oabm.quantities import extract_quantities
-from oabm.exports.gltf import _plan_is_convex, _prism_vertices, to_glb as to_glb_impl
+from oabm.exports.gltf import (
+    _plan_is_convex,
+    _prism_vertices,
+    build_glb_bytes,
+    to_glb as to_glb_impl,
+)
 from oabm.model import (
     BuildingModel,
     BoxSelectionOutcome,
@@ -42,7 +47,11 @@ from oabm.model import (
     Space,
     Vector3,
     Wall,
+    upgrade_to_v1_1,
+    upgrade_to_v1_2,
+    upgrade_to_v1_3,
     upgrade_to_v1_4,
+    upgrade_to_v1_5,
 )
 from oabm.qa import load_golden_cases, load_golden_model
 
@@ -380,6 +389,26 @@ def test_export_is_deterministic(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
     strip_path = lambda summary: {key: value for key, value in summary.items() if key != "path"}
     assert strip_path(summary_first) == strip_path(summary_second)
+
+
+def test_legacy_default_glb_fingerprints_remain_byte_identical() -> None:
+    """Pin pre-1.6 default GLBs while the assembly deck preview is scoped."""
+    expected = {
+        "1.0.0": "a60f501167b413c94fb789d22f7068d5340d41a42fde6bada207553b34815725",
+        "1.1.0": "cb775daac0951c6f893218773b1e2d14343c54afa96762e6cdcf1438fc242d72",
+        "1.2.0": "4ea3d0027e320364f049d9e6a99d14804491cad0fde2099e6ecbdbd8b6856a86",
+        "1.3.0": "a3733673c18df11b5b7e55a976dfe36ad94b8d9ff7495ef3ac1752d615bbd3f8",
+        "1.4.0": "86fd0ad701449796890bf70b5c178c2b194c4eaf44d147c9262480396acb0bff",
+        "1.5.0": "5fbce2ade0721b45a92e18d7793adf9dab70cf1eb22642f0de5365b4850eadb2",
+    }
+    model = _golden_garage()
+    upgrades = (lambda value: value, upgrade_to_v1_1, upgrade_to_v1_2,
+                upgrade_to_v1_3, upgrade_to_v1_4, upgrade_to_v1_5)
+    actual = {}
+    for upgrade in upgrades:
+        model = upgrade(model)
+        actual[model.schema_version] = hashlib.sha256(build_glb_bytes(model)).hexdigest()
+    assert actual == expected
 
 
 def test_inferred_geometry_gets_semitransparent_material(tmp_path: Path) -> None:

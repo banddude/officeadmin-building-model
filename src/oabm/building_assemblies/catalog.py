@@ -7,7 +7,7 @@ closed set interpreted by the pure producer in :mod:`oabm.building_assemblies.wa
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from typing import Any, Mapping
@@ -15,10 +15,13 @@ from typing import Any, Mapping
 from oabm.model import ContractError
 
 CATALOG_ID = "catalog:oabm-building-assemblies"
-CATALOG_REVISION = "1.0.0"
+LEGACY_CATALOG_REVISION = "1.0.0"
+CATALOG_REVISION = "2.0.0"
 WOOD_WALL_PRESET_ID = "wall.wood_rect_stock"
-WOOD_WALL_PRESET_REVISION = "1.0.0"
-WALL_GENERATOR_VERSION = "oabm-wall-producer/1.0.0"
+LEGACY_WOOD_WALL_PRESET_REVISION = "1.0.0"
+WOOD_WALL_PRESET_REVISION = "2.0.0"
+LEGACY_WALL_GENERATOR_VERSION = "oabm-wall-producer/1.0.0"
+WALL_GENERATOR_VERSION = "oabm-wall-producer/2.0.0"
 
 _VALUE_UNITS = {
     "length": "m",
@@ -170,16 +173,22 @@ class WallPreset:
             _text(getattr(self, field_name), f"WallPreset.{field_name}")
         if self.assembly_kind != "wall":
             raise ContractError("this catalog version admits wall recipes only")
-        if self.generator_kind != "wood_rect_stock_v1":
-            raise ContractError("WallPreset.generator_kind is outside the finite v1 recipe set")
+        if self.generator_kind not in {"wood_rect_stock_v1", "wood_rect_stock_v2"}:
+            raise ContractError("WallPreset.generator_kind is outside the finite supported wood recipe set")
         if self.structural_status != "illustrative_nonstructural_modeling_only":
             raise ContractError("wall recipe must explicitly declare illustrative nonstructural status")
         if self.material_policy != "unknown_unless_separately_supplied":
             raise ContractError("wall recipe cannot infer a material identity")
-        if self.stud_layout_rule != "regular_centers_with_explicit_end_stations_and_void_trim_v1":
-            raise ContractError("unsupported finite stud-layout rule")
-        if self.opening_frame_rule != "single_jamb_header_window_sill_and_cripples_v1":
-            raise ContractError("unsupported finite opening-frame rule")
+        expected_stud_rule = ("regular_centers_with_explicit_end_stations_and_void_trim_v1"
+                              if self.generator_kind == "wood_rect_stock_v1" else
+                              "regular_centers_with_explicit_end_stations_and_opening_frame_clearance_v2")
+        if self.stud_layout_rule != expected_stud_rule:
+            raise ContractError("unsupported finite stud-layout rule for the selected wood recipe revision")
+        expected_opening_rule = ("single_jamb_header_window_sill_and_cripples_v1"
+                                 if self.generator_kind == "wood_rect_stock_v1" else
+                                 "king_jack_header_plies_sill_and_cripples_v2")
+        if self.opening_frame_rule != expected_opening_rule:
+            raise ContractError("unsupported finite opening-frame rule for the selected wood recipe revision")
         if self.panel_partition_rule != "rectangular_grid_partition_subtract_openings_v1":
             raise ContractError("unsupported finite panel-partition rule")
         if not isinstance(self.drywall_faces, tuple) or self.drywall_faces != ("left", "right"):
@@ -189,8 +198,10 @@ class WallPreset:
         parameter_ids = tuple(item.parameter_id for item in self.parameters)
         if len(parameter_ids) != len(set(parameter_ids)):
             raise ContractError("WallPreset parameter IDs must be unique")
-        if parameter_ids != WALL_PARAMETER_IDS:
-            raise ContractError("WallPreset parameter set must exactly match the finite v1 wall recipe")
+        expected_parameters = (LEGACY_WALL_PARAMETER_IDS if self.generator_kind == "wood_rect_stock_v1"
+                               else WALL_PARAMETER_IDS)
+        if parameter_ids != expected_parameters:
+            raise ContractError("WallPreset parameter set must exactly match its finite recipe version")
         values = {item.parameter_id: item.default_value for item in self.parameters}
         if values["wall.stud.start_offset_m"] < values["wall.stock.wall_axis_width_m"] / 2:
             raise ContractError("wall preset start offset must keep the full default stud section inside the host")
@@ -236,7 +247,7 @@ class WallPreset:
         return cls(**values)
 
 
-WALL_PARAMETER_IDS = (
+LEGACY_WALL_PARAMETER_IDS = (
     "wall.stud.spacing_m",
     "wall.stud.start_offset_m",
     "wall.stud.end_offset_m",
@@ -251,6 +262,15 @@ WALL_PARAMETER_IDS = (
     "wall.drywall.thickness_m",
     "wall.stack.face_left.layer_1_m",
     "wall.stack.face_right.layer_1_m",
+)
+
+# v2 deliberately has no automatic header-size parameter.  Each source opening
+# needs an explicitly selected, typed opening-framing specification at build
+# time; the old v1 single-header-height setting survives only as reserved
+# historical catalog content.
+WALL_PARAMETER_IDS = tuple(
+    parameter_id for parameter_id in LEGACY_WALL_PARAMETER_IDS
+    if parameter_id != "wall.opening.header_height_m"
 )
 
 
@@ -361,9 +381,9 @@ def _wall_parameter(
     )
 
 
-DEFAULT_PRESET_CATALOG = BuildingAssemblyPresetCatalog(
+LEGACY_PRESET_CATALOG = BuildingAssemblyPresetCatalog(
     catalog_id=CATALOG_ID,
-    catalog_revision=CATALOG_REVISION,
+    catalog_revision=LEGACY_CATALOG_REVISION,
     catalog_version="1",
     sources=(
         CatalogSource(
@@ -384,7 +404,7 @@ DEFAULT_PRESET_CATALOG = BuildingAssemblyPresetCatalog(
     wall_presets=(
         WallPreset(
             preset_id=WOOD_WALL_PRESET_ID,
-            preset_revision=WOOD_WALL_PRESET_REVISION,
+            preset_revision=LEGACY_WOOD_WALL_PRESET_REVISION,
             assembly_kind="wall",
             generator_kind="wood_rect_stock_v1",
             structural_status="illustrative_nonstructural_modeling_only",
@@ -413,10 +433,33 @@ DEFAULT_PRESET_CATALOG = BuildingAssemblyPresetCatalog(
     ),
 )
 
+_legacy_wall_preset = LEGACY_PRESET_CATALOG.wall_presets[0]
+_v2_wall_preset = replace(
+    _legacy_wall_preset,
+    preset_revision=WOOD_WALL_PRESET_REVISION,
+    generator_kind="wood_rect_stock_v2",
+    stud_layout_rule="regular_centers_with_explicit_end_stations_and_opening_frame_clearance_v2",
+    opening_frame_rule="king_jack_header_plies_sill_and_cripples_v2",
+    parameters=tuple(
+        parameter for parameter in _legacy_wall_preset.parameters
+        if parameter.parameter_id != "wall.opening.header_height_m"
+    ),
+)
+DEFAULT_PRESET_CATALOG = BuildingAssemblyPresetCatalog(
+    catalog_id=CATALOG_ID,
+    catalog_revision=CATALOG_REVISION,
+    catalog_version="1",
+    sources=LEGACY_PRESET_CATALOG.sources,
+    wall_presets=(_v2_wall_preset,),
+)
+
 
 __all__ = [
     "CATALOG_ID", "CATALOG_REVISION", "WOOD_WALL_PRESET_ID",
     "WOOD_WALL_PRESET_REVISION", "WALL_GENERATOR_VERSION",
+    "LEGACY_CATALOG_REVISION", "LEGACY_WOOD_WALL_PRESET_REVISION",
+    "LEGACY_WALL_GENERATOR_VERSION", "LEGACY_WALL_PARAMETER_IDS",
+    "LEGACY_PRESET_CATALOG",
     "CatalogSource", "ParameterDefinition", "WallPreset",
     "BuildingAssemblyPresetCatalog", "DEFAULT_PRESET_CATALOG",
 ]

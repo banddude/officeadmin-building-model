@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import heapq
+import json
 import math
 from dataclasses import dataclass
 from typing import Iterable
@@ -30,6 +32,12 @@ _KEEP_OUT_TYPES = {"keep-out", "keepout", "no-go", "nogo", "forbidden"}
 _REQUIRED_TYPES = {"required-corridor", "required", "must-pass", "must-use"}
 _PREFERRED_TYPES = {"preferred-corridor", "preferred", "corridor"}
 _AVOID_TYPES = {"avoid", "soft-avoid", "discouraged"}
+_MAX_ALLOWED_DOMAIN_VOLUMES = 128
+_MAX_ALLOWED_DOMAIN_REMAINDERS = 4096
+_MAX_ALLOWED_DOMAIN_GRID_NODES = 200_000
+_MAX_ALLOWED_DOMAIN_SEARCH_STATES = 500_000
+_MAX_RECORDED_BLOCKER_IDS = 256
+_ALLOWED_DOMAIN_ALIGNMENT_EPSILON_M = 1e-9
 
 
 class RoutingError(ValueError):
@@ -38,6 +46,20 @@ class RoutingError(ValueError):
 
 class NoRouteError(RoutingError):
     """Raised when the canonical geometry admits no route under the limits."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str | None = None,
+        blocker_ids: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.reason = reason
+        # In a bounded-domain search, these are hard blockers encountered on
+        # rejected candidate edges, not a minimal cut set or an engineering
+        # diagnosis.
+        self.blocker_ids = tuple(sorted(set(blocker_ids)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +137,55 @@ class BundleHints:
 
 
 @dataclass(frozen=True, slots=True)
+class AllowedRouteDomain:
+    """Caller-supplied union of finite volumes that a route must stay inside.
+
+    This is a route-request constraint, not a physical building entity. A
+    future canonical assembly can adapt its explicitly generated free-space
+    volumes to this input. The router accepts only axis-aligned ``Box3D``
+    volumes in the first bounded implementation and records the exact request
+    in route provenance.
+    """
+
+    id: str
+    kind: str
+    volumes: tuple[Box3D, ...]
+    source_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not self.id.strip():
+            raise RoutingError("allowed route domain id must be a nonempty string")
+        if len(self.id) > 128:
+            raise RoutingError("allowed route domain id exceeds 128 characters")
+        if not isinstance(self.kind, str) or not self.kind.strip():
+            raise RoutingError("allowed route domain kind must be a nonempty string")
+        if not isinstance(self.volumes, tuple) or not self.volumes:
+            raise RoutingError("allowed route domain volumes must be a nonempty tuple")
+        if len(self.volumes) > _MAX_ALLOWED_DOMAIN_VOLUMES:
+            raise RoutingError(
+                "allowed route domain exceeds the limit of "
+                f"{_MAX_ALLOWED_DOMAIN_VOLUMES} boxes"
+            )
+        if any(not isinstance(volume, Box3D) for volume in self.volumes):
+            raise RoutingError("allowed route domain volumes must be Box3D values")
+        if not isinstance(self.source_ids, tuple) or any(
+            not isinstance(item, str) or not item.strip() for item in self.source_ids
+        ):
+            raise RoutingError("allowed route domain source_ids must be nonempty strings")
+        if len(self.source_ids) > _MAX_ALLOWED_DOMAIN_VOLUMES:
+            raise RoutingError(
+                "allowed route domain exceeds the limit of "
+                f"{_MAX_ALLOWED_DOMAIN_VOLUMES} source ids"
+            )
+        # A canonical ordering makes the provenance receipt independent of the
+        # caller's tuple ordering. No boxes are merged or otherwise rewritten.
+        ordered_volumes = tuple(sorted(self.volumes, key=_allowed_box_sort_key))
+        ordered_sources = tuple(sorted(set(self.source_ids)))
+        object.__setattr__(self, "volumes", ordered_volumes)
+        object.__setattr__(self, "source_ids", ordered_sources)
+
+
+@dataclass(frozen=True, slots=True)
 class _Bounds:
     min_x: float
     min_y: float
@@ -148,6 +219,7 @@ class _Rule:
     bounds: _Bounds
     geometry: Box3D | Polyline3D | Polygon3D | None = None
     tolerance_m: float = 0.0
+    source_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +231,18 @@ class _RoutingGeometry:
     surfaces: tuple[_Rule, ...]
     glazed: tuple[_Rule, ...] = ()
     bundle: _BundleIndex | None = None
+    allowed_domain: _AllowedDomainIndex | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _AllowedDomainIndex:
+    request: AllowedRouteDomain
+    volumes: tuple[_Bounds, ...]
+    route_radius_m: float
+    clearance_m: float
+    sweep_padding_m: float
+    containment_epsilon_m: float
+    axis_alignment_epsilon_m: float
 
 
 # For an axis key, the two fixed coordinates in x, y, z order.
@@ -264,6 +348,7 @@ def route_between_ports(
     nominal_diameter_m: float | None = None,
     options: RoutingOptions | None = None,
     bundle_hints: BundleHints | None = None,
+    allowed_domain: AllowedRouteDomain | None = None,
 ) -> tuple[Route, tuple[RouteFitting, ...]]:
     """Route one canonical port-to-port connection deterministically.
 
@@ -274,11 +359,18 @@ def route_between_ports(
     ``bundle_hints`` is optional caller input: earlier runs a new route may
     follow at reduced cost. It never changes route identity or provenance and
     is not persisted.
+
+    ``allowed_domain`` is an optional caller-supplied union of finite routing
+    volumes. When supplied, the whole swept route (including both port stubs)
+    must fit inside that union as well as avoid modeled hard geometry. It is a
+    route constraint, not a physical object, and is preserved in provenance.
     """
 
     if not route_type:
         raise RoutingError("route_type is required")
     options = options or RoutingOptions()
+    if allowed_domain is not None and not isinstance(allowed_domain, AllowedRouteDomain):
+        raise RoutingError("allowed_domain must be an AllowedRouteDomain value")
     ports = {port.id: port for port in model.ports}
     try:
         start_port = ports[start_port_id]
@@ -293,8 +385,15 @@ def route_between_ports(
         )
 
     diameter = _resolve_diameter(start_port, end_port, nominal_diameter_m)
+    if allowed_domain is not None and diameter is None:
+        raise RoutingError(
+            "allowed route domain requires a known positive nominal diameter "
+            "from nominal_diameter_m or port data"
+        )
     route_radius = (diameter or 0.0) / 2.0
-    geometry = _collect_routing_geometry(model, route_type, route_radius, options)
+    geometry = _collect_routing_geometry(
+        model, route_type, route_radius, options, allowed_domain=allowed_domain,
+    )
     type_mismatch = bundle_hints is not None and bundle_hints.route_type is not None and bundle_hints.route_type != route_type
     bundle = _bundle_index(None if type_mismatch else bundle_hints, options.coordinate_precision)
     if bundle is not None:
@@ -307,11 +406,64 @@ def route_between_ports(
     start_anchor = _offset(start, start_dir, options.port_stub_m)
     end_anchor = _offset(end, end_dir, options.port_stub_m)
 
-    if _point_blocked(start, geometry.hard_blockers) or _point_blocked(end, geometry.hard_blockers):
+    if geometry.allowed_domain is not None:
+        domain_id = geometry.allowed_domain.request.id
+        if not _point_within_allowed_domain(start, geometry.allowed_domain):
+            raise NoRouteError(
+                f"start port lies outside allowed route domain {domain_id!r}",
+                reason="start_outside_allowed_domain",
+            )
+        if not _point_within_allowed_domain(end, geometry.allowed_domain):
+            raise NoRouteError(
+                f"end port lies outside allowed route domain {domain_id!r}",
+                reason="end_outside_allowed_domain",
+            )
+        if not _segment_within_allowed_domain(start, start_anchor, geometry.allowed_domain):
+            raise NoRouteError(
+                f"start port stub leaves allowed route domain {domain_id!r}",
+                reason="start_stub_outside_allowed_domain",
+            )
+        if not _segment_within_allowed_domain(end_anchor, end, geometry.allowed_domain):
+            raise NoRouteError(
+                f"end port stub leaves allowed route domain {domain_id!r}",
+                reason="end_stub_outside_allowed_domain",
+            )
+
+    start_endpoint_blockers = tuple(
+        rule.id for rule in geometry.hard_blockers if _rule_contains_point(start, rule)
+    )
+    end_endpoint_blockers = tuple(
+        rule.id for rule in geometry.hard_blockers if _rule_contains_point(end, rule)
+    )
+    if start_endpoint_blockers or end_endpoint_blockers:
+        if geometry.allowed_domain is not None:
+            if start_endpoint_blockers:
+                raise NoRouteError(
+                    "a route endpoint lies inside hard obstacle/no-go geometry",
+                    reason="start_endpoint_inside_hard_blocker",
+                    blocker_ids=start_endpoint_blockers,
+                )
+            raise NoRouteError(
+                "a route endpoint lies inside hard obstacle/no-go geometry",
+                reason="end_endpoint_inside_hard_blocker",
+                blocker_ids=end_endpoint_blockers,
+            )
         raise NoRouteError("a route endpoint lies inside hard obstacle/no-go geometry")
     if not _segment_clear(start, start_anchor, geometry.hard_blockers):
+        if geometry.allowed_domain is not None:
+            raise NoRouteError(
+                "start port direction stub intersects hard obstacle/no-go geometry",
+                reason="start_stub_intersects_hard_blocker",
+                blocker_ids=_segment_blocker_ids(start, start_anchor, geometry.hard_blockers),
+            )
         raise NoRouteError("start port direction stub intersects hard obstacle/no-go geometry")
     if not _segment_clear(end_anchor, end, geometry.hard_blockers):
+        if geometry.allowed_domain is not None:
+            raise NoRouteError(
+                "end port direction stub intersects hard obstacle/no-go geometry",
+                reason="end_stub_intersects_hard_blocker",
+                blocker_ids=_segment_blocker_ids(end_anchor, end, geometry.hard_blockers),
+            )
         raise NoRouteError("end port direction stub intersects hard obstacle/no-go geometry")
 
     xs, ys, zs = _candidate_coordinates(
@@ -345,6 +497,15 @@ def route_between_ports(
         alignment = {"status": "unchanged", "reason": "route_type_mismatch"}
     elif bundle is not None and bundle_hints.route_type == route_type:
         points, alignment = _align_bundle_source(points,bundle,geometry,options,start_anchor,end_anchor)
+    if geometry.allowed_domain is not None and not _polyline_within_allowed_domain(
+        points, geometry.allowed_domain,
+    ):
+        # Search edges and any alignment proposal are checked. Retain this
+        # final guard so future path transforms cannot silently escape.
+        raise NoRouteError(
+            f"final route leaves allowed route domain {geometry.allowed_domain.request.id!r}",
+            reason="final_route_outside_allowed_domain",
+        )
     bend_count = _count_bends(points)
     if options.max_bends is not None and bend_count > options.max_bends:
         raise NoRouteError(
@@ -355,6 +516,21 @@ def route_between_ports(
         "route",
         f"{model.model_id}:{route_type}:{start_port_id}:{end_port_id}",
     )
+    router_attributes: dict[str, object] = {"route_type": route_type}
+    if geometry.allowed_domain is not None:
+        router_attributes["allowed_route_domain"] = _allowed_domain_receipt(
+            geometry.allowed_domain,
+        )
+        router_attributes["bounded_routing_context"] = _bounded_routing_context_receipt(
+            model,
+            start_port,
+            end_port,
+            route_type,
+            diameter,
+            options,
+            bundle_hints,
+            geometry.allowed_domain.request,
+        )
     provenance = (
         Provenance(
             source_kind="router",
@@ -366,7 +542,7 @@ def route_between_ports(
             # shows this centerline; we computed it. It stays inferred until
             # something in the source actually shows the run.
             derivation=DERIVATION_INFERRED,
-            attributes={"route_type": route_type},
+            attributes=router_attributes,
         ),
     )
     if alignment is not None and alignment["status"] == "aligned":
@@ -387,6 +563,22 @@ def route_between_ports(
         p = options.coordinate_precision
         attributes["bundle_hint_discount"] = float(bundle_hints.discount)
         attributes["bundle_hint_shared_m"] = round(_bundle_shared_m(points, bundle, p), p)
+    if geometry.allowed_domain is not None:
+        request = geometry.allowed_domain.request
+        attributes["allowed_route_domain"] = {
+            "id": request.id,
+            "kind": request.kind,
+            "containment": "swept-aabb-union-v1",
+            "volume_count": len(request.volumes),
+        }
+        attributes["geometry_check"] = {
+            **_checked_blocker_receipt(geometry),
+            "status": "contained_and_clear_of_checked_blockers",
+            "scope": "caller_allowed_volume_and_supported_hard_blocker_classes_only",
+            "envelope_scope": "nominal_radius_only; actual_outer_diameter_not_verified",
+            "revalidation": "generation_time_only; not_live_after_model_changes",
+            "code_review": "not_evaluated",
+        }
     if geometry.glazed:
         # Diagnostic, not an error: the route is valid, but each segment whose
         # midpoint remains inside a glazed wall's padded bounds is reported so
@@ -510,6 +702,11 @@ def _align_bundle_source(points, index, geometry, options, start_anchor, end_anc
         ):
             refusals.add("obstacle_clearance")
             continue
+        if geometry.allowed_domain is not None and not _polyline_within_allowed_domain(
+            proposal, geometry.allowed_domain,
+        ):
+            refusals.add("allowed_route_domain")
+            continue
         mask = 0
         for p, q in zip(proposal, proposal[1:]):
             mask = _required_mask(mask, p, q, geometry.required)
@@ -578,6 +775,7 @@ def _constraint_rule(constraint: RouteConstraint, tolerance_m: float) -> _Rule:
         _geometry_bounds(constraint.geometry).expanded(tolerance_m),
         constraint.geometry,
         tolerance_m,
+        "RouteConstraint",
     )
 
 
@@ -586,6 +784,8 @@ def _collect_routing_geometry(
     route_type: str,
     route_radius: float,
     options: RoutingOptions,
+    *,
+    allowed_domain: AllowedRouteDomain | None = None,
 ) -> _RoutingGeometry:
     hard: list[_Rule] = []
     soft: list[_Rule] = []
@@ -594,7 +794,11 @@ def _collect_routing_geometry(
 
     for obstacle in sorted(model.obstacles, key=lambda item: item.id):
         padding = obstacle.clearance_m + options.clearance_m + route_radius
-        rule = _Rule(obstacle.id, _geometry_bounds(obstacle.geometry).expanded(padding))
+        rule = _Rule(
+            obstacle.id,
+            _geometry_bounds(obstacle.geometry).expanded(padding),
+            source_type="Obstacle",
+        )
         if obstacle.obstacle_type.strip().lower() in {"soft", "advisory"}:
             soft.append(rule)
         else:
@@ -610,6 +814,7 @@ def _collect_routing_geometry(
         hard.append(_Rule(
             member.id,
             _Bounds(*bounds).expanded(options.clearance_m + route_radius),
+            source_type="StructuralMember",
         ))
 
     for constraint in sorted(model.route_constraints, key=lambda item: item.id):
@@ -653,6 +858,19 @@ def _collect_routing_geometry(
 
     surfaces: list[_Rule] = []
     glazed: list[_Rule] = []
+    allowed_domain_index = None
+    if allowed_domain is not None:
+        if not isinstance(allowed_domain, AllowedRouteDomain):
+            raise RoutingError("allowed_domain must be an AllowedRouteDomain value")
+        allowed_domain_index = _AllowedDomainIndex(
+            request=allowed_domain,
+            volumes=tuple(_axis_aligned_box_bounds(box) for box in allowed_domain.volumes),
+            route_radius_m=route_radius,
+            clearance_m=options.clearance_m,
+            sweep_padding_m=route_radius + options.clearance_m,
+            containment_epsilon_m=_EPS,
+            axis_alignment_epsilon_m=_ALLOWED_DOMAIN_ALIGNMENT_EPSILON_M,
+        )
     level_by_id = {level.id: level for level in model.levels}
     surface_pad = options.corridor_tolerance_m + route_radius
     for wall in sorted(model.walls, key=lambda item: item.id):
@@ -695,6 +913,7 @@ def _collect_routing_geometry(
         preferred=tuple(preferred),
         surfaces=tuple(surfaces),
         glazed=tuple(glazed),
+        allowed_domain=allowed_domain_index,
     )
 
 
@@ -710,6 +929,398 @@ def _geometry_bounds(geometry: Box3D | Polyline3D | Polygon3D) -> _Bounds:
                     corners.append(Point3(x=center.x + rx, y=center.y + ry, z=center.z + rz))
         return _bounds_from_points(corners)
     return _bounds_from_points(geometry.points)
+
+
+def _axis_aligned_box_bounds(box: Box3D) -> _Bounds:
+    """Cardinal-axis bounds, allowing only rounding-sized quarter-turn error.
+
+    Positional deviation is measured at all eight corners against the nearest
+    signed axis permutation. Accepted deviations fit inside the explicit
+    domain alignment epsilon, which is also honored by containment checks.
+    This avoids treating a genuinely rotated volume's wider AABB as allowed
+    free space.
+    """
+
+    rotation = box.pose.rotation
+    local_axes = (
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, 0.0, 1.0),
+    )
+    world_axis_for_local: list[int] = []
+    world_sign_for_local: list[float] = []
+    for axis in local_axes:
+        rotated = _rotate_vector(axis, rotation)
+        world_axis = max(range(3), key=lambda index: abs(rotated[index]))
+        if world_axis in world_axis_for_local:
+            raise RoutingError(
+                "allowed route domain boxes must be cardinally axis-aligned; "
+                "rotated volumes are unsupported"
+            )
+        world_axis_for_local.append(world_axis)
+        world_sign_for_local.append(1.0 if rotated[world_axis] >= 0 else -1.0)
+
+    local_half = (box.size.x / 2.0, box.size.y / 2.0, box.size.z / 2.0)
+    world_half = [0.0, 0.0, 0.0]
+    for local_axis, world_axis in enumerate(world_axis_for_local):
+        world_half[world_axis] = local_half[local_axis]
+
+    maximum_corner_error = 0.0
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                corner_signs = (sx, sy, sz)
+                actual = _rotate_vector(tuple(
+                    sign * half for sign, half in zip(corner_signs, local_half)
+                ), rotation)
+                ideal = [0.0, 0.0, 0.0]
+                for local_axis, world_axis in enumerate(world_axis_for_local):
+                    ideal[world_axis] = (
+                        corner_signs[local_axis]
+                        * local_half[local_axis]
+                        * world_sign_for_local[local_axis]
+                    )
+                error = math.sqrt(sum(
+                    (actual[index] - ideal[index]) ** 2 for index in range(3)
+                ))
+                maximum_corner_error = max(maximum_corner_error, error)
+
+    if maximum_corner_error > _ALLOWED_DOMAIN_ALIGNMENT_EPSILON_M:
+        raise RoutingError(
+            "allowed route domain boxes must be cardinally axis-aligned within "
+            f"{_ALLOWED_DOMAIN_ALIGNMENT_EPSILON_M:g} m positional error; "
+            "rotated volumes are unsupported"
+        )
+
+    center = box.pose.position
+    bounds = _Bounds(
+        center.x - world_half[0], center.y - world_half[1], center.z - world_half[2],
+        center.x + world_half[0], center.y + world_half[1], center.z + world_half[2],
+    )
+    if not all(math.isfinite(value) for value in dataclasses.astuple(bounds)):
+        raise RoutingError("allowed route domain world bounds must be finite")
+    return bounds
+
+
+def _allowed_box_sort_key(box: Box3D) -> tuple[float, ...]:
+    bounds = _axis_aligned_box_bounds(box)
+    center = box.pose.position
+    rotation = box.pose.rotation
+    return (
+        bounds.min_x, bounds.min_y, bounds.min_z,
+        bounds.max_x, bounds.max_y, bounds.max_z,
+        center.x, center.y, center.z,
+        rotation.x, rotation.y, rotation.z, rotation.w,
+        box.size.x, box.size.y, box.size.z,
+    )
+
+
+def _allowed_domain_receipt(domain: _AllowedDomainIndex) -> dict[str, object]:
+    """JSON-safe exact caller receipt; do not replace boxes with broad-phase bounds."""
+
+    request = domain.request
+    return {
+        **_allowed_route_domain_request(request),
+        "geometry_scope": "caller_volume_containment_only; not physical assembly or code approval",
+        "route_radius_m": domain.route_radius_m,
+        "clearance_m": domain.clearance_m,
+        "sweep_padding_m": domain.sweep_padding_m,
+        "containment_epsilon_m": domain.containment_epsilon_m,
+        "axis_alignment_epsilon_m": domain.axis_alignment_epsilon_m,
+        "envelope_scope": "nominal_radius_only; actual_outer_diameter_not_verified",
+    }
+
+
+def _allowed_route_domain_request(
+    request: AllowedRouteDomain | None,
+) -> dict[str, object] | None:
+    """Normalized caller request, suitable for user-decision idempotence."""
+
+    if request is None:
+        return None
+    if not isinstance(request, AllowedRouteDomain):
+        raise RoutingError("allowed_domain must be an AllowedRouteDomain value")
+    return {
+        "id": request.id,
+        "kind": request.kind,
+        "source_ids": list(request.source_ids),
+        "containment": "swept-aabb-union-v1",
+        "volumes": [
+            {
+                "pose": {
+                    "position": {
+                        "x": box.pose.position.x,
+                        "y": box.pose.position.y,
+                        "z": box.pose.position.z,
+                    },
+                    "rotation": {
+                        "x": box.pose.rotation.x,
+                        "y": box.pose.rotation.y,
+                        "z": box.pose.rotation.z,
+                        "w": box.pose.rotation.w,
+                    },
+                },
+                "size": {"x": box.size.x, "y": box.size.y, "z": box.size.z},
+            }
+            for box in request.volumes
+        ],
+    }
+
+
+def _bounded_routing_context_receipt(
+    model: BuildingModel,
+    start_port: Port,
+    end_port: Port,
+    route_type: str,
+    nominal_diameter_m: float | None,
+    options: RoutingOptions,
+    bundle_hints: BundleHints | None,
+    allowed_domain: AllowedRouteDomain,
+) -> dict[str, object]:
+    """Fingerprint every model/request input used to compute a bounded route.
+
+    This receipt lets explicit design idempotence fail closed when its bounded
+    routing context changes. It intentionally excludes unrelated model
+    collections which the router does not read.
+    """
+
+    def rows(items) -> list[dict[str, object]]:
+        return [dataclasses.asdict(item) for item in sorted(items, key=lambda item: item.id)]
+
+    def json_compatible(value):
+        if isinstance(value, dict):
+            return {key: json_compatible(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [json_compatible(item) for item in value]
+        return value
+
+    options_data = json_compatible(dataclasses.asdict(options))
+    bundle_data = json_compatible(dataclasses.asdict(bundle_hints)) if bundle_hints is not None else None
+
+    routing_geometry = {
+        "coordinate_system": dataclasses.asdict(model.coordinate_system),
+        "levels": rows(model.levels),
+        "walls": rows(model.walls),
+        "ceilings": rows(model.ceilings),
+        "obstacles": rows(model.obstacles),
+        "structural_members": rows(model.structural_members),
+        "active_route_constraints": rows(
+            item for item in model.route_constraints if _applies(item, route_type)
+        ),
+    }
+    payload = {
+        "version": "bounded-routing-context-v1",
+        "model_id": model.model_id,
+        "start_port": dataclasses.asdict(start_port),
+        "end_port": dataclasses.asdict(end_port),
+        "route_type": route_type,
+        "nominal_diameter_m": nominal_diameter_m,
+        "routing_options": options_data,
+        "bundle_hints": bundle_data,
+        "allowed_route_domain": _allowed_route_domain_request(allowed_domain),
+        "routing_geometry": routing_geometry,
+    }
+    canonical_payload = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return {
+        "version": "bounded-routing-context-v1",
+        "sha256": hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest(),
+        "model_id": model.model_id,
+        "route_type": route_type,
+        "start_port_id": start_port.id,
+        "end_port_id": end_port.id,
+        "nominal_diameter_m": nominal_diameter_m,
+        "routing_options": options_data,
+        "bundle_hints": bundle_data,
+        "allowed_route_domain": _allowed_route_domain_request(allowed_domain),
+        "routing_geometry_counts": {
+            "levels": len(model.levels),
+            "walls": len(model.walls),
+            "ceilings": len(model.ceilings),
+            "obstacles": len(model.obstacles),
+            "structural_members": len(model.structural_members),
+            "active_route_constraints": sum(
+                _applies(item, route_type) for item in model.route_constraints
+            ),
+        },
+    }
+
+
+def _checked_blocker_receipt(geometry: _RoutingGeometry) -> dict[str, object]:
+    ids = tuple(sorted({item.id for item in geometry.hard_blockers}))
+    return {
+        "checked_blocker_classes": sorted({
+            item.source_type for item in geometry.hard_blockers
+            if item.source_type is not None
+        }),
+        "checked_blocker_ids": list(ids[:_MAX_RECORDED_BLOCKER_IDS]),
+        "checked_blocker_count": len(ids),
+        "checked_blocker_ids_truncated": len(ids) > _MAX_RECORDED_BLOCKER_IDS,
+        "limitations": [
+            "Wall and ceiling geometry is a pathway preference, not a hard collision check.",
+            "Slabs and architectural openings are not checked as route blockers.",
+            "The caller volume does not authorize a structural penetration.",
+            "Code compliance and installation engineering were not evaluated.",
+        ],
+    }
+
+
+def _swept_bounds(a: Point3, b: Point3, padding_m: float) -> _Bounds:
+    return _Bounds(
+        min(a.x, b.x) - padding_m,
+        min(a.y, b.y) - padding_m,
+        min(a.z, b.z) - padding_m,
+        max(a.x, b.x) + padding_m,
+        max(a.y, b.y) + padding_m,
+        max(a.z, b.z) + padding_m,
+    )
+
+
+def _bounds_contains(outer: _Bounds, inner: _Bounds) -> bool:
+    return (
+        inner.min_x >= outer.min_x - _EPS
+        and inner.min_y >= outer.min_y - _EPS
+        and inner.min_z >= outer.min_z - _EPS
+        and inner.max_x <= outer.max_x + _EPS
+        and inner.max_y <= outer.max_y + _EPS
+        and inner.max_z <= outer.max_z + _EPS
+    )
+
+
+def _bounds_intersection(left: _Bounds, right: _Bounds) -> _Bounds | None:
+    minimum = (
+        max(left.min_x, right.min_x),
+        max(left.min_y, right.min_y),
+        max(left.min_z, right.min_z),
+    )
+    maximum = (
+        min(left.max_x, right.max_x),
+        min(left.max_y, right.max_y),
+        min(left.max_z, right.max_z),
+    )
+    if any(low > high + _EPS for low, high in zip(minimum, maximum)):
+        return None
+    # Normalize sub-nanometre roundoff to a closed, zero-width interval.
+    maximum = tuple(max(low, high) for low, high in zip(minimum, maximum))
+    return _Bounds(*minimum, *maximum)
+
+
+def _subtract_bounds(source: _Bounds, cutter: _Bounds) -> tuple[_Bounds, ...]:
+    """Return nonoverlapping AABBs for ``source`` minus ``cutter``."""
+
+    intersection = _bounds_intersection(source, cutter)
+    if intersection is None:
+        return (source,)
+    if _bounds_contains(cutter, source):
+        return ()
+    source_spans = (
+        source.max_x - source.min_x,
+        source.max_y - source.min_y,
+        source.max_z - source.min_z,
+    )
+    intersection_spans = (
+        intersection.max_x - intersection.min_x,
+        intersection.max_y - intersection.min_y,
+        intersection.max_z - intersection.min_z,
+    )
+    # A face-only intersection cannot cover any positive-volume part of the
+    # swept box. (Degenerate route sweeps are epsilon-padded before this call.)
+    if any(
+        source_span > _EPS and intersection_span <= _EPS
+        for source_span, intersection_span in zip(source_spans, intersection_spans)
+    ):
+        return (source,)
+
+    pieces: list[_Bounds] = []
+
+    def add(min_x, min_y, min_z, max_x, max_y, max_z) -> None:
+        if max_x < min_x - _EPS or max_y < min_y - _EPS or max_z < min_z - _EPS:
+            return
+        pieces.append(_Bounds(
+            min_x, min_y, min_z,
+            max(min_x, max_x), max(min_y, max_y), max(min_z, max_z),
+        ))
+
+    # Peel disjoint x, then y, then z slabs. This partitions only the part not
+    # covered by the current box and preserves the closed union at seams.
+    if source.min_x < intersection.min_x - _EPS:
+        add(source.min_x, source.min_y, source.min_z,
+            intersection.min_x, source.max_y, source.max_z)
+    if intersection.max_x < source.max_x - _EPS:
+        add(intersection.max_x, source.min_y, source.min_z,
+            source.max_x, source.max_y, source.max_z)
+    if source.min_y < intersection.min_y - _EPS:
+        add(intersection.min_x, source.min_y, source.min_z,
+            intersection.max_x, intersection.min_y, source.max_z)
+    if intersection.max_y < source.max_y - _EPS:
+        add(intersection.min_x, intersection.max_y, source.min_z,
+            intersection.max_x, source.max_y, source.max_z)
+    if source.min_z < intersection.min_z - _EPS:
+        add(intersection.min_x, intersection.min_y, source.min_z,
+            intersection.max_x, intersection.max_y, intersection.min_z)
+    if intersection.max_z < source.max_z - _EPS:
+        add(intersection.min_x, intersection.min_y, intersection.max_z,
+            intersection.max_x, intersection.max_y, source.max_z)
+    return tuple(pieces)
+
+
+def _bounds_covered_by_union(
+    target: _Bounds,
+    volumes: tuple[_Bounds, ...],
+) -> bool:
+    """Exact deterministic AABB-union coverage with a bounded remainder set."""
+
+    if any(_bounds_contains(volume, target) for volume in volumes):
+        return True
+    uncovered = [target]
+    for volume in volumes:
+        next_uncovered: list[_Bounds] = []
+        for item in uncovered:
+            next_uncovered.extend(_subtract_bounds(item, volume))
+            if len(next_uncovered) > _MAX_ALLOWED_DOMAIN_REMAINDERS:
+                raise RoutingError(
+                    "allowed route domain coverage exceeded the bounded "
+                    f"remainder limit ({_MAX_ALLOWED_DOMAIN_REMAINDERS})"
+                )
+        uncovered = next_uncovered
+        if not uncovered:
+            return True
+    return False
+
+
+def _point_within_allowed_domain(
+    point: Point3,
+    domain: _AllowedDomainIndex,
+) -> bool:
+    return _bounds_covered_by_union(
+        _swept_bounds(point, point, domain.sweep_padding_m), domain.volumes,
+    )
+
+
+def _segment_within_allowed_domain(
+    start: Point3,
+    end: Point3,
+    domain: _AllowedDomainIndex,
+) -> bool:
+    return _bounds_covered_by_union(
+        _swept_bounds(start, end, domain.sweep_padding_m), domain.volumes,
+    )
+
+
+def _polyline_within_allowed_domain(
+    points: Iterable[Point3],
+    domain: _AllowedDomainIndex,
+) -> bool:
+    points = tuple(points)
+    return all(
+        _segment_within_allowed_domain(start, end, domain)
+        for start, end in zip(points, points[1:])
+    )
 
 
 def _rotate_vector(vector: tuple[float, float, float], quaternion) -> tuple[float, float, float]:
@@ -787,6 +1398,25 @@ def _candidate_coordinates(
         if level.height_m is not None:
             zs.add(_canon(level.elevation_m + level.height_m, p))
 
+    if geometry.allowed_domain is not None:
+        padding = geometry.allowed_domain.sweep_padding_m
+        for bounds in geometry.allowed_domain.volumes:
+            for coordinates, low, high in (
+                (xs, bounds.min_x, bounds.max_x),
+                (ys, bounds.min_y, bounds.max_y),
+                (zs, bounds.min_z, bounds.max_z),
+            ):
+                coordinates.update({
+                    _canon(low, p),
+                    _canon(high, p),
+                    _canon((low + high) / 2, p),
+                })
+                if low + padding <= high - padding:
+                    coordinates.update({
+                        _canon(low + padding, p),
+                        _canon(high - padding, p),
+                    })
+
     if geometry.bundle is not None:
         # Bundle vertices are already canonical; they open lattice lines along
         # hinted trunks so the search can reach them.
@@ -798,7 +1428,16 @@ def _candidate_coordinates(
     xs.update({_canon(min(xs) - options.search_margin_m, p), _canon(max(xs) + options.search_margin_m, p)})
     ys.update({_canon(min(ys) - options.search_margin_m, p), _canon(max(ys) + options.search_margin_m, p)})
     zs.update({_canon(min(zs) - options.search_margin_m, p), _canon(max(zs) + options.search_margin_m, p)})
-    return tuple(sorted(xs)), tuple(sorted(ys)), tuple(sorted(zs))
+    sorted_xs, sorted_ys, sorted_zs = tuple(sorted(xs)), tuple(sorted(ys)), tuple(sorted(zs))
+    if (
+        geometry.allowed_domain is not None
+        and len(sorted_xs) * len(sorted_ys) * len(sorted_zs) > _MAX_ALLOWED_DOMAIN_GRID_NODES
+    ):
+        raise RoutingError(
+            "allowed route domain candidate grid exceeds the bounded "
+            f"node limit ({_MAX_ALLOWED_DOMAIN_GRID_NODES})"
+        )
+    return sorted_xs, sorted_ys, sorted_zs
 
 
 def _node_for_point(
@@ -850,10 +1489,12 @@ def _search(
     ] = {}
     heap: list[tuple[float, int, int, int, int, int, int, tuple[tuple[int, int, int], int, int, int]]] = []
     _push(heap, initial_cost, start_state)
+    pushed_states = 1
 
     full_required_mask = (1 << len(geometry.required)) - 1
     best_goal_cost = math.inf
     best_goal_state = None
+    considered_blockers: set[str] = set()
 
     while heap:
         cost, _, _, _, _, _, _, state = heapq.heappop(heap)
@@ -892,9 +1533,23 @@ def _search(
 
         for next_node, direction_code in _neighbors(node, xs, ys, zs):
             next_point = _point_for(next_node, xs, ys, zs)
+            if (
+                geometry.allowed_domain is not None
+                and not _segment_within_allowed_domain(point, next_point, geometry.allowed_domain)
+            ):
+                continue
             if _point_blocked(next_point, geometry.hard_blockers):
+                if geometry.allowed_domain is not None:
+                    considered_blockers.update(
+                        item.id for item in geometry.hard_blockers
+                        if _rule_contains_point(next_point, item)
+                    )
                 continue
             if not _segment_clear(point, next_point, geometry.hard_blockers):
+                if geometry.allowed_domain is not None:
+                    considered_blockers.update(
+                        _segment_blocker_ids(point, next_point, geometry.hard_blockers)
+                    )
                 continue
             if prev_code == -2:
                 prior_vector = start_vector
@@ -914,17 +1569,38 @@ def _search(
             next_state = (next_node, direction_code, next_bends, next_mask)
             old_cost = best.get(next_state)
             if old_cost is None or next_cost < old_cost - 1e-12:
+                if (
+                    geometry.allowed_domain is not None
+                    and pushed_states >= _MAX_ALLOWED_DOMAIN_SEARCH_STATES
+                ):
+                    raise RoutingError(
+                        "allowed route domain search exceeded the bounded "
+                        f"state limit ({_MAX_ALLOWED_DOMAIN_SEARCH_STATES})"
+                    )
                 best[next_state] = next_cost
                 predecessor[next_state] = state
                 _push(heap, next_cost, next_state)
+                pushed_states += 1
 
     if best_goal_state is None:
         required_text = ""
         if geometry.required:
             required_text = "; required corridors=" + ",".join(item.id for item in geometry.required)
         bend_text = "unlimited" if options.max_bends is None else str(options.max_bends)
+        if geometry.allowed_domain is None:
+            raise NoRouteError(
+                f"no route from {start_node} to {end_node} under hard geometry and max_bends={bend_text}{required_text}"
+            )
+        blocker_text = (
+            "; considered hard blockers=" + ",".join(sorted(considered_blockers))
+            if considered_blockers else ""
+        )
         raise NoRouteError(
-            f"no route from {start_node} to {end_node} under hard geometry and max_bends={bend_text}{required_text}"
+            f"no route from {start_node} to {end_node} within allowed route domain "
+            f"{geometry.allowed_domain.request.id!r} under hard geometry and "
+            f"max_bends={bend_text}{required_text}{blocker_text}",
+            reason="no_path_within_allowed_domain",
+            blocker_ids=tuple(sorted(considered_blockers)),
         )
 
     states = [best_goal_state]
@@ -1019,6 +1695,18 @@ def _segment_clear(a: Point3, b: Point3, blockers: tuple[_Rule, ...]) -> bool:
     if _distance(a, b) <= _EPS:
         return not _point_blocked(a, blockers)
     return not any(_rule_intersects_segment(a, b, item) for item in blockers)
+
+
+def _segment_blocker_ids(
+    a: Point3,
+    b: Point3,
+    blockers: tuple[_Rule, ...],
+) -> tuple[str, ...]:
+    if _distance(a, b) <= _EPS:
+        return tuple(sorted(item.id for item in blockers if _rule_contains_point(a, item)))
+    return tuple(sorted(
+        item.id for item in blockers if _rule_intersects_segment(a, b, item)
+    ))
 
 
 def _point_in_bounds(point: Point3, bounds: _Bounds) -> bool:

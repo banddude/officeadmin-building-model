@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import hashlib
+import json
+from dataclasses import asdict, dataclass, replace
 
 from oabm.model import (
     DERIVATION_INFERRED, DERIVATION_USER, BuildingModel, Circuit, Conductor,
@@ -13,7 +15,10 @@ from .placement import (
     EquipmentPlacementProposal, PlacementError, apply_equipment_proposal,
     propose_equipment_placement,
 )
-from .router import RoutingOptions, route_between_ports
+from .router import (
+    AllowedRouteDomain, RoutingOptions, _allowed_route_domain_request,
+    _bounded_routing_context_receipt, route_between_ports,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +104,117 @@ def _design_device_ids(metadata: dict[str, object], circuit_id: str) -> tuple[st
     return tuple(device_ids)
 
 
+def _bounded_route_result_sha256(route, fittings) -> str:
+    payload = {
+        "route": asdict(route),
+        "fittings": [asdict(item) for item in sorted(fittings, key=lambda item: item.id)],
+    }
+    canonical = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _bounded_reuse_contexts_match(
+    model: BuildingModel,
+    *,
+    equipment_id: str,
+    source_port_id: str | None,
+    load_port_ids: dict[str, str] | None,
+    groups: tuple[tuple[str, ...], ...],
+    circuits: tuple[Circuit, ...],
+    design_metadata: dict[str, dict[str, object]],
+    rules: CircuitDesignRules,
+    routing_options: RoutingOptions | None,
+    allowed_domain: AllowedRouteDomain,
+) -> bool:
+    """Fail closed if a bounded user decision's route inputs/results changed."""
+
+    ports_by_id = {port.id: port for port in model.ports}
+    if source_port_id is None:
+        source = next((port for port in model.ports if (
+            port.owner_id == equipment_id and port.role == "source"
+        )), None)
+        if source is None:
+            return False
+        requested_source_id = source.id
+    else:
+        requested_source_id = source_port_id
+    if requested_source_id not in ports_by_id:
+        return False
+
+    if load_port_ids is not None:
+        requested_load_ids = dict(load_port_ids)
+    else:
+        requested_load_ids = {
+            port.owner_id: port.id for port in model.ports if port.role == "load"
+        }
+    routes_by_id = {route.id: route for route in model.routes}
+    fittings_by_route: dict[str, list] = {}
+    for fitting in model.route_fittings:
+        fittings_by_route.setdefault(fitting.route_id, []).append(fitting)
+    effective_options = routing_options or RoutingOptions()
+
+    ordered_circuits = tuple(sorted(
+        circuits, key=lambda circuit: int(circuit.circuit_number or 0),
+    ))
+    if len(ordered_circuits) != len(groups):
+        return False
+    for circuit, group in zip(ordered_circuits, groups):
+        expected_load_sequence = tuple(requested_load_ids.get(item) for item in group)
+        if (
+            any(identity is None for identity in expected_load_sequence)
+            or circuit.source_port_id != requested_source_id
+            or circuit.load_port_ids != expected_load_sequence
+        ):
+            return False
+        saved_contexts = design_metadata.get(circuit.id, {}).get("bounded_routing_contexts")
+        if (
+            not isinstance(saved_contexts, list)
+            or len(saved_contexts) != len(group)
+            or len(circuit.route_ids) != len(group)
+        ):
+            return False
+        expected_start_id = requested_source_id
+        for index, device_id in enumerate(group):
+            expected_end_id = requested_load_ids.get(device_id)
+            start_port = ports_by_id.get(expected_start_id)
+            end_port = ports_by_id.get(expected_end_id) if expected_end_id else None
+            route = routes_by_id.get(circuit.route_ids[index])
+            saved = saved_contexts[index]
+            if (
+                start_port is None or end_port is None or route is None
+                or not isinstance(saved, dict)
+                or route.start_port_id != expected_start_id
+                or route.end_port_id != expected_end_id
+            ):
+                return False
+            expected_context = _bounded_routing_context_receipt(
+                model,
+                start_port,
+                end_port,
+                rules.route_type,
+                rules.nominal_diameter_m,
+                effective_options,
+                None,
+                allowed_domain,
+            )
+            router_context = next((item.attributes.get("bounded_routing_context")
+                for item in route.provenance
+                if item.source_kind == "router"), None)
+            if (
+                saved.get("routing_context") != expected_context
+                or router_context != expected_context
+                or saved.get("route_result_sha256") != _bounded_route_result_sha256(
+                    route, fittings_by_route.get(route.id, ()),
+                )
+            ):
+                return False
+            expected_start_id = expected_end_id
+    return True
+
+
 def propose_architectural_electrical_design(
     model: BuildingModel, *, rules: CircuitDesignRules | None = None,
 ) -> tuple[BuildingModel, tuple[EquipmentPlacementProposal, ...]]:
@@ -163,6 +279,7 @@ def design_proposed_circuits(
     source_port_id: str | None = None,
     load_port_ids: dict[str, str] | None = None,
     routing_options: RoutingOptions | None = None,
+    allowed_domain: AllowedRouteDomain | None = None,
 ) -> BuildingModel:
     """Design or replace circuits and runs; never claim source observation.
 
@@ -263,12 +380,40 @@ def design_proposed_circuits(
             _design_device_ids(prior_designs[item.id], item.id)
             for item in sorted(reused_decisions, key=lambda circuit: int(circuit.circuit_number or 0))
         )
-        if (len(reused_decisions) == len(prior)
-                and prior_groups == groups
-                and all(prior_designs[item.id].get("rules") == rules.to_dict()
-                        for item in reused_decisions)):
-            return model
-        raise PlacementError("one user_input_id cannot describe conflicting circuit groups")
+        requested_domain = _allowed_route_domain_request(allowed_domain)
+        saved_domains = tuple(
+            prior_designs[item.id].get("allowed_route_domain")
+            for item in sorted(reused_decisions, key=lambda circuit: int(circuit.circuit_number or 0))
+        )
+        decision_matches = (
+            len(reused_decisions) == len(prior)
+            and prior_groups == groups
+            and all(prior_designs[item.id].get("rules") == rules.to_dict()
+                    for item in reused_decisions)
+            and all(saved_domain == requested_domain for saved_domain in saved_domains)
+        )
+        if decision_matches:
+            if requested_domain is None:
+                # Preserve legacy unbounded idempotence exactly. Bounded reuse
+                # below additionally verifies the current routing context.
+                return model
+            if _bounded_reuse_contexts_match(
+                model,
+                equipment_id=equipment_id,
+                source_port_id=source_port_id,
+                load_port_ids=load_port_ids,
+                groups=groups,
+                circuits=reused_decisions,
+                design_metadata=prior_designs,
+                rules=rules,
+                routing_options=routing_options,
+                allowed_domain=allowed_domain,
+            ):
+                return model
+        raise PlacementError(
+            "one user_input_id cannot reuse conflicting circuit groups, rules, "
+            "allowed route domain, or bounded routing context"
+        )
     prior_ids = {item.id for item in prior}
     prior_route_ids = {route_id for item in prior for route_id in item.route_ids}
     if any(
@@ -351,12 +496,15 @@ def design_proposed_circuits(
     for number, group in enumerate(groups, start=1):
         circuit_id = stable_id("circuit", f"{equipment_id}:{','.join(sorted(group))}")
         route_ids: list[str] = []
+        bounded_contexts: list[dict[str, object]] = []
         previous_port_id = source_port.id
         for device_id in group:
             next_port_id = port_by_owner[device_id].id
             route, route_fittings = route_between_ports(
                 base, previous_port_id, next_port_id, rules.route_type,
-                nominal_diameter_m=rules.nominal_diameter_m, options=routing_options,
+                nominal_diameter_m=rules.nominal_diameter_m,
+                options=routing_options,
+                allowed_domain=allowed_domain,
             )
             if route.id in {item.id for item in routes}:
                 raise PlacementError("design route identity collides with another route")
@@ -364,11 +512,22 @@ def design_proposed_circuits(
                             attributes={**route.attributes, "design_status": "designed",
                                         "equipment_id": equipment_id})
             routes.append(route)
-            fittings.extend(replace(
+            designed_fittings = tuple(replace(
                 fitting, provenance=route.provenance,
                 attributes={**fitting.attributes, "design_status": "designed",
                             "equipment_id": equipment_id},
             ) for fitting in route_fittings)
+            fittings.extend(designed_fittings)
+            if allowed_domain is not None:
+                routing_context = route.provenance[0].attributes.get("bounded_routing_context")
+                if not isinstance(routing_context, dict):
+                    raise PlacementError("bounded route lacks its routing-context receipt")
+                bounded_contexts.append({
+                    "routing_context": routing_context,
+                    "route_result_sha256": _bounded_route_result_sha256(
+                        route, designed_fittings,
+                    ),
+                })
             route_ids.append(route.id)
             previous_port_id = next_port_id
         design_attributes = {
@@ -376,6 +535,13 @@ def design_proposed_circuits(
             "rules": rules.to_dict(), "source_observed": False,
             "device_ids": list(group), "user_input_id": user_input_id,
         }
+        domain_request = _allowed_route_domain_request(allowed_domain)
+        if domain_request is not None:
+            # Preserve legacy no-domain serialization. The absent field is
+            # equivalent to None during idempotence checks, so an existing
+            # unbounded user decision still cannot be reused as bounded.
+            design_attributes["allowed_route_domain"] = domain_request
+            design_attributes["bounded_routing_contexts"] = bounded_contexts
         circuit = Circuit(
             id=circuit_id, source_port_id=source_port.id,
             load_port_ids=tuple(port_by_owner[item].id for item in group),

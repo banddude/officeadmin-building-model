@@ -10,6 +10,7 @@ Canonical serialized contracts live here. Do not create competing workstream-loc
 - `oabm-model-v1.3.schema.json`: explicit version `1.3.0`, adding shared support assemblies, posed components/interfaces, and selection outcomes; see [migration and limits](../docs/shared-supports.md)
 - `oabm-model-v1.4.schema.json`: explicit version `1.4.0`, adding caller-confirmed structural members; see [migration and limits](../docs/structural-members.md)
 - `oabm-model-v1.5.schema.json`: explicit version `1.5.0`, adding exact-product route-fitting selections, explicit interface-to-port bindings, and outcomes; see [bounded route-fitting contract](../docs/route-fitting-selection-contract.md)
+- `oabm-model-v1.6.schema.json`: explicit version `1.6.0`, adding chosen presets plus separately identified physical parts; [bounded contract and consumers](../docs/building-assemblies-contract-v1.6-draft.md), part of [issue #356](https://github.com/banddude/officeadmin-building-model/issues/356)
 - Python types and reference-integrity validation: `src/oabm/model/`
 - Semantics and invariants: `docs/model-contract-v1.md`
 - Contract fixtures: `fixtures/model/v1/`
@@ -40,3 +41,21 @@ alias routing and measured benchmark records for the opt-in placement-ranking
 boundary. It reuses canonical primitives and existing source snapshots; no
 canonical migration or default behavior changes. See
 [Bounded proposals](../docs/bounded-proposals.md).
+
+Building-assembly contract `1.6.0` is explicitly selected; the default remains
+`1.0.0`, with unchanged serialized semantics for versions 1.0 through 1.5.
+Its records preserve immutable preset identities, typed resolved assumptions,
+source evidence, physical component identities, and input/output digests.
+The first separate producer supports a straight timber wall with framed
+rectangular opening voids and drywall. GLB and component quantities consume
+the same physical records and suppress duplicate aggregate-host bodies or
+physical quantity claims. Populated assemblies are refused by unsupported
+routing, IFC, drawing, revision-diff, confidence-review and review-bundle
+entrypoints. Empty upgraded models remain usable, including IFC round trip.
+
+Full-room corners/joins, metal-stud and ceiling producers, door/window insert
+recipes, assembly-aware routing, regeneration and dependent route invalidation
+remain unimplemented. The schema covers structural shapes and evidence scopes;
+cross-record identities, source agreement, geometry/host fit and digest
+freshness remain Python semantic checks. See the [bounded contract](../docs/building-assemblies-contract-v1.6-draft.md)
+and [wall producer](../docs/building-assembly-wall-producer-v1.md).

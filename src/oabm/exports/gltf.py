@@ -43,7 +43,17 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, NamedTuple
 
 from oabm.model import (
+    ASSEMBLY_SCHEMA_VERSIONS,
+    FITTING_SCHEMA_VERSIONS,
+    AssemblyComponent,
+    Box3D,
     BuildingModel,
+    PanelGeometry,
+    Profile2D,
+    ProfileExtrusion,
+    ProfileOutline2D,
+    WireSweep,
+    validate_model,
     is_observed,
     ElectricalDevice,
     ElectricalEquipment,
@@ -73,6 +83,12 @@ from oabm.geometry_primitives import (
     cylinder_vertices as _cylinder_vertices,
     segment_frame as _segment_frame,
 )
+from oabm.assembly_geometry import (
+    GeometryInputError,
+    extrude_simple_section_m,
+    rotate_vector_xyzw,
+    straight_round_wire_m,
+)
 
 _GLB_MAGIC = 0x46546C67  # "glTF"
 _GLB_VERSION = 2
@@ -81,6 +97,7 @@ _CHUNK_BIN = 0x004E4942  # "BIN\0"
 
 _COMPONENT_FLOAT = 5126
 _TARGET_ARRAY_BUFFER = 34962
+_TARGET_ELEMENT_ARRAY_BUFFER = 34963
 
 #: Sides used for the cylinder tubes along routes and for round device
 #: primitives. The brief allows 8-12; 10 keeps tubes readable at 3/4" conduit.
@@ -88,6 +105,11 @@ _CYLINDER_SIDES = 10
 
 #: Thin floor plate thickness for space footprints that have no slab of their own.
 _SPACE_PLATE_THICKNESS_M = 0.02
+_MAX_ASSEMBLY_PREVIEW_VERTICES = 250_000
+# Assembly meshes use float32 GLB positions. Fail closed rather than silently
+# collapsing or materially shifting a canonical part at large world origins.
+_ASSEMBLY_POSITION_ABSOLUTE_TOLERANCE_M = 1e-6
+_ASSEMBLY_POSITION_RELATIVE_TOLERANCE = 1e-5
 
 # Base colours per geometry class, as linear-ish sRGB triples in [0, 1].
 _COLOURS = {
@@ -112,6 +134,9 @@ _COLOURS = {
     # Dimension-derived fitting boxes are explicitly display envelopes, not
     # native manufacturer geometry. Their alpha is always the derived style.
     "fitting_envelope": (0.25, 0.58, 0.72),
+    # Assembly parts stay material-neutral until their canonical record names
+    # an explicit material. A muted blue-grey is a display class only.
+    "assembly_component": (0.55, 0.60, 0.66),
     # Conductor wire colours follow the common convention: phases cycle
     # black/red/blue by order within the circuit, neutral is white/grey,
     # ground is green, and an unknown role gets a neutral purple (and keeps
@@ -293,8 +318,12 @@ def to_glb(
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
 
     The export is a deterministic derived view: walls, slabs, space floor
-    plates, devices, electrical equipment and conduit routes become meshes;
-    canonical identity and provenance travel in node names and ``extras``.
+    plates, devices, electrical equipment and conduit routes become meshes.
+    In schema 1.6, each physical assembly component gets one indexed mesh and
+    one node named by its canonical component ID; an ``aggregate_host`` wall
+    keeps its identity in the model but its duplicate shell is suppressed.
+    Component role, owner, part key, geometry/material basis, and provenance
+    travel in node ``extras``.
     A wall's canonical ``construction`` token also travels as
     ``extras["construction"]`` on its node and mesh; a ``glazed`` wall draws
     with the one shared translucent ``wall-glazed`` glass material, and a
@@ -310,15 +339,17 @@ def to_glb(
       something to be read against in the viewer. The planes span the level's
       plan bounding box plus ``reference_margin_m``; the two alphas set their
       translucency. Levels with no drawn content get no plane.
-    - ``dimmed_ids`` lists canonical wall, slab, space, device, equipment or
-      route ids the caller wants drawn in a grey translucent style shaped by
+    - ``dimmed_ids`` lists canonical wall, slab, space, device, equipment,
+      route, or (in 1.6) assembly-component ids the caller wants drawn in a
+      grey translucent style shaped by
       ``dimmed_color`` and ``dimmed_alpha``. A dimmed route dims its drawn
       conductor wires with it, so a ghosted conduit never hides fully
       opaque conductors inside itself; the summary reports how many wires
       were dimmed as ``dimmed_conductor_wires`` while any are. Glazed walls
       retain the glass colour and take only the caller's alpha when lower
       than the glass alpha. Physical boxes and support records have no ghost
-      style today. Which ids to dim, and why, is the caller's decision; ids
+      style today. Assembly components use the same caller-supplied dimming.
+      Which ids to dim, and why, is the caller's decision; ids
       that match nothing are ignored.
     - ``emphasized_ids`` lists canonical device, equipment or route ids the
       caller wants drawn opaque in their normal class colour, whatever their
@@ -328,13 +359,16 @@ def to_glb(
       provenance: ``extras["derivation"]`` is unchanged and the emphasis
       itself travels in ``extras["display"]``.
     - ``groups`` maps a caller-chosen group name (for example
-      ``"ALTERNATES"``) to the canonical entity ids that belong to it. Each
+      ``"ALTERNATES"``) to canonical ids that belong to it. Each
       group becomes one parent node ``group:<name>`` at the scene root —
       after every other root node, groups sorted by name — and the members'
       nodes are reparented under it, including a route's drawn wire nodes, so
       hiding the one group node hides the whole alternate scope in Blender.
       The exporter never decides what belongs together: it only draws the
-      grouping the caller names. A canonical id may belong to at most one
+      grouping the caller names. In schema 1.6, grouping an assembly or
+      aggregate host reparents its physical component nodes, including
+      opening inserts tied to the parent wall; no duplicate wrapper geometry
+      is added. A canonical id may belong to at most one
       group (``ValueError`` otherwise); ids that match nothing are ignored
       and counted in the report. The group node discloses itself in
       ``extras``: the group name, ``display`` = "caller-supplied group", and
@@ -377,6 +411,12 @@ def to_glb(
       of metres or ``None``; bools and non-numeric values are rejected, so
       ``True`` can never masquerade as a 1 metre wall.
     """
+
+    if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS:
+        # 1.6 digests bind generated children to their exact source hosts.
+        # Revalidate at this handoff so a stale source cannot leak into a
+        # derived preview even if model construction happened earlier.
+        validate_model(model)
 
     owner_of: dict[str, str] = {}
     normalized_groups: list[tuple[str, frozenset[str]]] = []
@@ -527,7 +567,32 @@ def _build_document(
     emphasized_count = 0
     glazed_outline_count = 0
     thickened_wall_count = 0
+    assemblies_by_id = ({assembly.id: assembly for assembly in model.building_assemblies}
+                        if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS else {})
+    if assemblies_by_id:
+        _preflight_assembly_preview_vertices(model.assembly_components)
+    aggregate_wall_ids = {
+        assembly.host_id for assembly in assemblies_by_id.values()
+        if assembly.assembly_kind == "wall" and assembly.host_representation == "aggregate_host"
+    }
+    opening_by_id = {opening.id: opening for opening in model.openings}
+    if assemblies_by_id:
+        unsupported_inserts = sorted(
+            assembly.host_id for assembly in assemblies_by_id.values()
+            if assembly.assembly_kind == "opening_insert"
+            and opening_by_id[assembly.host_id].host_id not in aggregate_wall_ids
+        )
+        if unsupported_inserts:
+            raise ValueError(
+                "GLB opening inserts require their wall host to be an aggregate component assembly; "
+                "the legacy host mesh has no supported source-opening void cut for "
+                f"{unsupported_inserts!r}"
+            )
     for entity in model.walls:
+        # An aggregate host is still addressable canonical boundary evidence,
+        # but its physical shell is the owned component set, not a second body.
+        if entity.id in aggregate_wall_ids:
+            continue
         height_m, height_source = _wall_height(entity, level_heights)
         extras = _extras(entity, "wall", entity.level_id, include_canonical_id=include_canonical_node_ids)
         extras["height_source"] = height_source
@@ -713,7 +778,78 @@ def _build_document(
             "extras": extras,
             "pose": entity.pose,
         })
-    if model.schema_version == "1.5.0":
+    if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS:
+        for component in sorted(model.assembly_components, key=lambda item: item.id):
+            owner = assemblies_by_id.get(component.assembly_id)
+            if owner is None:
+                raise ValueError(f"{component.id} refers to a missing canonical building assembly")
+            vertices, indices = _assembly_component_mesh(component)
+            _require_assembly_float32_precision(component.id, vertices)
+            extras = _extras(
+                component, "building_assembly_component", component.level_id,
+                include_canonical_id=True,
+            )
+            _add_name(extras, component)
+            extras.update(
+                owner_id=owner.id,
+                assembly_id=owner.id,
+                assembly_kind=owner.assembly_kind,
+                host_id=owner.host_id,
+                role=component.component_kind,
+                component_kind=component.component_kind,
+                part_key=component.part_key,
+                geometry_basis=component.geometry_basis,
+                material_basis=component.material_basis,
+                material_id=component.material_id,
+                geometry_type=_assembly_geometry_type(component.geometry),
+                engineering_fire_listing_approval="not evaluated",
+            )
+            if component.opening_id is not None:
+                extras["opening_id"] = component.opening_id
+            if owner.assembly_kind == "opening_insert":
+                extras["parent_host_id"] = opening_by_id[owner.host_id].host_id
+            if isinstance(component.geometry, WireSweep) and len(component.geometry.centerline.points) > 2:
+                extras["mesh_disclosure"] = (
+                    "rendered as separate straight-segment cylinders; bend joins may overlap; "
+                    "no miter or boolean union is asserted"
+                )
+            if component.geometry_basis == "caller_selected_envelope":
+                extras["geometry_disclosure"] = (
+                    "caller-selected envelope; physical material geometry and volume are unknown"
+                )
+            elif component.geometry_basis == "specified_parameterized_geometry":
+                extras["geometry_disclosure"] = (
+                    "specified parameterized geometry; not a manufacturer measurement or approval"
+                )
+            else:
+                extras["geometry_disclosure"] = "manufacturer-actual geometry as source-bound"
+            if (isinstance(component.geometry, ProfileExtrusion) and
+                    isinstance(component.geometry.profile, ProfileOutline2D)):
+                extras["profile_source_id"] = component.geometry.profile.source_id
+            if component.geometry_basis == "caller_selected_envelope" or component.id in options.dimmed_ids:
+                dimmed_count += int(component.id in options.dimmed_ids)
+                if component.id in options.dimmed_ids:
+                    extras["display"] = _DIMMED_DISPLAY
+                material_key = (
+                    "dimmed", "assembly_component"
+                ) if component.id in options.dimmed_ids else (
+                    "assembly_component", True
+                )
+            else:
+                material_key = (
+                    "assembly_component",
+                    _is_derived(component.provenance, component.attributes),
+                )
+                if component.id in options.dimmed_ids:
+                    extras["display"] = _DIMMED_DISPLAY
+            add({
+                "name": component.id,
+                "vertices": vertices,
+                "indices": indices,
+                "material_key": material_key,
+                "extras": extras,
+            })
+    if model.schema_version in FITTING_SCHEMA_VERSIONS:
         selection_by_fitting = {row.fitting_id: row for row in model.fitting_selections}
         outcome_by_fitting = {row.fitting_id: row for row in model.fitting_selection_outcomes}
         interface_by_selection: dict[str, list[Any]] = {}
@@ -849,13 +985,39 @@ def _build_document(
             "max": maximum,
         })
         mesh_index = len(meshes)
-        mesh: dict[str, Any] = {
-            "primitives": [{
-                "attributes": {"POSITION": len(accessors) - 1},
-                "material": material_index[entry["material_key"]],
-                "mode": entry.get("mode", 4),
-            }],
+        primitive: dict[str, Any] = {
+            "attributes": {"POSITION": len(accessors) - 1},
+            "material": material_index[entry["material_key"]],
+            "mode": entry.get("mode", 4),
         }
+        # New assembly meshes use the indexed output of the shared geometry
+        # kernel. Older meshes remain their historical triangle soup, keeping
+        # all 1.0–1.5 GLB bytes unchanged.
+        indices = entry.get("indices")
+        if indices is not None:
+            if (not indices or len(indices) % 3 or
+                    any(isinstance(index, bool) or not isinstance(index, int) or
+                        index < 0 or index >= len(entry["vertices"]) for index in indices)):
+                raise ValueError(f"{entry['name']} has an invalid indexed triangle mesh")
+            byte_offset = len(buffer)
+            packed_indices = struct.pack(f"<{len(indices)}I", *indices)
+            buffer += packed_indices
+            buffer_views.append({
+                "buffer": 0,
+                "byteOffset": byte_offset,
+                "byteLength": len(packed_indices),
+                "target": _TARGET_ELEMENT_ARRAY_BUFFER,
+            })
+            accessors.append({
+                "bufferView": len(buffer_views) - 1,
+                "componentType": 5125,
+                "count": len(indices),
+                "type": "SCALAR",
+                "min": [min(indices)],
+                "max": [max(indices)],
+            })
+            primitive["indices"] = len(accessors) - 1
+        mesh: dict[str, Any] = {"primitives": [primitive]}
         if entry.get("construction") is not None:
             # A tokened wall's mesh carries the token too, so both the object
             # and its data disclose it among Blender's custom properties.
@@ -987,7 +1149,7 @@ def _build_document(
         support_document=model.to_dict()
         document["asset"]["extras"].update({name:support_document[name] for name in
             ("support_assemblies", "support_interfaces", "support_selection_outcomes")})
-    if model.schema_version == "1.5.0":
+    if model.schema_version in FITTING_SCHEMA_VERSIONS:
         fitting_document = model.to_dict()
         document["asset"]["extras"].update({name: fitting_document[name] for name in
             ("fitting_selections", "fitting_interfaces", "fitting_selection_outcomes")})
@@ -1018,7 +1180,7 @@ def _build_document(
         counts["support_components"] = len(model.support_components)
         counts["support_assemblies"] = len(model.support_assemblies)
         counts["unresolved_support_selections"] = sum(o.status == "unresolved" for o in model.support_selection_outcomes)
-    if model.schema_version == "1.5.0":
+    if model.schema_version in FITTING_SCHEMA_VERSIONS:
         counts["route_fittings"] = len(model.route_fittings)
         counts["fitting_envelopes"] = sum(row.geometry_basis == "dimension_derived_envelope"
                                            for row in model.fitting_selections)
@@ -1033,6 +1195,9 @@ def _build_document(
         counts["dimmed_conductor_wires"] = dimmed_wire_count
     if model.structural_members:
         counts["structural_members"] = len(model.structural_members)
+    if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS:
+        counts["assembly_components"] = len(model.assembly_components)
+        counts["aggregate_hosts_suppressed"] = len(aggregate_wall_ids)
     return document, bytes(buffer), counts
 
 
@@ -1052,7 +1217,14 @@ def _group_member_indices(
     route_key = member_id.removeprefix("route:") if member_id.startswith("route:") else None
     outline_name = f"outline:{member_id}"
     for index, node in enumerate(nodes):
-        if node["name"] == member_id or node["name"] == outline_name:
+        extras = node.get("extras", {})
+        component_of_member = (
+            extras.get("canonical_type") == "building_assembly_component"
+            and member_id in {
+                extras.get("owner_id"), extras.get("host_id"), extras.get("parent_host_id")
+            }
+        )
+        if node["name"] == member_id or node["name"] == outline_name or component_of_member:
             indices.append(index)
         elif route_key is not None and _wire_route_segment(node["name"]) == route_key:
             indices.append(index)
@@ -1069,6 +1241,251 @@ def _wire_route_segment(node_name: str) -> str | None:
     if not second or not index.isdigit():
         return None
     return route_id
+
+
+def _assembly_geometry_type(geometry: Any) -> str:
+    if isinstance(geometry, Box3D):
+        return "box3d"
+    if isinstance(geometry, ProfileExtrusion):
+        return "profile_extrusion"
+    if isinstance(geometry, PanelGeometry):
+        return "panel"
+    if isinstance(geometry, WireSweep):
+        return "wire_sweep"
+    raise ValueError(f"unsupported assembly component geometry: {type(geometry).__name__}")
+
+
+def _preflight_assembly_preview_vertices(components: tuple[AssemblyComponent, ...]) -> None:
+    """Bound total assembly mesh allocations before creating any component mesh."""
+
+    predicted = 0
+    for component in components:
+        geometry = component.geometry
+        if isinstance(geometry, Box3D):
+            count = 8
+        elif isinstance(geometry, ProfileExtrusion):
+            if isinstance(geometry.profile, Profile2D):
+                profile_count = len(geometry.profile.outline_xy_m())
+            elif isinstance(geometry.profile, ProfileOutline2D):
+                profile_count = len(geometry.profile.points_m)
+            else:
+                raise ValueError(f"{component.id} has an unsupported profile section")
+            count = profile_count * 2
+        elif isinstance(geometry, PanelGeometry):
+            count = len(geometry.boundary.points) * 2
+        elif isinstance(geometry, WireSweep):
+            count = (len(geometry.centerline.points) - 1) * 2 * _CYLINDER_SIDES
+        else:
+            raise ValueError(f"{component.id} has unsupported assembly geometry")
+        predicted += count
+        if predicted > _MAX_ASSEMBLY_PREVIEW_VERTICES:
+            raise ValueError(
+                "canonical building assemblies exceed the bounded GLB component-mesh "
+                f"model-wide vertex budget of {_MAX_ASSEMBLY_PREVIEW_VERTICES}"
+            )
+
+
+def _require_assembly_float32_precision(
+    component_id: str,
+    vertices: list[tuple[float, float, float]],
+) -> None:
+    """Decline assembly meshes whose world-space float32 positions lose detail."""
+
+    if not vertices:
+        raise ValueError(f"{component_id} has no vertices for GLB float32 precision check")
+    try:
+        quantized = tuple(
+            struct.unpack("<f", struct.pack("<f", value))[0]
+            for vertex in vertices for value in vertex
+        )
+    except (OverflowError, struct.error) as error:
+        raise ValueError(
+            f"{component_id} cannot be represented in GLB float32 positions; "
+            "rebase the model or use a local-coordinate representation"
+        ) from error
+    if not all(math.isfinite(value) for value in quantized):
+        raise ValueError(
+            f"{component_id} cannot be represented in finite GLB float32 positions; "
+            "rebase the model or use a local-coordinate representation"
+        )
+
+    coordinates = tuple(value for vertex in vertices for value in vertex)
+    axis_values = tuple(tuple(coordinates[index * 3 + axis] for index in range(len(vertices)))
+                        for axis in range(3))
+    axis_quantized = tuple(tuple(quantized[index * 3 + axis] for index in range(len(vertices)))
+                           for axis in range(3))
+    extents = tuple(max(values) - min(values) for values in axis_values)
+    quantized_extents = tuple(max(values) - min(values) for values in axis_quantized)
+    scale = max(extents)
+    allowed_error = max(
+        _ASSEMBLY_POSITION_ABSOLUTE_TOLERANCE_M,
+        scale * _ASSEMBLY_POSITION_RELATIVE_TOLERANCE,
+    )
+    max_error = max(
+        abs(value - packed) for value, packed in zip(coordinates, quantized)
+    )
+    collapsed_axis = any(
+        extent > 0.0 and packed_extent == 0.0
+        for extent, packed_extent in zip(extents, quantized_extents)
+    )
+    if collapsed_axis or max_error > allowed_error:
+        raise ValueError(
+            f"{component_id} exceeds GLB float32 positional precision "
+            f"(maximum coordinate error {max_error:.9g} m; allowed {allowed_error:.9g} m); "
+            "rebase the model or use a local-coordinate representation"
+        )
+
+
+def _assembly_component_mesh(
+    component: AssemblyComponent,
+) -> tuple[list[tuple[float, float, float]], tuple[int, ...]]:
+    """Return one indexed world-space mesh for one canonical assembly part.
+
+    Section extrusions and every round-wire segment use the strict shared
+    assembly geometry kernel. Panels use the shared deterministic planar ear
+    clipper after the canonical contract has already established a simple,
+    planar polygon; failure here is explicit and never falls back to a fan.
+    """
+
+    geometry = component.geometry
+    if isinstance(geometry, Box3D):
+        soup = _local_box_vertices(geometry.size.x, geometry.size.y, geometry.size.z)
+        world = [
+            _pose_world_point(vertex, geometry.pose.position, geometry.pose.rotation)
+            for vertex in soup
+        ]
+        return _index_triangle_soup(world)
+
+    if isinstance(geometry, ProfileExtrusion):
+        if isinstance(geometry.profile, Profile2D):
+            profile_xy = geometry.profile.outline_xy_m()
+        elif isinstance(geometry.profile, ProfileOutline2D):
+            profile_xy = tuple((point.x, point.y) for point in geometry.profile.points_m)
+        else:  # defensive: the v1.6 discriminated union must fail closed
+            raise ValueError(f"{component.id} has an unsupported profile section")
+        try:
+            derived = extrude_simple_section_m(profile_xy, geometry.length_m, geometry.pose)
+        except GeometryInputError as error:
+            raise ValueError(f"{component.id} cannot be meshed: {error}") from error
+        world = [
+            _pose_world_point(vertex, derived.pose.position_m, derived.pose.rotation_xyzw)
+            for vertex in derived.vertices_m
+        ]
+        return world, tuple(index for tri in derived.triangles for index in tri)
+
+    if isinstance(geometry, PanelGeometry):
+        points = geometry.boundary.points
+        normal = (geometry.normal.x, geometry.normal.y, geometry.normal.z)
+        axis = max(range(3), key=lambda index: abs(normal[index]))
+        plan = [
+            (point.y, point.z) if axis == 0 else
+            (point.x, point.z) if axis == 1 else
+            (point.x, point.y)
+            for point in points
+        ]
+        # The shared ear clipper operates on local planar extents. Subtracting
+        # a stable anchor avoids cancellation in its signed-area predicates at
+        # large world origins without changing the canonical points or output
+        # vertex positions.
+        anchor = plan[0]
+        local_plan = [(u - anchor[0], v - anchor[1]) for u, v in plan]
+        triangles = _plan_ear_triangles(local_plan)
+        if triangles is None:
+            raise ValueError(f"{component.id} panel boundary is not triangulable")
+        half = geometry.thickness_m / 2.0
+        lower = [
+            (point.x - normal[0] * half,
+             point.y - normal[1] * half,
+             point.z - normal[2] * half)
+            for point in points
+        ]
+        upper = [
+            (point.x + normal[0] * half,
+             point.y + normal[1] * half,
+             point.z + normal[2] * half)
+            for point in points
+        ]
+        count = len(points)
+        vertices = lower + upper
+        # Ear clipping returns consistent planar triangles; orient the caps
+        # against the canonical explicit normal, independent of ring winding.
+        first = triangles[0]
+        a, b, c = (points[index] for index in first)
+        ab = (b.x - a.x, b.y - a.y, b.z - a.z)
+        ac = (c.x - a.x, c.y - a.y, c.z - a.z)
+        cross = (ab[1] * ac[2] - ab[2] * ac[1],
+                 ab[2] * ac[0] - ab[0] * ac[2],
+                 ab[0] * ac[1] - ab[1] * ac[0])
+        aligned = sum(cross[index] * normal[index] for index in range(3)) > 0.0
+        indices: list[int] = []
+        for first, second, third in triangles:
+            top = (count + first, count + second, count + third)
+            bottom = (first, second, third)
+            if not aligned:
+                top = (top[0], top[2], top[1])
+                bottom = (bottom[0], bottom[2], bottom[1])
+            indices.extend(top)
+            indices.extend((bottom[0], bottom[2], bottom[1]))
+        for index in range(count):
+            nxt = (index + 1) % count
+            first_pair = ((index, nxt, count + nxt), (index, count + nxt, count + index))
+            if aligned:
+                indices.extend(first_pair[0])
+                indices.extend(first_pair[1])
+            else:
+                indices.extend((first_pair[0][0], first_pair[0][2], first_pair[0][1]))
+                indices.extend((first_pair[1][0], first_pair[1][2], first_pair[1][1]))
+        return vertices, tuple(indices)
+
+    if isinstance(geometry, WireSweep):
+        vertices: list[tuple[float, float, float]] = []
+        indices: list[int] = []
+        for start, end in zip(geometry.centerline.points, geometry.centerline.points[1:]):
+            try:
+                derived = straight_round_wire_m(start, end, geometry.diameter_m / 2.0)
+            except (GeometryInputError, ValueError) as error:
+                raise ValueError(f"{component.id} wire segment cannot be meshed: {error}") from error
+            base = len(vertices)
+            vertices.extend(
+                _pose_world_point(vertex, derived.pose.position_m, derived.pose.rotation_xyzw)
+                for vertex in derived.vertices_m
+            )
+            indices.extend(base + index for tri in derived.triangles for index in tri)
+        if not indices:
+            raise ValueError(f"{component.id} wire sweep produced no triangles")
+        return vertices, tuple(indices)
+
+    raise ValueError(f"unsupported assembly component geometry: {type(geometry).__name__}")
+
+
+def _pose_world_point(vertex: tuple[float, float, float], position: Any,
+                      rotation: Any) -> tuple[float, float, float]:
+    rotated = rotate_vector_xyzw(vertex, rotation)
+    if isinstance(position, tuple):
+        origin = position
+    else:
+        origin = (position.x, position.y, position.z)
+    return tuple(origin[index] + rotated[index] for index in range(3))
+
+
+def _index_triangle_soup(
+    vertices: list[tuple[float, float, float]],
+) -> tuple[list[tuple[float, float, float]], tuple[int, ...]]:
+    """Deduplicate exact box corners while retaining its deterministic winding."""
+
+    indexed: list[tuple[float, float, float]] = []
+    lookup: dict[tuple[float, float, float], int] = {}
+    indices: list[int] = []
+    for vertex in vertices:
+        index = lookup.get(vertex)
+        if index is None:
+            index = len(indexed)
+            lookup[vertex] = index
+            indexed.append(vertex)
+        indices.append(index)
+    if not indexed or len(indices) % 3:
+        raise ValueError("assembly box did not produce a complete triangle mesh")
+    return indexed, tuple(indices)
 
 
 def _material(material_class: str, derived: bool) -> dict[str, Any]:

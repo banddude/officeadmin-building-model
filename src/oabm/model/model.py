@@ -11,7 +11,8 @@ from .common import (
     SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, SUPPORT_SCHEMA_VERSION,
     PHYSICAL_SCHEMA_VERSIONS, RACEWAY_SCHEMA_VERSIONS, SUPPORTED_SCHEMA_VERSIONS,
     SUPPORT_SCHEMA_VERSIONS, STRUCTURAL_SCHEMA_VERSION, STRUCTURAL_SCHEMA_VERSIONS,
-    FITTING_SCHEMA_VERSION, FITTING_SCHEMA_VERSIONS,
+    FITTING_SCHEMA_VERSION, FITTING_SCHEMA_VERSIONS, ASSEMBLY_SCHEMA_VERSION,
+    ASSEMBLY_SCHEMA_VERSIONS,
     ContractError, CoordinateSystem, Entity, Point3, Provenance,
     UnsupportedSchemaVersion, _distance, _finite, _validate_id, _validate_json_value,
 )
@@ -19,6 +20,8 @@ from .physical import CatalogProduct, ElectricalBox, BoxSelectionOutcome, box_co
 from .raceway import RacewaySelection, RacewaySelectionOutcome, wiring_method_for_route_type
 from .structural import StructuralMember
 from .fittings import FittingInterface, FittingSelection, FittingSelectionOutcome
+from .assemblies import AssemblyComponent, BuildingAssembly
+from .assembly_validation import validate_building_assemblies
 from .supports import (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome,
                        component_contains_point, component_envelope_key, supported_levels)
 
@@ -27,6 +30,7 @@ _RACEWAY_FIELDS = frozenset({"raceway_selections", "raceway_selection_outcomes"}
 _SUPPORT_FIELDS = frozenset({"support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes"})
 _STRUCTURAL_FIELDS = frozenset({"structural_members"})
 _FITTING_FIELDS = frozenset({"fitting_selections", "fitting_interfaces", "fitting_selection_outcomes"})
+_ASSEMBLY_FIELDS = frozenset({"building_assemblies", "assembly_components"})
 _FITTING_PRODUCER = "route-fitting-selection-producer"
 _FITTING_INPUT_METHOD = "explicit-route-fitting-inputs"
 _FITTING_INTENT_METHOD = "explicit-route-fitting-intent"
@@ -68,6 +72,8 @@ class BuildingModel:
     fitting_selections: tuple[FittingSelection, ...] = ()
     fitting_interfaces: tuple[FittingInterface, ...] = ()
     fitting_selection_outcomes: tuple[FittingSelectionOutcome, ...] = ()
+    building_assemblies: tuple[BuildingAssembly, ...] = ()
+    assembly_components: tuple[AssemblyComponent, ...] = ()
     provenance: tuple[Provenance, ...] = ()
     attributes: dict[str, Any] = field(default_factory=dict)
 
@@ -87,12 +93,22 @@ class BuildingModel:
             raise ContractError("structural members require explicit schema_version 1.4.0")
         if self.schema_version not in FITTING_SCHEMA_VERSIONS and any(getattr(self, name) for name in _FITTING_FIELDS):
             raise ContractError("route-fitting selections require explicit schema_version 1.5.0")
+        if self.schema_version not in ASSEMBLY_SCHEMA_VERSIONS and any(getattr(self, name) for name in _ASSEMBLY_FIELDS):
+            raise ContractError("building assemblies require explicit schema_version 1.6.0")
         fitting_types = {
             "fitting_selections": FittingSelection,
             "fitting_interfaces": FittingInterface,
             "fitting_selection_outcomes": FittingSelectionOutcome,
         }
         for name, item_type in fitting_types.items():
+            collection = getattr(self, name)
+            if not isinstance(collection, tuple) or any(not isinstance(item, item_type) for item in collection):
+                raise ContractError(f"{name} must be a tuple of typed {item_type.__name__} entities")
+        assembly_types = {
+            "building_assemblies": BuildingAssembly,
+            "assembly_components": AssemblyComponent,
+        }
+        for name, item_type in assembly_types.items():
             collection = getattr(self, name)
             if not isinstance(collection, tuple) or any(not isinstance(item, item_type) for item in collection):
                 raise ContractError(f"{name} must be a tuple of typed {item_type.__name__} entities")
@@ -133,6 +149,10 @@ class BuildingModel:
             raise ContractError(f"{version} has unknown route-fitting fields; explicitly migrate to 1.5.0")
         if version in FITTING_SCHEMA_VERSIONS and not _FITTING_FIELDS.issubset(document):
             raise ContractError("1.5.0 requires all three route-fitting selection/interface arrays")
+        if version not in ASSEMBLY_SCHEMA_VERSIONS and _ASSEMBLY_FIELDS.intersection(document):
+            raise ContractError(f"{version} has unknown building-assembly fields; explicitly migrate to 1.6.0")
+        if version in ASSEMBLY_SCHEMA_VERSIONS and not _ASSEMBLY_FIELDS.issubset(document):
+            raise ContractError("1.6.0 requires both building_assemblies and assembly_components arrays")
         return _decode_dataclass(cls, document)
 
     @classmethod
@@ -161,7 +181,7 @@ class BuildingModel:
         Path(path).write_text(self.to_json(indent=indent) + "\n", encoding="utf-8")
 
 
-def _entity_collections(model: BuildingModel) -> tuple[tuple[Entity, ...], ...]:
+def _entity_collections(model: BuildingModel) -> tuple[tuple[Any, ...], ...]:
     return (
         model.levels,
         model.spaces,
@@ -190,6 +210,8 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Entity, ...], ...]:
         model.fitting_selections,
         model.fitting_interfaces,
         model.fitting_selection_outcomes,
+        model.building_assemblies,
+        model.assembly_components,
     )
 
 
@@ -223,6 +245,11 @@ def validate_model(model: BuildingModel) -> None:
                         model.schema_version not in FITTING_SCHEMA_VERSIONS):
                     raise ContractError(
                         f"model provenance scope path {path!r} requires schema_version 1.5.0"
+                    )
+                if (owner is model and path.split(".", 1)[0] in _ASSEMBLY_FIELDS and
+                        model.schema_version not in ASSEMBLY_SCHEMA_VERSIONS):
+                    raise ContractError(
+                        f"model provenance scope path {path!r} requires schema_version 1.6.0"
                     )
                 if not scope_exists(owner, path):
                     owner_id = model.model_id if owner is model else owner.id
@@ -362,6 +389,8 @@ def validate_model(model: BuildingModel) -> None:
     for opening in model.openings:
         require(opening.host_id, hostable, f"{opening.id}.host_id")
 
+    validate_building_assemblies(model)
+
     boxes = {item.id: item for item in model.electrical_boxes}
     devices = {item.id: item for item in model.electrical_devices}
     assigned: set[str] = set()
@@ -416,8 +445,9 @@ def validate_model(model: BuildingModel) -> None:
     for port in model.ports:
         require(port.owner_id, by_id, f"{port.id}.owner_id")
         if isinstance(by_id.get(port.owner_id),
-                      (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome)):
-            raise ContractError("non-electrical support entities cannot own electrical ports")
+                      (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome,
+                       BuildingAssembly, AssemblyComponent)):
+            raise ContractError("non-electrical support/assembly records cannot own electrical ports")
         if port.owner_id in {outcome.id for outcome in (*model.box_selection_outcomes, *model.raceway_selection_outcomes, *model.raceway_selections)}:
             raise ContractError(f"{port.id} cannot be owned by a nonphysical selection outcome")
         if port.owner_id in boxes and not box_contains_point(boxes[port.owner_id], port.pose.position):
@@ -1132,6 +1162,9 @@ def _encode(value: Any) -> Any:
         if isinstance(value, BuildingModel) and value.schema_version not in FITTING_SCHEMA_VERSIONS:
             for name in _FITTING_FIELDS:
                 encoded.pop(name)
+        if isinstance(value, BuildingModel) and value.schema_version not in ASSEMBLY_SCHEMA_VERSIONS:
+            for name in _ASSEMBLY_FIELDS:
+                encoded.pop(name)
         if isinstance(value, Provenance) and value.derivation is None:
             # An unset derivation states nothing, so omit it rather than
             # writing an explicit null. Adding the field then leaves the
@@ -1161,6 +1194,8 @@ def _encode(value: Any) -> Any:
 def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
     """Explicit, lossless opt-in to the physical-object contract; never downgrade."""
     from dataclasses import replace
+    if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.6")
     if model.schema_version in RACEWAY_SCHEMA_VERSIONS:
         raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.2")
     return replace(model, schema_version=PHYSICAL_SCHEMA_VERSION)
@@ -1169,6 +1204,8 @@ def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in; preserve prior physical box inventory."""
     from dataclasses import replace
+    if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_2 cannot downgrade version 1.6")
     if model.schema_version == SUPPORT_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_2 cannot downgrade version 1.3")
     return replace(model, schema_version=RACEWAY_SCHEMA_VERSION)
@@ -1177,19 +1214,36 @@ def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_3(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to shared supports; preserve previous inventory."""
     from dataclasses import replace
+    if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_3 cannot downgrade version 1.6")
     return replace(model, schema_version=SUPPORT_SCHEMA_VERSION)
 
 
 def upgrade_to_v1_4(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to structural members; preserve prior inventory."""
     from dataclasses import replace
+    if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_4 cannot downgrade version 1.6")
     return replace(model, schema_version=STRUCTURAL_SCHEMA_VERSION)
 
 
 def upgrade_to_v1_5(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to exact-product route-fitting decisions."""
     from dataclasses import replace
+    if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_5 cannot downgrade version 1.6")
     return replace(model, schema_version=FITTING_SCHEMA_VERSION)
+
+
+def upgrade_to_v1_6(model: BuildingModel) -> BuildingModel:
+    """Explicit lossless opt-in to candidate building-assembly records.
+
+    This adds empty assembly collections and never invents a preset, component,
+    host dimension, material or geometry. Contract 1.6 is an isolated draft;
+    current public consumers are not yet safe for models using its assemblies.
+    """
+    from dataclasses import replace
+    return replace(model, schema_version=ASSEMBLY_SCHEMA_VERSION)
 
 
 T = TypeVar("T")

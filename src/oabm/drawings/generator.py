@@ -7,6 +7,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from collections.abc import Mapping
 from typing import Iterable, Protocol
 
+from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import (
     Box3D,
     BuildingModel,
@@ -290,6 +291,7 @@ def generate_drawing_set(
     opt-in presentation options shared by every generated view; see
     :func:`generate_plan`.
     """
+    require_no_populated_building_assemblies(model, "generate_drawing_set")
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -378,6 +380,7 @@ def generate_plan(
     before labels, so ``"skip_with_dimensions"`` only sees the dimensions that
     survived this pass.
     """
+    require_no_populated_building_assemblies(model, "generate_plan")
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -461,6 +464,7 @@ def generate_elevation(
     dimension_overlap: str = "keep",
 ) -> DrawingView:
     """Generate one elevation view; see :func:`generate_plan` for the options."""
+    require_no_populated_building_assemblies(model, "generate_elevation")
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -536,6 +540,7 @@ def generate_section(
     ``dimension_overlap`` are validated for interface parity but do not change
     section output.
     """
+    require_no_populated_building_assemblies(model, "generate_section")
     overlap = _validated_label_overlap(label_overlap)
     _validated_dimension_decimals(dimension_decimals)
     _validated_dimension_overlap(dimension_overlap)
@@ -590,6 +595,7 @@ def generate_section(
 
 
 def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
+    require_no_populated_building_assemblies(model, "generate_schedules")
     schedules = (
         _room_schedule(model),
         _opening_schedule(model),

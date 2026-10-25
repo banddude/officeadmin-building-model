@@ -171,6 +171,7 @@ def generate_review_drawings(model, config, *, source_proposals_not_admitted=(),
     candidates = {e.id: e for collection in (model.electrical_devices, model.electrical_equipment,
         model.electrical_boxes, model.support_components, model.support_interfaces,
         model.routes, model.route_fittings) for e in collection}
+    fitting_selection_by_id = {row.fitting_id: row for row in model.fitting_selections}
     visibility = []
     payloads = {"panel_facts": json.dumps({"review": {"status": "incomplete_review",
         "permit_ready": False, "canonical_model_sha256": before,
@@ -184,7 +185,8 @@ def generate_review_drawings(model, config, *, source_proposals_not_admitted=(),
         for identity in sorted(shown):
             if any(not (plan.bounds_m[0] <= p.x <= plan.bounds_m[2]
                         and plan.bounds_m[1] <= p.y <= plan.bounds_m[3] and low <= p.z <= high)
-                   for p in _entity_points(candidates[identity])):
+                   for p in _entity_points(candidates[identity],
+                                           fitting_selection_by_id=fitting_selection_by_id)):
                 clipped.append(identity)
         visibility.append({"view_id": view.id, "level_id": plan.level_id,
             "depth_interval_m": [low, high], "bounds_m": list(plan.bounds_m),

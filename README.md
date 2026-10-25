@@ -33,6 +33,9 @@ See [Raceway and cable selections](docs/raceway-selections.md) for explicit
 contract 1.2 product/reference decisions and unresolved mixed-run limitations.
 See [Shared supports](docs/shared-supports.md) for explicit contract 1.3 shared
 assemblies, individually counted components, and unresolved attachment inputs.
+See [Exact-product route fittings](docs/route-fitting-selection-contract.md)
+for the opt-in contract 1.5 catalog-pair selection, unresolved cases, and
+derived consumer/replay boundaries.
 See [Layered raceway policy](docs/layered-raceway-policy.md) for portable caller
 baseline/company/job permissions compiled into existing explicit selection rules.
 See [Panel schedule facts](docs/panel-schedule-facts.md) for an opt-in grouped

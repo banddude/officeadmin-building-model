@@ -525,6 +525,12 @@ def _eligible_runs_and_specs(
         for object_id in item.supported_object_ids:
             if object_id in routes_by_id:
                 skipped.setdefault(object_id, "support_binding_requires_reselection")
+    # A fitting product and its caller-owned counterpart interfaces are tied
+    # to one existing route topology. Consolidation would mint a different
+    # route graph, so keep every such source route unchanged until an explicit
+    # re-selection workflow is available.
+    for item in (*model.fitting_selections, *model.fitting_selection_outcomes):
+        skipped.setdefault(item.route_id, "fitting_binding_requires_reselection")
     while True:
         runs = find_overlapping_route_runs(
             model, tolerance_m=tolerance_m, excluded_route_ids=frozenset(skipped),

@@ -101,6 +101,15 @@ def test_repeated_exports_and_a_fresh_process_are_byte_identical(
     assert third == first
 
 
+def test_pre_15_route_fitting_ifc_bytes_match_merged_main_baseline(tmp_path: Path) -> None:
+    # SHA-256 from the exact merged-main 888866609ff171961d7619243a48d0fbf5fea05e
+    # exporter; this v1.0 fixture already has physical route-fitting entities.
+    payload = _export_bytes("commercial-ti-alternates", tmp_path / "legacy-fittings.ifc")
+    assert hashlib.sha256(payload).hexdigest() == (
+        "639c9c809c35287ba335d4379e210b3dcf70d4d533aeb891117f9109955ce195"
+    )
+
+
 @pytest.mark.parametrize("name", VALID_CASES)
 def test_every_ifc_root_global_id_is_unique_and_valid(name: str) -> None:
     ifc = to_ifc(load_golden_model(_case(name)))

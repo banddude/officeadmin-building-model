@@ -1,0 +1,2903 @@
+{
+  "$defs": {
+    "AcceptedODRange": {
+      "additionalProperties": false,
+      "properties": {
+        "max_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "min_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "min_m",
+        "max_m"
+      ],
+      "type": "object"
+    },
+    "Box3D": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "box3d"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "size": {
+          "$ref": "#/$defs/Size3"
+        }
+      },
+      "required": [
+        "kind",
+        "pose",
+        "size"
+      ],
+      "type": "object"
+    },
+    "BoxSelectionOutcome": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "reason_codes": {
+                "minItems": 1
+              },
+              "selected_box_id": {
+                "type": "null"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "status": {
+                "const": "selected"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason_codes": {
+                "maxItems": 0
+              },
+              "requested_product": {
+                "$ref": "#/$defs/CatalogProduct"
+              },
+              "selected_box_id": {
+                "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "intent_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occupant_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "reason_codes": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "requested_product": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CatalogProduct"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected_box_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "selected",
+            "unresolved"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "occupant_ids",
+        "status",
+        "selected_box_id",
+        "requested_product",
+        "reason_codes"
+      ],
+      "type": "object"
+    },
+    "CatalogProduct": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "catalog_revision": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "product_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "catalog_id",
+        "catalog_revision",
+        "product_id"
+      ],
+      "type": "object"
+    },
+    "Ceiling": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "footprint": {
+          "$ref": "#/$defs/Polygon3D"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "thickness_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "footprint"
+      ],
+      "type": "object"
+    },
+    "Circuit": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "circuit_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "load_port_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "load_va": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "phase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "poles": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "source_port_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "voltage_v": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "source_port_id",
+        "load_port_ids"
+      ],
+      "type": "object"
+    },
+    "Conductor": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "circuit_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "count": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "insulation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "material": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "route_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "size": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "circuit_id",
+        "role"
+      ],
+      "type": "object"
+    },
+    "CoordinateSystem": {
+      "additionalProperties": false,
+      "properties": {
+        "angle_unit": {
+          "const": "rad"
+        },
+        "crs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "frame_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "handedness": {
+          "const": "right"
+        },
+        "length_unit": {
+          "const": "m"
+        },
+        "origin_in_crs": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Point3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "true_north_radians": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "up_axis": {
+          "const": "+Z"
+        }
+      },
+      "required": [
+        "frame_id",
+        "handedness",
+        "up_axis",
+        "length_unit",
+        "angle_unit"
+      ],
+      "type": "object"
+    },
+    "ElectricalBox": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "box_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "host_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "intent_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "listed_volume_m3": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mounting": {
+          "enum": [
+            "flush",
+            "surface",
+            "suspended",
+            "floor"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "occupant_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "product": {
+          "$ref": "#/$defs/CatalogProduct"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/Size3"
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "box_type",
+        "pose",
+        "size",
+        "level_id",
+        "host_id",
+        "mounting",
+        "occupant_ids",
+        "product"
+      ],
+      "type": "object"
+    },
+    "ElectricalDevice": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "device_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "host_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "rated_voltage_v": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "size": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Size3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "space_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "system": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "device_type",
+        "pose"
+      ],
+      "type": "object"
+    },
+    "ElectricalEquipment": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "equipment_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "host_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "rated_voltage_v": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "size": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Size3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "space_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "system": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "equipment_type",
+        "pose"
+      ],
+      "type": "object"
+    },
+    "FittingInterface": {
+      "additionalProperties": false,
+      "properties": {
+        "actual_accepted_od_m": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AcceptedODRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "connection_method": {
+          "enum": [
+            "set_screw",
+            "compression",
+            "threaded",
+            "clamp",
+            "snap_in"
+          ]
+        },
+        "dry_location": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "interface_key": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "listing_refs": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "mating_interface_key": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "mating_pair_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "mating_port_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "mating_product": {
+          "$ref": "#/$defs/CatalogProduct"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_designation": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permitted_wiring_methods": {
+          "items": {
+            "enum": [
+              "raceway",
+              "cable"
+            ]
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "port_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "raintight": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "role": {
+          "enum": [
+            "raceway",
+            "enclosure"
+          ]
+        },
+        "selection_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "wet_location": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "selection_id",
+        "interface_key",
+        "role",
+        "connection_method",
+        "permitted_wiring_methods",
+        "port_id",
+        "mating_port_id",
+        "mating_product",
+        "mating_interface_key",
+        "mating_pair_id"
+      ],
+      "type": "object"
+    },
+    "FittingSelection": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "geometry_basis": {
+                "const": "dimension_derived_envelope"
+              }
+            },
+            "required": [
+              "geometry_basis"
+            ]
+          },
+          "then": {
+            "properties": {
+              "size": {
+                "$ref": "#/$defs/Size3"
+              }
+            },
+            "required": [
+              "size"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "geometry_basis": {
+                "const": "metadata_only"
+              }
+            },
+            "required": [
+              "geometry_basis"
+            ]
+          },
+          "then": {
+            "properties": {
+              "size": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "basis": {
+          "$ref": "#/$defs/RuleReference"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "fitting_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "fitting_type": {
+          "enum": [
+            "coupling",
+            "connector"
+          ]
+        },
+        "geometry_basis": {
+          "enum": [
+            "dimension_derived_envelope",
+            "metadata_only"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "product": {
+          "$ref": "#/$defs/CatalogProduct"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "route_type": {
+          "const": "emt"
+        },
+        "size": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Size3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "fitting_id",
+        "route_id",
+        "product",
+        "route_type",
+        "fitting_type",
+        "basis",
+        "geometry_basis"
+      ],
+      "type": "object"
+    },
+    "FittingSelectionOutcome": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "selected"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason_codes": {
+                "maxItems": 0
+              },
+              "requested_basis": {
+                "$ref": "#/$defs/RuleReference"
+              },
+              "requested_product": {
+                "$ref": "#/$defs/CatalogProduct"
+              },
+              "selected_selection_id": {
+                "$ref": "#/$defs/Id"
+              }
+            },
+            "required": [
+              "selected_selection_id",
+              "requested_product",
+              "requested_basis",
+              "reason_codes"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unresolved"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason_codes": {
+                "minItems": 1
+              },
+              "selected_selection_id": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "reason_codes"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "actual_od_check_performed": {
+          "const": false
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "fitting_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "reason_codes": {
+          "items": {
+            "enum": [
+              "actual_od_unknown",
+              "counterpart_interface_unknown",
+              "counterpart_port_missing",
+              "environment_conflict",
+              "environment_unknown",
+              "fitting_port_missing",
+              "incompatible_wiring_method",
+              "interface_geometry_mismatch",
+              "interface_port_owner_mismatch",
+              "listing_reference_missing",
+              "mating_pair_conflict",
+              "mating_pair_unknown",
+              "missing_catalog_product",
+              "missing_requested_product",
+              "missing_route_product",
+              "missing_rule_reference",
+              "nonmaterial_fitting",
+              "port_connectivity_missing",
+              "product_not_permitted",
+              "unsupported_fitting_type",
+              "unsupported_joint_topology",
+              "wrong_route_type"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "requested_basis": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/RuleReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_product": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CatalogProduct"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "route_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "selected_selection_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "selected",
+            "unresolved"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "fitting_id",
+        "route_id",
+        "status",
+        "actual_od_check_performed"
+      ],
+      "type": "object"
+    },
+    "Geometry3D": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Box3D"
+        },
+        {
+          "$ref": "#/$defs/Polyline3D"
+        },
+        {
+          "$ref": "#/$defs/Polygon3D"
+        }
+      ]
+    },
+    "Id": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+      "type": "string"
+    },
+    "Level": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "elevation_m": {
+          "type": "number"
+        },
+        "height_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "elevation_m"
+      ],
+      "type": "object"
+    },
+    "Obstacle": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "clearance_m": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "geometry": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Box3D"
+            },
+            {
+              "$ref": "#/$defs/Polyline3D"
+            },
+            {
+              "$ref": "#/$defs/Polygon3D"
+            }
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "obstacle_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "geometry"
+      ],
+      "type": "object"
+    },
+    "Opening": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "host_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opening_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/Size3"
+        }
+      },
+      "required": [
+        "id",
+        "host_id",
+        "opening_type",
+        "pose",
+        "size"
+      ],
+      "type": "object"
+    },
+    "Point3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Polygon3D": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "polygon3d"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Point3"
+          },
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "points"
+      ],
+      "type": "object"
+    },
+    "Polyline3D": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "polyline3d"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/Point3"
+          },
+          "minItems": 2,
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "points"
+      ],
+      "type": "object"
+    },
+    "Port": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "connected_port_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "direction": {
+          "$ref": "#/$defs/Vector3"
+        },
+        "domain": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_diameter_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "owner_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "owner_id",
+        "domain",
+        "role",
+        "pose",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "Pose": {
+      "additionalProperties": false,
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/Point3"
+        },
+        "rotation": {
+          "$ref": "#/$defs/Quaternion"
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "derivation": {
+          "description": "How the element came to exist: observed from a source, placed by a user, or synthesized by us. Unset is not a claim of observation.",
+          "enum": [
+            "observed",
+            "user",
+            "inferred",
+            null
+          ]
+        },
+        "method": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page": {
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scope_paths": {
+          "description": "Canonical claim paths qualified by this record. Omitted/null means entity-wide; an explicit empty scope is invalid.",
+          "oneOf": [
+            {
+              "items": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$",
+                "type": "string"
+              },
+              "minItems": 1,
+              "type": "array",
+              "uniqueItems": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source_element_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source_kind": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_kind",
+        "source_id"
+      ],
+      "type": "object"
+    },
+    "Quaternion": {
+      "additionalProperties": false,
+      "properties": {
+        "w": {
+          "type": "number"
+        },
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "RacewaySelection": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "designation_kind": {
+                "const": "listed_assembly"
+              }
+            }
+          },
+          "if": {
+            "properties": {
+              "wiring_method": {
+                "const": "raceway"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "designation_kind": {
+                "const": "trade_size"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "basis": {
+          "$ref": "#/$defs/RuleReference"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "designation": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "designation_kind": {
+          "enum": [
+            "trade_size",
+            "listed_assembly"
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_diameter_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "product": {
+          "$ref": "#/$defs/CatalogProduct"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "route_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "wiring_method": {
+          "enum": [
+            "raceway",
+            "cable"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "route_id",
+        "product",
+        "route_type",
+        "wiring_method",
+        "designation_kind",
+        "designation",
+        "basis"
+      ],
+      "type": "object"
+    },
+    "RacewaySelectionOutcome": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "reason_codes": {
+                "minItems": 1
+              },
+              "selected_selection_id": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "reason_codes"
+            ]
+          },
+          "if": {
+            "properties": {
+              "status": {
+                "const": "selected"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason_codes": {
+                "maxItems": 0
+              },
+              "requested_basis": {
+                "$ref": "#/$defs/RuleReference"
+              },
+              "requested_product": {
+                "$ref": "#/$defs/CatalogProduct"
+              },
+              "scope": {
+                "const": "whole_route"
+              },
+              "selected_selection_id": {
+                "$ref": "#/$defs/Id"
+              }
+            },
+            "required": [
+              "selected_selection_id",
+              "requested_product",
+              "requested_basis"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "reason_codes": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "requested_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_product": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CatalogProduct"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "route_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "scope": {
+          "enum": [
+            "whole_route",
+            "partial_route",
+            "mixed_run"
+          ]
+        },
+        "selected_selection_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "selected",
+            "unresolved"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "route_id",
+        "status",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "Route": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "centerline": {
+          "$ref": "#/$defs/Polyline3D"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "end_port_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "fitting_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_diameter_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "start_port_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route_type",
+        "start_port_id",
+        "end_port_id",
+        "centerline"
+      ],
+      "type": "object"
+    },
+    "RouteConstraint": {
+      "additionalProperties": false,
+      "properties": {
+        "applies_to": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "clearance_m": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "constraint_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "geometry": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Box3D"
+            },
+            {
+              "$ref": "#/$defs/Polyline3D"
+            },
+            {
+              "$ref": "#/$defs/Polygon3D"
+            }
+          ]
+        },
+        "hard": {
+          "type": "boolean"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "constraint_type",
+        "geometry"
+      ],
+      "type": "object"
+    },
+    "RouteFitting": {
+      "additionalProperties": false,
+      "properties": {
+        "angle_radians": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "fitting_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nominal_diameter_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "route_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "route_id",
+        "fitting_type",
+        "pose"
+      ],
+      "type": "object"
+    },
+    "RuleReference": {
+      "additionalProperties": false,
+      "properties": {
+        "authority": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "revision": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rule_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "authority",
+        "revision",
+        "rule_id"
+      ],
+      "type": "object"
+    },
+    "Size3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "y": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "z": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Slab": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "footprint": {
+          "$ref": "#/$defs/Polygon3D"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "thickness_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "footprint",
+        "thickness_m"
+      ],
+      "type": "object"
+    },
+    "Space": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "footprint": {
+          "$ref": "#/$defs/Polygon3D"
+        },
+        "height_m": {
+          "exclusiveMinimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "usage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "footprint"
+      ],
+      "type": "object"
+    },
+    "StructuralMember": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "beam",
+            "joist",
+            "stud",
+            "header",
+            "plate",
+            "rafter"
+          ],
+          "type": "string"
+        },
+        "level_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "material": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/Size3"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "level_id",
+        "pose",
+        "size",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "SupportAssembly": {
+      "additionalProperties": false,
+      "properties": {
+        "assembly_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "basis": {
+          "$ref": "#/$defs/RuleReference"
+        },
+        "component_ids": {
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "interface_ids": {
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "level_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "supported_object_ids": {
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "assembly_type",
+        "level_id",
+        "supported_object_ids",
+        "component_ids",
+        "interface_ids",
+        "basis"
+      ],
+      "type": "object"
+    },
+    "SupportComponent": {
+      "additionalProperties": false,
+      "properties": {
+        "assembly_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "category": {
+          "enum": [
+            "support",
+            "fastener"
+          ]
+        },
+        "component_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "geometry_basis": {
+          "const": "catalog_exterior_envelope"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "part_key": {
+          "$ref": "#/$defs/Id"
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "product": {
+          "$ref": "#/$defs/CatalogProduct"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "size": {
+          "$ref": "#/$defs/Size3"
+        }
+      },
+      "required": [
+        "id",
+        "assembly_id",
+        "part_key",
+        "level_id",
+        "category",
+        "component_type",
+        "product",
+        "pose",
+        "size",
+        "geometry_basis"
+      ],
+      "type": "object"
+    },
+    "SupportInterface": {
+      "additionalProperties": false,
+      "properties": {
+        "assembly_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "attributes": {
+          "type": "object"
+        },
+        "component_ids": {
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "host_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "interface_key": {
+          "$ref": "#/$defs/Id"
+        },
+        "level_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pose": {
+          "$ref": "#/$defs/Pose"
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "substrate": {
+          "enum": [
+            "wood",
+            "steel",
+            "concrete",
+            "masonry"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "assembly_id",
+        "interface_key",
+        "level_id",
+        "host_id",
+        "substrate",
+        "pose",
+        "component_ids"
+      ],
+      "type": "object"
+    },
+    "SupportSelectionOutcome": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "else": {
+            "properties": {
+              "reason_codes": {
+                "minItems": 1
+              },
+              "selected_assembly_id": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "reason_codes"
+            ]
+          },
+          "if": {
+            "properties": {
+              "status": {
+                "const": "selected"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reason_codes": {
+                "maxItems": 0
+              },
+              "requested_basis": {
+                "$ref": "#/$defs/RuleReference"
+              },
+              "requested_level_id": {
+                "$ref": "#/$defs/Id"
+              },
+              "selected_assembly_id": {
+                "$ref": "#/$defs/Id"
+              }
+            },
+            "required": [
+              "selected_assembly_id",
+              "requested_level_id",
+              "requested_basis"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "intent_id": {
+          "$ref": "#/$defs/Id"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "reason_codes": {
+          "items": {
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "requested_basis": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleReference"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requested_level_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected_assembly_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "selected",
+            "unresolved"
+          ]
+        },
+        "supported_object_ids": {
+          "items": {
+            "$ref": "#/$defs/Id"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "intent_id",
+        "supported_object_ids",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Vector3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "z": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z"
+      ],
+      "type": "object"
+    },
+    "Wall": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "type": "object"
+        },
+        "centerline": {
+          "$ref": "#/$defs/Polyline3D"
+        },
+        "confidence": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "construction": {
+          "description": "How the wall is built: framed, masonry, concrete, or glazed. Omitted/null means unknown.",
+          "enum": [
+            "framed",
+            "masonry",
+            "concrete",
+            "glazed",
+            null
+          ]
+        },
+        "height_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "level_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "items": {
+            "$ref": "#/$defs/Provenance"
+          },
+          "type": "array"
+        },
+        "thickness_m": {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "level_id",
+        "centerline",
+        "thickness_m",
+        "height_m"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/banddude/officeadmin-building-model/contracts/oabm-model-v1.5.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Application-neutral semantic 3D building and electrical model. Canonical linear unit is metre; angular unit is radian; coordinates are right-handed +Z-up.",
+  "properties": {
+    "attributes": {
+      "type": "object"
+    },
+    "box_selection_outcomes": {
+      "items": {
+        "$ref": "#/$defs/BoxSelectionOutcome"
+      },
+      "type": "array"
+    },
+    "ceilings": {
+      "items": {
+        "$ref": "#/$defs/Ceiling"
+      },
+      "type": "array"
+    },
+    "circuits": {
+      "items": {
+        "$ref": "#/$defs/Circuit"
+      },
+      "type": "array"
+    },
+    "conductors": {
+      "items": {
+        "$ref": "#/$defs/Conductor"
+      },
+      "type": "array"
+    },
+    "coordinate_system": {
+      "$ref": "#/$defs/CoordinateSystem"
+    },
+    "electrical_boxes": {
+      "items": {
+        "$ref": "#/$defs/ElectricalBox"
+      },
+      "type": "array"
+    },
+    "electrical_devices": {
+      "items": {
+        "$ref": "#/$defs/ElectricalDevice"
+      },
+      "type": "array"
+    },
+    "electrical_equipment": {
+      "items": {
+        "$ref": "#/$defs/ElectricalEquipment"
+      },
+      "type": "array"
+    },
+    "fitting_interfaces": {
+      "items": {
+        "$ref": "#/$defs/FittingInterface"
+      },
+      "type": "array"
+    },
+    "fitting_selection_outcomes": {
+      "items": {
+        "$ref": "#/$defs/FittingSelectionOutcome"
+      },
+      "type": "array"
+    },
+    "fitting_selections": {
+      "items": {
+        "$ref": "#/$defs/FittingSelection"
+      },
+      "type": "array"
+    },
+    "levels": {
+      "items": {
+        "$ref": "#/$defs/Level"
+      },
+      "type": "array"
+    },
+    "model_id": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
+      "type": "string"
+    },
+    "name": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "obstacles": {
+      "items": {
+        "$ref": "#/$defs/Obstacle"
+      },
+      "type": "array"
+    },
+    "openings": {
+      "items": {
+        "$ref": "#/$defs/Opening"
+      },
+      "type": "array"
+    },
+    "ports": {
+      "items": {
+        "$ref": "#/$defs/Port"
+      },
+      "type": "array"
+    },
+    "provenance": {
+      "items": {
+        "$ref": "#/$defs/Provenance"
+      },
+      "type": "array"
+    },
+    "raceway_selection_outcomes": {
+      "items": {
+        "$ref": "#/$defs/RacewaySelectionOutcome"
+      },
+      "type": "array"
+    },
+    "raceway_selections": {
+      "items": {
+        "$ref": "#/$defs/RacewaySelection"
+      },
+      "type": "array"
+    },
+    "route_constraints": {
+      "items": {
+        "$ref": "#/$defs/RouteConstraint"
+      },
+      "type": "array"
+    },
+    "route_fittings": {
+      "items": {
+        "$ref": "#/$defs/RouteFitting"
+      },
+      "type": "array"
+    },
+    "routes": {
+      "items": {
+        "$ref": "#/$defs/Route"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.5.0"
+    },
+    "slabs": {
+      "items": {
+        "$ref": "#/$defs/Slab"
+      },
+      "type": "array"
+    },
+    "spaces": {
+      "items": {
+        "$ref": "#/$defs/Space"
+      },
+      "type": "array"
+    },
+    "structural_members": {
+      "items": {
+        "$ref": "#/$defs/StructuralMember"
+      },
+      "type": "array"
+    },
+    "support_assemblies": {
+      "items": {
+        "$ref": "#/$defs/SupportAssembly"
+      },
+      "type": "array"
+    },
+    "support_components": {
+      "items": {
+        "$ref": "#/$defs/SupportComponent"
+      },
+      "type": "array"
+    },
+    "support_interfaces": {
+      "items": {
+        "$ref": "#/$defs/SupportInterface"
+      },
+      "type": "array"
+    },
+    "support_selection_outcomes": {
+      "items": {
+        "$ref": "#/$defs/SupportSelectionOutcome"
+      },
+      "type": "array"
+    },
+    "walls": {
+      "items": {
+        "$ref": "#/$defs/Wall"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "box_selection_outcomes",
+    "coordinate_system",
+    "electrical_boxes",
+    "fitting_interfaces",
+    "fitting_selection_outcomes",
+    "fitting_selections",
+    "model_id",
+    "raceway_selection_outcomes",
+    "raceway_selections",
+    "schema_version",
+    "structural_members",
+    "support_assemblies",
+    "support_components",
+    "support_interfaces",
+    "support_selection_outcomes"
+  ],
+  "title": "OfficeAdmin Building Model canonical contract 1.5.0",
+  "type": "object"
+}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_EVEN, Decimal
 from collections.abc import Mapping
 from typing import Iterable, Protocol
@@ -28,6 +28,10 @@ from oabm.model import (
     Route,
     RouteConstraint,
     RouteFitting,
+    PHYSICAL_SCHEMA_VERSIONS,
+    RACEWAY_SCHEMA_VERSIONS,
+    SUPPORT_SCHEMA_VERSIONS,
+    FITTING_SCHEMA_VERSIONS,
     Size3,
     Slab,
     Space,
@@ -378,6 +382,7 @@ def generate_plan(
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
     level = _level(model, spec.level_id)
+    fitting_selections = _fitting_selection_by_id(model)
     cut_z = level.elevation_m + spec.cut_height_m
     min_z = level.elevation_m - spec.view_depth_below_m
     max_z = cut_z + spec.view_depth_above_m
@@ -387,9 +392,11 @@ def generate_plan(
         up=Vector3(x=0, y=1, z=0),
         normal=Vector3(x=0, y=0, z=1),
     )
-    entities = _plan_entities(model, spec.level_id, min_z=min_z, max_z=max_z, visibility=spec.visibility)
+    entities = _plan_entities(model, spec.level_id, min_z=min_z, max_z=max_z,
+                              visibility=spec.visibility, fitting_selection_by_id=fitting_selections)
     depth_interval = (min_z - level.elevation_m, max_z - level.elevation_m)
-    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval)
+    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval,
+                                         fitting_selection_by_id=fitting_selections)
     primitives: list[DrawingPrimitive] = []
     dimensions: list[DrawingDimension] = []
 
@@ -404,6 +411,7 @@ def generate_plan(
                 label_provider if spec.visibility.labels else None,
                 cut_depth=cut_z - level.elevation_m,
                 depth_interval=depth_interval,
+                fitting_selection_by_id=_fitting_selection_by_id(model),
             )
         )
         if spec.visibility.dimensions and isinstance(entity, Wall):
@@ -457,10 +465,13 @@ def generate_elevation(
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
+    fitting_selections = _fitting_selection_by_id(model)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
-    entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, spec.near_m, spec.far_m))
+    entities = tuple(entity for entity in entities if _entity_depth_overlaps(
+        entity, frame, spec.near_m, spec.far_m, fitting_selection_by_id=fitting_selections))
     depth_interval = (spec.near_m, spec.far_m)
-    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval)
+    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval,
+                                         fitting_selection_by_id=fitting_selections)
     primitives: list[DrawingPrimitive] = []
     dimensions: list[DrawingDimension] = []
     for entity in entities:
@@ -473,6 +484,7 @@ def generate_elevation(
                 symbol_provider,
                 label_provider if spec.visibility.labels else None,
                 depth_interval=depth_interval,
+                fitting_selection_by_id=_fitting_selection_by_id(model),
             )
         )
         if spec.visibility.dimensions and isinstance(entity, Opening):
@@ -528,10 +540,13 @@ def generate_section(
     _validated_dimension_decimals(dimension_decimals)
     _validated_dimension_overlap(dimension_overlap)
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
+    fitting_selections = _fitting_selection_by_id(model)
     entities = _spatial_entities(model, spec.level_ids, spec.visibility)
-    entities = tuple(entity for entity in entities if _entity_depth_overlaps(entity, frame, -spec.back_depth_m, spec.depth_m))
+    entities = tuple(entity for entity in entities if _entity_depth_overlaps(
+        entity, frame, -spec.back_depth_m, spec.depth_m, fitting_selection_by_id=fitting_selections))
     depth_interval = (-spec.back_depth_m, spec.depth_m)
-    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval)
+    bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval,
+                                         fitting_selection_by_id=fitting_selections)
     primitives: list[DrawingPrimitive] = []
     for entity in entities:
         primitives.extend(
@@ -543,6 +558,7 @@ def generate_section(
                 symbol_provider,
                 label_provider if spec.visibility.labels else None,
                 depth_interval=depth_interval,
+                fitting_selection_by_id=_fitting_selection_by_id(model),
             )
         )
     skipped_labels = 0
@@ -581,13 +597,16 @@ def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
         _device_schedule(model),
         _circuit_schedule(model),
     )
-    if model.schema_version in {"1.1.0", "1.2.0", "1.3.0"}:
+    if model.schema_version in PHYSICAL_SCHEMA_VERSIONS:
         schedules += (_box_schedule(model), _box_selection_schedule(model))
-    if model.schema_version in {"1.2.0", "1.3.0"}:
+    if model.schema_version in RACEWAY_SCHEMA_VERSIONS:
         schedules += (_raceway_schedule(model), _raceway_outcome_schedule(model))
-    if model.schema_version == "1.3.0":
+    if model.schema_version in SUPPORT_SCHEMA_VERSIONS:
         schedules += (_support_assembly_schedule(model), _support_component_schedule(model),
                       _support_interface_schedule(model), _support_outcome_schedule(model))
+    if model.schema_version in FITTING_SCHEMA_VERSIONS:
+        schedules += (_route_fitting_schedule(model), _fitting_interface_schedule(model),
+                      _fitting_outcome_schedule(model))
     return tuple(schedule for schedule in schedules if schedule.rows)
 
 
@@ -610,6 +629,97 @@ def _box_selection_schedule(model: BuildingModel) -> DrawingSchedule:
         outcome.selected_box_id or "not selected", ", ".join(outcome.reason_codes)))
         for outcome in sorted(model.box_selection_outcomes, key=lambda o: o.id))
     return DrawingSchedule(id="schedule:box-selections", title="Box Selection Outcomes", columns=columns, rows=rows)
+
+
+def _route_fitting_schedule(model: BuildingModel) -> DrawingSchedule:
+    selection_by_fitting = {row.fitting_id: row for row in model.fitting_selections}
+    outcome_by_fitting = {row.fitting_id: row for row in model.fitting_selection_outcomes}
+    interface_count: dict[str, int] = {}
+    for interface in model.fitting_interfaces:
+        selection = next((row for row in model.fitting_selections if row.id == interface.selection_id), None)
+        if selection is not None:
+            interface_count[selection.id] = interface_count.get(selection.id, 0) + 1
+    columns = tuple(ScheduleColumn(key, title) for key, title in (
+        ("fitting", "Existing fitting"), ("route", "Route"), ("type", "Fitting type"),
+        ("status", "Product selection"), ("product", "Exact catalog product"),
+        ("geometry", "Geometry basis"), ("envelope", "Derived envelope X×Y×Z m"),
+        ("interfaces", "Sourced interfaces"), ("reasons", "Unresolved reasons"),
+    ))
+    rows = []
+    for fitting in sorted(model.route_fittings, key=lambda row: row.id):
+        selection = selection_by_fitting.get(fitting.id)
+        outcome = outcome_by_fitting.get(fitting.id)
+        product = "not selected"
+        geometry = "no selected geometry"
+        envelope = ""
+        status = "unselected" if outcome is None else outcome.status
+        source_id = fitting.id
+        count = 0
+        reasons = "" if outcome is None else ", ".join(outcome.reason_codes)
+        if selection is not None:
+            source_id = selection.id
+            product = f"{selection.product.catalog_id}/{selection.product.catalog_revision}/{selection.product.product_id}"
+            geometry = selection.geometry_basis
+            count = interface_count.get(selection.id, 0)
+            if selection.size is not None:
+                envelope = "×".join(_fmt_number(v) for v in (selection.size.x, selection.size.y, selection.size.z))
+        rows.append(ScheduleRow(source_id=source_id, cells=(
+            fitting.id, fitting.route_id, fitting.fitting_type, status, product, geometry,
+            envelope, str(count), reasons,
+        )))
+    return DrawingSchedule(id="schedule:route-fittings", title="Existing Route Fittings", columns=columns,
+                           rows=tuple(rows))
+
+
+def _fitting_interface_schedule(model: BuildingModel) -> DrawingSchedule:
+    selection_by_id = {row.id: row for row in model.fitting_selections}
+    columns = tuple(ScheduleColumn(key, title) for key, title in (
+        ("fitting", "Existing fitting"), ("selection", "Selection"),
+        ("interface", "Interface key"), ("port", "Caller port"),
+        ("role", "Role"), ("connection", "Connection method"),
+        ("mate", "Counterpart port"), ("mate_product", "Exact counterpart product"),
+        ("mate_interface", "Counterpart interface"), ("pair", "Catalog pair ID"),
+        ("actual_od", "Actual OD check"),
+    ))
+    rows = []
+    for interface in sorted(model.fitting_interfaces, key=lambda row: (row.selection_id, row.interface_key, row.id)):
+        selection = selection_by_id[interface.selection_id]
+        product = interface.mating_product
+        rows.append(ScheduleRow(source_id=interface.id, cells=(
+            selection.fitting_id, interface.selection_id, interface.interface_key, interface.port_id,
+            interface.role, interface.connection_method, interface.mating_port_id,
+            f"{product.catalog_id}/{product.catalog_revision}/{product.product_id}",
+            interface.mating_interface_key, interface.mating_pair_id, "not performed",
+        )))
+    return DrawingSchedule(id="schedule:fitting-interfaces", title="Sourced Fitting Interfaces",
+                           columns=columns, rows=tuple(rows))
+
+
+def _fitting_outcome_schedule(model: BuildingModel) -> DrawingSchedule:
+    columns = tuple(ScheduleColumn(key, title) for key, title in (
+        ("intent", "Intent"), ("fitting", "Existing fitting"), ("route", "Route"),
+        ("status", "Status"), ("product", "Requested exact product"),
+        ("rule", "Caller rule"), ("reasons", "Unresolved reasons"),
+        ("actual_od", "Actual OD check"),
+    ))
+    rows = []
+    for outcome in sorted(model.fitting_selection_outcomes, key=lambda row: row.id):
+        product = outcome.requested_product
+        basis = outcome.requested_basis
+        rows.append(ScheduleRow(source_id=outcome.id, cells=(
+            outcome.intent_id, outcome.fitting_id, outcome.route_id, outcome.status,
+            "not supplied" if product is None else f"{product.catalog_id}/{product.catalog_revision}/{product.product_id}",
+            "not supplied" if basis is None else f"{basis.authority}/{basis.revision}/{basis.rule_id}",
+            ", ".join(outcome.reason_codes), "not performed",
+        )))
+    return DrawingSchedule(id="schedule:fitting-outcomes", title="Route Fitting Selection Outcomes",
+                           columns=columns, rows=tuple(rows))
+
+
+def _fitting_selection_by_id(model: BuildingModel) -> dict[str, Entity]:
+    if model.schema_version not in FITTING_SCHEMA_VERSIONS:
+        return {}
+    return {row.fitting_id: row for row in model.fitting_selections}
 
 
 def _room_schedule(model: BuildingModel) -> DrawingSchedule:
@@ -728,6 +838,7 @@ def _entity_primitives(
     *,
     cut_depth: float | None = None,
     depth_interval: tuple[float, float] | None = None,
+    fitting_selection_by_id: Mapping[str, Entity] | None = None,
 ) -> list[DrawingPrimitive]:
     result: list[DrawingPrimitive] = []
     if isinstance(entity, Wall):
@@ -875,6 +986,32 @@ def _entity_primitives(
                 )
             )
     elif isinstance(entity, RouteFitting):
+        selection = (fitting_selection_by_id or {}).get(entity.id)
+        if selection is not None and getattr(selection, "geometry_basis", None) == "dimension_derived_envelope":
+            size = selection.size
+            if size is not None:
+                product = selection.product
+                metadata = (
+                    ("geometry_basis", "dimension_derived_envelope"),
+                    ("geometry_disclosure", "dimension-derived envelope only; not native CAD or manufacturer geometry"),
+                    ("product_id", product.product_id),
+                )
+                envelope = _box_entity_primitives(
+                    entity.id, entity.pose, size, frame, bounds,
+                    layer="electrical:fitting-envelopes",
+                    style=LineStyle(stroke="electrical", pattern="dash"),
+                )
+                result.extend(replace(item,
+                    source_ids=tuple(sorted({*item.source_ids, selection.id})),
+                    metadata=metadata,
+                ) for item in envelope)
+                if view_type == "section" and _box_intersects_section(entity.pose, size, frame):
+                    cuts = _box_section_cut(entity.id, entity.pose, size, frame, bounds,
+                                            layer="electrical:fitting-envelopes")
+                    result.extend(replace(item,
+                        source_ids=tuple(sorted({*item.source_ids, selection.id})),
+                        metadata=metadata,
+                    ) for item in cuts)
         symbol = symbol_provider(entity, view_type)
         if symbol is not None:
             result.extend(_symbol_primitive(entity, frame, bounds, symbol, "symbols:fittings"))
@@ -1077,7 +1214,9 @@ def _opening_dimensions(opening: Opening, frame: ProjectionFrame, bounds: Bounds
     return result
 
 
-def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: float, visibility: VisibilityPolicy) -> tuple[Entity, ...]:
+def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: float,
+                   visibility: VisibilityPolicy,
+                   fitting_selection_by_id: Mapping[str, Entity] | None = None) -> tuple[Entity, ...]:
     result: list[Entity] = []
     if visibility.architecture:
         result.extend(
@@ -1096,7 +1235,9 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
     if visibility.routes:
         result.extend(item for item in model.routes if _polyline_z_overlap(item.centerline, min_z, max_z))
         route_ids = {item.id for item in result if isinstance(item, Route)}
-        result.extend(item for item in model.route_fittings if item.route_id in route_ids and min_z <= item.pose.position.z <= max_z)
+        result.extend(item for item in model.route_fittings if item.route_id in route_ids and
+                      _entity_z_overlap(item, min_z, max_z,
+                                        fitting_selection_by_id=fitting_selection_by_id))
     if visibility.obstacles:
         result.extend(item for item in model.obstacles if item.level_id in {None, level_id})
     if visibility.constraints:
@@ -1142,23 +1283,25 @@ def _opening_level(opening: Opening, model: BuildingModel) -> str | None:
 
 
 
-def _entity_z_overlap(entity: Entity, min_z: float, max_z: float) -> bool:
-    points = _entity_points(entity)
+def _entity_z_overlap(entity: Entity, min_z: float, max_z: float, *,
+                      fitting_selection_by_id: Mapping[str, Entity] | None = None) -> bool:
+    points = _entity_points(entity, fitting_selection_by_id=fitting_selection_by_id)
     if not points:
         return False
     low = min(point.z for point in points)
     high = max(point.z for point in points)
     return high >= min_z - _EPS and low <= max_z + _EPS
 
-def _entity_depth_overlaps(entity: Entity, frame: ProjectionFrame, near_m: float, far_m: float) -> bool:
-    points = _entity_points(entity)
+def _entity_depth_overlaps(entity: Entity, frame: ProjectionFrame, near_m: float, far_m: float, *,
+                           fitting_selection_by_id: Mapping[str, Entity] | None = None) -> bool:
+    points = _entity_points(entity, fitting_selection_by_id=fitting_selection_by_id)
     if not points:
         return False
     low, high = depth_range(frame, points)
     return high >= near_m - _EPS and low <= far_m + _EPS
 
 
-def _entity_points(entity: Entity) -> tuple[Point3, ...]:
+def _entity_points(entity: Entity, *, fitting_selection_by_id: Mapping[str, Entity] | None = None) -> tuple[Point3, ...]:
     if isinstance(entity, Wall): return tuple(point for segment in _wall_segment_corners(entity) for point in segment)
     if isinstance(entity, Space):
         return _vertical_prism_points(entity.footprint.points, entity.height_m) if entity.height_m is not None else entity.footprint.points
@@ -1169,7 +1312,11 @@ def _entity_points(entity: Entity) -> tuple[Point3, ...]:
         if entity.size is None: return (entity.pose.position,)
         return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
     if isinstance(entity, Route): return entity.centerline.points
-    if isinstance(entity, RouteFitting): return (entity.pose.position,)
+    if isinstance(entity, RouteFitting):
+        selection = (fitting_selection_by_id or {}).get(entity.id)
+        if selection is not None and getattr(selection, "geometry_basis", None) == "dimension_derived_envelope" and selection.size is not None:
+            return oriented_box_corners(entity.pose, selection.size.x, selection.size.y, selection.size.z)
+        return (entity.pose.position,)
     if isinstance(entity, (Obstacle, RouteConstraint)): return geometry_points(entity.geometry)
     return ()
 
@@ -1179,6 +1326,7 @@ def _auto_bounds(
     entities: tuple[Entity, ...],
     *,
     depth_interval: tuple[float, float] | None = None,
+    fitting_selection_by_id: Mapping[str, Entity] | None = None,
 ) -> Bounds2:
     points: list[Point2] = []
     for entity in entities:
@@ -1193,7 +1341,8 @@ def _auto_bounds(
                 projected, _ = project_points(frame, fragment)
                 points.extend(projected)
             continue
-        projected, _ = project_points(frame, _entity_points(entity))
+        projected, _ = project_points(frame, _entity_points(entity,
+                                                            fitting_selection_by_id=fitting_selection_by_id))
         points.extend(projected)
     return union_bounds(points, padding=0.5)
 
@@ -1422,6 +1571,7 @@ def _entities(model: BuildingModel) -> tuple[Entity, ...]:
         *model.electrical_boxes, *model.box_selection_outcomes,
         *model.raceway_selections, *model.raceway_selection_outcomes,
         *model.support_assemblies, *model.support_components, *model.support_interfaces, *model.support_selection_outcomes,
+        *model.fitting_selections, *model.fitting_interfaces, *model.fitting_selection_outcomes,
     )
 
 

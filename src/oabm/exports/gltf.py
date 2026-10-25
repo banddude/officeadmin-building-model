@@ -50,6 +50,8 @@ from oabm.model import (
     Point3,
     Route,
     SUPPORT_SCHEMA_VERSIONS,
+    PHYSICAL_SCHEMA_VERSIONS,
+    RACEWAY_SCHEMA_VERSIONS,
     Slab,
     Space,
     Wall,
@@ -91,6 +93,9 @@ _COLOURS = {
     "slab": (0.55, 0.55, 0.55),
     "space": (0.45, 0.50, 0.55),
     "route": (0.60, 0.60, 0.62),
+    # Dimension-derived fitting boxes are explicitly display envelopes, not
+    # native manufacturer geometry. Their alpha is always the derived style.
+    "fitting_envelope": (0.25, 0.58, 0.72),
     # Conductor wire colours follow the common convention: phases cycle
     # black/red/blue by order within the circuit, neutral is white/grey,
     # ground is green, and an unknown role gets a neutral purple (and keeps
@@ -692,6 +697,71 @@ def _build_document(
             "extras": extras,
             "pose": entity.pose,
         })
+    if model.schema_version == "1.5.0":
+        selection_by_fitting = {row.fitting_id: row for row in model.fitting_selections}
+        outcome_by_fitting = {row.fitting_id: row for row in model.fitting_selection_outcomes}
+        interface_by_selection: dict[str, list[Any]] = {}
+        for row in model.fitting_interfaces:
+            interface_by_selection.setdefault(row.selection_id, []).append(row)
+        for fitting in model.route_fittings:
+            selection = selection_by_fitting.get(fitting.id)
+            outcome = outcome_by_fitting.get(fitting.id)
+            related_interfaces = (() if selection is None else tuple(sorted(
+                interface_by_selection.get(selection.id, ()), key=lambda row: (row.interface_key, row.id)
+            )))
+            extras = _extras(fitting, "route_fitting", None,
+                             include_canonical_id=include_canonical_node_ids)
+            extras.update(route_id=fitting.route_id, fitting_type=fitting.fitting_type,
+                          model_object=True, selection_status=(outcome.status if outcome else "unselected"),
+                          native_cad_geometry=False)
+            if selection is not None:
+                extras.update(
+                    selection_id=selection.id,
+                    product={"catalog_id": selection.product.catalog_id,
+                             "catalog_revision": selection.product.catalog_revision,
+                             "product_id": selection.product.product_id},
+                    geometry_basis=selection.geometry_basis,
+                    rule={"authority": selection.basis.authority,
+                          "revision": selection.basis.revision,
+                          "rule_id": selection.basis.rule_id},
+                    interface_ids=[row.id for row in related_interfaces],
+                    interfaces=[row.to_dict() if hasattr(row, "to_dict") else {
+                        "id": row.id, "interface_key": row.interface_key,
+                        "role": row.role, "port_id": row.port_id,
+                        "mating_port_id": row.mating_port_id,
+                        "mating_product": {"catalog_id": row.mating_product.catalog_id,
+                                           "catalog_revision": row.mating_product.catalog_revision,
+                                           "product_id": row.mating_product.product_id},
+                        "mating_interface_key": row.mating_interface_key,
+                        "mating_pair_id": row.mating_pair_id,
+                    } for row in related_interfaces],
+                )
+                if selection.geometry_basis == "dimension_derived_envelope":
+                    assert selection.size is not None
+                    extras["geometry_disclosure"] = "dimension-derived envelope only; not native CAD or manufacturer geometry"
+                    add({"name": fitting.id,
+                         "vertices": _local_box_vertices(selection.size.x, selection.size.y, selection.size.z),
+                         "material_key": ("fitting_envelope", True),
+                         "extras": extras, "pose": fitting.pose})
+                    continue
+            if outcome is not None:
+                extras.update(outcome_id=outcome.id, reason_codes=list(outcome.reason_codes),
+                              requested_product=(None if outcome.requested_product is None else {
+                                  "catalog_id": outcome.requested_product.catalog_id,
+                                  "catalog_revision": outcome.requested_product.catalog_revision,
+                                  "product_id": outcome.requested_product.product_id}),
+                              requested_basis=(None if outcome.requested_basis is None else {
+                                  "authority": outcome.requested_basis.authority,
+                                  "revision": outcome.requested_basis.revision,
+                                  "rule_id": outcome.requested_basis.rule_id}))
+            # Metadata-only and unresolved records remain visible without a
+            # mesh, fabricated dimensions, or a synthetic interface port.
+            extras["geometry_disclosure"] = (
+                "metadata only; no geometry emitted" if selection is not None
+                else "no selected geometry; existing fitting metadata only"
+            )
+            add({"name": fitting.id, "meshless": True, "extras": extras,
+                 "pose": fitting.pose})
     for entity in model.routes:
         extras = _route_extras(model, entity)
         _add_name(extras, entity)
@@ -725,7 +795,7 @@ def _build_document(
 
     # Second pass: assemble glTF structures deterministically.
     entries.sort(key=lambda entry: entry["name"])
-    material_keys = sorted({entry["material_key"] for entry in entries})
+    material_keys = sorted({entry["material_key"] for entry in entries if not entry.get("meshless")})
     material_index = {key: index for index, key in enumerate(material_keys)}
 
     nodes: list[dict[str, Any]] = []
@@ -735,6 +805,16 @@ def _build_document(
     buffer = bytearray()
 
     for entry in entries:
+        if entry.get("meshless"):
+            node = {"name": entry["name"], "extras": entry["extras"]}
+            pose = entry.get("pose")
+            if pose is not None:
+                node["translation"] = _yup_point(pose.position)
+                rotation = _gltf_rotation(pose.rotation)
+                if rotation is not None:
+                    node["rotation"] = rotation
+            nodes.append(node)
+            continue
         byte_offset = len(buffer)
         packed, minimum, maximum = _pack_positions(entry["vertices"])
         buffer += packed
@@ -816,7 +896,7 @@ def _build_document(
             children = [index for index in sorted(set(indices)) if index not in moved]
             # Moving a member under a caller group must keep the scene a tree.
             # Logical assembly membership remains explicit in canonical extras.
-            if model.schema_version == "1.3.0":
+            if model.schema_version in SUPPORT_SCHEMA_VERSIONS:
                 for existing in nodes:
                     if "children" in existing:
                         existing["children"]=[i for i in existing["children"] if i not in children]
@@ -880,17 +960,21 @@ def _build_document(
         # Optional extension: never in extensionsRequired, so a viewer
         # without it still loads the file and simply shows the group.
         document["extensionsUsed"] = [_NODE_VISIBILITY_EXTENSION]
-    if model.schema_version in {"1.1.0", "1.2.0", "1.3.0"}:
+    if model.schema_version in PHYSICAL_SCHEMA_VERSIONS:
         document["asset"]["extras"].update(
             canonical_schema_version=model.schema_version,
             box_selection_outcomes=model.to_dict()["box_selection_outcomes"],
         )
-    if model.schema_version in {"1.2.0", "1.3.0"}:
+    if model.schema_version in RACEWAY_SCHEMA_VERSIONS:
         document["asset"]["extras"]["raceway_selection_outcomes"] = model.to_dict()["raceway_selection_outcomes"]
-    if model.schema_version == "1.3.0":
+    if model.schema_version in SUPPORT_SCHEMA_VERSIONS:
         support_document=model.to_dict()
         document["asset"]["extras"].update({name:support_document[name] for name in
             ("support_assemblies", "support_interfaces", "support_selection_outcomes")})
+    if model.schema_version == "1.5.0":
+        fitting_document = model.to_dict()
+        document["asset"]["extras"].update({name: fitting_document[name] for name in
+            ("fitting_selections", "fitting_interfaces", "fitting_selection_outcomes")})
     if buffer:
         document["bufferViews"] = buffer_views
         document["accessors"] = accessors
@@ -911,13 +995,20 @@ def _build_document(
     if options.groups:
         counts["groups"] = group_counts
         counts["unmatched_group_ids"] = unmatched_group_ids
-    if model.schema_version in {"1.1.0", "1.2.0", "1.3.0"}:
+    if model.schema_version in PHYSICAL_SCHEMA_VERSIONS:
         counts["electrical_boxes"] = len(model.electrical_boxes)
         counts["unresolved_box_selections"] = sum(o.status == "unresolved" for o in model.box_selection_outcomes)
-    if model.schema_version == "1.3.0":
+    if model.schema_version in SUPPORT_SCHEMA_VERSIONS:
         counts["support_components"] = len(model.support_components)
         counts["support_assemblies"] = len(model.support_assemblies)
         counts["unresolved_support_selections"] = sum(o.status == "unresolved" for o in model.support_selection_outcomes)
+    if model.schema_version == "1.5.0":
+        counts["route_fittings"] = len(model.route_fittings)
+        counts["fitting_envelopes"] = sum(row.geometry_basis == "dimension_derived_envelope"
+                                           for row in model.fitting_selections)
+        counts["unresolved_fitting_selections"] = sum(
+            row.status == "unresolved" for row in model.fitting_selection_outcomes
+        )
     if options.glazed_outline:
         counts["glazed_outlines"] = glazed_outline_count
     if options.min_display_wall_thickness_m is not None:
@@ -1182,7 +1273,7 @@ def _route_extras(model: BuildingModel, route: Route) -> dict[str, Any]:
     ]
     if conductors:
         extras["conductors"] = conductors
-    if model.schema_version in {"1.2.0", "1.3.0"}:
+    if model.schema_version in RACEWAY_SCHEMA_VERSIONS:
         extras["raceway_selections"] = [s for s in model.to_dict()["raceway_selections"] if s["route_id"] == route.id]
         extras["raceway_selection_outcomes"] = [o for o in model.to_dict()["raceway_selection_outcomes"] if o["route_id"] == route.id]
     return extras

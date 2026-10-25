@@ -8,7 +8,9 @@ import re
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from typing import Any, get_args, get_origin, get_type_hints
 
-from oabm.model import BuildingModel, ContractError, Entity, CoordinateSystem, Provenance, SUPPORTED_SCHEMA_VERSIONS, validate_model
+from oabm.model import (BuildingModel, ContractError, Entity, CoordinateSystem, Provenance,
+                        FITTING_SCHEMA_VERSION, STRUCTURAL_SCHEMA_VERSION,
+                        SUPPORTED_SCHEMA_VERSIONS, validate_model)
 from oabm.model.common import _finite, _validate_id, _validate_json_value
 from oabm.model.model import _decode_dataclass, _encode
 
@@ -19,6 +21,26 @@ ENTITY_TYPES = {name: get_args(tp)[0] for name, tp in get_type_hints(BuildingMod
                 if get_origin(tp) is tuple and get_args(tp) and isinstance(get_args(tp)[0], type)
                 and issubclass(get_args(tp)[0], Entity)}
 OPTIONAL_FACTS = ("circuit_number", "poles", "phase", "voltage_v", "load_va")
+
+
+def _minimum_source_schema(collection: str) -> str:
+    """Return the first canonical version that may contain this source row.
+
+    RouteFitting objects predate schema 1.5; only the three product-decision
+    collections are new to that version.
+    """
+    if collection in {"fitting_selections", "fitting_interfaces",
+                      "fitting_selection_outcomes"}:
+        return FITTING_SCHEMA_VERSION
+    if collection == "structural_members":
+        return STRUCTURAL_SCHEMA_VERSION
+    if collection.startswith("support_"):
+        return "1.3.0"
+    if collection.startswith("raceway_"):
+        return "1.2.0"
+    if collection in {"electrical_boxes", "box_selection_outcomes"}:
+        return "1.1.0"
+    return "1.0.0"
 
 
 def _json(value) -> str:
@@ -177,7 +199,8 @@ class CircuitFactRow:
             raise ContractError("circuit row contradicts actual source-port ownership")
         if self.source_port.id==self.source_owner.id or self.source_owner.collection in {
             'box_selection_outcomes','raceway_selections','raceway_selection_outcomes',
-            'support_assemblies','support_components','support_interfaces','support_selection_outcomes'}:
+            'support_assemblies','support_components','support_interfaces','support_selection_outcomes',
+            'fitting_selections','fitting_interfaces','fitting_selection_outcomes'}:
             raise ContractError('nonphysical/self source owner cannot own a circuit source port')
         _array(self.missing_fields, str, "missing_fields")
         if self.missing_fields != _missing(self.circuit.entity):
@@ -306,10 +329,7 @@ class PanelScheduleReport:
             raise ContractError("explicit panel circuit cannot be unassigned")
         snapshots={}
         for source in tuple(p.panel for p in self.panels)+tuple(s for r in all_rows for s in (r.circuit,r.source_port,r.source_owner)):
-            minimum = ('1.3.0' if source.collection.startswith('support_') else
-                       '1.2.0' if source.collection.startswith('raceway_') else
-                       '1.1.0' if source.collection in {'electrical_boxes','box_selection_outcomes'} else '1.0.0')
-            if self.source_model_version < minimum:
+            if self.source_model_version < _minimum_source_schema(source.collection):
                 raise ContractError('source collection is unavailable in declared model version')
             previous=snapshots.get(source.id)
             if previous is not None and previous != source:

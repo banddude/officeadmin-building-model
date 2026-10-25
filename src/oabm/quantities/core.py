@@ -23,6 +23,9 @@ from oabm.model import (
     RouteFitting,
     validate_model,
     provenance_applies_to,
+    RACEWAY_SCHEMA_VERSION,
+    SUPPORT_SCHEMA_VERSION,
+    FITTING_SCHEMA_VERSION,
 )
 from oabm.routing.overlap import RouteOverlap, find_overlapping_route_runs
 
@@ -274,7 +277,9 @@ def extract_quantities(
                 entities=evidence_entities,
                 assembly_resolver=assembly_resolver,
                 group=group_owner.get(route.id),
-                consumed_paths=("centerline",) if model.schema_version in {"1.2.0", "1.3.0"} else None,
+                consumed_paths=("centerline",) if model.schema_version in {
+                    RACEWAY_SCHEMA_VERSION, SUPPORT_SCHEMA_VERSION, FITTING_SCHEMA_VERSION,
+                } else None,
             )
         )
 
@@ -285,15 +290,15 @@ def extract_quantities(
                 (outcome.id, outcome.route_id)))
 
     for fitting in sorted(model.route_fittings, key=lambda item: item.id):
-        if fitting.attributes.get("consolidation", {}).get("nonmaterial") is True:
+        consolidation = fitting.attributes.get("consolidation")
+        if isinstance(consolidation, dict) and consolidation.get("nonmaterial") is True:
             continue  # a route-split port owner, not a physical fitting
         # A fitting inherits its route's group unless the caller named the
         # fitting itself; ``route_id`` is reference-checked above.
         fitting_group = group_owner.get(fitting.id)
         if fitting_group is None:
             fitting_group = group_owner.get(fitting.route_id)
-        contributions.append(
-            _contribution(
+        contribution = _contribution(
                 category="fitting",
                 item_type=fitting.fitting_type,
                 quantity=1.0,
@@ -306,7 +311,53 @@ def extract_quantities(
                 assembly_resolver=assembly_resolver,
                 group=fitting_group,
             )
-        )
+        selection = next((row for row in model.fitting_selections if row.fitting_id == fitting.id), None)
+        outcome = next((row for row in model.fitting_selection_outcomes if row.fitting_id == fitting.id), None)
+        if selection is not None:
+            interfaces = tuple(sorted(
+                (row for row in model.fitting_interfaces if row.selection_id == selection.id),
+                key=lambda row: (row.interface_key, row.id),
+            ))
+            pair_facts = tuple(
+                (row.interface_key, row.mating_product.catalog_id,
+                 row.mating_product.catalog_revision, row.mating_product.product_id,
+                 row.mating_interface_key, row.mating_pair_id)
+                for row in interfaces
+            )
+            contribution = replace(
+                contribution,
+                variant=contribution.variant + (
+                    ("catalog_id", selection.product.catalog_id),
+                    ("catalog_revision", selection.product.catalog_revision),
+                    ("product_id", selection.product.product_id),
+                    ("geometry_basis", selection.geometry_basis),
+                    ("rule_authority", selection.basis.authority),
+                    ("rule_revision", selection.basis.revision),
+                    ("rule_id", selection.basis.rule_id),
+                    ("mating_pairs", pair_facts),
+                ),
+                # Keep the physical fitting as the only counted source entity.
+                # Product and interface evidence qualifies the line without
+                # creating additional countable inventory rows.
+                provenance=_merge_provenance(
+                    contribution.provenance,
+                    selection.provenance,
+                    *(row.provenance for row in interfaces),
+                ),
+                confidence=min(
+                    contribution.confidence, selection.confidence,
+                    *(row.confidence for row in interfaces),
+                ),
+            )
+        contributions.append(contribution)
+
+    for outcome in model.fitting_selection_outcomes:
+        if outcome.status == "unresolved":
+            warnings.append(QuantityWarning(
+                "unresolved_fitting_selection",
+                f"{outcome.fitting_id}: {', '.join(outcome.reason_codes)}; the existing route-fitting object is counted once, but no product compatibility is asserted.",
+                (outcome.id, outcome.fitting_id),
+            ))
 
     for conductor in sorted(model.conductors, key=lambda item: item.id):
         if not conductor.route_ids:
@@ -426,7 +477,7 @@ def extract_quantities(
         if outcome.status=="unresolved":
             warnings.append(QuantityWarning("unresolved_support_selection",
                 f"{outcome.intent_id}: {', '.join(outcome.reason_codes)}; no support hardware was invented.",(outcome.id,)))
-    if model.schema_version=="1.3.0" and model.routes and not model.support_selection_outcomes:
+    if model.schema_version in {SUPPORT_SCHEMA_VERSION, FITTING_SCHEMA_VERSION} and model.routes and not model.support_selection_outcomes:
         warnings.append(QuantityWarning("support_design_unrequested",
             "No explicit support assembly intents were supplied; route length does not establish support or fastener quantities.",
             tuple(sorted(r.id for r in model.routes))))
@@ -443,6 +494,12 @@ def extract_quantities(
             consumed_paths=claim.consumed_paths,
         ))
     measured = {identity for item in contributions for identity in item.source_entity_ids}
+    # These are nonphysical decision/evidence rows, not quantity-bearing
+    # inventory. Their selected product details are folded into the existing
+    # fitting contribution above; unresolved outcomes appear as warnings.
+    measured.update(row.id for row in model.fitting_selections)
+    measured.update(row.id for row in model.fitting_interfaces)
+    measured.update(row.id for row in model.fitting_selection_outcomes)
     for name, entities in collections.items():
         missing = tuple(sorted(entity.id for entity in entities if entity.id not in measured))
         if missing:
@@ -816,7 +873,7 @@ _CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | frozenset({
     "electrical_boxes", "box_selection_outcomes",
     "raceway_selections", "raceway_selection_outcomes",
     "support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes",
-    "structural_members",
+    "structural_members", "fitting_selections", "fitting_interfaces", "fitting_selection_outcomes",
 })
 
 def _canonical_entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:

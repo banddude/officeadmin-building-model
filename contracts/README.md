@@ -8,6 +8,8 @@ Canonical serialized contracts live here. Do not create competing workstream-loc
 - `oabm-model-v1.1.schema.json`: explicit version `1.1.0`, adding physical electrical boxes and selection outcomes
 - `oabm-model-v1.2.schema.json`: explicit version `1.2.0`, adding whole-route raceway/cable product selections and unresolved outcomes
 - `oabm-model-v1.3.schema.json`: explicit version `1.3.0`, adding shared support assemblies, posed components/interfaces, and selection outcomes; see [migration and limits](../docs/shared-supports.md)
+- `oabm-model-v1.4.schema.json`: explicit version `1.4.0`, adding caller-confirmed structural members; see [migration and limits](../docs/structural-members.md)
+- `oabm-model-v1.5.schema.json`: explicit version `1.5.0`, adding exact-product route-fitting selections, explicit interface-to-port bindings, and outcomes; see [bounded route-fitting contract](../docs/route-fitting-selection-contract.md)
 - Python types and reference-integrity validation: `src/oabm/model/`
 - Semantics and invariants: `docs/model-contract-v1.md`
 - Contract fixtures: `fixtures/model/v1/`

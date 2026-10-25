@@ -33,6 +33,81 @@ Wall and ceiling geometry contributes candidate coordinates and optional lower-c
 
 Glazed walls (`Wall.construction == "glazed"`) are never surface pathways: they contribute no surface rule and get no `surface_path_discount`. Instead, any segment whose midpoint lies inside a glazed wall's padded bounds (the same padding a surface rule would use) costs `glazed_wall_penalty` times its length, so concealment in glazing is discouraged but still allowed when the geometry forces it. Each final route segment whose midpoint remains inside a glazed wall's padded bounds is reported as a `route_in_glazed_wall` entry in the route attributes, with the wall id and segment index. Glazing stays soft: a true no-go region is still the caller's `Obstacle`.
 
+## Caller-supplied allowed route volume (opt-in)
+
+`route_between_ports(..., allowed_domain=AllowedRouteDomain(...))` accepts an
+explicit, transient route-request constraint. `AllowedRouteDomain` names the
+caller-supplied union of finite `Box3D` volumes; its `kind` and `source_ids`
+are descriptive receipt fields, not physical objects. The domain does not
+create walls, framing, openings, or other blockers, and it does not replace
+canonical model geometry. Existing hard `Obstacle`, hard route constraints,
+and `StructuralMember` geometry remain independent no-go volumes.
+
+When supplied, the router requires the complete swept route envelope—not just
+ports or corridor visits—to fit in the union of volumes. Each straight segment
+and both port stubs are expanded to a conservative axis-aligned box by
+the resolved nominal radius plus `RoutingOptions.clearance_m`; a domain-mode
+route therefore requires a known positive diameter from the explicit argument
+or port data. The nominal-radius envelope is modeled geometry only: actual
+raceway/cable outer diameter, fitting envelopes, bend radius, and installation
+clearance are not verified. `clearance_m` is a geometric input, not an
+installation/code clearance determination. That swept box must be covered by
+the domain-volume union. The same check runs after simplification and after
+optional bundle-source alignment. Candidate edges that leave the union are
+discarded by Dijkstra. Boxes can meet at a seam: union coverage is checked
+across the seam rather than requiring each complete edge to fit in one box.
+This swept-AABB rule is conservative for round cable/conduit near corners. A
+domain must be a nonempty tuple of positive finite, cardinal-axis `Box3D`s;
+quarter-turn boxes are accepted only when their eight corners differ from the
+nearest signed axis permutation by no more than the declared 1e-9 m positional
+epsilon. Non-cardinal rotations are rejected; accepted boxes are not expanded
+to the AABB of a genuinely rotated volume. The first implementation caps the
+union at 128 boxes.
+The lattice is capped at 200,000 candidate nodes, each search at 500,000 pushed
+states, and a single union-coverage check at 4,096 uncovered fragments;
+exceeding a cap fails explicitly rather than weakening containment.
+
+The router writes the exact caller volume boxes (pose and size, without
+rounding), domain id/kind/source ids, nominal route radius, clearance, and
+containment method into the router provenance, and marks actual outer diameter
+as unverified. Route attributes add
+`geometry_check.status = "contained_and_clear_of_checked_blockers"`, the
+supported blocker classes and up to 256 sorted blocker IDs, plus explicit
+limitations and a generation-time-only revalidation marker. The checked hard
+blockers in this slice are `Obstacle`, `StructuralMember`, and hard no-go/avoid
+`RouteConstraint` geometry. This is
+not a complete building clash check: `Wall` and `Ceiling` geometry remain
+pathway preferences, while `Slab` and `Opening` geometry is not checked as a
+blocker. The status says only that the swept route fits the caller volume and
+avoids those checked hard blockers; it does not say that a wall is buildable to
+traverse, authorize a penetration, or establish code compliance. A future assembly generator can adapt explicit
+free-space geometry into this input, but this API itself generates no domain
+or penetration. If no domain is passed, legacy routing is unchanged and emits
+no domain metadata. `design_proposed_circuits(..., allowed_domain=...)` passes
+the same explicit domain to every generated route leg.
+
+An endpoint or stub outside the selected volume raises `NoRouteError` with a
+stable reason code. A route blocked within the union raises
+`NoRouteError(reason="no_path_within_allowed_domain")`; this means no path was
+found on the bounded deterministic candidate grid, not that continuous free
+space was exhaustively proven disconnected. Its sorted `blocker_ids` identify
+hard geometry encountered on rejected candidate edges, not a minimal cut set.
+`RouteConstraint` required corridors remain visit-once constraints and are
+not reinterpreted as allowed volumes. For `design_proposed_circuits`, the
+normalized non-null domain request is retained in circuit design metadata;
+absence of that field remains the legacy unbounded representation, preserving
+default serialization. Reusing a `user_input_id` cannot silently change
+between bounded and unbounded routing or replace its domain. Bounded design
+also stores a deterministic `bounded-routing-context-v1` fingerprint per leg
+over the selected ports, route type/diameter, all routing options, allowed
+volumes, and router-relevant model geometry (including framing members and
+active constraints), plus a fingerprint of the saved route and fittings.
+Reusing that decision requires both fingerprints to match current inputs; a
+changed port, clearance, or blocker fails closed and needs a fresh decision ID
+to regenerate. The geometry-check receipt describes the calculation when
+that route was produced; it is not live validation and does not update after
+host-model changes.
+
 ## Bundle hints (optional)
 
 A caller that routes runs in sequence can pass earlier runs to `route_between_ports` as `bundle_hints=BundleHints(paths=(...), discount=...)`. Later runs may then follow those paths at reduced edge cost, so home runs from one panel bundle onto a few shared trunks instead of zigzagging independently. The caller decides the order and which paths to pass; the router only prices edges. Hints are caller input only: they are never persisted and never become routes themselves.

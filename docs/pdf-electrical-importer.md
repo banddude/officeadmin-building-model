@@ -26,6 +26,50 @@ ratings are also accepted. An annotation alone cannot establish a panelboard
 from its free-form subject or contents. A source without a reliable panel label remains
 unresolved; circuit text or proximity does not supply the missing identity.
 
+## Circuit materialization policy
+
+The default `circuit_policy="legacy"` preserves existing import bytes and
+behavior. A caller can explicitly choose `circuit_policy="defer_all"` on
+`ElectricalPdfImporter`, `import_pdf(...)`, or `import_document(...)` for a
+device/equipment-only staging import:
+
+```python
+staged = ElectricalPdfImporter(
+    circuit_policy="defer_all",
+    schedule_reviews=selected_schedule_reviews,
+).import_document(
+    extracted_document,
+)
+```
+
+This policy defers **all** canonical circuit graph materialization, including
+associations for which the importer found candidate topology or a supplied
+human-reviewed schedule row. It returns the recognized electrical devices and
+equipment unchanged, with no importer-created ports, circuits, or conductors.
+It does not retain a second graph or canonical-looking circuit/port IDs.
+Source-bound candidate association diagnostics are stored at
+`attributes.pdf_electrical.circuit_review_candidates`; rows list candidate
+source/member entity IDs and source element/page/method references, with an
+explicit `candidate-association-not-materialized` status. They do not include
+raw source text and do not assert a canonical graph relationship or
+source-observed membership. Any explicit schedule-review facts are retained
+separately in the schedule diagnostics. The adjacent
+`circuit_materialization` report states that graph output was deferred and
+whether schedule-review input was supplied. Its
+`source_observation_fingerprint` is the existing
+`schedule_source_fingerprint(document)`: a SHA-256 fingerprint over the
+normalized extracted text/symbol/vector observations and page display
+provenance. It binds the diagnostic to extraction evidence, not to raw PDF
+bytes; `source_id` remains the caller/source alias.
+
+Schedule recognition and review facts remain available in
+`panel_schedules`: their existing `status`, circuit-number facts, and review
+diagnostics are preserved, while
+`canonical_materialization_status="deferred_by_policy"` distinguishes them
+from emitted circuit entities. This is a caller-controlled staging boundary,
+not a semantic resolution of ambiguous branch ownership (#76), a change to the
+canonical model contract, or a replacement for explicit reviewed design.
+
 ## Spatial semantics before convergence
 
 The canonical v1 model permits only one coordinate frame per document, so the

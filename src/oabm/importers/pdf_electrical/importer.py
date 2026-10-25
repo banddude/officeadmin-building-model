@@ -10312,13 +10312,22 @@ class ElectricalPdfImporter:
         topology_snap_radius_pt: float = 4.0,
         topology_endpoint_radius_pt: float = 18.0,
         topology_annotation_radius_pt: float = 60.0,
+        circuit_policy: str = "legacy",
     ) -> None:
+        if not isinstance(circuit_policy, str) or circuit_policy not in {
+            "legacy",
+            "defer_all",
+        }:
+            raise ElectricalPdfError(
+                "circuit_policy must be 'legacy' or 'defer_all'"
+            )
         self.symbol_rules = tuple(symbol_rules)
         self.instance_hints = tuple(instance_hints)
         self.schedule_reviews = tuple(
             review if isinstance(review, PanelScheduleReview) else PanelScheduleReview.from_dict(review)
             for review in schedule_reviews
         )
+        self.circuit_policy = circuit_policy
         seen_hint_ids: set[str] = set()
         for hint in self.instance_hints:
             if hint.identity_key in seen_hint_ids:
@@ -13316,6 +13325,150 @@ class ElectricalPdfImporter:
             )
         ports_by_owner_role = rebuilt_ports
 
+        circuit_review_candidates: list[dict[str, Any]] = []
+        if self.circuit_policy == "defer_all":
+            # Preserve only source-bound association candidates. This is
+            # deliberately not a second circuit graph: port/circuit IDs,
+            # canonical membership fields and graph-shaped records are not
+            # copied into model attributes.
+            ports_by_id = {
+                port.id: port for port in ports_by_owner_role.values()
+            }
+            for bucket in circuit_evidence.values():
+                source_port = ports_by_id.get(bucket["source_port_id"])
+                if source_port is None:
+                    raise ElectricalPdfError(
+                        "deferred circuit evidence refers to a missing source port"
+                    )
+                candidate_members: set[str] = set()
+                for port_id in bucket["load_port_ids"]:
+                    port = ports_by_id.get(port_id)
+                    if port is None:
+                        raise ElectricalPdfError(
+                            "deferred circuit evidence refers to a missing member port"
+                        )
+                    candidate_members.add(port.owner_id)
+
+                evidence_rows: list[dict[str, Any]] = []
+                for row in bucket["evidence"]:
+                    source_ids = {
+                        str(item)
+                        for item in row.get("source_element_ids", ())
+                        if item
+                    }
+                    if row.get("source_element_id"):
+                        source_ids.add(str(row["source_element_id"]))
+                    source_ids.update(
+                        str(item)
+                        for item in row.get("branch_vector_element_ids", ())
+                        if item
+                    )
+                    source_ids.update(
+                        str(item)
+                        for item in row.get("circuit_callout_ids", ())
+                        if item
+                    )
+                    evidence_row: dict[str, Any] = {
+                        "page": int(row["page"]),
+                        "source_element_ids": sorted(source_ids),
+                    }
+                    if row.get("method"):
+                        evidence_row["method"] = str(row["method"])
+                    if row.get("panel_tag"):
+                        evidence_row["candidate_panel_tag"] = str(row["panel_tag"])
+                    if row.get("circuit_number") is not None:
+                        evidence_row["candidate_circuit_number"] = str(
+                            row["circuit_number"]
+                        )
+                    evidence_rows.append(evidence_row)
+                evidence_rows.sort(
+                    key=lambda row: (
+                        row["page"],
+                        tuple(row["source_element_ids"]),
+                        row.get("method", ""),
+                    )
+                )
+
+                provenance_rows: list[dict[str, Any]] = []
+                for item in bucket["provenance"]:
+                    source_ids = {
+                        str(item.source_element_id)
+                    } if item.source_element_id else set()
+                    # Homerun evidence binds the annotation to the contributing
+                    # PDF line observations. Keep those identifiers only; do
+                    # not copy arbitrary attributes or source text into this
+                    # sanitized diagnostic.
+                    branch_ids = item.attributes.get("branch_vector_element_ids", ())
+                    if isinstance(branch_ids, (list, tuple)):
+                        source_ids.update(str(value) for value in branch_ids if value)
+                    provenance_row = {
+                        "source_kind": item.source_kind,
+                        "source_id": item.source_id,
+                        "source_element_ids": sorted(source_ids),
+                    }
+                    if item.page is not None:
+                        provenance_row["page"] = item.page
+                    if item.method is not None:
+                        provenance_row["method"] = item.method
+                    provenance_rows.append(provenance_row)
+                provenance_rows = [
+                    row
+                    for _, row in sorted(
+                        {
+                            (
+                                row.get("page", 0),
+                                row["source_kind"],
+                                row["source_id"],
+                                row.get("method", ""),
+                                tuple(row["source_element_ids"]),
+                            ): row
+                            for row in provenance_rows
+                        }.items()
+                    )
+                ]
+                candidate: dict[str, Any] = {
+                    "status": "candidate-association-not-materialized",
+                    "association_status": "candidate_only",
+                    "reason_code": "circuit_graph_deferred_by_policy",
+                    "source_id": document.source_id,
+                    "candidate_source_entity_id": source_port.owner_id,
+                    "candidate_member_entity_ids": sorted(candidate_members),
+                    "source_evidence": evidence_rows,
+                    "source_provenance": provenance_rows,
+                    "canonical_membership_emitted": False,
+                }
+                if bucket["circuit_number"] is not None:
+                    candidate["candidate_circuit_number"] = str(
+                        bucket["circuit_number"]
+                    )
+                source_entity = next(
+                    (
+                        entity
+                        for entity in (*equipment, *devices)
+                        if entity.id == source_port.owner_id
+                    ),
+                    None,
+                )
+                if source_entity is not None and source_entity.name:
+                    candidate["candidate_panel_tag"] = source_entity.name
+                circuit_review_candidates.append(candidate)
+            circuit_review_candidates.sort(
+                key=lambda row: (
+                    row["source_id"],
+                    row["candidate_source_entity_id"],
+                    row.get("candidate_circuit_number", ""),
+                    tuple(row["candidate_member_entity_ids"]),
+                    tuple(
+                        (
+                            item["page"],
+                            tuple(item["source_element_ids"]),
+                            item.get("method", ""),
+                        )
+                        for item in row["source_evidence"]
+                    ),
+                )
+            )
+
         circuits: list[Circuit] = []
         for circuit_id, bucket in sorted(circuit_evidence.items()):
             conflicts: dict[str, list[Any]] = {}
@@ -13519,12 +13672,49 @@ class ElectricalPdfImporter:
             coordinate_system=CoordinateSystem(frame_id=frame_id),
             electrical_equipment=tuple(sorted(equipment, key=lambda item: item.id)),
             electrical_devices=tuple(sorted(devices, key=lambda item: item.id)),
-            ports=tuple(sorted(ports_by_owner_role.values(), key=lambda item: item.id)),
-            circuits=tuple(circuits),
+            ports=(
+                ()
+                if self.circuit_policy == "defer_all"
+                else tuple(sorted(ports_by_owner_role.values(), key=lambda item: item.id))
+            ),
+            circuits=() if self.circuit_policy == "defer_all" else tuple(circuits),
             provenance=tuple(model_provenance),
             attributes={
                 "pdf_electrical": {
                     "lane": "pdf_electrical",
+                    **(
+                        {
+                            "circuit_materialization": {
+                                "policy": "defer_all",
+                                "status": "deferred_by_caller_policy",
+                                "reason_code": "circuit_graph_deferred_by_policy",
+                                "note": (
+                                    "All circuit graph materialization is deferred, including "
+                                    "associations supported by supplied schedule reviews. "
+                                    "Candidate associations below are diagnostics, not canonical "
+                                    "graph edges or membership assertions."
+                                ),
+                                "canonical_circuits_emitted": 0,
+                                "canonical_ports_emitted": 0,
+                                "canonical_conductors_emitted": 0,
+                                "schedule_reviews_supplied": bool(self.schedule_reviews),
+                                "schedule_review_effect": (
+                                    "source validation facts are retained; no circuit graph is emitted"
+                                ),
+                                "source_observation_fingerprint": schedule_source_fingerprint(
+                                    document
+                                ),
+                                "source_observation_fingerprint_basis": (
+                                    "schedule_source_fingerprint: SHA-256 of normalized extracted "
+                                    "observations and page display provenance; not raw PDF bytes"
+                                ),
+                                "candidate_association_count": len(circuit_review_candidates),
+                            },
+                            "circuit_review_candidates": circuit_review_candidates,
+                        }
+                        if self.circuit_policy == "defer_all"
+                        else {}
+                    ),
                     "page_count": document.page_count,
                     "source_length_unit": "pt",
                     "canonicalized_length_unit": "m",
@@ -13594,6 +13784,11 @@ class ElectricalPdfImporter:
                                 else "structure_not_confirmed"
                             ),
                             "circuits": sorted(schedule_circuits[panel]),
+                            **(
+                                {"canonical_materialization_status": "deferred_by_policy"}
+                                if self.circuit_policy == "defer_all"
+                                else {}
+                            ),
                             **(
                                 {}
                                 if panel in confirmed_schedules
@@ -13696,8 +13891,13 @@ def import_pdf(
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
     architecture_document: Any | None = None,
+    circuit_policy: str = "legacy",
 ) -> BuildingModel:
-    return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_pdf(
+    return ElectricalPdfImporter(
+        instance_hints=instance_hints,
+        schedule_reviews=schedule_reviews,
+        circuit_policy=circuit_policy,
+    ).import_pdf(
         path,
         source_id=source_id,
         page_transforms=page_transforms,
@@ -13718,8 +13918,13 @@ def import_document(
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
     architecture_document: Any | None = None,
+    circuit_policy: str = "legacy",
 ) -> BuildingModel:
-    return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_document(
+    return ElectricalPdfImporter(
+        instance_hints=instance_hints,
+        schedule_reviews=schedule_reviews,
+        circuit_policy=circuit_policy,
+    ).import_document(
         document,
         page_transforms=page_transforms,
         selected_pages=selected_pages,

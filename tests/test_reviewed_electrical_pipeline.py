@@ -64,7 +64,12 @@ def test_same_snapshot_drives_quantity_review_and_export_artifact_bindings(tmp_p
         assert bundle["artifacts"][key]["reference"]==report["artifacts"][artifact]["reference"]
     quantity=json.loads(result.artifacts["quantities"])
     item,=quantity["items"]
-    assert (item["quantity"],item["unit"],item["group"])==(1.0,"ea","unresolved-inventory")
+    assert (item["quantity"],item["unit"])==(1.0,"ea")
+    assert item["group"].startswith("ai-symbol-scope:")
+    assert json.loads(item["group"].split(":",1)[1])=={
+        "caller_group":"unresolved-inventory","work_status":"unresolved",
+        "bid_scope":"unresolved","alternate_id":None}
+    assert quantity["groups"][item["group"]]=={"entities":1,"items":1}
     entity,=result.model.electrical_devices
     assert item["source_entity_ids"]==[entity.id]
     assert report["canonical_output_sha256"]==report["artifacts"]["canonical_model"]["sha256"]
@@ -252,8 +257,14 @@ def test_existing_canonical_inventory_groups_and_unknown_legacy_roles_are_preser
     assert result.completion["counts"]["canonical_devices"]==2
     assert len(result.completion["counts"]["new_canonical_electrical_ids"])==1
     assert next(r for r in result.completion["field_roles"] if r["canonical_id"]=="existing-device")["role"]=="unknown"
-    assert {item["group"] for item in json.loads(result.artifacts["quantities"])["items"]}=={
-        "existing-inventory","unresolved-inventory"}
+    items=json.loads(result.artifacts["quantities"])["items"]
+    existing_item,= [item for item in items if item["source_entity_ids"]==["existing-device"]]
+    assert existing_item["group"]=="existing-inventory"
+    new_item,= [item for item in items if item["source_entity_ids"]!=["existing-device"]]
+    assert new_item["group"].startswith("ai-symbol-scope:")
+    assert json.loads(new_item["group"].split(":",1)[1])=={
+        "caller_group":"unresolved-inventory","work_status":"unresolved",
+        "bid_scope":"unresolved","alternate_id":None}
 
 
 @pytest.mark.parametrize("value",[None,object()])

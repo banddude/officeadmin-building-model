@@ -1,0 +1,290 @@
+{
+  "cases": [
+    {
+      "cheap_receipt": {
+        "attempt_id": "symbol-attempt:ab922917a86f56f280221df03c40283d",
+        "endpoint": {
+          "adapter_id": "vision_luna",
+          "model_alias": "vision_luna",
+          "provider_id": "synthetic-provider"
+        },
+        "error": null,
+        "phase": "finish",
+        "policy_fingerprint": "47ba9a03c339c8dd0c7929373cc115f4c2c02b2ab541a4fa1eca2746bae23cb3",
+        "provider_request_id": "request:vision_luna",
+        "raw_output": "{\n  \"coverage_notes\": [\n    \"All target regions inspected.\"\n  ],\n  \"marks\": [\n    {\n      \"anchor\": [\n        0.2,\n        0.3\n      ],\n      \"bounds\": [\n        0.1,\n        0.2,\n        0.3,\n        0.4\n      ],\n      \"category\": \"luminaire\",\n      \"confidence\": 0.95,\n      \"evidence_image_ids\": [\n        \"field\",\n        \"legend\",\n        \"schedule\"\n      ],\n      \"image_id\": \"field\",\n      \"instance_label\": null,\n      \"polyline\": [],\n      \"source_mark\": \"Visible synthetic mark with F1 label.\",\n      \"type_proposal\": \"luminaire-type\",\n      \"type_tag\": \"F1\",\n      \"unknowns\": [\n        \"Circuit and registered position unknown.\"\n      ]\n    }\n  ],\n  \"scanned_image_ids\": [\n    \"field\"\n  ],\n  \"version\": \"1.0.0\"\n}",
+        "reason": "qualification:cheap_comparison",
+        "request_fingerprint": "f1e14c60c5dbf15502235208d6009536547ed44c011e69ba21c90cdc47ebad07",
+        "resolved_model_id": "cheap-actual",
+        "role": "vision_luna",
+        "status": "completed",
+        "timestamp_utc": "2000-01-01T00:00:00+00:00"
+      },
+      "expected": {
+        "coverage_notes": [
+          "All target regions inspected."
+        ],
+        "marks": [
+          {
+            "anchor": [
+              0.2,
+              0.3
+            ],
+            "bounds": [
+              0.1,
+              0.2,
+              0.3,
+              0.4
+            ],
+            "category": "luminaire",
+            "confidence": 0.95,
+            "evidence_image_ids": [
+              "field",
+              "legend",
+              "schedule"
+            ],
+            "image_id": "field",
+            "instance_label": null,
+            "polyline": [],
+            "source_mark": "Visible synthetic mark with F1 label.",
+            "type_proposal": "luminaire-type",
+            "type_tag": "F1",
+            "unknowns": [
+              "Circuit and registered position unknown."
+            ]
+          }
+        ],
+        "scanned_image_ids": [
+          "field"
+        ],
+        "version": "1.0.0"
+      },
+      "id": "synthetic-one",
+      "request": {
+        "allowed_types": [
+          "luminaire-type",
+          "switch-type",
+          "dimmer-type",
+          "detector-type",
+          "fan-type",
+          "receptacle-type",
+          "equipment-type",
+          "linear_symbol-type",
+          "unknown-type"
+        ],
+        "confidence_threshold": 0.9,
+        "contexts": [
+          {
+            "image_ids": [
+              "legend"
+            ],
+            "rationale": "Full synthetic legend.",
+            "role": "legend",
+            "status": "supplied"
+          },
+          {
+            "image_ids": [
+              "schedule"
+            ],
+            "rationale": "Full synthetic schedule.",
+            "role": "schedule",
+            "status": "supplied"
+          },
+          {
+            "image_ids": [],
+            "rationale": "Synthetic source has no notes.",
+            "role": "notes",
+            "status": "inapplicable"
+          }
+        ],
+        "images": [
+          {
+            "crop_px": [
+              100,
+              20,
+              300,
+              180
+            ],
+            "id": "field",
+            "render_manifest": {
+              "pdfium_version": "153.0.7999.0",
+              "pixel_to_display_pt": [
+                0.5,
+                0.0,
+                0.0,
+                -0.5,
+                50.0,
+                90.0
+              ],
+              "policy": "pdfium-mediabox-rgb-no-annots-v1",
+              "renderer_version": "5.13.0",
+              "scale": 2.0
+            },
+            "role": "target",
+            "sha256": "42d0412865142c6ffb2b061c801ed7b59761445bd9e6122ec129b3332d680abc",
+            "source": {
+              "document_sha256": "c98ccc27c479a7b25f139b84380a7a87404e88a77c09dd341e2af525138c5757",
+              "height_pt": 100.0,
+              "height_px": 200,
+              "media_box_pt": [
+                0.0,
+                0.0,
+                200.0,
+                100.0
+              ],
+              "page": 2,
+              "rotation": 0,
+              "source_id": "synthetic:lighting",
+              "width_pt": 200.0,
+              "width_px": 400
+            }
+          },
+          {
+            "crop_px": [
+              0,
+              0,
+              100,
+              100
+            ],
+            "id": "legend",
+            "render_manifest": {
+              "pdfium_version": "153.0.7999.0",
+              "pixel_to_display_pt": [
+                0.5,
+                0.0,
+                0.0,
+                -0.5,
+                0.0,
+                100.0
+              ],
+              "policy": "pdfium-mediabox-rgb-no-annots-v1",
+              "renderer_version": "5.13.0",
+              "scale": 2.0
+            },
+            "role": "legend",
+            "sha256": "a4d98e2dbbefb4905fa90ca6f288a52d5e6178827107129369d02470a3a406b0",
+            "source": {
+              "document_sha256": "c98ccc27c479a7b25f139b84380a7a87404e88a77c09dd341e2af525138c5757",
+              "height_pt": 100.0,
+              "height_px": 200,
+              "media_box_pt": [
+                0.0,
+                0.0,
+                200.0,
+                100.0
+              ],
+              "page": 2,
+              "rotation": 0,
+              "source_id": "synthetic:lighting",
+              "width_pt": 200.0,
+              "width_px": 400
+            }
+          },
+          {
+            "crop_px": [
+              0,
+              100,
+              100,
+              200
+            ],
+            "id": "schedule",
+            "render_manifest": {
+              "pdfium_version": "153.0.7999.0",
+              "pixel_to_display_pt": [
+                0.5,
+                0.0,
+                0.0,
+                -0.5,
+                0.0,
+                50.0
+              ],
+              "policy": "pdfium-mediabox-rgb-no-annots-v1",
+              "renderer_version": "5.13.0",
+              "scale": 2.0
+            },
+            "role": "schedule",
+            "sha256": "a4d98e2dbbefb4905fa90ca6f288a52d5e6178827107129369d02470a3a406b0",
+            "source": {
+              "document_sha256": "c98ccc27c479a7b25f139b84380a7a87404e88a77c09dd341e2af525138c5757",
+              "height_pt": 100.0,
+              "height_px": 200,
+              "media_box_pt": [
+                0.0,
+                0.0,
+                200.0,
+                100.0
+              ],
+              "page": 2,
+              "rotation": 0,
+              "source_id": "synthetic:lighting",
+              "width_pt": 200.0,
+              "width_px": 400
+            }
+          }
+        ],
+        "prompt_version": "all-electrical-symbols-v1",
+        "question": "Locate all supplied electrical symbol categories.",
+        "resource_limits": {
+          "max_total_image_bytes": 64000000,
+          "max_total_pixels": 64000000
+        },
+        "target_image_ids": [
+          "field"
+        ],
+        "task": "extract_electrical_symbols",
+        "validator_version": "electrical-symbols-v1",
+        "version": "1.0.0"
+      },
+      "strong_receipt": {
+        "attempt_id": "symbol-attempt:30f77de3d3325690a8585843c0483fe2",
+        "endpoint": {
+          "adapter_id": "vision_sol",
+          "model_alias": "vision_sol",
+          "provider_id": "synthetic-provider"
+        },
+        "error": null,
+        "phase": "finish",
+        "policy_fingerprint": "47ba9a03c339c8dd0c7929373cc115f4c2c02b2ab541a4fa1eca2746bae23cb3",
+        "provider_request_id": "request:vision_sol",
+        "raw_output": "{\n  \"coverage_notes\": [\n    \"All target regions inspected.\"\n  ],\n  \"marks\": [\n    {\n      \"anchor\": [\n        0.2,\n        0.3\n      ],\n      \"bounds\": [\n        0.1,\n        0.2,\n        0.3,\n        0.4\n      ],\n      \"category\": \"luminaire\",\n      \"confidence\": 0.95,\n      \"evidence_image_ids\": [\n        \"field\",\n        \"legend\",\n        \"schedule\"\n      ],\n      \"image_id\": \"field\",\n      \"instance_label\": null,\n      \"polyline\": [],\n      \"source_mark\": \"Visible synthetic mark with F1 label.\",\n      \"type_proposal\": \"luminaire-type\",\n      \"type_tag\": \"F1\",\n      \"unknowns\": [\n        \"Circuit and registered position unknown.\"\n      ]\n    }\n  ],\n  \"scanned_image_ids\": [\n    \"field\"\n  ],\n  \"version\": \"1.0.0\"\n}",
+        "reason": "qualification:strong_baseline",
+        "request_fingerprint": "f1e14c60c5dbf15502235208d6009536547ed44c011e69ba21c90cdc47ebad07",
+        "resolved_model_id": "strong-actual",
+        "role": "vision_sol",
+        "status": "completed",
+        "timestamp_utc": "2000-01-01T00:00:00+00:00"
+      }
+    }
+  ],
+  "config": {
+    "diagnostic_astra": {
+      "adapter_id": "diagnostic_astra",
+      "model_alias": "diagnostic_astra",
+      "provider_id": "synthetic-provider"
+    },
+    "text_codex": {
+      "adapter_id": "text_codex",
+      "model_alias": "text_codex",
+      "provider_id": "synthetic-provider"
+    },
+    "text_glm": {
+      "adapter_id": "text_glm",
+      "model_alias": "text_glm",
+      "provider_id": "synthetic-provider"
+    },
+    "version": "1.0.0",
+    "vision_luna": {
+      "adapter_id": "vision_luna",
+      "model_alias": "vision_luna",
+      "provider_id": "synthetic-provider"
+    },
+    "vision_sol": {
+      "adapter_id": "vision_sol",
+      "model_alias": "vision_sol",
+      "provider_id": "synthetic-provider"
+    }
+  },
+  "content_fingerprint": "fe9ec9a5145e2ec98bf399f7619f7d6c92c63bfb49f3742d62843eba8f28e212",
+  "expected_cheap_model_id": "cheap-actual",
+  "expected_strong_model_id": "strong-actual"
+}

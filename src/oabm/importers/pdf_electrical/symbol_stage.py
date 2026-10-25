@@ -273,7 +273,7 @@ def build_symbol_review(runs: Sequence, *, documents: Mapping[str, bytes],
         request_images, request_documents = _request_inputs(run.request, images, documents)
         proposals = run.proposals(documents=request_documents, images=request_images,
                                   journal_path=journal_paths[run.request.fingerprint])
-        rows.extend(_portable(p) for p in proposals)
+        rows.extend(p.to_dict() for p in proposals)
         # Retain the complete run request/output/attempt envelope for review;
         # no provider identity or empty-result completeness is inferred here.
         coverage.append({"run_fingerprint": run.fingerprint, "status": run.status,
@@ -422,7 +422,9 @@ def _materialize_verified(model, review, decisions, registrations):
                 if registration is None:
                     status, reason = "pending", "reviewed_registration_missing"
                 else:
-                    entity = _entity(model, row, decision, registration)
+                    equivalents = tuple(by_id[peer] for peer, record in sorted(decision_map.items())
+                                        if record.action == "duplicate" and record.duplicate_of == key)
+                    entity = _entity(model, row, decision, registration, equivalents)
                     entity_id = entity.id
                     (devices if isinstance(entity, ElectricalDevice) else equipment).append(entity)
         dispositions.append({"proposal_id": key, "status": status, "reason": reason,
@@ -461,7 +463,7 @@ def _materialize_verified(model, review, decisions, registrations):
     return SymbolStageOutcome(model=result, review=review, dispositions=tuple(dispositions))
 
 
-def _entity(model, row, decision, registration):
+def _entity(model, row, decision, registration, equivalents=()):
     if (registration.source_id, registration.document_sha256, registration.page) != (
             row["source_id"], row["document_sha256"], row["page"]):
         raise ContractError("symbol registration source/page mismatch")
@@ -483,25 +485,43 @@ def _entity(model, row, decision, registration):
                                z=level.elevation_m + placement.height_above_level_m),
                 rotation=Quaternion(z=math.sin(placement.yaw_radians / 2),
                                     w=math.cos(placement.yaw_radians / 2)))
+    from oabm.proposals.symbol_scope import scope_from_proposals, source_scope_provenance
+    source_rows = (row, *equivalents)
+    scope = scope_from_proposals(source_rows)
+    # Preserve historical non-scope materialization bytes. Scope-aware identity
+    # equivalence retains every original row and does not resolve field claims.
+    if scope is None:
+        source_rows = (row,)
     source_records = []
-    for record in row["provenance"]:
-        fields = copy.deepcopy(record)
-        derivation = fields.pop("derivation")  # Preserve the supplied class; never guess one.
-        fields["scope_paths"] = (tuple(fields["scope_paths"])
-                                 if fields.get("scope_paths") is not None else None)
-        fields["attributes"] = {**fields.get("attributes", {}),
-                                "source_document_sha256": row["document_sha256"]}
-        source_records.append(Provenance(derivation=derivation, **fields))
+    for source_row in source_rows:
+        for record in source_row["provenance"]:
+            fields = copy.deepcopy(record)
+            derivation = fields.pop("derivation")  # Preserve the supplied class; never guess one.
+            fields["scope_paths"] = (tuple(fields["scope_paths"])
+                                     if fields.get("scope_paths") is not None else None)
+            fields["attributes"] = {**fields.get("attributes", {}),
+                                    "source_document_sha256": source_row["document_sha256"]}
+            source_records.append(Provenance(derivation=derivation, **fields))
     source_provenance = tuple(source_records)
+    review_attributes = {"decision": decision.to_dict(), "registration": registration.to_dict()}
+    if scope is not None and equivalents:
+        review_attributes["scope_equivalent_fingerprints"] = {
+            peer["proposal_id"]: digest(peer) for peer in equivalents}
     review_provenance = Provenance(source_kind="symbol-review", source_id=decision.reviewer_id,
         source_element_id=row["source_mark_id"], page=row["page"], method="explicit-symbol-review-v1",
         confidence=row["confidence"], derivation=decision.reviewer_derivation,
-        attributes={"decision": decision.to_dict(), "registration": registration.to_dict()})
+        attributes=review_attributes)
     attributes = {"symbol_review": {"proposal": copy.deepcopy(row),
         "decision": decision.to_dict(), "registration_fingerprint": registration.fingerprint,
         "remaining_unknowns": list(placement.remaining_unknowns),
         "physical_geometry_status": "anchor_only_dimensions_unknown",
         "hosting_status": "unresolved", "connectivity_status": "unresolved"}}
+    # Identity review never discards scope asserted by a duplicate peer.
+    if scope is not None:
+        attributes["pdf_electrical"] = scope.canonical_metadata()
+        if equivalents:
+            attributes["symbol_review"]["scope_equivalent_proposals"] = copy.deepcopy(list(equivalents))
+        source_provenance += source_scope_provenance(source_rows)
     cls = ElectricalDevice if placement.entity_kind == "device" else ElectricalEquipment
     type_key = "device_type" if placement.entity_kind == "device" else "equipment_type"
     # Identity follows the native source-mark identity, never corrected pose/type.

@@ -276,6 +276,12 @@ def deliver_reviewed_electrical(
                 if identity in membership and membership[identity]!=name:
                     raise ContractError("canonical object assigned conflicting quantity groups")
                 membership[identity]=name
+        # Source-scope labels are safety partitions, not caller inventory
+        # assignments. Check explicit membership before quantities adds those
+        # labels, otherwise an unresolved AI mark could mask a missing group.
+        if any(entity.id not in membership for entity in
+               (*canonical.electrical_devices,*canonical.electrical_equipment)):
+            raise ContractError("every quantity line requires an explicit inventory group")
         takeoff=extract_quantities(canonical,groups={n:tuple(sorted(ids)) for n,ids in sorted(resolved.items())})
         if any(item.group is None for item in takeoff.items):
             raise ContractError("every quantity line requires an explicit inventory group")

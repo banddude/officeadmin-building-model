@@ -149,6 +149,10 @@ provenance. `fingerprint` binds the complete proposal for importer-owned review.
 `request_fingerprint`, `result_fingerprint` and `attempt_id` link it to raw
 attempt evidence. No canonical model objects are created.
 
+Optional [source scope assertions](ai-symbol-scope.md) retain quoted existing/new/
+relocation/removal/N.I.C. and base/alternate facts, with explicit unresolved or
+conflict states. They use the same raw journal and verified image boundary.
+
 ## Coordinates and duplicates
 
 Raw `bounds`, point `anchor` and ordered `polyline` use normalized target-crop

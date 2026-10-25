@@ -190,6 +190,23 @@ def test_day_precision_is_preserved_without_inventing_time(document):
     assert entry.provenance[0].attributes["source"]["retrieved_at"] == "2026-01-01"
 
 
+@pytest.mark.parametrize('url', ['https://exa mple.org/x', 'https://example.org:bad/x',
+    'https://example.org:999999/x', 'https://example.org:0/x', 'https://-bad.example/x',
+    'https://example..org/x', 'https://999.999.999.999/x', 'https://example.org/%oops'])
+def test_malformed_https_sources_rejected(document, url):
+    document['sources'][0]['url'] = url
+    with pytest.raises(ContractError):
+        CatalogManifest(encoded(document))
+
+
+@pytest.mark.parametrize('url', ['https://example.org:8443/x', 'https://[2001:db8::1]/x',
+    'https://münchen.example/spec%20sheet.pdf', 'https://example.org./x'])
+def test_supported_https_forms_remain_unchanged(document, url):
+    document['sources'][0]['url'] = url
+    entry = CatalogManifest(encoded(document)).selector_entry('box-a')
+    assert entry.provenance[0].source_id == url
+
+
 def test_cli_search_hash_pin_and_no_source_writes(document, tmp_path, capsys):
     from oabm.electrical.catalog_manifest import main
     path = tmp_path / "catalog.json"

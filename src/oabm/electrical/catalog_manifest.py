@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
+import ipaddress
 import json
 import math
 import re
@@ -53,6 +54,32 @@ def _hash(value):
     _require(isinstance(value, str) and _SHA.fullmatch(value), "invalid SHA-256")
 
 
+def _https_url(value):
+    _require(not any(c.isspace() for c in value) and not re.search(r'%(?![0-9A-Fa-f]{2})', value),
+             "malformed URL")
+    try:
+        url = urlsplit(value)
+        host = url.hostname
+        port = url.port  # Access validates nonnumeric and out-of-range ports.
+        _require(url.scheme == "https" and bool(host) and url.username is None
+                 and url.password is None and not url.fragment and (port is None or port > 0),
+                 "source must be an HTTPS reference")
+        _require('%' not in host, "invalid source hostname")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            # A colon or dotted all-numeric host is an invalid IP literal, not a
+            # DNS name to fall back to. Other hosts use bounded IDNA/DNS labels.
+            _require(':' not in host and not re.fullmatch(r'[0-9.]+', host), "invalid source hostname")
+            ascii_host = host.encode('idna').decode('ascii').removesuffix('.')
+            _require(len(ascii_host) <= 253 and all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label)
+                for label in ascii_host.split('.')), "invalid source hostname")
+    except (ValueError, UnicodeError) as error:
+        if isinstance(error, ContractError):
+            raise
+        raise ContractError("catalog manifest: malformed URL") from error
+
+
 def _decode(raw):
     def pairs(rows):
         out = {}
@@ -97,12 +124,7 @@ def _validate(document):
         if source["revision"] is not None:
             _text(source["revision"])
         _hash(source["sha256"])
-        try:
-            url = urlsplit(source["url"])
-            _require(url.scheme == "https" and bool(url.hostname) and url.username is None
-                     and url.password is None and not url.fragment, "source must be an HTTPS reference")
-        except ValueError as error:
-            raise ContractError("catalog manifest: malformed URL") from error
+        _https_url(source["url"])
         _require(re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}Z)?", source["retrieved_at"]),
                  "retrieval date or UTC timestamp required")
         try:

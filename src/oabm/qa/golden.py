@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from oabm.model import BuildingModel, ContractError, SUPPORTED_SCHEMA_VERSIONS, SCHEMA_VERSION, validate_model
+from oabm.model import (BuildingModel, ContractError, SUPPORTED_SCHEMA_VERSIONS, SCHEMA_VERSION,
+    PHYSICAL_SCHEMA_VERSIONS, RACEWAY_SCHEMA_VERSIONS, SUPPORT_SCHEMA_VERSIONS,
+    STRUCTURAL_SCHEMA_VERSIONS, FITTING_SCHEMA_VERSIONS, validate_model)
 
 _COLLECTION_FIELDS = (
     "levels",
@@ -29,6 +31,7 @@ _COLLECTION_FIELDS = (
     "raceway_selections",
     "raceway_selection_outcomes",
     "support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes",
+    "structural_members", "fitting_selections", "fitting_interfaces", "fitting_selection_outcomes",
 )
 
 _DEFAULT_ROOT = Path(__file__).resolve().parents[3] / "fixtures" / "golden" / "v1"
@@ -186,9 +189,11 @@ def load_golden_model(case: GoldenCase) -> BuildingModel:
 
 def _entity_counts(model: BuildingModel) -> dict[str, int]:
     return {field_name: len(getattr(model, field_name)) for field_name in _COLLECTION_FIELDS
-            if (model.schema_version != SCHEMA_VERSION or field_name not in {"electrical_boxes", "box_selection_outcomes"})
-            and (model.schema_version in {"1.2.0", "1.3.0"} or field_name not in {"raceway_selections", "raceway_selection_outcomes"})
-            and (model.schema_version == "1.3.0" or field_name not in {"support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes"})}
+            if (model.schema_version in PHYSICAL_SCHEMA_VERSIONS or field_name not in {"electrical_boxes", "box_selection_outcomes"})
+            and (model.schema_version in RACEWAY_SCHEMA_VERSIONS or field_name not in {"raceway_selections", "raceway_selection_outcomes"})
+            and (model.schema_version in SUPPORT_SCHEMA_VERSIONS or field_name not in {"support_assemblies", "support_components", "support_interfaces", "support_selection_outcomes"})
+            and (model.schema_version in STRUCTURAL_SCHEMA_VERSIONS or field_name != "structural_members")
+            and (model.schema_version in FITTING_SCHEMA_VERSIONS or field_name not in {"fitting_selections", "fitting_interfaces", "fitting_selection_outcomes"})}
 
 
 def _validate_expectations(case: GoldenCase, model: BuildingModel) -> None:

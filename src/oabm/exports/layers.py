@@ -12,9 +12,10 @@ Ghosting is disclosed honestly. The exporter can render a ghost (dimmed,
 translucent) style for architectural walls, slabs and spaces, electrical
 devices, electrical equipment and routes, including the conductor wires
 drawn inside a dimmed route, so a ghosted route ghosts whole. A glazed wall
-takes the dim only as a lower alpha. Physical boxes and the 1.3 support
-components, interfaces and assemblies still have no ghost style today, so
-those ids stay in the ghosted group but retain normal appearance, and
+takes the dim only as a lower alpha. Physical boxes, support components,
+interfaces and assemblies, structural members, and v1.5 route-fitting
+occurrences still have no caller-ghost style today, so those ids stay in the
+ghosted group but retain their normal/envelope appearance, and
 :attr:`LayerGlbPlan.unsupported_ghost_ids` names them explicitly rather than
 silently advertising the behaviour as working.
 """

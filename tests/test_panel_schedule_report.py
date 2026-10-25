@@ -10,9 +10,28 @@ from referencing import Registry,Resource
 from oabm.model import (BuildingModel,Circuit,ContractError,Provenance,ElectricalEquipment,
     Point3,Pose,Port,Vector3,upgrade_to_v1_1,upgrade_to_v1_2,upgrade_to_v1_3)
 from oabm.reports import generate_panel_schedule_report,PanelScheduleReport,SourceSnapshot
+from oabm.reports.panel_schedules import _minimum_source_schema
 from oabm.drawings.panel_schedules import panel_report_to_drawing_schedules
 
 ROOT=Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("collection", [
+    "fitting_selections", "fitting_interfaces", "fitting_selection_outcomes",
+])
+def test_fitting_source_snapshots_require_schema_v1_5(collection):
+    assert _minimum_source_schema(collection) == "1.5.0"
+
+
+def test_existing_route_fitting_collection_remains_available_from_v1_0():
+    assert _minimum_source_schema("route_fittings") == "1.0.0"
+
+
+def test_existing_panel_schedule_source_schema_gates_remain_explicit():
+    assert _minimum_source_schema("electrical_boxes") == "1.1.0"
+    assert _minimum_source_schema("raceway_selections") == "1.2.0"
+    assert _minimum_source_schema("support_components") == "1.3.0"
+    assert _minimum_source_schema("structural_members") == "1.4.0"
 
 @pytest.fixture
 def two_panels():

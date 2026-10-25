@@ -35,7 +35,9 @@ from oabm.model import (
     RACEWAY_SCHEMA_VERSION,
     SUPPORT_SCHEMA_VERSION,
     SUPPORT_SCHEMA_VERSIONS,
-    STRUCTURAL_SCHEMA_VERSION,
+    STRUCTURAL_SCHEMA_VERSIONS,
+    FITTING_SCHEMA_VERSION,
+    FITTING_SCHEMA_VERSIONS,
     PHYSICAL_SCHEMA_VERSIONS,
     RACEWAY_SCHEMA_VERSIONS,
     SUPPORTED_SCHEMA_VERSIONS,
@@ -143,6 +145,15 @@ _COLLECTION_BY_KIND = {
     "support_interface": "support_interfaces",
     "support_outcome": "support_selection_outcomes",
     "structural_member": "structural_members",
+    "fitting_selection": "fitting_selections",
+    "fitting_interface": "fitting_interfaces",
+    "fitting_selection_outcome": "fitting_selection_outcomes",
+}
+
+_FITTING_PSETS = {
+    "fitting_selection": "OABM_FittingSelection",
+    "fitting_interface": "OABM_FittingInterface",
+    "fitting_selection_outcome": "OABM_FittingOutcome",
 }
 
 
@@ -320,6 +331,7 @@ def to_ifc(
     spaces: dict[str, Any] = {}
 
     model_document = model.to_dict()
+    fitting_selections_by_fitting = {row.fitting_id: row for row in model.fitting_selections}
 
     for ordinal, level in enumerate(model.levels):
         item = _create_root(ifc, "IfcBuildingStorey", level.id, level.name)
@@ -563,12 +575,30 @@ def to_ifc(
             predefined_type=_fitting_predefined_type(fitting.fitting_type),
         )
         _set_pose(ifc, item, fitting.pose)
-        _mark_adapter(
-            ifc,
-            item,
-            Body="no",
-            BodyReason="fitting is a placement-only occurrence on its conduit run",
-        )
+        selection = fitting_selections_by_fitting.get(fitting.id)
+        if model.schema_version not in FITTING_SCHEMA_VERSIONS:
+            # Keep the legacy IFC property set byte-for-byte unchanged. The
+            # exact-product geometry disclosure is opt-in with schema 1.5.
+            _mark_adapter(
+                ifc,
+                item,
+                Body="no",
+                BodyReason="fitting is a placement-only occurrence on its conduit run",
+            )
+        else:
+            if selection is not None and selection.geometry_basis == "dimension_derived_envelope":
+                reason = _assign_box_body(ifc, item, body_context, selection.size)
+                _mark_body(ifc, item, reason)
+                _mark_adapter(ifc, item, GeometryBasis="dimension_derived_envelope",
+                              GeometryDisclosure="dimension-derived envelope only; not native CAD or manufacturer geometry",
+                              NativeCatalogGeometry=False)
+            else:
+                reason = ("metadata_only; no canonical envelope dimensions"
+                          if selection is not None else
+                          "fitting is a placement-only occurrence; no product envelope was selected")
+                _mark_adapter(ifc, item, Body="no", BodyReason=reason,
+                              GeometryBasis=(selection.geometry_basis if selection is not None else "unselected"),
+                              NativeCatalogGeometry=False)
         _add_canonical_pset(
             ifc,
             item,
@@ -586,6 +616,8 @@ def to_ifc(
             Vector3(x=1, y=0, z=0),
             route_id=fitting.route_id,
             role="fitting-port",
+            **({"SemanticScope": "route-endpoint-wrapper; not a catalog interface port"}
+               if model.schema_version in FITTING_SCHEMA_VERSIONS else {}),
         )
         p1 = _add_adapter_port(
             ifc,
@@ -595,14 +627,50 @@ def to_ifc(
             Vector3(x=-1, y=0, z=0),
             route_id=fitting.route_id,
             role="fitting-port",
+            **({"SemanticScope": "route-endpoint-wrapper; not a catalog interface port"}
+               if model.schema_version in FITTING_SCHEMA_VERSIONS else {}),
         )
         fitting_ports[fitting.id] = (p0, p1)
         _assign_spatial_container(ifc, fitting, item, storeys, spaces, model=model)
 
+    if model.schema_version in FITTING_SCHEMA_VERSIONS:
+        for kind, collection_name, reason in (
+            ("fitting_selection", "fitting_selections",
+             "product selection is a decision, not a physical occurrence"),
+            ("fitting_interface", "fitting_interfaces",
+             "explicit product-interface evidence; no IFC port is authored"),
+            ("fitting_selection_outcome", "fitting_selection_outcomes",
+             "fitting selection outcome is a decision, not physical hardware"),
+        ):
+            for ordinal, entity in enumerate(getattr(model, collection_name)):
+                item = add_product(entity, kind, ordinal, "IfcAnnotation", assign_container=False)
+                _add_fitting_projection(ifc, item, kind, model_document[collection_name][ordinal])
+                _mark_adapter(ifc, item, Body="no", BodyReason=reason,
+                              NativePortCreated=False)
+                if kind == "fitting_interface":
+                    selection = next(row for row in model.fitting_selections if row.id == entity.selection_id)
+                    host_id = selection.fitting_id
+                else:
+                    host_id = entity.fitting_id
+                if host_id not in entity_ifc:
+                    raise IfcAdapterError(f"fitting decision {entity.id!r} has no existing fitting host")
+                ifc.create_entity("IfcRelAssignsToProduct",
+                    GlobalId=canonical_id_to_ifc_guid(f"{entity.id}#fitting-host"),
+                    Name="OABM exact route fitting evidence", RelatedObjects=[item],
+                    RelatingProduct=entity_ifc[host_id])
+
     canonical_ports: dict[str, Any] = {}
     canonical_port_owners: dict[str, Any] = {}
     model_ports = {port.id: port for port in model.ports}
+    route_ids = {route.id for route in model.routes}
+    fitting_contract = model.schema_version in FITTING_SCHEMA_VERSIONS
+    route_owned_port_ids = {port.id for port in model.ports
+                            if fitting_contract and port.owner_id in route_ids}
     for ordinal, port in enumerate(model.ports):
+        if port.id in route_owned_port_ids:
+            # Existing route-owned canonical ports are placed on the native
+            # segment representing their point after those segments exist.
+            continue
         owner = entity_ifc.get(port.owner_id)
         if owner is None or not owner.is_a("IfcDistributionElement"):
             raise IfcAdapterError(
@@ -623,37 +691,28 @@ def to_ifc(
         entity_ifc[port.id] = item
         canonical_ports[port.id] = item
 
-    # Explicit canonical connectivity must be present in native IFC when export
-    # succeeds. Never let the JSON shadow conceal an unexpected IfcOpenShell/API
-    # failure, because Bonsai edits need a single authoritative representation.
-    fanout_ports = sorted(
-        port.id for port in model.ports if len(port.connected_port_ids) > 1
-    )
+    # Preserve historical IFC entity ordering for schemas 1.0--1.4: canonical
+    # peer links are registered before route adapter ports, exactly as before
+    # the fitting consumer slice. Only 1.5 route-owned points need deferred
+    # canonical IFC ports on their existing route segment.
+    port_links: list[tuple[Any, Any]] = []
+    fanout_ports = sorted(port.id for port in model.ports if len(port.connected_port_ids) > 1)
     if fanout_ports:
         raise IfcAdapterError(
             "canonical port connectivity cannot be represented natively without loss; "
             f"IFC ports support one connected peer: {fanout_ports!r}"
         )
-
-    # Port connections are collected and materialized once, at the end.
-    # ``ifcopenshell.api.system.connect_port`` is not used: it purges existing
-    # connections on either port and writes two reciprocal relationships for one
-    # logical connection, which is how canonical peer links were silently lost.
-    #
-    # Canonical ports carry canonical peer connectivity only. Route ends attach
-    # to adapter-owned ports of their own (see the route loop), because IFC4
-    # gives a port one relationship per role and a panel port is routinely the
-    # start of many home runs.
-    port_links: list[tuple[Any, Any]] = []
     linked: set[tuple[str, str]] = set()
     for port in model.ports:
         for other_id in port.connected_port_ids:
-            pair = tuple(sorted((port.id, other_id)))
-            if pair in linked:
+            if port.id in route_owned_port_ids or other_id in route_owned_port_ids:
                 continue
-            port_links.append((canonical_ports[port.id], canonical_ports[other_id]))
-            linked.add(pair)
+            pair = tuple(sorted((port.id, other_id)))
+            if pair not in linked:
+                port_links.append((canonical_ports[port.id], canonical_ports[other_id]))
+                linked.add(pair)
 
+    route_segment_records: dict[str, list[tuple[Point3, Point3, Any]]] = {}
     for ordinal, route in enumerate(model.routes):
         route_system = ifcopenshell.api.system.add_system(ifc, ifc_class="IfcDistributionSystem")
         route_system.GlobalId = canonical_id_to_ifc_guid(route.id)
@@ -673,6 +732,7 @@ def to_ifc(
 
         segments: list[Any] = []
         segment_ports: list[tuple[Any, Any]] = []
+        segment_records: list[tuple[Point3, Point3, Any]] = []
         points = route.centerline.points
         for index, (start, end) in enumerate(zip(points, points[1:])):
             segment_class, predefined = _segment_ifc_type(route.route_type)
@@ -719,6 +779,7 @@ def to_ifc(
             )
             segments.append(segment)
             segment_ports.append((p_start, p_end))
+            segment_records.append((start, end, segment))
             # Adapter-generated segments are reachable under their stable
             # segment keys, like the canonical products; caller-supplied
             # groups expand a route member through them.
@@ -740,6 +801,8 @@ def to_ifc(
             # the span to the canonical port itself would spend one of that
             # port's two IFC4 role slots per route end, so a panel port that
             # starts more than two home runs could not be exported.
+            if route.start_port_id not in canonical_port_owners or route.end_port_id not in canonical_port_owners:
+                raise IfcAdapterError("route start/end canonical ports must be owned by existing distribution elements")
             start_attachment = _add_route_attachment_port(
                 ifc,
                 canonical_port_owners[route.start_port_id],
@@ -775,6 +838,43 @@ def to_ifc(
                     ifcopenshell.api.spatial.assign_container(
                         ifc, relating_structure=storeys[level_id], products=[product]
                     )
+        route_segment_records[route.id] = segment_records
+
+    # Materialize caller-authored route-owned ports on the existing native
+    # route segment that contains their supplied point. These are canonical
+    # ports from the model, not generated catalog interface ports.
+    route_by_id = {route.id: route for route in model.routes}
+    for ordinal, port in enumerate(model.ports):
+        if port.owner_id not in route_ids:
+            continue
+        route = route_by_id[port.owner_id]
+        candidates = [segment for start, end, segment in route_segment_records.get(route.id, ())
+                     if _point_on_segment(port.pose.position, start, end, tolerance=1e-6)]
+        if not candidates:
+            raise IfcAdapterError(f"route-owned canonical port {port.id!r} is not on a native segment")
+        native_port = ifcopenshell.api.system.add_port(ifc, element=candidates[0])
+        native_port.GlobalId = canonical_id_to_ifc_guid(port.id)
+        native_port.Name = port.name
+        native_port.FlowDirection = _flow_direction(port.role)
+        try:
+            native_port.PredefinedType = "CABLE"
+            native_port.SystemType = "ELECTRICAL"
+        except (AttributeError, TypeError, ValueError):
+            pass
+        _set_pose(ifc, native_port, port.pose)
+        _add_canonical_pset(ifc, native_port, "port", ordinal, model_document["ports"][ordinal])
+        canonical_ports[port.id] = native_port
+        entity_ifc[port.id] = native_port
+
+    # Add deferred schema-1.5 links after their pre-existing route-owned port
+    # objects exist. Other canonical links were already added above, retaining
+    # their pre-1.5 relationship order and IFC bytes.
+    for port in model.ports:
+        for other_id in port.connected_port_ids:
+            pair = tuple(sorted((port.id, other_id)))
+            if pair not in linked:
+                port_links.append((canonical_ports[port.id], canonical_ports[other_id]))
+                linked.add(pair)
 
     circuit_ifc: dict[str, Any] = {}
     for ordinal, circuit in enumerate(model.circuits):
@@ -1193,8 +1293,10 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         document.update(raceway_selections=[], raceway_selection_outcomes=[])
     if header["schema_version"] in SUPPORT_SCHEMA_VERSIONS:
         document.update(support_assemblies=[],support_components=[],support_interfaces=[],support_selection_outcomes=[])
-    if header["schema_version"] == STRUCTURAL_SCHEMA_VERSION:
+    if header["schema_version"] in STRUCTURAL_SCHEMA_VERSIONS:
         document.update(structural_members=[])
+    if header["schema_version"] in FITTING_SCHEMA_VERSIONS:
+        document.update(fitting_selections=[], fitting_interfaces=[], fitting_selection_outcomes=[])
 
     canonical_items: dict[str, tuple[Any, dict[str, Any], int, str]] = {}
     for item in ifc.by_type("IfcRoot"):
@@ -1222,8 +1324,10 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         canonical_items[canonical_id] = (item, data, meta["ordinal"], kind)
 
     route_segments = _route_segments(ifc)
-    if header["schema_version"] == SUPPORT_SCHEMA_VERSION:
+    if header["schema_version"] in SUPPORT_SCHEMA_VERSIONS:
         _validate_native_support_inventory(ifc,canonical_items)
+    if header["schema_version"] in FITTING_SCHEMA_VERSIONS:
+        _validate_native_fitting_inventory(ifc, canonical_items)
     if header["schema_version"] in RACEWAY_SCHEMA_VERSIONS:
         selected_routes = {data["route_id"] for _, data, _, kind in canonical_items.values()
                            if kind == "raceway_selection"}
@@ -1581,11 +1685,15 @@ def _assign_glazed_wall_style(
 def _body_representation(product: Any) -> Any | None:
     """The product's ``Body`` shape representation, or ``None`` without one."""
 
+    representations = _body_representations(product)
+    return representations[0] if representations else None
+
+
+def _body_representations(product: Any) -> tuple[Any, ...]:
+    """Every ``Body`` representation, including contradictory duplicates."""
     representation = getattr(product, "Representation", None)
-    for shape in getattr(representation, "Representations", ()) or ():
-        if shape.RepresentationIdentifier == "Body":
-            return shape
-    return None
+    return tuple(shape for shape in (getattr(representation, "Representations", ()) or ())
+                 if shape.RepresentationIdentifier == "Body")
 
 
 def _create_root(
@@ -1640,6 +1748,8 @@ def _add_canonical_pset(
         visible_properties.update(_raceway_visible_properties(payload))
     if kind in _SUPPORT_PSETS:
         visible_properties.update(_support_properties(kind,payload))
+    if kind in _FITTING_PSETS:
+        visible_properties.update(_fitting_properties(kind, payload))
     attributes = payload.get("attributes", {})
     if kind == "electrical_equipment" and isinstance(attributes, Mapping):
         placement = attributes.get("placement")
@@ -2615,6 +2725,33 @@ def _point_distance(first: Point3, second: Point3) -> float:
     )
 
 
+def _point_on_segment(point: Point3, start: Point3, end: Point3, *, tolerance: float) -> bool:
+    delta = (end.x - start.x, end.y - start.y, end.z - start.z)
+    offset = (point.x - start.x, point.y - start.y, point.z - start.z)
+    scale = max(abs(value) for value in delta)
+    if not math.isfinite(scale) or not all(math.isfinite(value) for value in offset):
+        return False
+    if scale == 0.0:
+        return math.dist((point.x, point.y, point.z),
+                         (start.x, start.y, start.z)) <= tolerance
+    unit_delta = tuple(value / scale for value in delta)
+    unit_offset = tuple(value / scale for value in offset)
+    denominator = sum(value * value for value in unit_delta)
+    parameter = sum(a * b for a, b in zip(unit_offset, unit_delta)) / denominator
+    if not math.isfinite(parameter):
+        return False
+    # Clamp to the finite segment, then use an actual distance tolerance in
+    # metres. The dimensionless projected parameter is not compared with a
+    # length-valued tolerance.
+    parameter = min(1.0, max(0.0, parameter))
+    coordinates = tuple((1.0 - parameter) * a + parameter * b
+                        for a, b in zip((start.x, start.y, start.z),
+                                        (end.x, end.y, end.z)))
+    if not all(math.isfinite(value) for value in coordinates):
+        return False
+    return math.dist((point.x, point.y, point.z), coordinates) <= tolerance
+
+
 def _route_level_id(model: BuildingModel, route: Any) -> str | None:
     port = next((p for p in model.ports if p.id == route.start_port_id), None)
     if port is None:
@@ -2948,6 +3085,156 @@ def _raceway_outcome_projection_matches(actual, expected):
 
 _SUPPORT_PSETS={'support_assembly':'OABM_SupportAssembly','support_component':'OABM_SupportComponent',
                 'support_interface':'OABM_SupportInterface','support_outcome':'OABM_SupportOutcome'}
+_SUPPORT_OUTCOME_OPTIONAL={'SelectedAssemblyId','RequestedLevelId','RequestedRuleAuthority','RequestedRuleRevision','RequestedRuleId'}
+
+
+def _fitting_properties(kind: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    """Human-readable IFC projection of exact-product fitting facts.
+
+    This is descriptive product/interface evidence, not a code approval or a
+    claim that IFC native ports were generated from catalog interfaces.
+    """
+    if kind == "fitting_selection":
+        product, basis = data["product"], data["basis"]
+        result = {
+            "IntentId": data["intent_id"], "FittingId": data["fitting_id"],
+            "RouteId": data["route_id"], "RouteType": data["route_type"],
+            "FittingType": data["fitting_type"],
+            "CatalogId": product["catalog_id"],
+            "CatalogRevision": product["catalog_revision"],
+            "ProductId": product["product_id"],
+            "RuleAuthority": basis["authority"], "RuleRevision": basis["revision"],
+            "RuleId": basis["rule_id"], "GeometryBasis": data["geometry_basis"],
+            "NativeCatalogGeometry": False, "CodeVerificationPerformed": False,
+        }
+        if data.get("size") is not None:
+            result.update(EnvelopeWidthM=data["size"]["x"],
+                          EnvelopeDepthM=data["size"]["y"],
+                          EnvelopeHeightM=data["size"]["z"])
+        return result
+    if kind == "fitting_interface":
+        product = data["mating_product"]
+        result = {
+            "SelectionId": data["selection_id"], "InterfaceKey": data["interface_key"],
+            "Role": data["role"], "ConnectionMethod": data["connection_method"],
+            "PermittedWiringMethods": json.dumps(data["permitted_wiring_methods"], separators=(",", ":")),
+            "PortId": data["port_id"], "MatingPortId": data["mating_port_id"],
+            "MatingCatalogId": product["catalog_id"],
+            "MatingCatalogRevision": product["catalog_revision"],
+            "MatingProductId": product["product_id"],
+            "MatingInterfaceKey": data["mating_interface_key"],
+            "MatingPairId": data["mating_pair_id"],
+            "DryLocationStatus": _tri_state(data.get("dry_location")),
+            "WetLocationStatus": _tri_state(data.get("wet_location")),
+            "RaintightStatus": _tri_state(data.get("raintight")),
+            "ListingReferences": json.dumps(data.get("listing_refs", []), separators=(",", ":")),
+            "ActualOdCheckPerformed": False, "NativePortCreated": False,
+        }
+        if data.get("nominal_designation") is not None:
+            result["NominalDesignation"] = data["nominal_designation"]
+        if data.get("actual_accepted_od_m") is not None:
+            result["AcceptedActualOdMinM"] = data["actual_accepted_od_m"]["min_m"]
+            result["AcceptedActualOdMaxM"] = data["actual_accepted_od_m"]["max_m"]
+        return result
+    if kind == "fitting_selection_outcome":
+        result = {
+            "IntentId": data["intent_id"], "FittingId": data["fitting_id"],
+            "RouteId": data["route_id"], "SelectionStatus": data["status"],
+            "ReasonCodes": json.dumps(data["reason_codes"], separators=(",", ":")),
+            "ActualOdCheckPerformed": False,
+        }
+        if data.get("selected_selection_id") is not None:
+            result["SelectedSelectionId"] = data["selected_selection_id"]
+        if data.get("requested_product") is not None:
+            product = data["requested_product"]
+            result.update(RequestedCatalogId=product["catalog_id"],
+                          RequestedCatalogRevision=product["catalog_revision"],
+                          RequestedProductId=product["product_id"])
+        if data.get("requested_basis") is not None:
+            basis = data["requested_basis"]
+            result.update(RequestedRuleAuthority=basis["authority"],
+                          RequestedRuleRevision=basis["revision"],
+                          RequestedRuleId=basis["rule_id"])
+        return result
+    raise IfcAdapterError(f"unsupported fitting projection kind {kind!r}")
+
+
+def _tri_state(value: bool | None) -> str:
+    return "unknown" if value is None else ("yes" if value else "no")
+
+
+def _add_fitting_projection(ifc, native, kind, data):
+    pset = ifcopenshell.api.pset.add_pset(ifc, product=native, name=_FITTING_PSETS[kind])
+    ifcopenshell.api.pset.edit_pset(ifc, pset=pset, properties=_fitting_properties(kind, data))
+
+
+def _fitting_projection_matches(actual, expected, kind, *, canonical=False):
+    if actual is None or any(actual.get(key) != value for key, value in expected.items()):
+        return False
+    # Projections are complete evidence records. Unknown/new properties are not
+    # accepted as if they had survived a canonical round trip.
+    canonical_keys = {"SchemaVersion", "CanonicalKind", "CanonicalOrdinal", "CanonicalJson"}
+    return set(actual) == (set(expected) | (canonical_keys if canonical else set()))
+
+
+def _validate_native_fitting_inventory(ifc, canonical_items):
+    by_native = {item.id(): (item, data, kind)
+                 for item, data, _, kind in canonical_items.values()}
+    for native in ifc.by_type("IfcObject"):
+        record = by_native.get(native.id())
+        for kind, pset_name in _FITTING_PSETS.items():
+            actual = _property_set(native, pset_name)
+            if actual is not None and (record is None or record[2] != kind):
+                raise IfcAdapterError("native fitting claims have no matching typed canonical record")
+    selections = {data["id"]: data for _, data, _, kind in canonical_items.values()
+                  if kind == "fitting_selection"}
+    for native, data, _, kind in canonical_items.values():
+        if kind in _FITTING_PSETS:
+            expected = _fitting_properties(kind, data)
+            for pset_name in (CANONICAL_PSET, _FITTING_PSETS[kind]):
+                if not _fitting_projection_matches(_property_set(native, pset_name), expected, kind,
+                                                   canonical=pset_name == CANONICAL_PSET):
+                    raise IfcAdapterError("native fitting projection contradicts its typed record")
+            if not native.is_a("IfcAnnotation") or _body_representation(native) is not None or getattr(native, "ObjectPlacement", None) is not None:
+                raise IfcAdapterError("fitting decision and interface records must be unplaced non-solid annotations")
+            if kind == "fitting_interface":
+                selection = selections.get(data["selection_id"])
+                if selection is None:
+                    raise IfcAdapterError("native fitting interface references no typed selection")
+                host_id = selection["fitting_id"]
+            else:
+                host_id = data["fitting_id"]
+            hosts = [rel.RelatingProduct.GlobalId for rel in getattr(native, "HasAssignments", ())
+                     if rel.is_a("IfcRelAssignsToProduct")]
+            if hosts != [canonical_id_to_ifc_guid(host_id)]:
+                raise IfcAdapterError("native fitting evidence host contradicts its existing route fitting")
+            if kind == "fitting_interface":
+                if data["port_id"] not in canonical_items or data["mating_port_id"] not in canonical_items:
+                    raise IfcAdapterError("fitting counterpart evidence references no canonical port entity")
+                if canonical_items[data["port_id"]][3] != "port" or canonical_items[data["mating_port_id"]][3] != "port":
+                    raise IfcAdapterError("fitting counterpart evidence does not reference canonical ports")
+        elif kind == "route_fitting":
+            selection = next((s for s in selections.values() if s["fitting_id"] == data["id"]), None)
+            adapter = _property_set(native, ADAPTER_PSET) or {}
+            expected_basis = (selection["geometry_basis"] if selection is not None else "unselected")
+            expected_body = (selection is not None and
+                             selection["geometry_basis"] == "dimension_derived_envelope")
+            body_representations = _body_representations(native)
+            actual_body = bool(body_representations)
+            body_count_matches = (len(body_representations) == 1 if expected_body else not actual_body)
+            if (adapter.get("Body") != ("yes" if expected_body else "no") or
+                    actual_body is not expected_body or not body_count_matches):
+                raise IfcAdapterError(
+                    "native route-fitting Body claim contradicts its selected envelope/no-Body state or representation count"
+                )
+            if adapter.get("GeometryBasis") != expected_basis or adapter.get("NativeCatalogGeometry") is not False:
+                raise IfcAdapterError("native route-fitting geometry basis contradicts its exact-product record")
+            if expected_body:
+                _validate_native_box_envelope(native, {"size": selection["size"]}, label="route-fitting envelope")
+                if adapter.get("GeometryDisclosure") != "dimension-derived envelope only; not native CAD or manufacturer geometry":
+                    raise IfcAdapterError("native route-fitting Body is not disclosed as a derived envelope")
+
+
 _SUPPORT_OUTCOME_OPTIONAL={'SelectedAssemblyId','RequestedLevelId','RequestedRuleAuthority','RequestedRuleRevision','RequestedRuleId'}
 
 

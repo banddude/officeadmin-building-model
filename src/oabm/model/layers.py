@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from .common import (
     ContractError, UnsupportedSchemaVersion, _validate_id,
+    FITTING_SCHEMA_VERSIONS,
+    STRUCTURAL_SCHEMA_VERSIONS,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard, typing only
@@ -511,10 +513,11 @@ def _universe(model: "BuildingModel") -> dict[str, str | None]:
 
     These are exactly the canonical node kinds the current GLB exporter
     draws (walls, slabs, spaces, devices, equipment, routes, physical
-    electrical boxes, and the 1.3 support components, interfaces and
-    assemblies). Ceilings and openings are not drawn yet and are outside
-    the universe; conductor wire nodes ride their route, and a support
-    assembly node brings its component and interface children with it.
+    electrical boxes, structural members, support components/interfaces/assemblies, and the
+    existing route-fitting occurrences in v1.5). Fitting product/interface/
+    outcome rows are nonphysical metadata and are not drawable. Ceilings and
+    openings are outside the universe; conductor wire nodes ride their route,
+    and a support assembly node brings its component and interface children.
     """
 
     entries: dict[str, str | None] = {}
@@ -538,6 +541,14 @@ def _universe(model: "BuildingModel") -> dict[str, str | None]:
         entries[interface.id] = interface.level_id
     for assembly in model.support_assemblies:
         entries[assembly.id] = assembly.level_id
+    if model.schema_version in STRUCTURAL_SCHEMA_VERSIONS:
+        for member in model.structural_members:
+            entries[member.id] = member.level_id
+    if model.schema_version in FITTING_SCHEMA_VERSIONS:
+        routes = {route.id: route for route in model.routes}
+        for fitting in model.route_fittings:
+            route = routes.get(fitting.route_id)
+            entries[fitting.id] = None if route is None else _route_level_id(model, route)
     return dict(sorted(entries.items()))
 
 
@@ -576,6 +587,8 @@ def _model_entity_ids(model: "BuildingModel") -> set[str]:
         model.raceway_selections, model.raceway_selection_outcomes,
         model.support_assemblies, model.support_components,
         model.support_interfaces, model.support_selection_outcomes,
+        model.structural_members, model.fitting_selections, model.fitting_interfaces,
+        model.fitting_selection_outcomes,
     )
     for collection in collections:
         for entity in collection:

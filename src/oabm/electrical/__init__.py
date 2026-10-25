@@ -17,3 +17,8 @@ from .policy import (RacewayPolicy, RacewayPolicyRule, PolicyCompilation,
                      compile_raceway_policy)
 __all__ += ['RacewayPolicy','RacewayPolicyRule','PolicyCompilation','PolicyDiagnostic',
             'PolicyEvaluation','ProductBlock','compile_raceway_policy']
+
+from .fittings import (FittingIntent, FittingPortBinding, FittingRule,
+                       FittingRulePermission, select_route_fittings)
+__all__ += ['FittingIntent','FittingPortBinding','FittingRule',
+            'FittingRulePermission','select_route_fittings']

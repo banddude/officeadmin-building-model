@@ -209,4 +209,13 @@ conservative hard no-go geometry, exported once with its canonical identity,
 and counted with its rectangular solid volume. Nothing recognizes framing or
 permits penetrations. All earlier schemas, portable semantics, and consumer
 bytes remain unchanged; explicit version rules and refusals continue to apply.
-`upgrade_to_v1_3` preserves their existing data. Default remains 1.0.
+`upgrade_to_v1_4` preserves their existing data. Default remains 1.0.
+
+Version 1.5.0 adds the opt-in route-fitting contract described in
+[the bounded route-fitting selection contract](route-fitting-selection-contract.md).
+Only caller-authored existing EMT couplings with two route-owned counterpart
+ports and EMT terminal connectors with one route-owned port plus one exact-box
+port are supported initially. There is no automatic fitting/port placement,
+actual-OD check, product-fit claim, CAD download, or code/listing compliance
+claim. `upgrade_to_v1_5` is explicit and adds empty fitting collections;
+default remains 1.0.0 and older serialized output remains unchanged.

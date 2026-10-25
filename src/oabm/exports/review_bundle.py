@@ -14,7 +14,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, get_args, get_origin, get_type_hints
 
-from oabm.model import BuildingModel, SUPPORT_SCHEMA_VERSIONS
+from oabm.model import BuildingModel, SUPPORT_SCHEMA_VERSIONS, FITTING_SCHEMA_VERSIONS
 from oabm.model.common import Entity
 from oabm.qa.confidence_review import (
     ConfidenceReviewManifest,
@@ -383,6 +383,9 @@ def _verify_expected_rendered_nodes(
     ):
         for entity in collection:
             expected[entity.id] = 1
+    if model.schema_version in FITTING_SCHEMA_VERSIONS:
+        for fitting in model.route_fittings:
+            expected[fitting.id] = 1
     for conductor in model.conductors:
         wire_count = conductor.count * len(dict.fromkeys(conductor.route_ids))
         if wire_count:

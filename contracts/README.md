@@ -46,16 +46,19 @@ Building-assembly contract `1.6.0` is explicitly selected; the default remains
 `1.0.0`, with unchanged serialized semantics for versions 1.0 through 1.5.
 Its records preserve immutable preset identities, typed resolved assumptions,
 source evidence, physical component identities, and input/output digests.
-The first separate producer supports a straight timber wall with framed
-rectangular opening voids and drywall. GLB and component quantities consume
+Separate bounded producers support a straight timber wall with framed
+rectangular voids and drywall, simple explicitly chosen door/window inserts,
+and a rectangular suspended ceiling below an existing Slab deck. GLB and component quantities consume
 the same physical records and suppress duplicate aggregate-host bodies or
 physical quantity claims. Populated assemblies are refused by unsupported
 routing, IFC, drawing, revision-diff, confidence-review and review-bundle
 entrypoints. Empty upgraded models remain usable, including IFC round trip.
 
-Full-room corners/joins, metal-stud and ceiling producers, door/window insert
-recipes, assembly-aware routing, regeneration and dependent route invalidation
-remain unimplemented. The schema covers structural shapes and evidence scopes;
+Full-room corners/joins, metal-stud presets, generated-deck production,
+assembly-aware routing, regeneration and dependent route invalidation remain
+unimplemented. Unmodeled items include boundary trim, tee joint hardware and
+deck fasteners. The basic shapes do not certify loads, installation or
+regulatory compliance. The schema covers structural shapes and evidence scopes;
 cross-record identities, source agreement, geometry/host fit and digest
 freshness remain Python semantic checks. See the [bounded contract](../docs/building-assemblies-contract-v1.6-draft.md)
 and [wall producer](../docs/building-assembly-wall-producer-v1.md).

@@ -66,6 +66,7 @@ from oabm.model import (
     Space,
     Wall,
 )
+from oabm.model.assemblies import ASSEMBLY_GEOMETRY_TOLERANCE_M
 from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 from oabm.geometry_primitives import (
     _PLAN_EPSILON,
@@ -550,10 +551,27 @@ def _build_document(
     level_heights: dict[str, float | None] = {
         level.id: level.height_m for level in model.levels
     }
+    assemblies_by_id = ({assembly.id: assembly for assembly in model.building_assemblies}
+                        if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS else {})
+    slab_ids = {slab.id for slab in model.slabs}
+    # A selected existing Slab is already the physical deck for a populated
+    # 1.6 suspended-ceiling assembly. Keep its canonical top-face convention
+    # here without changing the historical upward slab preview for legacy or
+    # empty-upgrade models.
+    selected_ceiling_deck_slab_ids = {
+        assembly.deck_id
+        for assembly in assemblies_by_id.values()
+        if assembly.assembly_kind == "suspended_ceiling"
+        and assembly.component_ids
+        and assembly.deck_id in slab_ids
+    }
     # Space floor plates sit on the level's highest slab top so they never
-    # z-fight inside a slab; footprint z is the fallback.
+    # z-fight inside a floor slab; a selected suspended-ceiling deck is
+    # overhead, not floor support, so it does not participate in this lookup.
     slab_top: dict[str, float] = {}
     for slab in model.slabs:
+        if slab.id in selected_ceiling_deck_slab_ids:
+            continue
         top = max(point.z for point in slab.footprint.points) + slab.thickness_m
         slab_top[slab.level_id] = max(slab_top.get(slab.level_id, 0.0), top)
 
@@ -567,8 +585,6 @@ def _build_document(
     emphasized_count = 0
     glazed_outline_count = 0
     thickened_wall_count = 0
-    assemblies_by_id = ({assembly.id: assembly for assembly in model.building_assemblies}
-                        if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS else {})
     if assemblies_by_id:
         _preflight_assembly_preview_vertices(model.assembly_components)
     aggregate_wall_ids = {
@@ -662,10 +678,27 @@ def _build_document(
             })
     for entity in model.slabs:
         extras = _extras(entity, "slab", entity.level_id, include_canonical_id=include_canonical_node_ids)
+        footprint_z = tuple(point.z for point in entity.footprint.points)
+        if entity.id in selected_ceiling_deck_slab_ids:
+            if max(footprint_z) - min(footprint_z) > ASSEMBLY_GEOMETRY_TOLERANCE_M:
+                raise ValueError(
+                    f"GLB cannot render nonhorizontal Slab {entity.id!r} as a selected "
+                    "suspended-ceiling deck"
+                )
+            # Match point_on_slab_surface's canonical plane elevation; the
+            # assembly validator has already required the whole face to be
+            # horizontal within this same tolerance.
+            deck_top = footprint_z[0]
+            deck_bottom = deck_top - entity.thickness_m
+        else:
+            # Preserve the historical upward slab mesh for all earlier
+            # schemas and for explicit empty 1.6 upgrades.
+            deck_bottom = min(footprint_z)
+            deck_top = deck_bottom + entity.thickness_m
         vertices, triangulation = _prism_vertices(
             entity.footprint.points,
-            min(point.z for point in entity.footprint.points),
-            min(point.z for point in entity.footprint.points) + entity.thickness_m,
+            deck_bottom,
+            deck_top,
         )
         if triangulation == "fan-fallback":
             extras["triangulation"] = triangulation

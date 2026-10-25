@@ -7,13 +7,38 @@ from oabm.model import (
     Quaternion, Size3, Wall,
 )
 
-from .wall import WallAssemblyRequest, build_wall_assembly
+from .wall import OpeningFramingSpecification, WallAssemblyRequest, build_wall_assembly
 
 SYNTHETIC_MODEL_ID = "model:wall-assembly-two-opening-fixture"
 SYNTHETIC_WALL_ID = "wall:proof"
 SYNTHETIC_ASSEMBLY_ID = "assembly:wall-proof"
 SYNTHETIC_DOOR_ID = "opening:proof-door"
 SYNTHETIC_WINDOW_ID = "opening:proof-window"
+
+# Explicit synthetic modeling inputs only. The 2-ply build-up, spacer, section
+# depth, bearing and support counts are not engineering recommendations/sizing.
+SYNTHETIC_OPENING_FRAMING_SPECS = (
+    OpeningFramingSpecification(
+        opening_id=SYNTHETIC_DOOR_ID,
+        header_depth_m=0.1397,
+        header_ply_thickness_m=0.0381,
+        header_ply_count=2,
+        header_spacer_thickness_m=0.0127,
+        bearing_m=0.0381,
+        king_count_per_side=1,
+        jack_count_per_side=1,
+    ),
+    OpeningFramingSpecification(
+        opening_id=SYNTHETIC_WINDOW_ID,
+        header_depth_m=0.1397,
+        header_ply_thickness_m=0.0381,
+        header_ply_count=2,
+        header_spacer_thickness_m=0.0127,
+        bearing_m=0.0381,
+        king_count_per_side=1,
+        jack_count_per_side=1,
+    ),
+)
 
 
 def synthetic_two_opening_wall_source() -> BuildingModel:
@@ -103,6 +128,7 @@ def synthetic_two_opening_wall_assembly() -> BuildingModel:
             assembly_id=SYNTHETIC_ASSEMBLY_ID,
             wall_id=SYNTHETIC_WALL_ID,
             selected_by="agent:synthetic-fixture-selector",
+            opening_framing_specs=SYNTHETIC_OPENING_FRAMING_SPECS,
         ),
     )
 
@@ -110,5 +136,6 @@ def synthetic_two_opening_wall_assembly() -> BuildingModel:
 __all__ = [
     "SYNTHETIC_MODEL_ID", "SYNTHETIC_WALL_ID", "SYNTHETIC_ASSEMBLY_ID",
     "SYNTHETIC_DOOR_ID", "SYNTHETIC_WINDOW_ID",
+    "SYNTHETIC_OPENING_FRAMING_SPECS",
     "synthetic_two_opening_wall_source", "synthetic_two_opening_wall_assembly",
 ]

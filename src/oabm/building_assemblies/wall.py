@@ -8,11 +8,13 @@ replace an existing assembly, or make structural/code claims.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import math
 import re
 from oabm.model import (
     ASSEMBLY_MAX_COMPONENTS,
+    ASSEMBLY_MAX_PARAMETERS,
     ASSEMBLY_SCHEMA_VERSIONS,
     AssemblyComponent,
     Box3D,
@@ -38,8 +40,9 @@ from oabm.model import (
 
 from .catalog import (
     DEFAULT_PRESET_CATALOG,
+    LEGACY_PRESET_CATALOG,
+    LEGACY_WALL_PARAMETER_IDS,
     WALL_GENERATOR_VERSION,
-    WALL_PARAMETER_IDS,
     BuildingAssemblyPresetCatalog,
     ParameterDefinition,
     WallPreset,
@@ -49,7 +52,11 @@ _TOLERANCE_M = 1e-9
 _MAX_OPENINGS = 256
 _CANONICAL_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 _MAX_PART_KEY_LENGTH = 2048
-_MAX_PARAMETER_OVERRIDES = len(WALL_PARAMETER_IDS)
+_MAX_PARAMETER_OVERRIDES = len(LEGACY_WALL_PARAMETER_IDS)
+_OPENING_SPEC_FIELDS = (
+    "header_depth_m", "header_ply_thickness_m", "header_ply_count",
+    "header_spacer_thickness_m", "bearing_m", "king_count_per_side", "jack_count_per_side",
+)
 
 
 class WallPresetError(ContractError):
@@ -75,6 +82,58 @@ class ParameterOverride:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class OpeningFramingSpecification:
+    """Explicit selected geometry for one conventional wood opening frame.
+
+    Header dimensions/build-up, bearing and support counts are caller-selected
+    inputs, not calculated structural sizing. Spacer thickness, including zero,
+    is an explicit input rather than an inferred default.
+    """
+
+    opening_id: str
+    header_depth_m: float
+    header_ply_thickness_m: float
+    header_ply_count: int
+    header_spacer_thickness_m: float
+    bearing_m: float
+    king_count_per_side: int
+    jack_count_per_side: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.opening_id, str) or not _CANONICAL_ID.fullmatch(self.opening_id):
+            raise WallPresetError("opening framing specification requires a canonical opening_id")
+        for field_name in ("header_depth_m", "header_ply_thickness_m", "bearing_m"):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or \
+                    not math.isfinite(float(value)) or value <= _TOLERANCE_M:
+                raise WallPresetError(
+                    f"{self.opening_id}.{field_name} must be a finite length greater than "
+                    f"the {_TOLERANCE_M:g} m geometric tolerance"
+                )
+        if isinstance(self.header_spacer_thickness_m, bool) or not isinstance(
+                self.header_spacer_thickness_m, (int, float)) or \
+                not math.isfinite(float(self.header_spacer_thickness_m)) or self.header_spacer_thickness_m < 0:
+            raise WallPresetError(
+                f"{self.opening_id}.header_spacer_thickness_m must be a finite nonnegative length"
+            )
+        if 0 < self.header_spacer_thickness_m <= _TOLERANCE_M:
+            raise WallPresetError(
+                f"{self.opening_id}.header_spacer_thickness_m must be zero or greater than "
+                f"the {_TOLERANCE_M:g} m geometric tolerance"
+            )
+        for field_name in ("header_ply_count", "king_count_per_side", "jack_count_per_side"):
+            value = getattr(self, field_name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1 or value > 64:
+                raise WallPresetError(f"{self.opening_id}.{field_name} must be an integer from 1 through 64")
+        total_thickness = (self.header_ply_count * self.header_ply_thickness_m
+                           + (self.header_ply_count - 1) * self.header_spacer_thickness_m)
+        if not math.isfinite(total_thickness) or total_thickness <= 0:
+            raise WallPresetError(f"{self.opening_id} header ply build-up must have positive finite thickness")
+        if self.header_ply_count == 1 and self.header_spacer_thickness_m > 0:
+            raise WallPresetError(f"{self.opening_id} cannot select a header spacer without multiple plies")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class WallAssemblyRequest:
     """Explicit selection used by an agent/user after plan facts are reviewed."""
 
@@ -83,6 +142,7 @@ class WallAssemblyRequest:
     selected_by: str
     preset_id: str = "wall.wood_rect_stock"
     parameter_overrides: tuple[ParameterOverride, ...] = ()
+    opening_framing_specs: tuple[OpeningFramingSpecification, ...] = ()
 
     def __post_init__(self) -> None:
         for label in ("assembly_id", "wall_id", "selected_by", "preset_id"):
@@ -96,7 +156,8 @@ class WallAssemblyRequest:
             raise WallPresetError("WallAssemblyRequest.selected_by exceeds the canonical text limit")
         if not isinstance(self.parameter_overrides, tuple):
             raise WallPresetError("parameter_overrides must be an immutable tuple of typed overrides")
-        # There are only 14 finite v1 parameter IDs. Reject impossible lengths
+        # Keep the historic maximum, then let the selected revision reject
+        # fields that it does not define. Reject impossible lengths
         # before scanning the rows or allocating copies for uniqueness checks.
         if len(self.parameter_overrides) > _MAX_PARAMETER_OVERRIDES:
             raise WallPresetError(
@@ -107,6 +168,15 @@ class WallAssemblyRequest:
         ids = tuple(row.parameter_id for row in self.parameter_overrides)
         if len(ids) != len(set(ids)):
             raise WallPresetError("parameter overrides must have unique parameter IDs")
+        if not isinstance(self.opening_framing_specs, tuple):
+            raise WallPresetError("opening_framing_specs must be an immutable tuple of typed specifications")
+        if len(self.opening_framing_specs) > _MAX_OPENINGS:
+            raise WallPresetError(f"opening framing specification count exceeds the {_MAX_OPENINGS}-opening producer cap")
+        if any(not isinstance(row, OpeningFramingSpecification) for row in self.opening_framing_specs):
+            raise WallPresetError("opening_framing_specs must be an immutable tuple of typed specifications")
+        spec_ids = tuple(row.opening_id for row in self.opening_framing_specs)
+        if len(spec_ids) != len(set(spec_ids)):
+            raise WallPresetError("opening framing specifications must have unique opening IDs")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -121,7 +191,8 @@ class WallPresetResolution:
             not isinstance(row, ResolvedParameter) for row in self.parameters
         ):
             raise WallPresetError("resolved parameters must be an immutable tuple")
-        if tuple(row.parameter_id for row in self.parameters) != WALL_PARAMETER_IDS:
+        if tuple(row.parameter_id for row in self.parameters) != tuple(
+                definition.parameter_id for definition in self.preset.parameters):
             raise WallPresetError("resolved parameter snapshot is incomplete or out of canonical order")
 
     def parameter_map(self) -> dict[str, ResolvedParameter]:
@@ -146,6 +217,37 @@ def resolve_wall_preset(
         preset = catalog.wall_preset(request.preset_id)
     except ContractError as exc:
         raise WallPresetError(str(exc)) from exc
+    published_catalogs = (LEGACY_PRESET_CATALOG, DEFAULT_PRESET_CATALOG)
+    builtin_source_ids = {
+        definition.source_id
+        for published_catalog in published_catalogs
+        for published_preset in published_catalog.wall_presets
+        for definition in published_preset.parameters
+        if definition.source_id is not None
+    }
+    builtin_sources = {
+        row.source_id: row for published_catalog in published_catalogs
+        for row in published_catalog.sources
+    }
+    for source_id in {row.source_id for row in preset.parameters if row.source_id is not None} & builtin_source_ids:
+        selected_source = next((row for row in catalog.sources if row.source_id == source_id), None)
+        if selected_source != builtin_sources[source_id]:
+            raise WallPresetError(
+                f"published wall catalog source ID {source_id!r} is reserved; "
+                "changed source content requires a new source_id"
+            )
+    for published_catalog in published_catalogs:
+        if (catalog.catalog_id != published_catalog.catalog_id or
+                catalog.catalog_revision != published_catalog.catalog_revision):
+            continue
+        published = next((row for row in published_catalog.wall_presets
+                          if row.preset_id == preset.preset_id and
+                          row.preset_revision == preset.preset_revision), None)
+        if published is not None and preset != published:
+            raise WallPresetError(
+                f"published wall preset identity {catalog.catalog_id}@{catalog.catalog_revision}/"
+                f"{preset.preset_id}@{preset.preset_revision} is reserved; changed content requires a new revision"
+            )
     if preset.assembly_kind != "wall":
         raise WallPresetError(f"selected preset {preset.preset_id!r} is not a wall recipe")
 
@@ -388,7 +490,17 @@ def _opening_locals(model: BuildingModel, wall: Wall, frame: _WallFrame,
 
 
 def _component_provenance(catalog: BuildingAssemblyPresetCatalog, preset: WallPreset,
-                          part_key: str) -> tuple[Provenance, ...]:
+                          part_key: str,
+                          framing_metadata: dict[str, str | int | float | bool] | None = None
+                          ) -> tuple[Provenance, ...]:
+    attributes: dict[str, str | int | float | bool | None] = {
+        "geometry_basis": "specified_parameterized_geometry",
+        "material_basis": "unknown",
+        "structural_status": preset.structural_status,
+        "generator_version": WALL_GENERATOR_VERSION,
+    }
+    if framing_metadata:
+        attributes.update(framing_metadata)
     return (Provenance(
         source_kind="building_assembly_generator",
         source_id=catalog.catalog_id,
@@ -400,12 +512,7 @@ def _component_provenance(catalog: BuildingAssemblyPresetCatalog, preset: WallPr
         confidence=1.0,
         derivation="inferred",
         scope_paths=("geometry", "geometry_basis", "material_id", "material_basis"),
-        attributes={
-            "geometry_basis": "specified_parameterized_geometry",
-            "material_basis": "unknown",
-            "structural_status": preset.structural_status,
-            "generator_version": WALL_GENERATOR_VERSION,
-        },
+        attributes=attributes,
     ),)
 
 
@@ -413,7 +520,9 @@ def _make_box_component(*, assembly_id: str, level_id: str, part_key: str,
                         kind: str, frame: _WallFrame, station: float, through: float,
                         center_z: float, size_x: float, size_y: float, size_z: float,
                         catalog: BuildingAssemblyPresetCatalog, preset: WallPreset,
-                        opening_id: str | None = None) -> AssemblyComponent:
+                        opening_id: str | None = None,
+                        framing_metadata: dict[str, str | int | float | bool] | None = None
+                        ) -> AssemblyComponent:
     heading = math.atan2(frame.uy, frame.ux)
     rotation = Quaternion(z=math.sin(heading / 2.0), w=math.cos(heading / 2.0))
     geometry = Box3D(
@@ -431,7 +540,7 @@ def _make_box_component(*, assembly_id: str, level_id: str, part_key: str,
         material_id=None,
         material_basis="unknown",
         opening_id=opening_id,
-        provenance=_component_provenance(catalog, preset, part_key),
+        provenance=_component_provenance(catalog, preset, part_key, framing_metadata),
     )
 
 
@@ -514,7 +623,8 @@ def _merge_intervals(intervals: list[tuple[float, float, tuple[str, ...]]]) -> l
 
 def _free_cripple_spans(*, station: float, slot: str, frame: _WallFrame,
                         member_width: float, base_limit: float, top_limit: float,
-                        openings: tuple[_OpeningLocal, ...], header_height: float,
+                        openings: tuple[_OpeningLocal, ...],
+                        header_depths: dict[str, float],
                         sill_height: float) -> tuple[_StudSpan, ...]:
     half = member_width / 2.0
     # Rough framing deliberately expands the source aperture by one member on
@@ -526,7 +636,7 @@ def _free_cripple_spans(*, station: float, slot: str, frame: _WallFrame,
     blocked: list[tuple[float, float, tuple[str, ...]]] = []
     for row in associated:
         low = row.sill - (sill_height if row.opening.opening_type.casefold() == "window" else 0.0)
-        high = row.head + header_height
+        high = row.head + header_depths[row.opening.id]
         low, high = max(low, base_limit), min(high, top_limit)
         if high - low > _TOLERANCE_M:
             blocked.append((low, high, (row.opening.id,)))
@@ -560,6 +670,45 @@ def _free_cripple_spans(*, station: float, slot: str, frame: _WallFrame,
     return tuple(result)
 
 
+def _opening_spec_parameters(request: WallAssemblyRequest,
+                             specs: dict[str, OpeningFramingSpecification]) -> tuple[ResolvedParameter, ...]:
+    rows: list[ResolvedParameter] = []
+    fields = (
+        ("header_depth_m", "length", "m"),
+        ("header_ply_thickness_m", "length", "m"),
+        ("header_ply_count", "count", "each"),
+        ("header_spacer_thickness_m", "length", "m"),
+        ("bearing_m", "length", "m"),
+        ("king_count_per_side", "count", "each"),
+        ("jack_count_per_side", "count", "each"),
+    )
+    for opening_id, spec in sorted(specs.items()):
+        opening_key = hashlib.sha256(opening_id.encode("utf-8")).hexdigest()[:16]
+        for field_name, value_kind, unit in fields:
+            parameter_id = f"wall.opening.{opening_key}.{field_name}"
+            rows.append(ResolvedParameter(
+                parameter_id=parameter_id,
+                value_kind=value_kind,
+                value=getattr(spec, field_name),
+                unit=unit,
+                origin="user_override",
+                provenance=(Provenance(
+                    source_kind="user_override",
+                    source_id=request.selected_by,
+                    source_element_id=parameter_id,
+                    method="explicit-selected-opening-framing-specification",
+                    confidence=1.0,
+                    derivation="user",
+                    scope_paths=("value", "unit", "origin"),
+                    attributes={"opening_id": opening_id, "field": field_name,
+                                "sizing_status": "explicit_geometry_input_not_engineered_sizing"},
+                ),),
+                source_entity_id=None,
+                source_field_path=None,
+            ))
+    return tuple(rows)
+
+
 def _stud_span_part_key(span: _StudSpan) -> str:
     if span.role == "stud":
         return f"stud:station:{span.slot}"
@@ -567,26 +716,111 @@ def _stud_span_part_key(span: _StudSpan) -> str:
 
 
 def _rough_frame_overlap_guard(openings: tuple[_OpeningLocal, ...], *, frame: _WallFrame,
-                               member_width: float, header_height: float,
+                               member_width: float,
+                               specs: dict[str, OpeningFramingSpecification],
+                               header_depths: dict[str, float],
                                sill_height: float, top_plate_bottom: float,
                                bottom_plate_top: float) -> None:
     envelopes: list[tuple[str, float, float, float, float]] = []
     for row in openings:
-        left, right = row.left - member_width, row.right + member_width
-        lower = row.sill - (sill_height if row.opening.opening_type.casefold() == "window" else 0.0)
-        upper = row.head + header_height
+        spec = specs[row.opening.id]
+        support_width = (spec.king_count_per_side + spec.jack_count_per_side) * member_width
+        left, right = row.left - support_width, row.right + support_width
+        # Kings and jacks continue to the bottom-plate top, independent of the
+        # source rough-opening sill, so adjacent-frame collision covers their
+        # full vertical envelope.
+        lower = bottom_plate_top
+        upper = row.head + header_depths[row.opening.id]
         if left < -_TOLERANCE_M or right > frame.length + _TOLERANCE_M:
-            raise WallPresetError(f"{row.opening.id} rough frame does not fit inside the wall axis")
+            raise WallPresetError(f"{row.opening.id} king/jack/header frame does not fit inside the wall axis")
         if upper > top_plate_bottom + _TOLERANCE_M:
             raise WallPresetError(f"{row.opening.id} rough header overlaps the required top plate band")
-        if row.opening.opening_type.casefold() == "window" and lower < bottom_plate_top - _TOLERANCE_M:
-            raise WallPresetError(f"{row.opening.id} rough sill overlaps the required bottom plate band")
         envelopes.append((row.opening.id, left, right, lower, upper))
     for index, first in enumerate(envelopes):
         for second in envelopes[index + 1:]:
             if min(first[2], second[2]) - max(first[1], second[1]) > _TOLERANCE_M and \
                     min(first[4], second[4]) - max(first[3], second[3]) > _TOLERANCE_M:
                 raise WallPresetError(f"rough-frame envelopes overlap: {first[0]} and {second[0]}")
+
+
+def _subtract_opening_supports(span: _StudSpan, *, member_width: float,
+                                base_limit: float, top_limit: float,
+                                openings: tuple[_OpeningLocal, ...],
+                                specs: dict[str, OpeningFramingSpecification]) -> tuple[_StudSpan, ...]:
+    """Remove only vertical intervals occupied by king/jack stock at a grid column.
+
+    A jack occupies the stud interval from the lower plate face to its header
+    underside; a king occupies that full lower-to-upper plate-face interval.
+    Grid-derived framing above a jack may therefore remain as a cripple. This
+    bounded recipe does not add off-grid members.
+    """
+    half = member_width / 2.0
+    column_left, column_right = span.station - half, span.station + half
+    blocked: list[tuple[float, float, tuple[str, ...]]] = []
+    for row in openings:
+        spec = specs[row.opening.id]
+        for side, boundary, outward in (("left", row.left, -1.0), ("right", row.right, 1.0)):
+            supports = (
+                (boundary + outward * (member + 0.5) * member_width,
+                 base_limit, row.head)
+                for member in range(spec.jack_count_per_side)
+            )
+            kings = (
+                (boundary + outward * (spec.jack_count_per_side + member + 0.5) * member_width,
+                 base_limit, top_limit)
+                for member in range(spec.king_count_per_side)
+            )
+            for center, lower, upper in (*supports, *kings):
+                if min(column_right, center + half) - max(column_left, center - half) > _TOLERANCE_M:
+                    lower, upper = max(lower, span.bottom_z), min(upper, span.top_z)
+                    if upper - lower > _TOLERANCE_M:
+                        blocked.append((lower, upper, (row.opening.id,)))
+    merged = _merge_intervals(blocked)
+    if not merged:
+        return (span,)
+
+    result: list[_StudSpan] = []
+    cursor = span.bottom_z
+    lower_key = span.lower_key
+    ids = set(span.related_openings)
+    for low, high, low_ids, high_ids in merged:
+        if low - cursor > _TOLERANCE_M:
+            related = tuple(sorted(ids | set(low_ids)))
+            result.append(_StudSpan(
+                station=span.station, slot=span.slot, bottom_z=cursor, top_z=low,
+                role="cripple", related_openings=related,
+                lower_key=lower_key, upper_key="below-support:" + "+".join(sorted(low_ids)),
+            ))
+        cursor = max(cursor, high)
+        ids.update(low_ids)
+        ids.update(high_ids)
+        lower_key = "above-support:" + "+".join(sorted(high_ids))
+    if span.top_z - cursor > _TOLERANCE_M:
+        result.append(_StudSpan(
+            station=span.station, slot=span.slot, bottom_z=cursor, top_z=span.top_z,
+            role="cripple", related_openings=tuple(sorted(ids)),
+            lower_key=lower_key, upper_key=span.upper_key,
+        ))
+    return tuple(result)
+
+
+def _station_framing_spans(*, station: float, slot: str, frame: _WallFrame,
+                           member_width: float, base_limit: float, top_limit: float,
+                           openings: tuple[_OpeningLocal, ...],
+                           header_depths: dict[str, float], sill_height: float,
+                           specs: dict[str, OpeningFramingSpecification]) -> tuple[_StudSpan, ...]:
+    return tuple(
+        remaining
+        for span in _free_cripple_spans(
+            station=station, slot=slot, frame=frame, member_width=member_width,
+            base_limit=base_limit, top_limit=top_limit, openings=openings,
+            header_depths=header_depths, sill_height=sill_height,
+        )
+        for remaining in _subtract_opening_supports(
+            span, member_width=member_width, base_limit=base_limit, top_limit=top_limit,
+            openings=openings, specs=specs,
+        )
+    )
 
 
 def _event_edges(events: dict[float, list[str]]) -> tuple[tuple[float, str], ...]:
@@ -652,6 +886,7 @@ def _panel_cells(x_edges: tuple[tuple[float, str], ...],
 
 def _assignment_provenance(wall: Wall, openings: tuple[_OpeningLocal, ...],
                            request: WallAssemblyRequest,
+                           host_framing_basis: str,
                            resolution: WallPresetResolution) -> tuple[Provenance, ...]:
     catalog, preset = resolution.catalog, resolution.preset
     selection_id = json.dumps(
@@ -666,6 +901,7 @@ def _assignment_provenance(wall: Wall, openings: tuple[_OpeningLocal, ...],
         confidence=1.0,
         derivation="user",
         scope_paths=("catalog_id", "catalog_revision", "preset_id", "preset_revision", "selected_by"),
+        attributes={"host_framing_basis": host_framing_basis},
     )]
     for source in wall.provenance:
         if source.derivation == "observed":
@@ -722,6 +958,71 @@ def _guard_dependencies_and_replacement(model: BuildingModel, wall: Wall,
         )
 
 
+def _host_framing_basis(wall: Wall) -> str:
+    """Reject known incompatible hosts and describe the evidence basis honestly.
+
+    Only typed construction plus these narrowly scoped metadata fields are
+    considered: ``stud_material``, ``stud_system``, and ``framing_system``.
+    Fastener/tie materials and free-form unrelated prose are not framing facts.
+    """
+    if wall.construction is not None and wall.construction != "framed":
+        raise WallPresetError(
+            f"{wall.id} typed construction {wall.construction!r} is not a framed wall; "
+            "the wood-stud preset cannot be applied"
+        )
+
+    metal_terms = re.compile(r"\b(?:metal|steel|cold[\s_-]*formed)\b", re.IGNORECASE)
+    wood_terms = re.compile(r"\b(?:wood|timber|lumber)\b", re.IGNORECASE)
+    steel_accessory_phrase = re.compile(
+        r"\bwith\s+(?:steel|metal)\s+"
+        r"(?:tie\s+connectors?|ties?|nail\s+plates?|nails?|fasteners?)\b",
+        re.IGNORECASE,
+    )
+    field_names = {"stud_material", "stud_system", "framing_system"}
+    wood_framing_evidence: str | None = None
+    metal_stud_framing = False
+
+    def visit(value: object, field_name: str | None = None) -> None:
+        nonlocal wood_framing_evidence, metal_stud_framing
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized = re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_")
+                next_field = normalized if normalized in field_names else field_name
+                visit(child, next_field)
+        elif isinstance(value, (tuple, list)):
+            for child in value:
+                visit(child, field_name)
+        elif isinstance(value, str) and field_name in field_names:
+            text = value.casefold().strip()
+            wood_declared = bool(wood_terms.search(text))
+            if wood_declared and wood_framing_evidence is None:
+                wood_framing_evidence = (
+                    "source_metadata_declares_wood_stud_material"
+                    if field_name == "stud_material"
+                    else "source_metadata_declares_wood_framing_system"
+                )
+            # Allow only an explicit accessory construction phrase attached to
+            # a wood declaration. Any remaining metal/steel/cold-formed term
+            # is treated as an incompatible or ambiguous structural system.
+            classified_text = (
+                steel_accessory_phrase.sub(" ", text) if wood_declared else text
+            )
+            if metal_terms.search(classified_text):
+                metal_stud_framing = True
+
+    visit(wall.attributes)
+    if metal_stud_framing:
+        raise WallPresetError(
+            f"{wall.id} relevant source metadata declares metal/steel stud framing; "
+            "the wood preset cannot be applied"
+        )
+    if wood_framing_evidence is not None:
+        return wood_framing_evidence
+    if wall.construction == "framed":
+        return "source_declares_framed_construction;wood_studs_selected_by_preset"
+    return "wood_framing_is_selected_preset_assumption;host_material_unknown"
+
+
 def build_wall_assembly(
     model: BuildingModel,
     request: WallAssemblyRequest,
@@ -737,9 +1038,14 @@ def build_wall_assembly(
     if not isinstance(model, BuildingModel):
         raise WallPresetError("model must be a typed canonical BuildingModel")
     resolution = resolve_wall_preset(request, catalog=catalog)
+    if resolution.preset.generator_kind != "wood_rect_stock_v2":
+        raise WallPresetError(
+            "the historical single-jamb v1 recipe is decode-only; new builds require the conventional v2 recipe"
+        )
     wall = next((row for row in model.walls if row.id == request.wall_id), None)
     if wall is None:
         raise WallPresetError(f"requested wall {request.wall_id!r} is missing from the canonical model")
+    host_framing_basis = _host_framing_basis(wall)
     _guard_dependencies_and_replacement(model, wall, request)
     if request.assembly_id == model.model_id:
         raise WallPresetError("assembly_id cannot collide with model_id")
@@ -750,13 +1056,26 @@ def build_wall_assembly(
     value = {key: row.value for key, row in params.items()}
     frame = _frame_for_wall(wall)
     openings = _opening_locals(model, wall, frame, float(value["wall.opening_clearance_m"]))
+    specs = {row.opening_id: row for row in request.opening_framing_specs}
+    opening_ids = {row.opening.id for row in openings}
+    if set(specs) != opening_ids:
+        missing = sorted(opening_ids - set(specs))
+        extra = sorted(set(specs) - opening_ids)
+        raise WallPresetError(
+            f"explicit opening framing specifications must exactly match the host door/window openings "
+            f"(missing={missing!r}, extra={extra!r})"
+        )
+    if len(resolution.parameters) + len(specs) * len(_OPENING_SPEC_FIELDS) > ASSEMBLY_MAX_PARAMETERS:
+        raise WallPresetError(
+            f"opening framing specification snapshot exceeds the canonical {ASSEMBLY_MAX_PARAMETERS} resolved-parameter limit"
+        )
+    resolved_parameters = (*resolution.parameters, *_opening_spec_parameters(request, specs))
 
     axis_width = float(value["wall.stock.wall_axis_width_m"])
     framing_depth = float(value["wall.stack.framing_depth_m"])
     plate_thickness = float(value["wall.plate.thickness_m"])
     bottom_count = int(value["wall.plate.bottom_count"])
     top_count = int(value["wall.plate.top_count"])
-    header_height = float(value["wall.opening.header_height_m"])
     sill_height = float(value["wall.opening.sill_height_m"])
     drywall_thickness = float(value["wall.drywall.thickness_m"])
     left_layer = float(value["wall.stack.face_left.layer_1_m"])
@@ -785,53 +1104,71 @@ def build_wall_assembly(
         raise WallPresetError("selected plate stack leaves no positive stud height inside the host")
     base_limit = frame.base_z + bottom_band
     top_limit = frame.base_z + wall.height_m - top_band
-    if header_height >= wall.height_m or sill_height >= wall.height_m:
-        raise WallPresetError("opening frame member thickness exceeds the wall height")
+    header_depths = {opening_id: float(spec.header_depth_m) for opening_id, spec in specs.items()}
+    for opening in openings:
+        spec = specs[opening.opening.id]
+        built_up_thickness = (spec.header_ply_count * spec.header_ply_thickness_m
+                              + (spec.header_ply_count - 1) * spec.header_spacer_thickness_m)
+        if built_up_thickness > framing_depth + _TOLERANCE_M:
+            raise WallPresetError(
+                f"{opening.opening.id} header ply build-up exceeds the selected wall framing depth"
+            )
+        support_width = spec.jack_count_per_side * axis_width
+        if abs(spec.bearing_m - support_width) > _TOLERANCE_M:
+            raise WallPresetError(
+                f"{opening.opening.id} header end bearing must exactly span the jack support pack "
+                "so both header ends meet jacks and king studs without gaps"
+            )
+        if opening.head + spec.header_depth_m > top_limit + _TOLERANCE_M:
+            raise WallPresetError(
+                f"{opening.opening.id} selected header depth overlaps the top-plate band or wall host"
+            )
+        if opening.opening.opening_type.casefold() == "window" and \
+                opening.sill - sill_height < base_limit - _TOLERANCE_M:
+            raise WallPresetError(f"{opening.opening.id} rough sill overlaps the required bottom-plate band")
+    if sill_height >= wall.height_m:
+        raise WallPresetError("selected window sill section exceeds the wall height")
     _rough_frame_overlap_guard(
-        openings, frame=frame, member_width=axis_width,
-        header_height=header_height, sill_height=sill_height,
+        openings, frame=frame, member_width=axis_width, specs=specs,
+        header_depths=header_depths, sill_height=sill_height,
         top_plate_bottom=top_limit, bottom_plate_top=base_limit,
     )
 
     stations = _wall_stations(frame, start_offset, end_offset, spacing, axis_width)
     # Stable layout slot keys are semantic stations. Build just scalar span
     # specifications first; bound all geometry allocation to the contract cap.
-    # Openings receive one explicit rectangular jamb on each side. If a regular
-    # station exactly occupies that same center, its full-height part is replaced
-    # by the semantic jamb child rather than duplicated.
-    jamb_stations = tuple(
-        value
-        for row in openings
-        for value in (row.left - axis_width / 2.0, row.right + axis_width / 2.0)
-    )
-
-    def is_replaced_by_jamb(span: _StudSpan) -> bool:
-        return span.role == "stud" and any(abs(span.station - value) <= _TOLERANCE_M
-                                            for value in jamb_stations)
-
+    # Reserve only the vertical intervals physically occupied by kings/jacks
+    # at each regular grid column. This preserves any clear grid-derived
+    # cripple above a jack/header while never duplicating its support member.
     # First count spans without retaining a component-sized collection. The
     # maximum temporary per-station interval set is the capped opening count.
     framing_station_count = 0
     for station, slot in stations:
-        for span in _free_cripple_spans(
+        for span in _station_framing_spans(
             station=station, slot=slot, frame=frame, member_width=axis_width,
             base_limit=base_limit, top_limit=top_limit, openings=openings,
-            header_height=header_height, sill_height=sill_height,
+            header_depths=header_depths, sill_height=sill_height, specs=specs,
         ):
-            if not is_replaced_by_jamb(span):
-                if len(_stud_span_part_key(span)) > _MAX_PART_KEY_LENGTH:
-                    raise WallPresetError(
-                        "component_key_too_long: framing slot evidence exceeds the canonical part-key limit"
-                    )
-                framing_station_count += 1
-                if framing_station_count > ASSEMBLY_MAX_COMPONENTS:
-                    raise WallPresetError(
-                        f"component_cap_exceeded: predicted wall framing components exceed {ASSEMBLY_MAX_COMPONENTS}"
-                    )
+            if len(_stud_span_part_key(span)) > _MAX_PART_KEY_LENGTH:
+                raise WallPresetError(
+                    "component_key_too_long: framing slot evidence exceeds the canonical part-key limit"
+                )
+            framing_station_count += 1
+            if framing_station_count > ASSEMBLY_MAX_COMPONENTS:
+                raise WallPresetError(
+                    f"component_cap_exceeded: predicted wall framing components exceed {ASSEMBLY_MAX_COMPONENTS}"
+                )
     x_edges, z_edges = _panel_edges(frame, wall.height_m, openings)
     panel_cell_count = _panel_cell_count(x_edges, z_edges, openings)
-    opening_components_count = sum(3 + (1 if row.opening.opening_type.casefold() == "window" else 0)
-                                   for row in openings)
+    opening_components_count = sum(
+        2 * specs[row.opening.id].king_count_per_side
+        + 2 * specs[row.opening.id].jack_count_per_side
+        + specs[row.opening.id].header_ply_count
+        + ((specs[row.opening.id].header_ply_count - 1)
+           if specs[row.opening.id].header_spacer_thickness_m > _TOLERANCE_M else 0)
+        + (1 if row.opening.opening_type.casefold() == "window" else 0)
+        for row in openings
+    )
     predicted = (
         framing_station_count
         + top_count
@@ -849,12 +1186,11 @@ def build_wall_assembly(
     filtered_spans = tuple(
         span
         for station, slot in stations
-        for span in _free_cripple_spans(
+        for span in _station_framing_spans(
             station=station, slot=slot, frame=frame, member_width=axis_width,
             base_limit=base_limit, top_limit=top_limit, openings=openings,
-            header_height=header_height, sill_height=sill_height,
+            header_depths=header_depths, sill_height=sill_height, specs=specs,
         )
-        if not is_replaced_by_jamb(span)
     )
     panel_cells = _panel_cells(x_edges, z_edges, openings)
 
@@ -871,12 +1207,14 @@ def build_wall_assembly(
 
     def add_box(part_key: str, kind: str, *, station: float, through: float,
                 center_z: float, size_x: float, size_y: float, size_z: float,
-                opening_id: str | None = None) -> None:
+                opening_id: str | None = None,
+                framing_metadata: dict[str, str | int | float | bool] | None = None) -> None:
         parts.append(_make_box_component(
             assembly_id=request.assembly_id, level_id=wall.level_id, part_key=part_key,
             kind=kind, frame=frame, station=station, through=through,
             center_z=center_z, size_x=size_x, size_y=size_y, size_z=size_z,
             catalog=resolution.catalog, preset=resolution.preset, opening_id=opening_id,
+            framing_metadata=framing_metadata,
         ))
 
     # Bottom plates are separated only at door voids. Window sills remain above
@@ -926,40 +1264,92 @@ def build_wall_assembly(
         add_box(key, role, station=span.station, through=0.0,
                 center_z=(span.bottom_z + span.top_z) / 2.0,
                 size_x=axis_width, size_y=framing_depth,
-                size_z=span.top_z - span.bottom_z, opening_id=opening_id)
+                size_z=span.top_z - span.bottom_z, opening_id=opening_id,
+                framing_metadata={"framing_role": "ordinary" if role == "stud" else "cripple"})
 
-    # Each opening has one simple jamb pair, one single-rectangular header, and
-    # a rectangular sill only for windows. These are illustrative geometry,
-    # not selected structural members or suitable engineering designs.
+    # Explicitly selected conventional geometry: king studs continue from
+    # bottom-plate top to top-plate underside; jack/trimmer studs meet the
+    # header underside; every header ply sits on the selected jack support set.
+    # This is not structural member sizing or approval.
     for row in openings:
         opening_id = row.opening.id
+        spec = specs[opening_id]
         sill = row.opening.opening_type.casefold() == "window"
-        jamb_bottom = row.sill if sill else base_limit
-        jamb_top = row.head
-        jamb_height = jamb_top - jamb_bottom
-        if jamb_height <= _TOLERANCE_M:
-            raise WallPresetError(f"{opening_id} leaves no positive jamb height")
-        for side, station in (("left", row.left - axis_width / 2.0),
-                              ("right", row.right + axis_width / 2.0)):
-            add_box(f"stud:opening:{opening_id}:jamb:{side}", "stud",
-                    station=station, through=0.0,
-                    center_z=(jamb_bottom + jamb_top) / 2.0,
-                    size_x=axis_width, size_y=framing_depth, size_z=jamb_height)
-        add_box(f"header:opening:{opening_id}", "header",
-                station=row.station, through=0.0,
-                center_z=row.head + header_height / 2.0,
-                size_x=row.opening.size.x + 2.0 * axis_width,
-                size_y=framing_depth, size_z=header_height,
-                opening_id=opening_id)
+        jack_height = row.head - base_limit
+        king_height = top_limit - base_limit
+        if jack_height <= _TOLERANCE_M:
+            raise WallPresetError(f"{opening_id} leaves no positive jack/trimmer height")
+        if king_height <= _TOLERANCE_M:
+            raise WallPresetError(f"{opening_id} leaves no positive full-height king-stud span")
+        for side, boundary, outward in (("left", row.left, -1.0), ("right", row.right, 1.0)):
+            for member in range(spec.jack_count_per_side):
+                station = boundary + outward * (member + 0.5) * axis_width
+                add_box(
+                    f"stud:opening:{opening_id}:jack:{side}:member-{member+1}", "stud",
+                    station=station, through=0.0, center_z=base_limit + jack_height / 2.0,
+                    size_x=axis_width, size_y=framing_depth, size_z=jack_height,
+                    framing_metadata={"framing_role": "jack", "opening_id": opening_id,
+                                      "side": side, "member": member + 1,
+                                      "support_surface": "header_underside"},
+                )
+            for member in range(spec.king_count_per_side):
+                station = boundary + outward * (
+                    spec.jack_count_per_side + member + 0.5
+                ) * axis_width
+                add_box(
+                    f"stud:opening:{opening_id}:king:{side}:member-{member+1}", "stud",
+                    station=station, through=0.0, center_z=base_limit + king_height / 2.0,
+                    size_x=axis_width, size_y=framing_depth, size_z=king_height,
+                    framing_metadata={"framing_role": "king", "opening_id": opening_id,
+                                      "side": side, "member": member + 1,
+                                      "support_span": "between_plates"},
+                )
+        header_stack_thickness = (spec.header_ply_count * spec.header_ply_thickness_m
+                                  + (spec.header_ply_count - 1) * spec.header_spacer_thickness_m)
+        first_through = -header_stack_thickness / 2.0
+        header_length = row.opening.size.x + 2.0 * spec.bearing_m
+        for ply in range(spec.header_ply_count):
+            through = first_through + spec.header_ply_thickness_m / 2.0 + ply * (
+                spec.header_ply_thickness_m + spec.header_spacer_thickness_m
+            )
+            add_box(
+                f"header:opening:{opening_id}:ply-{ply+1}", "header",
+                station=row.station, through=through,
+                center_z=row.head + spec.header_depth_m / 2.0,
+                size_x=header_length, size_y=spec.header_ply_thickness_m,
+                size_z=spec.header_depth_m, opening_id=opening_id,
+                framing_metadata={"framing_role": "header_ply", "opening_id": opening_id,
+                                  "ply": ply + 1, "ply_count": spec.header_ply_count,
+                                  "header_depth_m": spec.header_depth_m,
+                                  "header_ply_thickness_m": spec.header_ply_thickness_m,
+                                  "header_spacer_thickness_m": spec.header_spacer_thickness_m,
+                                  "bearing_m": spec.bearing_m,
+                                  "sizing_status": "explicit_geometry_input_not_engineered_sizing"},
+            )
+            if ply < spec.header_ply_count - 1 and spec.header_spacer_thickness_m > _TOLERANCE_M:
+                spacer_through = through + spec.header_ply_thickness_m / 2.0 \
+                    + spec.header_spacer_thickness_m / 2.0
+                add_box(
+                    f"header:opening:{opening_id}:spacer-{ply+1}", "header",
+                    station=row.station, through=spacer_through,
+                    center_z=row.head + spec.header_depth_m / 2.0,
+                    size_x=header_length, size_y=spec.header_spacer_thickness_m,
+                    size_z=spec.header_depth_m, opening_id=opening_id,
+                    framing_metadata={"framing_role": "header_spacer", "opening_id": opening_id,
+                                      "between_plies": f"{ply+1}-{ply+2}",
+                                      "spacer_thickness_m": spec.header_spacer_thickness_m,
+                                      "material_basis": "unknown"},
+                )
         if sill:
             add_box(f"sill:opening:{opening_id}", "sill",
                     station=row.station, through=0.0,
                     center_z=row.sill - sill_height / 2.0,
-                    size_x=row.opening.size.x + 2.0 * axis_width,
+                    size_x=row.opening.size.x,
                     size_y=framing_depth, size_z=sill_height,
-                    opening_id=opening_id)
-    # The station-complement pass above already emitted the correct rough-frame
-    # cripples; only the explicit jamb/header/sill items are added here.
+                    opening_id=opening_id,
+                    framing_metadata={"framing_role": "rough_sill", "opening_id": opening_id})
+    # The station-complement pass emits clear-bay cripples above headers and
+    # below window sills; support packs are excluded from ordinary stations.
     parts_by_key: dict[str, AssemblyComponent] = {}
     for part in parts:
         if part.part_key in parts_by_key:
@@ -998,7 +1388,7 @@ def build_wall_assembly(
         )
 
     upgraded = model if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS else upgrade_to_v1_6(model)
-    provenance = _assignment_provenance(wall, openings, request, resolution)
+    provenance = _assignment_provenance(wall, openings, request, host_framing_basis, resolution)
     draft = BuildingAssembly(
         id=request.assembly_id,
         assembly_kind="wall",
@@ -1011,7 +1401,7 @@ def build_wall_assembly(
         preset_revision=resolution.preset.preset_revision,
         selected_by=request.selected_by,
         generator_version=WALL_GENERATOR_VERSION,
-        resolved_parameters=resolution.parameters,
+        resolved_parameters=resolved_parameters,
         component_ids=tuple(component.id for component in components),
         input_digest="0" * 64,
         output_digest="0" * 64,
@@ -1030,6 +1420,6 @@ def build_wall_assembly(
 
 
 __all__ = [
-    "WallPresetError", "ParameterOverride", "WallAssemblyRequest",
+    "WallPresetError", "ParameterOverride", "OpeningFramingSpecification", "WallAssemblyRequest",
     "WallPresetResolution", "resolve_wall_preset", "build_wall_assembly",
 ]

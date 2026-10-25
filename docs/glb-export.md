@@ -46,6 +46,21 @@ keeps its `extras["conductors"]` list.
 The `to_glb` summary dict reports the drawn wire count as
 `conductor_wires`.
 
+## Existing suspended-ceiling decks
+
+When a populated canonical 1.6 `suspended_ceiling` assignment selects an
+existing `Slab`, the exporter renders that one canonical slab as the physical
+deck: its footprint is the top face and its thickness extends downward from
+the canonical footprint-plane elevation by `thickness_m`. The deck keeps its
+canonical ID and is emitted once; the assembly does not add a duplicate deck
+mesh. The 1.6 validator rejects unsupported nonhorizontal source decks rather
+than allowing the GLB consumer to flatten them. For earlier schemas and an
+explicit empty 1.6 upgrade, the historical upward slab preview is unchanged;
+all existing 1.0–1.5 default GLB bytes remain preserved.
+The selected overhead deck does not elevate same-level `Space` floor-plate
+previews; those still use their footprint datum unless another slab supplies
+the existing floor-height inference.
+
 ## Cap triangulation
 
 Slab and space floor-plate prisms cap their top and bottom from the

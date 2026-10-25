@@ -9,18 +9,47 @@ import json
 import os
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from oabm.model import ContractError, Provenance, stable_id
 from .contracts import (
-    Endpoint, Portable, RoutingConfig, _array, _finite, _portable, budget,
+    Endpoint, Portable, RoutingConfig, _array, _finite, _portable as _contract_portable, budget,
     digest, fingerprint, integer, text,
 )
 from .dispatch import AdapterAvailabilityError, _availability_reason
 from .symbol_scope import SymbolScope
 from .takeoff import SourceImage, _strings, _unit_box, _validate_rendered_images
+
+
+def _portable(value):
+    """Preserve typed legacy symbol omissions inside nested audit artifacts."""
+    def prune(source, encoded):
+        if isinstance(source, (SymbolMark, SymbolProposal)) and source.scope is None:
+            encoded.pop("scope", None)
+            if isinstance(source, SymbolProposal):
+                encoded.pop("scope_sources", None)
+        if is_dataclass(source) and not isinstance(source, type):
+            for field in fields(source):
+                if field.name in encoded:
+                    prune(getattr(source, field.name), encoded[field.name])
+        elif isinstance(source, (tuple, list)):
+            for child, data in zip(source, encoded):
+                prune(child, data)
+        elif isinstance(source, dict):
+            for key, child in source.items():
+                prune(child, encoded[str(key)])
+        return encoded
+    return prune(value, _contract_portable(value))
+
+
+class _SymbolPortable(Portable):
+    def to_dict(self):
+        data = _portable(self)
+        self.from_dict(data)
+        return data
+
 
 VERSION = "1.0.0"
 TASK = "extract_electrical_symbols"
@@ -604,7 +633,7 @@ def _semantic_signature(output):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class QualificationCase(Portable):
+class QualificationCase(_SymbolPortable):
     id: str
     request: SymbolRequest
     expected: SymbolOutput
@@ -637,7 +666,7 @@ class QualificationCase(Portable):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SymbolQualification(Portable):
+class SymbolQualification(_SymbolPortable):
     config: RoutingConfig
     expected_strong_model_id: str
     expected_cheap_model_id: str
@@ -684,7 +713,7 @@ class SymbolQualification(Portable):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SymbolRun(Portable):
+class SymbolRun(_SymbolPortable):
     version: str
     request: SymbolRequest
     policy: SymbolRoutingPolicy
@@ -953,7 +982,7 @@ def dispatch_symbols(request,policy,*,adapters,images,documents,journal,qualific
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SymbolBenchmarkCase(Portable):
+class SymbolBenchmarkCase(_SymbolPortable):
     id: str
     request: SymbolRequest
     expected: SymbolOutput

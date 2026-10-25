@@ -5,9 +5,10 @@ The existing importer status vocabulary is reused by the canonical adapter.
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 
-from oabm.model import ContractError
+from oabm.model import ContractError, Provenance, stable_id
 from oabm.importers.pdf_electrical.importer import (
     SCOPE_NEW, SCOPE_RELOCATED, SCOPE_EXISTING, SCOPE_REMOVED, SCOPE_UNRESOLVED,
 )
@@ -118,6 +119,58 @@ class SymbolScope(Portable):
                                     "conflict": "ai_scope_conflict",
                                     "not_in_contract": "not_in_contract"}[status]
         return data
+
+
+def scope_from_proposals(proposals):
+    """Union original assertions for explicitly duplicate-equivalent rows.
+
+    A missing peer contributes no assertion, never a new/base default. Keep the
+    original row snapshots separately; this aggregate is not a source rewrite.
+    """
+    _array(proposals, dict, "scope source proposals")
+    scopes = [SymbolScope.from_dict(row["scope"]) for row in proposals
+              if row.get("scope") is not None]
+    if not scopes:
+        return None
+    if len(scopes) == 1:
+        return scopes[0]  # Preserve single-source assertion order/legacy bytes.
+    claims = {digest(c.to_dict()): c for scope in scopes for c in scope.claims}
+    # The existing finite assertion budget still applies. Never truncate peers.
+    return SymbolScope(claims=tuple(claims[key] for key in sorted(claims)))
+
+
+def source_scope_provenance(proposals):
+    """Reproduce the source-scoped evidence retained at verified intake.
+
+    This checks consistency against separately retained provenance. It does not
+    authenticate a model whose source records and review history are all edited.
+    """
+    records = []
+    for row in proposals:
+        if row.get('scope') is None:
+            continue
+        scope = SymbolScope.from_dict(row['scope'])
+        sources = {image['id']: image for image in row['scope_sources']}
+        for claim in scope.claims:
+            for evidence in claim.evidence:
+                image = sources[evidence.image_id]
+                source = image['source']
+                records.append(Provenance(
+                    source_kind='ai-proposed', source_id=source['source_id'], page=source['page'],
+                    source_element_id=stable_id('symbol-scope-evidence', digest({
+                        'source':source, 'image_sha256':image['sha256'], 'evidence':evidence.to_dict()})),
+                    method='ai-symbol-source-scope-v1', derivation='inferred',
+                    confidence=min(row['confidence'], claim.confidence),
+                    scope_paths=('attributes.pdf_electrical',),
+                    attributes={'target_source_mark_id':row['source_mark_id'],
+                        'source_proposal_id':row['proposal_id'],
+                        'document_sha256':source['document_sha256'],
+                        'image_sha256':image['sha256'], 'image_id':image['id'],
+                        'source_image':copy.deepcopy(image),
+                        'claim':claim.to_dict(), 'evidence':evidence.to_dict(),
+                        'request_fingerprint':row['request_fingerprint'],
+                        'result_fingerprint':row['result_fingerprint']}))
+    return tuple(records)
 
 
 def symbol_scope_schema(request):

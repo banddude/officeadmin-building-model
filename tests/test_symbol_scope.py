@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
@@ -69,8 +70,10 @@ def source_pdf():
     return result.getvalue()
 
 
-@pytest.fixture
-def case(tmp_path):
+_NO_SCOPE_OVERRIDE = object()
+
+
+def build_case(tmp_path, duplicate_scope=_NO_SCOPE_OVERRIDE, primary_scope=_NO_SCOPE_OVERRIDE):
     document = source_pdf()
     # Evidence quotes actually exist in the independently authored PDF.
     extracted = PdfReader(io.BytesIO(document)).pages[1].extract_text()
@@ -98,12 +101,17 @@ def case(tmp_path):
             claim("work_status","relocated",PHRASES[6]),claim("bid_scope","base",PHRASES[6]))),
         SymbolScope(claims=()),
     ]
+    if primary_scope is not _NO_SCOPE_OVERRIDE:
+        scopes[0] = primary_scope
     marks = tuple(SymbolMark(image_id="field", category="luminaire", type_proposal="luminaire",
         type_tag="E" if i==7 else None, instance_label=f"S-{i}",
         bounds=((20+i*40)/400,250/300,(30+i*40)/400,260/300),
         anchor=((25+i*40)/400,255/300), polyline=(), confidence=.9,
         source_mark="Independent synthetic square mark.", evidence_image_ids=("field","notes"),
         unknowns=(), scope=item) for i,item in enumerate(scopes))
+    if duplicate_scope is not _NO_SCOPE_OVERRIDE:
+        marks = (marks[0], replace(marks[0], scope=duplicate_scope,
+            source_mark="Second source interpretation of the same synthetic mark."))
     output = SymbolOutput(version=VERSION, marks=marks, scanned_image_ids=("field",),
         coverage_notes=("Synthetic bounded source only.",))
     documents = {hashlib.sha256(document).hexdigest(): document}
@@ -116,7 +124,17 @@ def case(tmp_path):
     reg = registration(source_id="synthetic:scope", document_sha256=next(iter(documents)),
         source_bbox_pt=(0,0,400,300))
     decisions = []
+    if duplicate_scope is not _NO_SCOPE_OVERRIDE:
+        survivor, = [r for r in extraction.review.proposals if r["instance_label"] == "S-0"
+                     and r["source_mark"] == "Independent synthetic square mark."]
     for row in extraction.review.proposals:
+        if duplicate_scope is not _NO_SCOPE_OVERRIDE and row["instance_label"] == "S-0" and row != survivor:
+            decisions.append(SymbolDecision(manifest_fingerprint=extraction.review.fingerprint,
+                proposal_id=row["proposal_id"], proposal_fingerprint=digest(row),
+                reviewer_id="synthetic-scope-review", reviewer_derivation="user",
+                rationale="Duplicate physical identity only; source scope is not resolved.",
+                action="duplicate", duplicate_of=survivor["proposal_id"]))
+            continue
         i = int(row["instance_label"].split("-")[1])
         decisions.append(SymbolDecision(manifest_fingerprint=extraction.review.fingerprint,
             proposal_id=row["proposal_id"], proposal_fingerprint=digest(row),
@@ -129,6 +147,11 @@ def case(tmp_path):
         journal_paths={request.fingerprint:journal.path}, decisions=decisions, registrations=[reg])
     outcome = materialize_reviewed_symbols(model(), extraction.review, **args)
     return outcome, args, scopes
+
+
+@pytest.fixture
+def case(tmp_path):
+    return build_case(tmp_path)
 
 
 def entities_by_label(outcome):
@@ -308,13 +331,232 @@ def test_legacy_reviewed_ai_inventory_without_scope_stays_outside_base():
 
 
 def test_non_ai_inventory_keeps_plain_base_and_original_variant():
-    from test_symbol_stage import apply
-    legacy = apply().model
-    entity = replace(legacy.electrical_devices[0], attributes={})
-    ordinary = replace(legacy, electrical_devices=(entity,))
+    from oabm.model import ElectricalDevice, Point3, Pose
+    entity = ElectricalDevice(id='device:ordinary', device_type='luminaire',
+        pose=Pose(position=Point3(x=1, y=1, z=1)),
+        provenance=(Provenance(source_kind='synthetic', source_id='fixture:ordinary', derivation='user'),))
+    ordinary = BuildingModel(model_id='model:ordinary', electrical_devices=(entity,))
     report = extract_quantities(ordinary)
     item, = report.items
     assert item.group is None and report.group_summary is None
     assert "work_status" not in dict(item.variant)
     assert "groups" not in report.to_dict()
     assert not any(w.code=="ai_symbol_scope_inventory" for w in report.warnings)
+
+
+@pytest.mark.parametrize('remove_all', [False, True])
+def test_missing_review_metadata_cannot_erase_ai_origin(case, remove_all):
+    outcome, _, _ = case
+    if remove_all:
+        from test_symbol_stage import apply
+        # Historical AI rows have no scope-qualified owner paths. Removing all
+        # metadata therefore passes canonical validation but must not become base.
+        data = apply().model.to_dict()
+    else:
+        data = outcome.model.to_dict()
+    entity = data['electrical_devices'][0]
+    if remove_all:
+        entity['attributes'] = {}
+    else:
+        del entity['attributes']['symbol_review']
+    with pytest.raises(QuantityError, match='source proposal'):
+        extract_quantities(BuildingModel.from_dict(data))
+
+
+def test_coordinated_scope_copies_cannot_rewrite_original_review(case):
+    outcome, _, _ = case
+    data = outcome.model.to_dict()
+    entity = next(e for e in data['electrical_devices']
+        if e['attributes']['symbol_review']['proposal']['instance_label'] == 'S-5')
+    changed = scope('new', 'base', quote=PHRASES[0])
+    entity['attributes']['symbol_review']['proposal']['scope'] = changed.to_dict()
+    entity['attributes']['pdf_electrical'] = changed.canonical_metadata()
+    with pytest.raises(QuantityError, match='review|source'):
+        extract_quantities(BuildingModel.from_dict(data))
+
+
+def test_duplicate_scope_copies_cannot_rewrite_original_evidence(tmp_path):
+    from oabm.proposals.symbol_scope import scope_from_proposals
+    outcome, _, _ = build_case(tmp_path, duplicate_scope=scope('new', 'alternate', quote=PHRASES[5], alternate_id='ALT-1'))
+    data = outcome.model.to_dict()
+    entity = data['electrical_devices'][0]
+    review = entity['attributes']['symbol_review']
+    review['scope_equivalent_proposals'][0]['scope'] = scope('new', 'base', quote=PHRASES[0]).to_dict()
+    entity['attributes']['pdf_electrical'] = scope_from_proposals(
+        (review['proposal'], *review['scope_equivalent_proposals'])).canonical_metadata()
+    with pytest.raises(QuantityError, match='review|source'):
+        extract_quantities(BuildingModel.from_dict(data))
+
+
+@pytest.mark.parametrize('retained_origin', ['scope_evidence', 'scope_marker'])
+def test_partial_provenance_loss_cannot_erase_ai_scope(case, retained_origin):
+    outcome, _, _ = case
+    data = outcome.model.to_dict()
+    entity = next(e for e in data['electrical_devices']
+        if e['attributes']['symbol_review']['proposal']['instance_label'] == 'S-5')
+    del entity['attributes']['symbol_review']
+    entity['provenance'] = ([p for p in entity['provenance']
+        if p['method'] == 'ai-symbol-source-scope-v1'] if retained_origin == 'scope_evidence' else [])
+    if retained_origin == 'scope_evidence':
+        del entity['attributes']['pdf_electrical']['scope_method']
+    changed = BuildingModel.from_dict(data)
+    with pytest.raises(QuantityError, match='source proposal'):
+        extract_quantities(changed)
+
+
+def test_duplicate_citation_crop_cannot_change_without_retained_evidence(tmp_path):
+    outcome, _, _ = build_case(tmp_path, duplicate_scope=scope('relocated', 'base', quote=PHRASES[1]))
+    data = outcome.model.to_dict()
+    peer = data['electrical_devices'][0]['attributes']['symbol_review']['scope_equivalent_proposals'][0]
+    image = peer['scope_sources'][0]
+    image['crop_px'] = [100, 100, 300, 200]
+    image['render_manifest']['pixel_to_display_pt'] = [1, 0, 0, -1, 100, 200]
+    with pytest.raises(QuantityError, match='source|evidence'):
+        extract_quantities(BuildingModel.from_dict(data))
+
+
+def test_scope_image_evidence_is_complete_and_detached(case):
+    import copy
+    from oabm.proposals.symbol_scope import source_scope_provenance
+    outcome, _, _ = case
+    row = copy.deepcopy(next(p for p in outcome.review.proposals if p.get('scope', {}).get('claims')))
+    records = source_scope_provenance((row,))
+    original = copy.deepcopy(row['scope_sources'][0])
+    assert records[0].attributes['source_image'] == original
+    row['scope_sources'][0]['render_manifest']['scale'] = 99
+    assert records[0].attributes['source_image'] == original
+
+
+@pytest.mark.parametrize('change', ['peer_text', 'extra_peer'])
+def test_duplicate_peer_snapshots_require_independent_review_binding(tmp_path, change):
+    import copy
+    outcome, _, _ = build_case(tmp_path, duplicate_scope=SymbolScope(claims=()))
+    data = outcome.model.to_dict()
+    review = data['electrical_devices'][0]['attributes']['symbol_review']
+    peer = review['scope_equivalent_proposals'][0]
+    if change == 'peer_text':
+        peer['source_mark'] = 'A different unreviewed source description.'
+    else:
+        added = copy.deepcopy(peer)
+        added['proposal_id'] = 'symbol-proposal:unreviewed-extra'
+        review['scope_equivalent_proposals'].append(added)
+    with pytest.raises(QuantityError, match='review|source'):
+        extract_quantities(BuildingModel.from_dict(data))
+
+
+def test_extra_nic_reason_agrees_with_ledger_and_cannot_enter_new_base(case):
+    from oabm.reports import ScopePolicy, generate_scope_ledger
+    outcome, _, _ = case
+    data = outcome.model.to_dict()
+    source = next(e for e in data["electrical_devices"]
+        if e["attributes"]["symbol_review"]["proposal"]["instance_label"] == "S-0")
+    source["attributes"]["pdf_electrical"]["scope_reason"] = "not_in_contract"
+    changed = BuildingModel.from_dict(data)
+    ledger = generate_scope_ledger(changed, policy=ScopePolicy(version="1.0.0",
+        mode="preserve_unresolved", actor="synthetic-rule",
+        basis=RuleReference(authority="synthetic", revision="1", rule_id="scope-conflict"),
+        provenance=(Provenance(source_kind="user", source_id="synthetic:rule", derivation="user"),)))
+    row, = [r for r in ledger.rows if r.source.entity["id"] == source["id"]]
+    assert row.effective_status == "unresolved"
+    assert row.diagnostic_reason == "contradictory_scope_evidence"
+    with pytest.raises(QuantityError, match="contradicts"):
+        extract_quantities(changed)
+
+
+def test_complete_ai_scope_metadata_cannot_accept_extra_marker_or_legend_facts(case):
+    outcome, _, _ = case
+    for extras in ({"status":"E"}, {"scope_marker_source_element_id":"synthetic-marker"},
+                   {"scope_legend_source_element_ids":["synthetic-legend"]},
+                   {"scope_legend_text":" "}, {"scope_reason":None},
+                   {"scope_marker_unrecognized":"D"}, {"status_meaning":"existing"}):
+        data = outcome.model.to_dict()
+        source = next(e for e in data["electrical_devices"]
+            if e["attributes"]["symbol_review"]["proposal"]["instance_label"] == "S-0")
+        source["attributes"]["pdf_electrical"].update(extras)
+        with pytest.raises(QuantityError, match="contradicts"):
+            extract_quantities(BuildingModel.from_dict(data))
+
+
+@pytest.mark.parametrize("duplicate_scope, expected_work, expected_bid", [
+    (scope("relocated", "base", quote=PHRASES[1]), "conflict", "base"),
+    (scope("new", "alternate", quote=PHRASES[5], alternate_id="ALT-1"), "new", "conflict"),
+    (scope("not_in_contract", "base", quote=PHRASES[4]), "conflict", "base"),
+])
+def test_trusted_duplicate_identity_cannot_discard_conflicting_scope(
+        tmp_path, duplicate_scope, expected_work, expected_bid):
+    outcome, args, _ = build_case(tmp_path, duplicate_scope=duplicate_scope)
+    originals = [r for r in outcome.review.proposals if r["instance_label"] == "S-0"]
+    assert len(originals) == 2
+    assert len({r["source_mark_id"] for r in originals}) == 1
+    entity = entities_by_label(outcome)["S-0"]
+    assert len(outcome.model.electrical_devices) + len(outcome.model.electrical_equipment) == 1
+    report = extract_quantities(outcome.model)
+    item, = [i for i in report.items if entity.id in i.source_entity_ids]
+    assert item.group is not None
+    assert dict(item.variant)["work_status"] == expected_work
+    assert dict(item.variant)["bid_scope"] == expected_bid
+    assert item.quantity == 1
+    source_review = entity.attributes["symbol_review"]
+    assert source_review["proposal"]["scope"] == scope("new", "base", quote=PHRASES[0]).to_dict()
+    equivalent, = source_review["scope_equivalent_proposals"]
+    assert equivalent["scope"] == duplicate_scope.to_dict()
+    source_ids = {r["proposal_id"] for r in originals}
+    records = [p for p in entity.provenance if p.method == "ai-symbol-source-scope-v1"]
+    assert {p.attributes["source_proposal_id"] for p in records} == source_ids
+    assert any(p.attributes["claim"] == c.to_dict() for p in records for c in duplicate_scope.claims)
+    duplicate, = [d for d in outcome.dispositions if d["status"] == "duplicate"]
+    assert duplicate["canonical_id"] == entity.id
+    repeated = materialize_reviewed_symbols(outcome.model, outcome.review, **args)
+    assert repeated.model == outcome.model
+    assert BuildingModel.from_json(outcome.model.to_json()) == outcome.model
+
+
+@pytest.mark.parametrize("primary, peer, expected", [
+    (None, scope("relocated", "base", quote=PHRASES[1]), "relocated"),
+    (scope("relocated", "base", quote=PHRASES[1]), None, "relocated"),
+    (SymbolScope(claims=()), scope("relocated", "base", quote=PHRASES[1]), "relocated"),
+    (None, None, "unresolved"),
+])
+def test_duplicate_peers_with_missing_scope_preserve_available_source_facts(tmp_path, primary, peer, expected):
+    outcome, args, _ = build_case(tmp_path, duplicate_scope=peer, primary_scope=primary)
+    entity = entities_by_label(outcome)["S-0"]
+    item, = [i for i in extract_quantities(outcome.model).items if entity.id in i.source_entity_ids]
+    assert item.quantity == 1 and item.group is not None
+    assert dict(item.variant)["work_status"] == expected
+    if primary is None and peer is None:
+        assert "pdf_electrical" not in entity.attributes
+        assert "scope_equivalent_proposals" not in entity.attributes["symbol_review"]
+    else:
+        original = entity.attributes["symbol_review"]["proposal"]
+        assert original.get("scope") == (None if primary is None else primary.to_dict())
+        equivalent, = entity.attributes["symbol_review"]["scope_equivalent_proposals"]
+        assert equivalent.get("scope") == (None if peer is None else peer.to_dict())
+    repeated = materialize_reviewed_symbols(outcome.model, outcome.review, **args)
+    assert repeated.model == outcome.model
+
+
+def test_nested_symbol_artifacts_preserve_explicit_unknown_scope():
+    from oabm.proposals.symbols import SymbolBenchmarkCase
+    request, _, _, output = legacy_fixture()
+    expected = replace(output, marks=(replace(output.marks[0], scope=SymbolScope(claims=())),))
+    case = SymbolBenchmarkCase(id="synthetic-scoped-audit", request=request, expected=expected)
+    assert case.to_dict()["expected"]["marks"][0]["scope"] == {"claims":[], "version":"1.0.0"}
+    assert SymbolBenchmarkCase.from_json(case.to_json()) == case
+
+
+
+def test_baseline_generated_no_scope_qualification_keeps_exact_bytes_and_binding():
+    from oabm.proposals.symbols import SymbolQualification, QualificationCase
+    raw = (Path(__file__).parents[1] / "fixtures/proposals/legacy-no-scope-qualification.json").read_text()
+    assert hashlib.sha256(raw.encode()).hexdigest() == "efc1e3784fa6d7d2dceaec202536c335ad149f5c9e0b6e258fcf88281634b947"
+    loaded = SymbolQualification.from_json(raw)
+    assert loaded.content_fingerprint == "fe9ec9a5145e2ec98bf399f7619f7d6c92c63bfb49f3742d62843eba8f28e212"
+    assert loaded.to_json() == raw
+    assert all(case.passes for case in loaded.cases)
+    assert loaded.cases[0].expected.marks[0].scope is None
+    assert "scope" not in loaded.to_dict()["cases"][0]["expected"]["marks"][0]
+    assert QualificationCase.from_dict(json.loads(raw)["cases"][0]).to_dict() == json.loads(raw)["cases"][0]
+    changed = json.loads(raw)
+    changed["content_fingerprint"] = "0" * 64
+    with pytest.raises(ContractError, match="content binding mismatch"):
+        SymbolQualification.from_dict(changed)

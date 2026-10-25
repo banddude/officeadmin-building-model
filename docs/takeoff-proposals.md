@@ -32,8 +32,14 @@ experiment does not establish a permanent task upgrade or prove that Luna fails.
 - `render_source_image` reads immutable original PDF bytes, derives source facts
   from their actual 1-based page, renders the MediaBox with the source quarter
   turn, then crops integer raster edges without resizing. The fixed policy uses
-  PDFium RGB pixels, white background, no additional rotation, no annotations or
-  forms. `SourceImage` includes the exact PNG SHA-256 plus a `RenderManifest` with
+  PDFium RGB pixels, white background, no additional rotation, and printable
+  annotation appearances (`pdfium-mediabox-rgb-print-annots-v2`). The supported
+  static appearance subtypes are Stamp, Square, Circle, FreeText, Line, Polygon,
+  PolyLine and Ink. Other printable subtypes refuse explicitly. Printable
+  widgets, missing/state-dependent normal appearances, and annotation optional
+  content refuse rather than silently vanish; interactive forms remain unsupported.
+  Historical `pdfium-mediabox-rgb-no-annots-v1` references remain verifiable only
+  under their recorded policy; their pixels/identities are never upgraded. `SourceImage` includes the exact PNG SHA-256 plus a `RenderManifest` with
   policy/version, installed pypdfium2/PDFium versions, scale and a six-value
   affine from local crop pixels to displayed bottom-origin points. The affine
   must agree exactly with the source raster and crop metadata.
@@ -178,3 +184,32 @@ component supplies routing-ladder fake tests and its measured public-safe vision
 gate. This new task has no measured Luna/Sol/Astra capability benchmark or live
 production adapter, no canonical acceptance path, and no verified full-floor
 accuracy. #98 and #241 remain open.
+
+
+## Annotation completeness and historical evidence
+
+New source captures use PDFium annotation rendering in printing mode. The PDF
+Print flag governs inclusion; hidden and nonprinting annotations are not painted.
+`source_annotation_inventory(document, page=...)` in `pdf_annotations` returns
+source PDF digest, annotation indices/object numbers, flags, raw rectangles and
+normal-appearance digests. It does not extract appearance text or interpret work
+status. Keep this inventory with independently reviewed annotation evidence.
+
+The recorded render policy participates in rerender cache identity and pixel
+comparison. A legacy no-annotation crop cannot be relabeled as a print-policy
+crop. Existing frozen requests/results retain their original serialization and
+remain historical observations over their original view. Reconciliation is a
+separate source-bound review layer; new captures have new policies and hashes.
+No annotation contents are promoted to canonical facts by rendering alone.
+
+Optional-content refusal inspects the bounded appearance/resource graph, not
+only the annotation dictionary: marked-content `/OC` tags, nested forms,
+patterns, Type3 glyph resources and soft-mask resources are inspected. Cycles,
+unparseable content and inspection limits refuse explicitly. Binary image/font
+streams are not tokenized as content. Layer visibility is never forced ON.
+
+Resource inspection also follows effective page resources (including inherited
+page-tree resources) when an appearance resource category is absent. A locally
+present category shadows the page category; an unresolved name refuses. This
+lookup is applied to rendering resource operators and nested form contexts,
+with the same recursive/decoded-content budgets. It never changes OCG state.

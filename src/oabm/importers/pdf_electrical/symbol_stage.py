@@ -296,7 +296,8 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
     stage. Dispatch exceptions propagate; failed run statuses and their receipts
     remain explicit in the review coverage and per-request journals.
     """
-    from oabm.proposals.symbols import AttemptJournal, SymbolRequest, dispatch_symbols
+    from oabm.proposals.symbols import (AttemptJournal, SymbolRequest, dispatch_symbols,
+                                       _validate_symbol_inputs)
 
     if not requests:
         raise ContractError("symbol stage requires explicit source regions")
@@ -307,6 +308,11 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
         checked.append(SymbolRequest.from_dict(request.to_dict()))
     if len({r.fingerprint for r in checked}) != len(checked):
         raise ContractError("duplicate symbol requests")
+    if not all(isinstance(value, Mapping) for value in (images, documents, journals)):
+        raise ContractError("symbol batch requires source and journal mappings")
+    # Retain immutable byte values in snapshots for preflight, dispatch and the
+    # final review. An adapter closure cannot swap a later request's sources.
+    images, documents, journals = dict(images), dict(documents), dict(journals)
     _batch_inputs(checked, images, documents)
     expected = {request.fingerprint for request in checked}
     if not isinstance(journals, Mapping) or set(journals) != expected:
@@ -320,6 +326,9 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
     # belongs to saved-run verification, never an implicit fresh dispatch.
     if any(journal.receipts or AttemptJournal.read(journal.path) for journal in journals.values()):
         raise ContractError("fresh symbol extraction requires empty attempt journals")
+    for request in checked:
+        request_images, request_documents = _request_inputs(request, images, documents)
+        _validate_symbol_inputs(request, request_images, request_documents)
     runs = []
     for request in checked:
         request_images, request_documents = _request_inputs(request, images, documents)
@@ -413,7 +422,9 @@ def _materialize_verified(model, review, decisions, registrations):
                 if registration is None:
                     status, reason = "pending", "reviewed_registration_missing"
                 else:
-                    entity = _entity(model, row, decision, registration)
+                    equivalents = tuple(by_id[peer] for peer, record in sorted(decision_map.items())
+                                        if record.action == "duplicate" and record.duplicate_of == key)
+                    entity = _entity(model, row, decision, registration, equivalents)
                     entity_id = entity.id
                     (devices if isinstance(entity, ElectricalDevice) else equipment).append(entity)
         dispositions.append({"proposal_id": key, "status": status, "reason": reason,
@@ -452,7 +463,7 @@ def _materialize_verified(model, review, decisions, registrations):
     return SymbolStageOutcome(model=result, review=review, dispositions=tuple(dispositions))
 
 
-def _entity(model, row, decision, registration):
+def _entity(model, row, decision, registration, equivalents=()):
     if (registration.source_id, registration.document_sha256, registration.page) != (
             row["source_id"], row["document_sha256"], row["page"]):
         raise ContractError("symbol registration source/page mismatch")
@@ -474,52 +485,43 @@ def _entity(model, row, decision, registration):
                                z=level.elevation_m + placement.height_above_level_m),
                 rotation=Quaternion(z=math.sin(placement.yaw_radians / 2),
                                     w=math.cos(placement.yaw_radians / 2)))
+    from oabm.proposals.symbol_scope import scope_from_proposals, source_scope_provenance
+    source_rows = (row, *equivalents)
+    scope = scope_from_proposals(source_rows)
+    # Preserve historical non-scope materialization bytes. Scope-aware identity
+    # equivalence retains every original row and does not resolve field claims.
+    if scope is None:
+        source_rows = (row,)
     source_records = []
-    for record in row["provenance"]:
-        fields = copy.deepcopy(record)
-        derivation = fields.pop("derivation")  # Preserve the supplied class; never guess one.
-        fields["scope_paths"] = (tuple(fields["scope_paths"])
-                                 if fields.get("scope_paths") is not None else None)
-        fields["attributes"] = {**fields.get("attributes", {}),
-                                "source_document_sha256": row["document_sha256"]}
-        source_records.append(Provenance(derivation=derivation, **fields))
+    for source_row in source_rows:
+        for record in source_row["provenance"]:
+            fields = copy.deepcopy(record)
+            derivation = fields.pop("derivation")  # Preserve the supplied class; never guess one.
+            fields["scope_paths"] = (tuple(fields["scope_paths"])
+                                     if fields.get("scope_paths") is not None else None)
+            fields["attributes"] = {**fields.get("attributes", {}),
+                                    "source_document_sha256": source_row["document_sha256"]}
+            source_records.append(Provenance(derivation=derivation, **fields))
     source_provenance = tuple(source_records)
+    review_attributes = {"decision": decision.to_dict(), "registration": registration.to_dict()}
+    if scope is not None and equivalents:
+        review_attributes["scope_equivalent_fingerprints"] = {
+            peer["proposal_id"]: digest(peer) for peer in equivalents}
     review_provenance = Provenance(source_kind="symbol-review", source_id=decision.reviewer_id,
         source_element_id=row["source_mark_id"], page=row["page"], method="explicit-symbol-review-v1",
         confidence=row["confidence"], derivation=decision.reviewer_derivation,
-        attributes={"decision": decision.to_dict(), "registration": registration.to_dict()})
+        attributes=review_attributes)
     attributes = {"symbol_review": {"proposal": copy.deepcopy(row),
         "decision": decision.to_dict(), "registration_fingerprint": registration.fingerprint,
         "remaining_unknowns": list(placement.remaining_unknowns),
         "physical_geometry_status": "anchor_only_dimensions_unknown",
         "hosting_status": "unresolved", "connectivity_status": "unresolved"}}
-    # Preserve source assertions independently of type/placement review. A type
-    # correction or resolved_unknowns entry cannot resolve contradictory scope.
-    if row.get("scope") is not None:
-        from oabm.proposals.symbol_scope import SymbolScope
-        scope = SymbolScope.from_dict(row["scope"])
+    # Identity review never discards scope asserted by a duplicate peer.
+    if scope is not None:
         attributes["pdf_electrical"] = scope.canonical_metadata()
-        sources = {image["id"]: image for image in row["scope_sources"]}
-        scope_records = []
-        for claim in scope.claims:
-            for evidence in claim.evidence:
-                image = sources[evidence.image_id]
-                source = image["source"]
-                scope_records.append(Provenance(
-                    source_kind="ai-proposed", source_id=source["source_id"],
-                    page=source["page"], source_element_id=stable_id("symbol-scope-evidence",
-                        digest({"source": source, "image_sha256": image["sha256"],
-                                "evidence": evidence.to_dict()})),
-                    method="ai-symbol-source-scope-v1", derivation="inferred",
-                    confidence=min(row["confidence"], claim.confidence),
-                    scope_paths=("attributes.pdf_electrical",),
-                    attributes={"target_source_mark_id": row["source_mark_id"],
-                        "document_sha256": source["document_sha256"],
-                        "image_sha256": image["sha256"], "image_id": image["id"],
-                        "claim": claim.to_dict(), "evidence": evidence.to_dict(),
-                        "request_fingerprint": row["request_fingerprint"],
-                        "result_fingerprint": row["result_fingerprint"]}))
-        source_provenance += tuple(scope_records)
+        if equivalents:
+            attributes["symbol_review"]["scope_equivalent_proposals"] = copy.deepcopy(list(equivalents))
+        source_provenance += source_scope_provenance(source_rows)
     cls = ElectricalDevice if placement.entity_kind == "device" else ElectricalEquipment
     type_key = "device_type" if placement.entity_kind == "device" else "equipment_type"
     # Identity follows the native source-mark identity, never corrected pose/type.

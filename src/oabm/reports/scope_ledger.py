@@ -100,8 +100,11 @@ class ScopePolicy(Portable):
 
 
 def _scope_facts(source):
-    """Consume existing classifier metadata; malformed evidence fails closed."""
-    lane = source.entity['attributes'].get('pdf_electrical')
+    return scope_metadata_facts(source.entity['attributes'].get('pdf_electrical'))
+
+
+def scope_metadata_facts(lane):
+    """Shared source-metadata interpretation; malformed evidence fails closed."""
     if not isinstance(lane, dict):
         return 'unresolved', 'no_scope_classification', False
     status = lane.get('scope_status')

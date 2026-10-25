@@ -52,6 +52,17 @@ Canonical identity still follows native source-mark geometry, independent of
 scope or corrected type. Reviewing a type or resolving a free-text unknown
 cannot discard a scope conflict.
 
+A duplicate disposition establishes physical identity only. Intake retains the
+untouched selected proposal and its provenance, plus the original verified peer
+snapshots under `symbol_review.scope_equivalent_proposals`. Effective scope is
+the deterministic union of their original assertions; new versus relocation or
+base versus alternate remains a conflict. Every citation keeps its source
+proposal identity, source image manifest, quote and confidence. A peer with
+missing scope adds no assertion or fallback; facts explicitly supplied by other
+peers remain available. All missing peers keep historical no-scope behavior.
+The bounded assertion budget applies to the union, with no truncation.
+
+
 Reviewed intake writes the original assertions under
 `attributes.pdf_electrical.scope_assertions`, reuses
 `attributes.pdf_electrical.scope_status`, and preserves `bid_scope` /
@@ -70,7 +81,9 @@ unmarked policy cannot silently turn them into new work.
 
 Legacy symbol output without `scope` stays readable and reserializes with that
 optional field absent. Legacy proposal keys/fingerprints remain unchanged.
-Canonical models and source journals require no migration. A new extraction
+Canonical models and source journals require no migration. Nested benchmark,
+qualification and run artifacts also omit absent typed scope fields recursively,
+preserving historical experiment fingerprints without repairing stored hashes. A new extraction
 cannot overwrite a different existing object: use the explicit edit workflow.
 Repeated identical review/intake remains idempotent.
 
@@ -89,8 +102,25 @@ counts, not automatically selected alternates or purchase approval.
 
 Old reviewed AI objects with no scope metadata remain unknown and get a
 separate unresolved group. Contradictory canonical metadata versus preserved
-source assertions raises `QuantityError`. Non-AI canonical objects and existing
+source assertions raises `QuantityError`. The AI lane's complete metadata shape
+must match its original selected/duplicate assertions, including absent keys;
+extra reason/marker/legend evidence fails closed. Quantity eligibility uses the
+same source-metadata interpretation as the scope ledger. Non-AI canonical objects and existing
 caller group behavior keep their previous serialized outputs.
+
+Removing review metadata while retaining symbol-review/AI symbol provenance is
+an error, not a route back into ordinary base inventory. The primary proposal
+must still match its retained acceptance decision and separate review provenance.
+Scope assertions from both selected and duplicate proposals must reproduce the
+separately retained source-scoped provenance, including detached complete cited
+image records with crop transforms and render manifests. Surviving AI scope
+evidence or the AI-owned lane marker also prevents a missing review record from
+silently becoming ordinary base inventory. Editing both metadata copies cannot
+silently rewrite their original source claims. These are consistency checks,
+not cryptographic authentication of an entirely rewritten model or audit history.
+Scope-aware duplicate rows also retain their complete proposal fingerprints in
+separate review provenance, including peers with no scope assertions. Adding a
+peer or changing its otherwise-unconsumed source description requires re-review.
 
 A consumer must retain groups, line variants, provenance and warnings. Summing
 all inventory rows across groups does not produce a base purchase list. There is

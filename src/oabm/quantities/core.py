@@ -559,25 +559,68 @@ def _group_summary(
 def _ai_symbol_scope(entity):
     """Consume intake metadata only; no marker classifier or silent fallback."""
     if "symbol_review" not in entity.attributes:
+        lane = entity.attributes.get('pdf_electrical')
+        owned_marker = isinstance(lane, dict) and lane.get('scope_method') == 'reviewed_ai_source_assertions_v1'
+        if owned_marker or any(p.source_kind == 'symbol-review'
+               or p.method == 'ai-symbol-source-scope-v1' or
+               (p.source_kind == 'ai-proposed' and isinstance(p.source_element_id, str)
+                and p.source_element_id.startswith(('symbol-source-mark:', 'symbol-scope-evidence:')))
+               for p in entity.provenance):
+            raise QuantityError(f"missing AI symbol source proposal for {entity.id}")
         return None
     from oabm.model import ContractError
-    from oabm.proposals.symbol_scope import SymbolScope
+    from oabm.proposals.contracts import digest
+    from oabm.proposals.symbol_scope import SymbolScope, scope_from_proposals, source_scope_provenance
+    from oabm.proposals.symbols import SymbolProposal
+    from oabm.reports.scope_ledger import scope_metadata_facts
     review = entity.attributes["symbol_review"]
     try:
         if not isinstance(review, dict) or not isinstance(review.get("proposal"), dict):
             raise ContractError("missing AI symbol source proposal")
         proposal = review["proposal"]
-        original = proposal.get("scope")
+        decision = review.get('decision')
+        retained_reviews = [p for p in entity.provenance if p.source_kind == 'symbol-review'
+            and p.method == 'explicit-symbol-review-v1' and isinstance(p.attributes, dict)
+            and p.attributes.get('decision') == decision]
+        if (not isinstance(decision, dict) or decision.get('action') != 'accept'
+                or decision.get('proposal_id') != proposal.get('proposal_id')
+                or decision.get('proposal_fingerprint') != digest(proposal)
+                or not retained_reviews):
+            raise ContractError('AI source proposal no longer matches retained review')
+        equivalents = review.get("scope_equivalent_proposals", [])
+        if not isinstance(equivalents, list) or any(not isinstance(r, dict) for r in equivalents):
+            raise ContractError("invalid duplicate scope source proposals")
+        if equivalents:
+            ids = [r.get("proposal_id") for r in (proposal, *equivalents)]
+            if any(not isinstance(key, str) or not key for key in ids) or len(set(ids)) != len(ids):
+                raise ContractError("duplicate scope source proposals require distinct identities")
+        peer_bindings = {peer['proposal_id']: digest(peer) for peer in equivalents}
+        if not any(p.attributes.get('scope_equivalent_fingerprints', {}) == peer_bindings
+                   for p in retained_reviews):
+            raise ContractError('duplicate source proposals no longer match retained review')
+        source_rows = (proposal, *equivalents)
+        for row in source_rows:
+            if row.get('scope') is not None:
+                SymbolProposal.from_dict(row)
+        actual_evidence = [p for p in entity.provenance if p.method == 'ai-symbol-source-scope-v1']
+        expected_evidence = source_scope_provenance(source_rows)
+        if sorted(digest(asdict(p)) for p in actual_evidence) != sorted(digest(asdict(p)) for p in expected_evidence):
+            raise ContractError('AI scope source assertions contradict retained evidence')
+        scope = scope_from_proposals(source_rows)
         lane = entity.attributes.get("pdf_electrical")
-        if original is None:
+        if scope is None:
             if lane is not None:
                 raise ContractError("scope metadata without original AI assertions")
             return SymbolScope(claims=())  # Old runs remain unknown, never new.
-        scope = SymbolScope.from_dict(original)
-        if not isinstance(lane, dict) or any(lane.get(k) != v for k, v in scope.canonical_metadata().items()):
+        expected = scope.canonical_metadata()
+        # The AI adapter owns this complete shape, including absent keys. Extra
+        # reason/marker/legend facts cannot bypass either consumer's guard.
+        if (not isinstance(lane, dict) or digest(lane) != digest(expected)
+                or scope_metadata_facts(lane) != (
+                    expected["scope_status"], expected.get("scope_reason"), False)):
             raise ContractError("AI scope metadata contradicts original source assertions")
         return scope
-    except ContractError as exc:
+    except (ContractError, KeyError, TypeError, ValueError) as exc:
         raise QuantityError(f"invalid AI symbol scope for {entity.id}: {exc}") from exc
 
 

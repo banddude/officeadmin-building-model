@@ -483,7 +483,7 @@ DEFAULT_SYMBOL_RULES: tuple[SymbolRule, ...] = (
         0.94,
     ),
     SymbolRule(r"^(?!.*\b(?:ELECTRICAL|POWER|DATA|TELE|TELEPHONE)\b.*\b(?:JBOX|J-?BOX|JUNCTION\s+BOX)\b).*\b(?:(?:JBOX|J-?BOX|JB)[A-Z0-9]*|JUNCTION\s+BOX)\b", "device", "junction_box", 0.94),
-    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE|SCONCE|FLOODLIGHT|DOWNLIGHT)\b", "device", "luminaire", 0.91),
+    SymbolRule(r"\b(?:LUMINAIRE|LIGHT|LTG|FIXTURE|SCONCE|FLOODLIGHT|DOWNLIGHT|TROFFER)\b", "device", "luminaire", 0.91),
     # A pendant control station is not a luminaire.
     SymbolRule(
         r"^(?!.*\b(?:STATION|CONTROL|MOUNTED|PANEL|RACK|BOARD|CABINET)\b)"
@@ -3140,10 +3140,69 @@ def _isotropic_sweep_distance(
     return best
 
 
+def _nested_rectangle_sample(cluster: _VectorCluster) -> bool:
+    """Two genuinely closed rectangular borders, not an open ceiling grid."""
+    # CAD exporters can triangulate a white knockout behind the two borders.
+    # Ignore only explicitly white paint, and only when contained by the
+    # proven outer rectangle. Unknown or dark extra geometry remains a refusal.
+    def white_paint(vector: PdfVectorPathObservation) -> bool:
+        family = _paint_family(vector)
+        return (family in {"fill", "fill-stroke"}
+                and vector.metadata.get("fill_gray") == 1.0
+                and (family == "fill" or vector.metadata.get("stroke_gray") == 1.0))
+
+    masks = [vector for vector in cluster.vectors if white_paint(vector)]
+    borders = [vector for vector in cluster.vectors if not white_paint(vector)]
+    if len(borders) != 2 or any(_paint_family(vector) != "stroke" for vector in borders):
+        return False
+    rectangles = []
+    for vector in borders:
+        if _vector_contains_bezier(vector):
+            return False
+        points = list(vector.points_pt)
+        if _distance_pt(*points[0], *points[-1]) <= 1e-6:
+            points.pop()
+        elif not vector.closed:
+            return False
+        if len(points) != 4:
+            return False
+        edges = [(points[(i+1)%4][0]-points[i][0], points[(i+1)%4][1]-points[i][1])
+                 for i in range(4)]
+        lengths = [math.hypot(*edge) for edge in edges]
+        if min(lengths) <= 1e-6:
+            return False
+        if any(abs(edges[i][0]*edges[(i+1)%4][0]+edges[i][1]*edges[(i+1)%4][1])
+               > 1e-6*lengths[i]*lengths[(i+1)%4] for i in range(4)):
+            return False
+        rectangles.append((lengths[0]*lengths[1], points))
+    inner, outer = sorted(rectangles, key=lambda item: item[0])
+
+    def inside(point: tuple[float, float], *, strict: bool) -> bool:
+        polygon = outer[1]
+        sides = [(polygon[(i+1)%4][0]-polygon[i][0])*(point[1]-polygon[i][1])
+                 -(polygon[(i+1)%4][1]-polygon[i][1])*(point[0]-polygon[i][0])
+                 for i in range(4)]
+        tolerance = 1e-6 * outer[0]
+        return (all(value > tolerance for value in sides) or all(value < -tolerance for value in sides)
+                if strict else
+                all(value >= -tolerance for value in sides) or all(value <= tolerance for value in sides))
+
+    return (all(inside(point, strict=True) for point in inner[1])
+            and all(inside(point, strict=False) for mask in masks for point in mask.points_pt))
+
+
 def _cluster_match_score(
     cluster: _VectorCluster,
     prototype: _VectorCluster,
 ) -> float:
+    # Recovered large double-border samples need the same closed-outline
+    # topology in the field. Point-cloud similarity alone can mistake a plain
+    # ceiling-grid rectangle for a luminaire by ignoring the missing border.
+    prototype_box = prototype.bbox_pt
+    if (max(prototype_box[2]-prototype_box[0], prototype_box[3]-prototype_box[1])
+            > _GLYPH_PATH_MAX_EXTENT_PT and _nested_rectangle_sample(prototype)
+            and not _nested_rectangle_sample(cluster)):
+        return 0.0
     if cluster.shape_signature == prototype.shape_signature:
         return 1.0
 
@@ -3856,11 +3915,17 @@ def _prepare_field_clusters(
 
     prepared: list[_VectorCluster] = []
     extents_by_page: dict[int, tuple[float, ...]] = {}
+    oversized_sample_pages: set[int] = set()
     for page, entries in entries_for_page.items():
         extents_by_page[page] = tuple(
             _cluster_extent_pt(entry.prototype)
             for entry in entries
+            if _cluster_extent_pt(entry.prototype) <= _GLYPH_PATH_MAX_EXTENT_PT
         )
+        if any(_cluster_extent_pt(entry.prototype) > _GLYPH_PATH_MAX_EXTENT_PT for entry in entries):
+            oversized_sample_pages.add(page)
+        # Enlarged printed samples do not establish physical field-symbol
+        # size. Keep existing cleanup/neighbor-merging distances unchanged.
 
     for cluster in clusters:
         if (cluster.page, cluster.geometry_key) in prototype_geometry_keys:
@@ -3875,7 +3940,9 @@ def _prepare_field_clusters(
             texts=texts,
             glyph_extent_pt=glyph_extent,
         )
-        if _cluster_extent_pt(cleaned) > 2.5 * glyph_extent:
+        recovered_border_topology = (cluster.page in oversized_sample_pages
+                                     and _nested_rectangle_sample(cleaned))
+        if _cluster_extent_pt(cleaned) > 2.5 * glyph_extent and not recovered_border_topology:
             prepared.extend(
                 _split_connected_components(
                     cleaned,
@@ -3907,6 +3974,8 @@ def _prepare_field_clusters(
 
 def _cluster_small_vector_glyphs(
     vectors: Sequence[PdfVectorPathObservation],
+    *,
+    max_extent_pt: float = _GLYPH_PATH_MAX_EXTENT_PT,
 ) -> tuple[_VectorCluster, ...]:
     small: list[
         tuple[
@@ -3917,8 +3986,8 @@ def _cluster_small_vector_glyphs(
     for vector in vectors:
         bbox = _vector_bbox(vector)
         if (
-            bbox[2] - bbox[0] <= _GLYPH_PATH_MAX_EXTENT_PT
-            and bbox[3] - bbox[1] <= _GLYPH_PATH_MAX_EXTENT_PT
+            bbox[2] - bbox[0] <= max_extent_pt
+            and bbox[3] - bbox[1] <= max_extent_pt
         ):
             small.append((vector, bbox))
 
@@ -3976,8 +4045,8 @@ def _cluster_small_vector_glyphs(
             first, first_bbox = small[first_index]
             combined = _bbox_union(first_bbox, second_bbox)
             if (
-                combined[2] - combined[0] > _GLYPH_PATH_MAX_EXTENT_PT
-                or combined[3] - combined[1] > _GLYPH_PATH_MAX_EXTENT_PT
+                combined[2] - combined[0] > max_extent_pt
+                or combined[3] - combined[1] > max_extent_pt
             ):
                 continue
             if _bbox_gap_pt(first_bbox, second_bbox) <= _GLYPH_CLUSTER_GAP_PT:
@@ -4014,8 +4083,8 @@ def _cluster_small_vector_glyphs(
         for _vector, vector_bbox in group[1:]:
             bbox = _bbox_union(bbox, vector_bbox)
         if (
-            bbox[2] - bbox[0] > _GLYPH_PATH_MAX_EXTENT_PT
-            or bbox[3] - bbox[1] > _GLYPH_PATH_MAX_EXTENT_PT
+            bbox[2] - bbox[0] > max_extent_pt
+            or bbox[3] - bbox[1] > max_extent_pt
         ):
             continue
         clusters.append(_make_vector_cluster(vectors_in_group))
@@ -5413,6 +5482,17 @@ def _legend_row_candidates(
             horizontal_gap = label.x_pt - cluster.bbox_pt[2]
             if not 0.0 <= horizontal_gap <= _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT:
                 continue
+            row_classification = classification
+            row_ranked = tuple(ranked)
+            if (classification is not None and classification[:2] == ("device", "luminaire")
+                    and re.search(r"\bTROFFER\b", label.text, re.I)
+                    and not _nested_rectangle_sample(cluster)):
+                # A clipped/dashed sample can leave only two unrelated strokes.
+                # Do not promote that fragment into a fixture prototype merely
+                # because the adjacent label names a troffer.
+                row_classification = None
+                row_ranked = tuple({**candidate, "geometry_refusal": "troffer_border_topology_unsupported"}
+                                   for candidate in ranked)
             possible.append(
                 (
                     vertical_delta,
@@ -5421,8 +5501,8 @@ def _legend_row_candidates(
                     cluster.geometry_key,
                     cluster,
                     label,
-                    classification,
-                    tuple(ranked),
+                    row_classification,
+                    row_ranked,
                     block,
                 )
             )
@@ -9005,6 +9085,65 @@ def _recognize_lighting(
     )
 
 
+def _oversized_legend_samples(
+    document: PdfElectricalDocument,
+    *,
+    texts: Sequence[PdfTextObservation],
+    vectors: Sequence[PdfVectorPathObservation],
+    regions: Sequence[_LegendRegion],
+    rules: Sequence[SymbolRule],
+    ambiguity_margin: float,
+) -> tuple[_VectorCluster, ...]:
+    """Recover larger printed samples only inside an established legend column.
+
+    Field clustering keeps its original extent limit. An explicit accepted
+    heading, two aligned existing rows and a uniquely classified row label are
+    prerequisites; arbitrary large plan rectangles never become candidates.
+    """
+    maximum = 2.0 * _GLYPH_PATH_MAX_EXTENT_PT
+    found: dict[tuple[int, str], _VectorCluster] = {}
+    for region in regions:
+        if region.heading is None or not _is_legend_heading(region.heading):
+            continue
+        generic_heading = _normalize_legend_alias(region.heading.text) in {
+            "LEGEND", "SYMBOL LEGEND", "SYMBOLS LEGEND", "ELECTRICAL LEGEND",
+        }
+        if not generic_heading and _lighting_heading_kind(region.heading) != "lighting_legend":
+            continue
+        for label in texts:
+            if label.page != region.page or not _is_short_legend_label(label):
+                continue
+            aligned = [row for row in region.rows
+                       if abs(row.label.x_pt - label.x_pt) <= _LEGEND_ROW_VERTICAL_TOLERANCE_PT]
+            if len(aligned) < 2:
+                continue
+            if not (min(row.label.y_pt for row in aligned) - _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+                    <= label.y_pt < region.heading.y_pt):
+                continue
+            classification, _ = _classify_semantic_text(label.text, rules, ambiguity_margin=ambiguity_margin)
+            if classification is None or classification[:2] != ("device", "luminaire"):
+                continue
+            local = []
+            for vector in vectors:
+                if vector.page != label.page:
+                    continue
+                box = _vector_bbox(vector)
+                if (label.x_pt - _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT <= box[0]
+                        and box[2] < label.x_pt
+                        and label.y_pt - maximum / 2 <= box[1]
+                        and box[3] <= label.y_pt + maximum / 2):
+                    local.append(vector)
+            opaque, screened = _glyph_cluster_groups(document, local)
+            for group in (opaque, screened):
+                for cluster in _cluster_small_vector_glyphs(group, max_extent_pt=maximum):
+                    box = cluster.bbox_pt
+                    if (max(box[2] - box[0], box[3] - box[1]) > _GLYPH_PATH_MAX_EXTENT_PT
+                            and abs(cluster.center_pt[1] - label.y_pt) <= _LEGEND_ROW_VERTICAL_TOLERANCE_PT
+                            and _nested_rectangle_sample(cluster)):
+                        found[(cluster.page, cluster.geometry_key)] = cluster
+    return tuple(found[key] for key in sorted(found))
+
+
 def _recognize_legend_shapes(
     document: PdfElectricalDocument,
     *,
@@ -9053,6 +9192,27 @@ def _recognize_legend_shapes(
         vectors=vectors,
         preferred_regions=preferred_regions,
     )
+    large_samples = _oversized_legend_samples(
+        document, texts=texts, vectors=vectors, regions=regions,
+        rules=rules, ambiguity_margin=ambiguity_margin,
+    )
+    if large_samples:
+        # Re-evaluate ordinary row/region ownership with the recovered samples;
+        # all standard ambiguity and rejected-section checks still apply.
+        sample_ids = [(sample.page, set(sample.source_element_ids)) for sample in large_samples]
+        clusters = (*(cluster for cluster in clusters
+                      if not any(cluster.page == page and set(cluster.source_element_ids) <= ids
+                                 for page, ids in sample_ids)),
+                    *large_samples)
+        rows = _legend_row_candidates(clusters, texts, rules, ambiguity_margin=ambiguity_margin)
+        preferred_regions = _symbol_function_legend_regions(
+            document=document, texts=texts, clusters=clusters, vectors=vectors,
+            rules=rules, ambiguity_margin=ambiguity_margin,
+        )
+        regions = _detect_legend_regions(
+            texts=texts, rows=rows, clusters=clusters, vectors=vectors,
+            preferred_regions=preferred_regions,
+        )
     legend_text_ids = {
         region.heading.element_id
         for region in regions

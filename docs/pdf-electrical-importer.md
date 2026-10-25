@@ -913,3 +913,29 @@ model = ElectricalPdfImporter().import_document(
     document, page_type_filters=filters
 )
 ```
+
+### Enlarged double-border lighting legend samples
+
+Printed legend samples can be larger than the same symbols in the plan. The
+normal field-clustering limit remains 54 PDF points. A second, bounded pass can
+recover a double-border rectangular luminaire sample up to 108 points only
+inside an already established generic, electrical, or lighting legend column.
+It requires an accepted heading, two aligned existing rows, a uniquely
+classified source description, and two nested, closed rectangular borders.
+`TROFFER` is recognized as a luminaire description, not as a manufacturer SKU,
+fixture tag, wattage, or inferred physical dimension.
+
+The recovered sample still goes through the ordinary row ownership, ambiguity,
+legend exclusion, source-provenance and matching checks. It never widens the
+field search or changes cleanup/neighbor-merging distances based on its larger
+printed size. A matching field candidate must retain the two closed borders;
+plain grid cells and open ceiling-grid intersections do not qualify. Explicitly
+white CAD knockout triangles contained by the outer border may coexist with
+those borders; unknown or dark extra geometry cannot satisfy that topology.
+
+Unconfirmed headings, other disciplines, oversized unsupported samples and
+ambiguous geometry remain unresolved. A partial dashed troffer sample cannot
+be used as a prototype: its fragments stay unresolved rather than matching
+letter strokes, legend fragments or unrelated equipment. This is bounded symbol recognition, not
+a complete lighting takeoff or cross-sheet registration. Existing source-scope
+and review requirements still apply.

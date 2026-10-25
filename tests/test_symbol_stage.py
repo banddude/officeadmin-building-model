@@ -672,3 +672,71 @@ def test_source_provenance_reconstruction_preserves_explicit_class_scope_and_att
                                  "source_document_sha256": "a"*64}
     record.attributes["independent_evidence"]["source_token"] = "changed"
     assert manifest.proposals[0]["provenance"][0]["attributes"]["independent_evidence"]["source_token"] == "glyph-a"
+
+
+@pytest.mark.parametrize('failure', ['pixels', 'pdf', 'budget'])
+def test_root_batch_source_preflight_has_zero_external_effects(tmp_path, failure):
+    import hashlib
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review
+    from oabm.proposals.symbols import AttemptJournal, SymbolResourceLimits
+    from oabm.proposals.takeoff import render_source_image
+    req, policy, adapters, documents, images, first, calls, _ = symbol_source_fixture(tmp_path)
+    second_pdf = next(iter(documents.values())) + b'\n'
+    sha = hashlib.sha256(second_pdf).hexdigest()
+    ref, pixels = render_source_image(second_pdf, source_id='synthetic:second', page=1,
+        scale=1, crop_px=(0, 0, 200, 100), image_id='second-field', role='target')
+    second_req = replace(req, images=(ref, *req.images[1:]), target_image_ids=('second-field',))
+    documents[sha] = second_pdf
+    images['second-field'] = pixels
+    if failure == 'pixels':
+        images['second-field'] = b'corrupt pixels'
+    elif failure == 'pdf':
+        documents[sha] = b'corrupt PDF'
+    else:
+        second_req = replace(second_req, resource_limits=SymbolResourceLimits(
+            max_total_image_bytes=sum(len(images[i.id]) for i in second_req.images)-1))
+    second = AttemptJournal.create(tmp_path/'second.jsonl', run_id='second')
+    with first, second:
+        before = (first.path.read_bytes(), second.path.read_bytes())
+        with pytest.raises(ContractError):
+            extract_symbol_review([req, second_req], policy, adapters=adapters,
+                documents=documents, images=images, journals={req.fingerprint:first, second_req.fingerprint:second})
+        assert calls == []
+        assert first.receipts == second.receipts == ()
+        assert (first.path.read_bytes(), second.path.read_bytes()) == before
+
+
+@pytest.mark.parametrize('target', ['images', 'documents', 'journals'])
+def test_root_batch_snapshots_are_retained_through_provider_and_review(tmp_path, target):
+    import json
+    from oabm.importers.pdf_electrical.symbol_stage import extract_symbol_review, build_symbol_review
+    from oabm.proposals.symbols import AttemptJournal
+    req, policy, adapters, documents, images, first, calls, _ = symbol_source_fixture(tmp_path)
+    second_req=replace(req, images=tuple(replace(i,id='second-field') if i.id=='field' else i for i in req.images),
+                       target_image_ids=('second-field',))
+    images['second-field']=images['field']
+    second=AttemptJournal.create(tmp_path/'second.jsonl',run_id='second')
+    journals={req.fingerprint:first,second_req.fingerprint:second}
+    snapshot_images,snapshot_documents=dict(images),dict(documents)
+    journal_paths={k:j.path for k,j in journals.items()}
+    original=adapters['fake-symbols']
+    def mutate(payload,**kwargs):
+        if not calls:
+            {'images':images,'documents':documents,'journals':journals}[target].clear()
+        reply=original(payload,**kwargs)
+        if payload['target_image_ids']==['second-field']:
+            out=json.loads(reply.output_json);out['scanned_image_ids']=['second-field']
+            for mark in out['marks']:
+                mark['image_id']='second-field'
+                mark['evidence_image_ids']=['second-field' if k=='field' else k for k in mark['evidence_image_ids']]
+            reply=replace(reply,output_json=json.dumps(out))
+        return reply
+    with first,second:
+        result=extract_symbol_review([req,second_req],policy,adapters={'fake-symbols':mutate},
+                                    images=images,documents=documents,journals=journals)
+    assert len(calls)==2
+    assert len(result.review.proposals)==18
+    assert set(calls[0][1]['images'])=={'field','legend','notes','schedule'}
+    assert set(calls[1][1]['images'])=={'second-field','legend','notes','schedule'}
+    assert build_symbol_review(result.runs,documents=snapshot_documents,images=snapshot_images,
+                               journal_paths=journal_paths)==result.review

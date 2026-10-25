@@ -296,7 +296,8 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
     stage. Dispatch exceptions propagate; failed run statuses and their receipts
     remain explicit in the review coverage and per-request journals.
     """
-    from oabm.proposals.symbols import AttemptJournal, SymbolRequest, dispatch_symbols
+    from oabm.proposals.symbols import (AttemptJournal, SymbolRequest, dispatch_symbols,
+                                       _validate_symbol_inputs)
 
     if not requests:
         raise ContractError("symbol stage requires explicit source regions")
@@ -307,6 +308,11 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
         checked.append(SymbolRequest.from_dict(request.to_dict()))
     if len({r.fingerprint for r in checked}) != len(checked):
         raise ContractError("duplicate symbol requests")
+    if not all(isinstance(value, Mapping) for value in (images, documents, journals)):
+        raise ContractError("symbol batch requires source and journal mappings")
+    # Retain immutable byte values in snapshots for preflight, dispatch and the
+    # final review. An adapter closure cannot swap a later request's sources.
+    images, documents, journals = dict(images), dict(documents), dict(journals)
     _batch_inputs(checked, images, documents)
     expected = {request.fingerprint for request in checked}
     if not isinstance(journals, Mapping) or set(journals) != expected:
@@ -320,6 +326,9 @@ def extract_symbol_review(requests: Sequence, policy, *, adapters, documents,
     # belongs to saved-run verification, never an implicit fresh dispatch.
     if any(journal.receipts or AttemptJournal.read(journal.path) for journal in journals.values()):
         raise ContractError("fresh symbol extraction requires empty attempt journals")
+    for request in checked:
+        request_images, request_documents = _request_inputs(request, images, documents)
+        _validate_symbol_inputs(request, request_images, request_documents)
     runs = []
     for request in checked:
         request_images, request_documents = _request_inputs(request, images, documents)

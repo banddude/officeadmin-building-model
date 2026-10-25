@@ -49,6 +49,58 @@ page-local coordinates from collapsing onto one another while still allowing
 per-page recognition to proceed. When explicit transforms are supplied they
 must still cover every page and target one canonical `frame_id`.
 
+### Caller-selected original pages
+
+When a source PDF contains reference, demolition, or otherwise out-of-scope
+sheets, a caller may limit canonical electrical entities to an explicit subset
+of the original 1-based page numbers. `import_pdf(...)` and
+`import_document(...)` accept `selected_pages` and
+`excluded_page_reasons`. The selected set must be non-empty, unique, and within
+the source page count. Every original page outside that set must have one
+non-empty caller-supplied exclusion reason; reasons are recorded as caller
+scope, not represented as independently verified sheet classification or human
+approval. The original document page count, source page numbers, element IDs,
+and source provenance are preserved; the PDF is not sliced or renumbered.
+
+Recognition still sees the complete source document before canonicalization, so
+an explicitly referenced legend or panel schedule on an unselected page can
+support a selected field sheet. Candidates on unselected pages are not emitted
+as canonical equipment/devices and cannot enter placement or circuit loads.
+This preserves interpretation context without treating every sheet as part of
+the selected physical model. The default `selected_pages=None` remains the
+legacy all-pages import and emits no page-selection metadata.
+The `page_selection` model attribute names the selected and transform-covered
+original pages separately from pages retained as reference context. Any
+unresolved observation, circuit, or topology diagnostic whose source page is
+excluded is marked `page_scope: excluded-source-context` with its exclusion
+reason, so context diagnostics are not misread as failed selected-page
+placement.
+
+When transforms are supplied, their keys must cover exactly `selected_pages`
+using original page numbers; missing selected transforms and transforms for
+unselected pages are rejected. All selected transforms must still target one
+canonical frame. With no explicit transform mapping, selected pages retain
+deterministic page-local best-effort placement, tiled using their original page
+numbers. `page_type_filters` remain independent candidate-type filters and do
+not select or exclude source pages. Example:
+
+```python
+registered = registration.page_transforms()
+if registered is None:
+    raise ValueError("not every requested registration page resolved")
+selected_pages = tuple(sorted(registered))
+model = ElectricalPdfImporter().import_document(
+    full_document,
+    page_transforms=registered,
+    selected_pages=selected_pages,
+    excluded_page_reasons={
+        page: "not included in this current-scope placement pass"
+        for page in range(1, full_document.page_count + 1)
+        if page not in selected_pages
+    },
+)
+```
+
 A page's value is either one `PdfPageTransform` or a non-empty sequence of
 `DrawingRegionTransform(source_bbox_pt, transform)`, one per drawing on a page
 that holds several drawings (#72). A recognized point on such a page uses the

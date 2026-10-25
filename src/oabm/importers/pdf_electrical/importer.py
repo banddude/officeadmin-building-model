@@ -2564,6 +2564,111 @@ def _normalize_page_type_filters(
         filters[page] = filter_set
     return filters
 
+
+def _normalize_selected_pages(
+    document: PdfElectricalDocument,
+    selected_pages: Iterable[int] | None,
+    excluded_page_reasons: Mapping[int, str] | None,
+) -> tuple[tuple[int, ...], dict[int, str]]:
+    """Validate caller-selected original pages and explicit exclusions.
+
+    ``None`` preserves the legacy all-pages behavior. A partial selection is a
+    page-scope decision, not a transform shortcut: every original page outside
+    the selected set must have a non-empty caller-supplied reason.
+    """
+
+    all_pages = tuple(range(1, document.page_count + 1))
+    if selected_pages is None:
+        if excluded_page_reasons is not None:
+            raise ElectricalPdfError(
+                "excluded_page_reasons requires an explicit selected_pages set"
+            )
+        return all_pages, {}
+    if isinstance(selected_pages, (str, bytes)) or not isinstance(selected_pages, Iterable):
+        raise ElectricalPdfError("selected_pages must be a non-empty iterable of original page numbers")
+    supplied = tuple(selected_pages)
+    if not supplied:
+        raise ElectricalPdfError("selected_pages must not be empty")
+    invalid = sorted(
+        {repr(page) for page in supplied
+         if isinstance(page, bool) or not isinstance(page, int)}
+    )
+    if invalid:
+        raise ElectricalPdfError(
+            "selected_pages must contain only 1-based integer page numbers; "
+            f"invalid values {invalid}"
+        )
+    if len(set(supplied)) != len(supplied):
+        duplicates = sorted(page for page, count in Counter(supplied).items() if count > 1)
+        raise ElectricalPdfError(f"selected_pages contains duplicate pages {duplicates}")
+    selected = tuple(sorted(supplied))
+    unknown = sorted(set(selected) - set(all_pages))
+    if unknown:
+        raise ElectricalPdfError(
+            f"selected_pages references pages outside the source document: {unknown}"
+        )
+
+    omitted = set(all_pages) - set(selected)
+    if excluded_page_reasons is None:
+        if omitted:
+            raise ElectricalPdfError(
+                "excluded_page_reasons must give a reason for every original page "
+                f"outside selected_pages; missing pages {sorted(omitted)}"
+            )
+        return selected, {}
+    if not isinstance(excluded_page_reasons, Mapping):
+        raise ElectricalPdfError("excluded_page_reasons must map original page numbers to non-empty reasons")
+    reasons: dict[int, str] = {}
+    for page, reason in excluded_page_reasons.items():
+        if isinstance(page, bool) or not isinstance(page, int):
+            raise ElectricalPdfError(
+                f"excluded_page_reasons contains invalid page key {page!r}"
+            )
+        if page not in all_pages:
+            raise ElectricalPdfError(
+                f"excluded_page_reasons references page {page} outside the source document"
+            )
+        if page in selected:
+            raise ElectricalPdfError(
+                f"excluded_page_reasons includes selected page {page}"
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            raise ElectricalPdfError(
+                f"excluded_page_reasons for page {page} must be a non-empty reason"
+            )
+        reasons[page] = reason.strip()
+    missing = sorted(omitted - set(reasons))
+    extra = sorted(set(reasons) - omitted)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing pages {missing}")
+        if extra:
+            details.append(f"unexpected pages {extra}")
+        raise ElectricalPdfError(
+            "excluded_page_reasons must cover exactly the original pages outside "
+            "selected_pages: " + ", ".join(details)
+        )
+    return selected, reasons
+
+
+def _label_excluded_source_context(
+    rows: Iterable[dict[str, Any]],
+    excluded_reasons: Mapping[int, str],
+) -> None:
+    """Annotate diagnostics from excluded pages without rewriting their facts."""
+
+    for row in rows:
+        page = row.get("page")
+        if (
+            isinstance(page, int)
+            and not isinstance(page, bool)
+            and page in excluded_reasons
+        ):
+            row["page_scope"] = "excluded-source-context"
+            row["selection_exclusion_reason"] = excluded_reasons[page]
+
+
 # Lighting is intentionally a separate recognition path from power-device
 # legends. A fixture's readable type tag is the semantic evidence; geometry
 # only confirms that the tag is attached to a fixture instance.
@@ -6886,32 +6991,39 @@ def _resolve_explicit_legend_references(
 def _resolve_page_transforms(
     document: PdfElectricalDocument,
     page_transforms: Mapping[int, PageTransformInput] | None,
+    selected_pages: Sequence[int],
 ) -> tuple[dict[int, PdfPageTransform], dict[int, tuple[DrawingRegionTransform, ...]], bool]:
-    """Validate caller transforms: one per page, or one per drawing of a page.
+    """Validate transforms: one per selected original page or drawing region.
 
-    Returns ``(page_transforms, drawing_transforms, explicit)``. Every PDF page
-    must be covered exactly once, by a ``PdfPageTransform`` or by a non-empty
-    sequence of ``DrawingRegionTransform``; every transform targets one
-    canonical frame. Whether each recognized point lies in exactly one drawing
-    region is decided once the points are known.
+    Returns ``(page_transforms, drawing_transforms, explicit)``. Every selected
+    source page must be covered exactly once, by a ``PdfPageTransform`` or by a
+    non-empty sequence of ``DrawingRegionTransform``; every transform targets
+    one canonical frame. Whether each selected-page candidate lies in exactly
+    one drawing region is decided once candidates are known.
     """
 
     if page_transforms is None:
-        return _best_effort_page_transforms(document), {}, False
+        return _best_effort_page_transforms(document, selected_pages), {}, False
 
     transforms = dict(page_transforms)
-    expected_pages = set(range(1, document.page_count + 1))
+    expected_pages = set(selected_pages)
     actual_pages = set(transforms)
     if actual_pages != expected_pages:
         missing = sorted(expected_pages - actual_pages)
         extra = sorted(actual_pages - expected_pages)
+        full_page_scope = expected_pages == set(range(1, document.page_count + 1))
         details = []
         if missing:
             details.append(f"missing pages {missing}")
         if extra:
-            details.append(f"unknown pages {extra}")
+            details.append(
+                f"unknown pages {extra}"
+                if full_page_scope
+                else f"unknown or unselected pages {extra}"
+            )
+        scope = "every PDF page" if full_page_scope else "every selected PDF page"
         raise ElectricalPdfError(
-            "page_transforms must cover every PDF page exactly: " + ", ".join(details)
+            f"page_transforms must cover {scope} exactly: " + ", ".join(details)
         )
     single: dict[int, PdfPageTransform] = {}
     regions: dict[int, tuple[DrawingRegionTransform, ...]] = {}
@@ -6940,15 +7052,20 @@ def _resolve_page_transforms(
     return single, regions, True
 
 
-def _best_effort_page_transforms(document: PdfElectricalDocument) -> dict[int, PdfPageTransform]:
+def _best_effort_page_transforms(
+    document: PdfElectricalDocument,
+    selected_pages: Sequence[int] | None = None,
+) -> dict[int, PdfPageTransform]:
     """Page-local placement used when no registration is supplied or usable."""
 
-    if document.page_count == 1:
+    pages = tuple(range(1, document.page_count + 1)) if selected_pages is None else tuple(selected_pages)
+    if len(pages) == 1:
+        page = pages[0]
         frame_id = stable_id(
             "frame",
-            f"pdf-electrical:{document.source_id}:page-local:1",
+            f"pdf-electrical:{document.source_id}:page-local:{page}",
         )
-        return {1: PdfPageTransform(frame_id=frame_id)}
+        return {page: PdfPageTransform(frame_id=frame_id)}
 
     frame_id = stable_id(
         "frame",
@@ -6959,7 +7076,7 @@ def _best_effort_page_transforms(document: PdfElectricalDocument) -> dict[int, P
             frame_id=frame_id,
             tx_m=(page - 1) * _UNREGISTERED_PAGE_TILE_OFFSET_M,
         )
-        for page in range(1, document.page_count + 1)
+        for page in pages
     }
 
 
@@ -10333,12 +10450,16 @@ class ElectricalPdfImporter:
         *,
         source_id: str | None = None,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
+        selected_pages: Iterable[int] | None = None,
+        excluded_page_reasons: Mapping[int, str] | None = None,
         wall_evidence: SourceWallEvidence | None = None,
         architecture_document: Any | None = None,
     ) -> BuildingModel:
         return self.import_document(
             extract_pdf(path, source_id=source_id),
             page_transforms=page_transforms,
+            selected_pages=selected_pages,
+            excluded_page_reasons=excluded_page_reasons,
             wall_evidence=wall_evidence,
             architecture_document=architecture_document,
         )
@@ -10348,12 +10469,28 @@ class ElectricalPdfImporter:
         document: PdfElectricalDocument,
         *,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
+        selected_pages: Iterable[int] | None = None,
+        excluded_page_reasons: Mapping[int, str] | None = None,
         page_type_filters: Mapping[int, frozenset[str]] | None = None,
         wall_evidence: SourceWallEvidence | None = None,
         architecture_document: Any | None = None,
     ) -> BuildingModel:
+        selected_page_numbers, excluded_reasons = _normalize_selected_pages(
+            document, selected_pages, excluded_page_reasons,
+        )
+        selected_page_set = set(selected_page_numbers)
+        for hint in self.instance_hints:
+            if hint.page not in selected_page_set:
+                raise ElectricalPdfError(
+                    f"instance hint {hint.identity_key!r} references original page "
+                    f"{hint.page}, which is outside selected_pages"
+                )
         if wall_evidence is not None:
             _validate_wall_evidence_binding(document, wall_evidence)
+            if wall_evidence.page_number not in selected_page_set:
+                raise ElectricalPdfError(
+                    f"wall evidence page {wall_evidence.page_number} is outside selected_pages"
+                )
         if architecture_document is not None:
             if wall_evidence is None:
                 raise ElectricalPdfError("architecture extraction requires source wall evidence")
@@ -10363,6 +10500,7 @@ class ElectricalPdfImporter:
         transforms, region_transforms, has_explicit_registration = _resolve_page_transforms(
             document,
             page_transforms,
+            selected_page_numbers,
         )
         frame_id = (
             next(iter(transforms.values())).frame_id
@@ -11197,6 +11335,15 @@ class ElectricalPdfImporter:
                     )
                 )
 
+        # Recognition intentionally sees the complete source document so an
+        # unselected page can supply an explicitly referenced legend or
+        # schedule. Only selected original pages may become canonical
+        # equipment/device candidates or enter placement.
+        if selected_pages is not None:
+            for key in sorted(tuple(candidates)):
+                if candidates[key].page not in selected_page_set:
+                    del candidates[key]
+
         equipment: list[ElectricalEquipment] = []
         devices: list[ElectricalDevice] = []
         entity_by_page_tag: dict[tuple[int, str], ElectricalEquipment | ElectricalDevice] = {}
@@ -11220,7 +11367,7 @@ class ElectricalPdfImporter:
                 candidates.values(), region_transforms,
             )
             if region_assignment["status"] != "resolved":
-                transforms = _best_effort_page_transforms(document)
+                transforms = _best_effort_page_transforms(document, selected_page_numbers)
                 region_transforms = {}
                 assigned_regions = {}
                 has_explicit_registration = False
@@ -13239,6 +13386,15 @@ class ElectricalPdfImporter:
             and observation.element_id not in attached_note_ids
         ]
 
+        if selected_pages is not None:
+            # Keep full-source recognition diagnostics and reference evidence,
+            # but make clear that an unresolved mark on an excluded page is
+            # context, not a failed placement from the selected-page run.
+            _label_excluded_source_context(unresolved_observations, excluded_reasons)
+            _label_excluded_source_context(unresolved_circuits, excluded_reasons)
+            _label_excluded_source_context(unresolved_topology, excluded_reasons)
+            _label_excluded_source_context(global_notes, excluded_reasons)
+
         model_provenance: list[Provenance] = [
             Provenance(
                 source_kind="pdf-electrical",
@@ -13288,7 +13444,7 @@ class ElectricalPdfImporter:
                 )
             )
         if has_explicit_registration:
-            for page in range(1, document.page_count + 1):
+            for page in selected_page_numbers:
                 registered: list[tuple[PdfPageTransform, tuple[float, float, float, float] | None]] = (
                     [(region.transform, region.source_bbox_pt) for region in region_transforms[page]]
                     if page in region_transforms
@@ -13319,7 +13475,7 @@ class ElectricalPdfImporter:
                         )
                     )
         if not has_explicit_registration and document.page_count > 1:
-            for page in range(1, document.page_count + 1):
+            for page in selected_page_numbers:
                 model_provenance.append(
                     Provenance(
                         source_kind="pdf-electrical",
@@ -13377,6 +13533,28 @@ class ElectricalPdfImporter:
                     # Whether the caller supplied transforms, even when the
                     # per-drawing assignment later fell back to best effort.
                     "page_transforms_supplied": page_transforms is not None,
+                    **(
+                        {
+                            "page_selection": {
+                                "basis": "caller-supplied original-page scope; not independently verified",
+                                "selected_original_pages": list(selected_page_numbers),
+                                "transform_scope_original_pages": sorted(
+                                    set(transforms) | set(region_transforms)
+                                ),
+                                "reference_context_original_pages": sorted(excluded_reasons),
+                                "reference_context_policy": (
+                                    "full source remains available for explicit legend and schedule "
+                                    "interpretation; excluded-page candidates are not canonicalized"
+                                ),
+                                "excluded_original_pages": [
+                                    {"page": page, "reason": excluded_reasons[page]}
+                                    for page in sorted(excluded_reasons)
+                                ],
+                            }
+                        }
+                        if selected_pages is not None
+                        else {}
+                    ),
                     "registration_mode": registration_mode,
                     "registered_frame_id": frame_id,
                     **(
@@ -13430,7 +13608,7 @@ class ElectricalPdfImporter:
                     "best_effort_page_transforms": (
                         {
                             str(page): transforms[page].to_attributes()
-                            for page in range(1, document.page_count + 1)
+                            for page in selected_page_numbers
                         }
                         if not has_explicit_registration and document.page_count > 1
                         else {}
@@ -13512,6 +13690,8 @@ def import_pdf(
     *,
     source_id: str | None = None,
     page_transforms: Mapping[int, PageTransformInput] | None = None,
+    selected_pages: Iterable[int] | None = None,
+    excluded_page_reasons: Mapping[int, str] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
@@ -13521,6 +13701,8 @@ def import_pdf(
         path,
         source_id=source_id,
         page_transforms=page_transforms,
+        selected_pages=selected_pages,
+        excluded_page_reasons=excluded_page_reasons,
         wall_evidence=wall_evidence,
         architecture_document=architecture_document,
     )
@@ -13530,6 +13712,8 @@ def import_document(
     document: PdfElectricalDocument,
     *,
     page_transforms: Mapping[int, PageTransformInput] | None = None,
+    selected_pages: Iterable[int] | None = None,
+    excluded_page_reasons: Mapping[int, str] | None = None,
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
@@ -13538,6 +13722,8 @@ def import_document(
     return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_document(
         document,
         page_transforms=page_transforms,
+        selected_pages=selected_pages,
+        excluded_page_reasons=excluded_page_reasons,
         wall_evidence=wall_evidence,
         architecture_document=architecture_document,
     )

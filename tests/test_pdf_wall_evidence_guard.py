@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
@@ -335,6 +335,33 @@ def test_wrong_page_evidence_refuses(tmp_path: Path) -> None:
     document = electrical_extract_pdf(source)
     with pytest.raises(ElectricalPdfError, match="outside this document"):
         ElectricalPdfImporter().import_document(document, wall_evidence=wrong_page)
+
+
+def test_valid_wall_evidence_on_excluded_page_refuses(tmp_path: Path) -> None:
+    single_page = tmp_path / "single.pdf"
+    source = tmp_path / "two-page.pdf"
+    _write_combined_sheet(single_page, walls=OPEN_CHAIN_LINES)
+    reader = PdfReader(single_page)
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])
+    writer.add_page(reader.pages[0])
+    with source.open("wb") as handle:
+        writer.write(handle)
+
+    document = electrical_extract_pdf(source)
+    wall_evidence = source_wall_evidence(
+        architecture_extract_pdf(source),
+        page_number=1,
+        confidence=0.9,
+        meters_per_point=METERS_PER_POINT,
+    )
+    with pytest.raises(ElectricalPdfError, match="outside selected_pages"):
+        ElectricalPdfImporter().import_document(
+            document,
+            selected_pages=(2,),
+            excluded_page_reasons={1: "first page is not a placement target"},
+            wall_evidence=wall_evidence,
+        )
 
 
 def test_contact_with_the_own_symbol_outline_is_not_a_wall_conflict() -> None:

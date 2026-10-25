@@ -24,6 +24,140 @@ class LayeredRoomRegion:
     source_wall_ids: tuple[str, ...]
     source_opening_ids: tuple[str, ...]
     closure_count: int
+    source_glazing_ids: tuple[str, ...] = ()
+    source_mullion_ids: tuple[str, ...] = ()
+    source_leader_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LayeredRoomSeed:
+    """One room identity seed, optionally linked by an observed room-ID leader."""
+
+    anchor: str
+    point_pt: tuple[float, float]
+    source_leader_ids: tuple[str, ...] = ()
+
+
+# This is a raster stroke width for filling source loops, not a physical gap
+# allowance, measured wall width, or engineering dimension.
+_MASK_LINE_WIDTH_PT = 3.0
+_GLAZING_BOUNDARY_LAYERS = frozenset({
+    "A-GLAZ", "AE-GLAZ", "A-GLAZ-BASE", "AE-GLAZ-BASE",
+    "A-GLAZ-EXST", "AE-GLAZ-EXST",
+})
+_GLAZING_MULLION_LAYERS = frozenset({
+    "A-GLAZ-MULL", "AE-GLAZ-MULL",
+})
+
+
+def _source_layer_tokens(line: PdfLineObservation) -> frozenset[str]:
+    return frozenset(
+        token.upper().lstrip("_")
+        for layer in line.source_layers
+        for token in layer.split("|")
+        if token
+    )
+
+
+def _segment_bbox(line: PdfLineObservation) -> tuple[float, float, float, float]:
+    (ax, ay), (bx, by) = line.start_pt, line.end_pt
+    return (min(ax, bx), min(ay, by), max(ax, bx), max(ay, by))
+
+
+def _segment_intersects(first: PdfLineObservation, second: PdfLineObservation) -> bool:
+    def cross(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+        return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+    a, b = first.start_pt, first.end_pt
+    c, d = second.start_pt, second.end_pt
+    ab_c, ab_d = cross(a, b, c), cross(a, b, d)
+    cd_a, cd_b = cross(c, d, a), cross(c, d, b)
+    return (
+        ab_c == 0 and min(a[0], b[0]) <= c[0] <= max(a[0], b[0])
+        and min(a[1], b[1]) <= c[1] <= max(a[1], b[1])
+    ) or (
+        ab_d == 0 and min(a[0], b[0]) <= d[0] <= max(a[0], b[0])
+        and min(a[1], b[1]) <= d[1] <= max(a[1], b[1])
+    ) or (
+        cd_a == 0 and min(c[0], d[0]) <= a[0] <= max(c[0], d[0])
+        and min(c[1], d[1]) <= a[1] <= max(c[1], d[1])
+    ) or (
+        cd_b == 0 and min(c[0], d[0]) <= b[0] <= max(c[0], d[0])
+        and min(c[1], d[1]) <= b[1] <= max(c[1], d[1])
+    ) or (ab_c * ab_d < 0 and cd_a * cd_b < 0)
+
+
+def _segments_source_connected(
+    first: PdfLineObservation,
+    second: PdfLineObservation,
+) -> bool:
+    """Whether observed strokes touch within the raster mask stroke width.
+
+    The tolerance is only a topology/raster-connectivity test, not a physical
+    gap bridge or a measurement of wall/glazing separation.
+    """
+    first_box, second_box = _segment_bbox(first), _segment_bbox(second)
+    gap_x = max(0.0, first_box[0] - second_box[2], second_box[0] - first_box[2])
+    gap_y = max(0.0, first_box[1] - second_box[3], second_box[1] - first_box[3])
+    if math.hypot(gap_x, gap_y) > _MASK_LINE_WIDTH_PT:
+        return False
+    if _segment_intersects(first, second):
+        return True
+    return min(
+        _distance_to_segment(first.start_pt, second),
+        _distance_to_segment(first.end_pt, second),
+        _distance_to_segment(second.start_pt, first),
+        _distance_to_segment(second.end_pt, first),
+    ) <= _MASK_LINE_WIDTH_PT
+
+
+def _connected_glazing_evidence(
+    page: PdfPageObservation,
+    walls: tuple[PdfLineObservation, ...],
+) -> tuple[tuple[PdfLineObservation, ...], tuple[PdfLineObservation, ...]]:
+    """Return only glazing/mullion vectors in components touching opaque walls.
+
+    The connectivity tolerance is exactly the existing three-point raster mask
+    stroke width. No connector segment is synthesized; only source vectors are
+    returned and drawn. Disconnected glazing details therefore cannot close a
+    room on their own.
+    """
+    candidates = tuple(
+        line for line in page.lines
+        if _source_layer_tokens(line) & (_GLAZING_BOUNDARY_LAYERS | _GLAZING_MULLION_LAYERS)
+    )
+    if not candidates:
+        return (), ()
+
+    connected = {
+        index for index, line in enumerate(candidates)
+        if any(_segments_source_connected(line, wall) for wall in walls)
+    }
+    neighbors: dict[int, list[int]] = {index: [] for index in range(len(candidates))}
+    for first in range(len(candidates)):
+        for second in range(first + 1, len(candidates)):
+            if _segments_source_connected(candidates[first], candidates[second]):
+                neighbors[first].append(second)
+                neighbors[second].append(first)
+
+    pending = list(sorted(connected))
+    while pending:
+        index = pending.pop()
+        for neighbor in neighbors[index]:
+            if neighbor not in connected:
+                connected.add(neighbor)
+                pending.append(neighbor)
+
+    selected = tuple(candidates[index] for index in sorted(connected))
+    glazing = tuple(
+        line for line in selected
+        if _source_layer_tokens(line) & _GLAZING_BOUNDARY_LAYERS
+    )
+    mullions = tuple(
+        line for line in selected
+        if _source_layer_tokens(line) & _GLAZING_MULLION_LAYERS
+    )
+    return glazing, mullions
 
 
 def _is_opening_layer(layer: str) -> bool:
@@ -275,24 +409,30 @@ def _flood(
     seed: tuple[int, int],
     *,
     limit: int = 500_000,
-) -> set[tuple[int, int]] | None:
+) -> tuple[set[tuple[int, int]], bool] | None:
     x, y = seed
     if not (0 <= x < width and 0 <= y < height) or pixels[x, y] == 0:  # type: ignore[index]
         return None
     queue = deque([seed])
     seen = {seed}
+    touches_mask_edge = False
     while queue:
         x, y = queue.popleft()
         if x == 0 or y == 0 or x == width - 1 or y == height - 1:
-            return None
+            touches_mask_edge = True
         if len(seen) > limit:
-            return None
+            return seen, False
         for neighbor in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
             nx, ny = neighbor
-            if neighbor not in seen and pixels[nx, ny] != 0:  # type: ignore[index]
+            if (
+                0 <= nx < width
+                and 0 <= ny < height
+                and neighbor not in seen
+                and pixels[nx, ny] != 0  # type: ignore[index]
+            ):
                 seen.add(neighbor)
                 queue.append(neighbor)
-    return seen
+    return seen, not touches_mask_edge
 
 
 def _outer_polygon(cells: set[tuple[int, int]]) -> tuple[tuple[int, int], ...] | None:
@@ -354,9 +494,17 @@ def _line_touches_region(
 def find_layered_room_regions(
     page: PdfPageObservation,
     meters_per_point: float,
-    seeds: tuple[tuple[str, tuple[float, float]], ...],
+    seeds: tuple[LayeredRoomSeed | tuple[str, tuple[float, float]], ...],
 ) -> tuple[LayeredRoomRegion, ...]:
     """Return uniquely labeled, closed interiors; unresolved regions stay absent."""
+    normalized_seeds = tuple(sorted(
+        (
+            seed if isinstance(seed, LayeredRoomSeed)
+            else LayeredRoomSeed(anchor=seed[0], point_pt=seed[1])
+            for seed in seeds
+        ),
+        key=lambda item: (item.anchor, item.point_pt, item.source_leader_ids),
+    ))
     walls = _wall_layer_lines(page)
     openings = tuple(
         line for line in page.lines
@@ -370,61 +518,127 @@ def find_layered_room_regions(
         ),
         key=lambda rect: (rect.bbox_pt, rect.element_id),
     ))
-    if len(walls) < 4 or len(openings) + len(opening_rects) < 2 or not seeds:
+    if len(walls) < 4 or len(openings) + len(opening_rects) < 2 or not normalized_seeds:
         return ()
     if has_multiple_wall_regions(page, meters_per_point):
         return ()
-    xs = [value for line in walls for value in (line.start_pt[0], line.end_pt[0])]
-    ys = [value for line in walls for value in (line.start_pt[1], line.end_pt[1])]
-    left = math.floor(min(xs)) - 3
-    right = math.ceil(max(xs)) + 3
-    bottom = math.floor(min(ys)) - 3
-    top = math.ceil(max(ys)) + 3
-    width, height = right - left + 1, top - bottom + 1
-    if width * height > 8_000_000:
-        return ()
-    mask = Image.new("L", (width, height), 255)
-    draw = ImageDraw.Draw(mask)
-    for line in walls:
-        draw.line(
-            (line.start_pt[0] - left, top - line.start_pt[1],
-             line.end_pt[0] - left, top - line.end_pt[1]),
-            fill=0, width=3,
-        )
+    glazing, mullions = _connected_glazing_evidence(
+        page, walls,
+    ) if any(seed.source_leader_ids for seed in normalized_seeds) else ((), ())
     closures = _merge_closures(
         _supported_opening_closures(walls, openings, meters_per_point),
         _door_leaf_closures(walls, openings, meters_per_point),
     )
-    for axis, fixed, low, high, _ in closures:
-        points = (
-            (low - left, top - fixed, high - left, top - fixed)
-            if axis == "h" else
-            (fixed - left, top - low, fixed - left, top - high)
-        )
-        draw.line(points, fill=0, width=3)
-    # Openings drawn as rectangles (a garage door) are closed barriers across
-    # the opening; their outline seals the wall line they interrupt.
-    for rect in opening_rects:
-        x0, y0, x1, y1 = rect.bbox_pt
-        draw.rectangle(
-            (x0 - left, top - y1, x1 - left, top - y0),
-            outline=0, width=3,
-        )
 
-    pixels = mask.load()
-    components: list[tuple[set[tuple[int, int]], list[str]]] = []
-    for anchor, (sx, sy) in sorted(seeds):
-        seed = (round(sx - left), round(top - sy))
-        if any(seed in cells for cells, _ in components):
-            next(anchors for cells, anchors in components if seed in cells).append(anchor)
-            continue
-        cells = _flood(pixels, width, height, seed)
-        if cells is not None:
-            components.append((cells, [anchor]))
+    def flood_components(
+        boundary_lines: tuple[PdfLineObservation, ...],
+        seed_indexes: tuple[int, ...],
+    ) -> tuple[
+        list[tuple[set[tuple[int, int]], list[tuple[int, LayeredRoomSeed]], int, int]],
+        set[int],
+    ]:
+        if not boundary_lines or not seed_indexes:
+            return [], set()
+        xs = [value for line in boundary_lines for value in (line.start_pt[0], line.end_pt[0])]
+        ys = [value for line in boundary_lines for value in (line.start_pt[1], line.end_pt[1])]
+        left = math.floor(min(xs)) - 3
+        right = math.ceil(max(xs)) + 3
+        bottom = math.floor(min(ys)) - 3
+        top = math.ceil(max(ys)) + 3
+        width, height = right - left + 1, top - bottom + 1
+        if width * height > 8_000_000:
+            return [], set()
+        mask = Image.new("L", (width, height), 255)
+        draw = ImageDraw.Draw(mask)
+        for line in boundary_lines:
+            draw.line(
+                (line.start_pt[0] - left, top - line.start_pt[1],
+                 line.end_pt[0] - left, top - line.end_pt[1]),
+                fill=0, width=int(_MASK_LINE_WIDTH_PT),
+            )
+        for axis, fixed, low, high, _ in closures:
+            points = (
+                (low - left, top - fixed, high - left, top - fixed)
+                if axis == "h" else
+                (fixed - left, top - low, fixed - left, top - high)
+            )
+            draw.line(points, fill=0, width=int(_MASK_LINE_WIDTH_PT))
+        # Opening rectangles are source-supported barriers across their own
+        # openings, not invented wall segments.
+        for rect in opening_rects:
+            x0, y0, x1, y1 = rect.bbox_pt
+            draw.rectangle(
+                (x0 - left, top - y1, x1 - left, top - y0),
+                outline=0, width=int(_MASK_LINE_WIDTH_PT),
+            )
+
+        pixels = mask.load()
+        components: list[
+            tuple[set[tuple[int, int]], list[tuple[int, LayeredRoomSeed]], int, int]
+        ] = []
+        bounded_seed_indexes: set[int] = set()
+        unresolved_pixels: set[tuple[int, int]] = set()
+        for seed_index in seed_indexes:
+            room_seed = normalized_seeds[seed_index]
+            sx, sy = room_seed.point_pt
+            seed = (round(sx - left), round(top - sy))
+            existing = next(
+                (component for component in components if seed in component[0]),
+                None,
+            )
+            if existing is not None:
+                existing[1].append((seed_index, room_seed))
+                bounded_seed_indexes.add(seed_index)
+                continue
+            if seed in unresolved_pixels:
+                continue
+            result = _flood(pixels, width, height, seed)
+            if result is None:
+                continue
+            cells, bounded = result
+            if not bounded:
+                # Cache failed/open components too, so repeated text or leader
+                # candidates do not flood the same leaking region repeatedly.
+                unresolved_pixels.update(cells)
+                continue
+            components.append((cells, [(seed_index, room_seed)], left, top))
+            bounded_seed_indexes.add(seed_index)
+        return components, bounded_seed_indexes
+
+    boundary_lines = (*walls, *glazing, *mullions)
+    seed_indexes = tuple(range(len(normalized_seeds)))
+    wall_components, wall_bounded_seed_indexes = flood_components(walls, seed_indexes)
+    components: list[
+        tuple[
+            set[tuple[int, int]], list[tuple[int, LayeredRoomSeed]], int, int,
+            tuple[PdfLineObservation, ...], tuple[PdfLineObservation, ...],
+        ]
+    ] = [
+        (cells, seeds, left, top, (), ())
+        for cells, seeds, left, top in wall_components
+    ]
+
+    # Existing opaque-wall interiors retain legacy text-center seeding. Only
+    # seeds not already assigned to any bounded wall component are retried on
+    # the connected facade mask, and every resulting component must have one
+    # explicit room-ID leader seed. Including unresolved text seeds in that
+    # second flood keeps them as ambiguity evidence rather than allowing a
+    # nearby leader seed to silently claim their component.
+    facade_seed_indexes = tuple(
+        index for index in seed_indexes if index not in wall_bounded_seed_indexes
+    )
+    if facade_seed_indexes and (glazing or mullions):
+        facade_components, _ = flood_components(boundary_lines, facade_seed_indexes)
+        components.extend(
+            (cells, seeds, left, top, glazing, mullions)
+            for cells, seeds, left, top in facade_components
+            if len(seeds) == 1 and seeds[0][1].source_leader_ids
+        )
 
     regions: list[LayeredRoomRegion] = []
-    for cells, anchors in components:
-        if len(anchors) != 1:
+    for cells, indexed_seeds, left, top, component_glazing, component_mullions in components:
+        room_seeds = [seed for _, seed in indexed_seeds]
+        if len(room_seeds) != 1:
             continue
         area_m2 = len(cells) * meters_per_point**2
         if not 1.0 <= area_m2 <= 250.0:
@@ -452,6 +666,14 @@ def find_layered_room_regions(
             line.element_id for line in walls
             if _line_touches_region(line, cells, left, top)
         ))
+        nearby_glazing = tuple(sorted(
+            line.element_id for line in component_glazing
+            if _line_touches_region(line, cells, left, top)
+        ))
+        nearby_mullions = tuple(sorted(
+            line.element_id for line in component_mullions
+            if _line_touches_region(line, cells, left, top)
+        ))
         nearby_closures = []
         for axis, fixed, low, high, evidence in closures:
             synthetic = PdfLineObservation(
@@ -462,10 +684,13 @@ def find_layered_room_regions(
             if _line_touches_region(synthetic, cells, left, top):
                 nearby_closures.append(evidence)
         regions.append(LayeredRoomRegion(
-            anchor=anchors[0],
+            anchor=room_seeds[0].anchor,
             polygon_pt=source_polygon,
             source_wall_ids=nearby_walls,
             source_opening_ids=tuple(sorted({item for evidence in nearby_closures for item in evidence})),
             closure_count=len(nearby_closures),
+            source_glazing_ids=nearby_glazing,
+            source_mullion_ids=nearby_mullions,
+            source_leader_ids=tuple(sorted(room_seeds[0].source_leader_ids)),
         ))
     return tuple(sorted(regions, key=lambda item: item.anchor))

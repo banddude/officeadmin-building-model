@@ -1,3 +1,4 @@
+import hashlib
 import json
 import math
 from dataclasses import replace
@@ -447,6 +448,36 @@ def test_visible_layered_wall_and_door_source_yields_one_inferred_room(tmp_path:
     assert import_observations(extracted, options=ImportOptions(
         scale_overrides=(ScaleOverride(1, 0.016933333333),),
     )).to_dict() == model.to_dict()
+
+
+def test_existing_room_fixtures_keep_prechange_888_canonical_json_bytes(
+    tmp_path: Path,
+) -> None:
+    """Lock two unchanged room paths to independently captured 888 output."""
+    source = tmp_path / "synthetic-layered-room.pdf"
+    _write_layered_room_source(source)
+    extracted = extract_pdf(source, source_id="fixture:layered-room")
+    scale = ImportOptions(scale_overrides=(ScaleOverride(1, 0.016933333333),))
+    layered_room = import_observations(extracted, options=scale)
+
+    # Existing nested-rectangle-only path: _plan_page has two nested source
+    # rectangles and no leader, glazing, or newly introduced boundary evidence.
+    rect_room = import_observations(
+        _document(_plan_page(), source_id="fixture:observations", digest="a" * 64),
+    )
+
+    def canonical_json_fingerprint(model: BuildingModel) -> str:
+        payload = json.dumps(
+            json.loads(model.to_json()), sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    assert canonical_json_fingerprint(layered_room) == (
+        "8b828a0e04c3fa3df3df8e803dd873bdd634acee38399df0b1825f9302980884"
+    )
+    assert canonical_json_fingerprint(rect_room) == (
+        "2fecef3dfed711852b3e788ce3defccd0ff1ed1875348781f9f13163cd6f9047"
+    )
 
 
 @pytest.mark.parametrize("opening_evidence,second_label,hidden_wall", [

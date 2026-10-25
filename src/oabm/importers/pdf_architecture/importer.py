@@ -58,6 +58,7 @@ from .extract import (
 )
 from .layered_rooms import (
     LayeredRoomRegion,
+    LayeredRoomSeed,
     find_layered_room_regions,
     has_multiple_wall_regions,
 )
@@ -2018,6 +2019,604 @@ def _point_near_bbox(
     )
 
 
+def _room_id_annotation_line(line: PdfLineObservation) -> bool:
+    return any(
+        token.upper().lstrip("_") == "A-ANNO-RM-IDEN"
+        for layer in line.source_layers
+        for token in layer.split("|")
+    )
+
+
+_ROOM_ID_LEADER_JOIN_TOLERANCE_PT = 0.5
+_ROOM_ID_ARROWHEAD_MIN_FORWARD_COS = 0.5
+_ROOM_ID_ARROWHEAD_MAX_LEG_LENGTH_RATIO = 2.0
+_ROOM_ID_ARROWHEAD_MAX_ALIGNMENT_DELTA = 0.5
+
+
+def _line_contact_points(
+    first: PdfLineObservation,
+    second: PdfLineObservation,
+    tolerance: float,
+) -> tuple[tuple[float, float], ...]:
+    """Return source-coordinate contact points for two touching line strokes."""
+    exact_contacts: list[tuple[float, float]] = []
+    for point, start, end in (
+        (first.start_pt, second.start_pt, second.end_pt),
+        (first.end_pt, second.start_pt, second.end_pt),
+        (second.start_pt, first.start_pt, first.end_pt),
+        (second.end_pt, first.start_pt, first.end_pt),
+    ):
+        distance, raw_t = _source_point_to_segment_distance(point, start, end)
+        if distance <= 1e-6 and 0.0 <= raw_t <= 1.0:
+            t = max(0.0, min(1.0, raw_t))
+            contact = (start[0] + t * (end[0] - start[0]), start[1] + t * (end[1] - start[1]))
+            if not any(math.dist(contact, previous) <= 1e-6 for previous in exact_contacts):
+                exact_contacts.append(contact)
+
+    # Interior crossings have no endpoint on the other segment; use their
+    # exact intersection, without turning a near-parallel stroke into a span
+    # of false contact points.
+    a, b = first.start_pt, first.end_pt
+    c, d = second.start_pt, second.end_pt
+    rx, ry = b[0] - a[0], b[1] - a[1]
+    sx, sy = d[0] - c[0], d[1] - c[1]
+    denominator = rx * sy - ry * sx
+    if abs(denominator) > 1e-12:
+        qx, qy = c[0] - a[0], c[1] - a[1]
+        t = (qx * sy - qy * sx) / denominator
+        u = (qx * ry - qy * rx) / denominator
+        if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+            contact = (a[0] + t * rx, a[1] + t * ry)
+            if not any(math.dist(contact, previous) <= 1e-6 for previous in exact_contacts):
+                exact_contacts.append(contact)
+    if exact_contacts:
+        return tuple(exact_contacts)
+
+    approximate: list[tuple[float, tuple[float, float]]] = []
+    for point, start, end in (
+        (first.start_pt, second.start_pt, second.end_pt),
+        (first.end_pt, second.start_pt, second.end_pt),
+        (second.start_pt, first.start_pt, first.end_pt),
+        (second.end_pt, first.start_pt, first.end_pt),
+    ):
+        distance, raw_t = _source_point_to_segment_distance(point, start, end)
+        if distance <= tolerance and -1e-9 <= raw_t <= 1.0 + 1e-9:
+            t = max(0.0, min(1.0, raw_t))
+            contact = (start[0] + t * (end[0] - start[0]), start[1] + t * (end[1] - start[1]))
+            approximate.append((distance, contact))
+    if not approximate:
+        return ()
+    minimum = min(distance for distance, _ in approximate)
+    contacts: list[tuple[float, float]] = []
+    for distance, contact in approximate:
+        if distance <= minimum + 1e-6 and not any(
+            math.dist(contact, previous) <= tolerance for previous in contacts
+        ):
+            contacts.append(contact)
+    return tuple(contacts)
+
+
+def _point_in_source_polygon(
+    point: tuple[float, float],
+    polygon: tuple[tuple[float, float], ...],
+    tolerance: float,
+) -> bool:
+    inside = False
+    x, y = point
+    for start, end in zip(polygon, (*polygon[1:], polygon[0])):
+        distance, raw_t = _source_point_to_segment_distance(point, start, end)
+        if distance <= tolerance and 0.0 <= raw_t <= 1.0:
+            return True
+        if (start[1] > y) != (end[1] > y):
+            crossing_x = start[0] + (y - start[1]) * (end[0] - start[0]) / (end[1] - start[1])
+            if x < crossing_x:
+                inside = not inside
+    return inside
+
+
+def _simple_source_polygon(polygon: tuple[tuple[float, float], ...]) -> bool:
+    count = len(polygon)
+    if count < 3:
+        return False
+    for first in range(count):
+        a, b = polygon[first], polygon[(first + 1) % count]
+        for second in range(first + 1, count):
+            if second in (first, (first + 1) % count) or first == (second + 1) % count:
+                continue
+            c, d = polygon[second], polygon[(second + 1) % count]
+            if _segments_intersect_pt(a, b, c, d):
+                return False
+    return True
+
+
+def _closed_room_tip_marker(
+    lines: tuple[PdfLineObservation, ...],
+    room_end: tuple[float, float],
+    text_height: float,
+) -> tuple[tuple[tuple[float, float], ...], frozenset[str], tuple[float, float]] | None:
+    """Find one source-closed marker contour in an otherwise compact tip glyph.
+
+    A closed contour is required: a bounded cluster or a compact branch by
+    itself is not a room-tip marker. This allows source glyphs with interior
+    spokes while rejecting off-contour strokes and competing endpoints.
+    """
+    lines = tuple(
+        replace(
+            line,
+            start_pt=min(line.start_pt, line.end_pt),
+            end_pt=max(line.start_pt, line.end_pt),
+        )
+        for line in sorted(
+            lines,
+            key=lambda item: (
+                item.element_id,
+                min(item.start_pt, item.end_pt),
+                max(item.start_pt, item.end_pt),
+            ),
+        )
+    )
+    if len(lines) < 3 or len(lines) > 256:
+        return None
+    endpoints = tuple(point for line in lines for point in (line.start_pt, line.end_pt))
+    if len(endpoints) > 512:
+        return None
+
+    parents = list(range(len(endpoints)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(first: int, second: int) -> None:
+        first_root, second_root = find(first), find(second)
+        if first_root != second_root:
+            parents[second_root] = first_root
+
+    for first, point in enumerate(endpoints):
+        for second in range(first + 1, len(endpoints)):
+            if math.dist(point, endpoints[second]) <= _ROOM_ID_LEADER_JOIN_TOLERANCE_PT:
+                union(first, second)
+
+    roots = sorted({find(index) for index in range(len(endpoints))})
+    root_to_node = {root: index for index, root in enumerate(roots)}
+    node_members = {
+        root: [endpoints[index] for index in range(len(endpoints)) if find(index) == root]
+        for root in roots
+    }
+    nodes = tuple(
+        (
+            sum(point[0] for point in node_members[root]) / len(node_members[root]),
+            sum(point[1] for point in node_members[root]) / len(node_members[root]),
+        )
+        for root in roots
+    )
+    edge_nodes: list[tuple[int, int]] = []
+    adjacency: list[set[int]] = [set() for _ in roots]
+    for index in range(len(lines)):
+        first = root_to_node[find(2 * index)]
+        second = root_to_node[find(2 * index + 1)]
+        if first == second:
+            return None
+        edge_nodes.append((first, second))
+        adjacency[first].add(second)
+        adjacency[second].add(first)
+
+    cycles: dict[tuple[int, ...], tuple[float, tuple[tuple[float, float], ...]]] = {}
+    search_steps = 0
+    search_exhausted = False
+
+    def polygon_area(polygon: tuple[tuple[float, float], ...]) -> float:
+        return abs(sum(
+            polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
+            - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
+            for index in range(len(polygon))
+        ) / 2.0)
+
+    def visit(current: int, path: tuple[int, ...], start: int) -> None:
+        nonlocal search_steps, search_exhausted
+        search_steps += 1
+        if search_steps > 20_000:
+            search_exhausted = True
+            return
+        for neighbor in sorted(adjacency[current]):
+            if neighbor == start and len(path) >= 3:
+                reverse = (start, *reversed(path[1:]))
+                key = min(path, reverse)
+                if key in cycles:
+                    continue
+                polygon = tuple(nodes[index] for index in path)
+                area = polygon_area(polygon)
+                if area > 0.0 and _simple_source_polygon(polygon):
+                    cycles[key] = (area, polygon)
+            elif neighbor > start and neighbor not in path and len(path) < 64:
+                visit(neighbor, (*path, neighbor), start)
+                if search_exhausted:
+                    return
+
+    for start in range(len(adjacency)):
+        visit(start, (start,), start)
+        if search_exhausted:
+            return None
+    candidates = sorted(
+        cycles.items(),
+        key=lambda item: (-item[1][0], -len(item[1][1]), item[0]),
+    )
+    if not candidates:
+        return None
+    best_key, (best_area, polygon) = candidates[0]
+    minimum_area = max(1.0, 0.1 * text_height**2)
+    if best_area < minimum_area:
+        return None
+    if len(candidates) > 1 and best_area - candidates[1][1][0] < 0.1:
+        return None
+    if not all(
+        math.dist(point, room_end) <= max(12.0, 1.25 * text_height)
+        for point in polygon
+    ):
+        return None
+
+    edge_to_lines: dict[frozenset[int], list[int]] = {}
+    for index, (first, second) in enumerate(edge_nodes):
+        edge_to_lines.setdefault(frozenset((first, second)), []).append(index)
+    cycle_line_indexes = set()
+    for first, second in zip(best_key, (*best_key[1:], best_key[0])):
+        indexes = edge_to_lines.get(frozenset((first, second)), ())
+        if not indexes:
+            return None
+        cycle_line_indexes.add(min(indexes))
+
+    # Residual strokes may be source-observed fill spokes or one short
+    # connector, but they must not encode a second closed endpoint marker.
+    residual_parents = list(range(len(nodes)))
+
+    def residual_find(index: int) -> int:
+        while residual_parents[index] != index:
+            residual_parents[index] = residual_parents[residual_parents[index]]
+            index = residual_parents[index]
+        return index
+
+    for index, (first, second) in enumerate(edge_nodes):
+        if index in cycle_line_indexes:
+            continue
+        first_root, second_root = residual_find(first), residual_find(second)
+        if first_root == second_root:
+            return None
+        residual_parents[second_root] = first_root
+
+    signed_area_twice = sum(
+        polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
+        - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
+        for index in range(len(polygon))
+    )
+    if abs(signed_area_twice) <= 1e-12:
+        return None
+    centroid = (
+        sum(
+            (polygon[index][0] + polygon[(index + 1) % len(polygon)][0])
+            * (
+                polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
+                - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
+            )
+            for index in range(len(polygon))
+        ) / (3.0 * signed_area_twice),
+        sum(
+            (polygon[index][1] + polygon[(index + 1) % len(polygon)][1])
+            * (
+                polygon[index][0] * polygon[(index + 1) % len(polygon)][1]
+                - polygon[(index + 1) % len(polygon)][0] * polygon[index][1]
+            )
+            for index in range(len(polygon))
+        ) / (3.0 * signed_area_twice),
+    )
+    if not _point_in_source_polygon(centroid, polygon, _ROOM_ID_LEADER_JOIN_TOLERANCE_PT):
+        return None
+
+    for index, line in enumerate(lines):
+        if index in cycle_line_indexes:
+            continue
+        if math.dist(line.start_pt, line.end_pt) > max(4.0, 0.5 * text_height):
+            return None
+        if not (
+            _point_in_source_polygon(line.start_pt, polygon, _ROOM_ID_LEADER_JOIN_TOLERANCE_PT)
+            and _point_in_source_polygon(line.end_pt, polygon, _ROOM_ID_LEADER_JOIN_TOLERANCE_PT)
+        ):
+            return None
+    return polygon, frozenset(lines[index].element_id for index in cycle_line_indexes), centroid
+
+
+def _room_id_leader_component(
+    page: PdfPageObservation,
+    stem: PdfLineObservation,
+    room_end: tuple[float, float],
+    text_height: float,
+) -> tuple[bool, tuple[str, ...], tuple[float, float] | None]:
+    """Validate one same-layer leader component and return its target point.
+
+    Permitted extras are either one unadorned stem, a two-sided short
+    arrowhead at its room-side endpoint, or one source-closed compact marker
+    contour with a unique stem contact. Any branch, crossing, competing
+    marker, or off-contour continuation makes the tag-to-room relation
+    ambiguous. The sub-point join tolerance is for vector-coordinate
+    roundoff only; it is not a spatial-search radius.
+    """
+    lines = tuple(line for line in page.lines if _room_id_annotation_line(line))
+    try:
+        stem_index = lines.index(stem)
+    except ValueError:
+        return False, (stem.element_id,), None
+
+    connected = {stem_index}
+    pending = [stem_index]
+    while pending:
+        index = pending.pop()
+        current = lines[index]
+        for other_index, other in enumerate(lines):
+            if other_index in connected:
+                continue
+            if _segment_to_segment_distance_pt(
+                current.start_pt, current.end_pt, other.start_pt, other.end_pt,
+            ) <= _ROOM_ID_LEADER_JOIN_TOLERANCE_PT:
+                connected.add(other_index)
+                pending.append(other_index)
+
+    component = tuple(sorted(
+        (lines[index] for index in connected),
+        key=lambda line: (line.element_id, min(line.start_pt, line.end_pt), max(line.start_pt, line.end_pt)),
+    ))
+    extras = tuple(line for line in component if line.element_id != stem.element_id)
+    if not extras:
+        return True, tuple(sorted(line.element_id for line in component)), room_end
+    arrowhead_limit = max(4.0, 1.5 * text_height)
+    arrowheads = tuple(
+        line for line in extras
+        if math.dist(line.start_pt, line.end_pt) <= arrowhead_limit
+        and min(
+            math.dist(line.start_pt, room_end),
+            math.dist(line.end_pt, room_end),
+        ) <= _ROOM_ID_LEADER_JOIN_TOLERANCE_PT
+    )
+    if len(extras) == 2 and len(arrowheads) == len(extras):
+        tag_end = (
+            stem.start_pt if math.dist(stem.start_pt, room_end) > _ROOM_ID_LEADER_JOIN_TOLERANCE_PT
+            else stem.end_pt
+        )
+        stem_vector = (tag_end[0] - room_end[0], tag_end[1] - room_end[1])
+        tips = [
+            line.end_pt if math.dist(line.start_pt, room_end) <= _ROOM_ID_LEADER_JOIN_TOLERANCE_PT
+            else line.start_pt
+            for line in arrowheads
+        ]
+        sides = [
+            stem_vector[0] * (point[1] - room_end[1])
+            - stem_vector[1] * (point[0] - room_end[0])
+            for point in tips
+        ]
+        tip_vectors = [
+            (point[0] - room_end[0], point[1] - room_end[1])
+            for point in tips
+        ]
+        stem_length = math.hypot(*stem_vector)
+        tip_lengths = [math.hypot(*vector) for vector in tip_vectors]
+        forward_alignments = [
+            stem_vector[0] * (point[0] - room_end[0])
+            + stem_vector[1] * (point[1] - room_end[1])
+            for point in tips
+        ]
+        normalized_alignments = [
+            projection / (stem_length * tip_length)
+            for projection, tip_length in zip(forward_alignments, tip_lengths)
+            if stem_length > 0.0 and tip_length > 0.0
+        ]
+        leg_length_ratio = min(tip_lengths) / max(tip_lengths) if max(tip_lengths) > 0.0 else 0.0
+        # A coherent source arrowhead has one leg on each side of the shaft;
+        # each tip advances at least half its leg length toward the tag
+        # (within 60 degrees), the legs stay within 2:1 length, and their
+        # normalized forward alignments differ by no more than 0.5.
+        if (
+            sides[0] * sides[1] < 0
+            and len(normalized_alignments) == 2
+            and min(normalized_alignments) >= _ROOM_ID_ARROWHEAD_MIN_FORWARD_COS
+            and leg_length_ratio >= 1.0 / _ROOM_ID_ARROWHEAD_MAX_LEG_LENGTH_RATIO
+            and max(normalized_alignments) - min(normalized_alignments)
+            <= _ROOM_ID_ARROWHEAD_MAX_ALIGNMENT_DELTA
+        ):
+            return True, tuple(sorted(line.element_id for line in component)), room_end
+
+    touching_lines = tuple(
+        line for line in extras
+        if _segment_to_segment_distance_pt(
+            stem.start_pt, stem.end_pt, line.start_pt, line.end_pt,
+        ) <= _ROOM_ID_LEADER_JOIN_TOLERANCE_PT
+    )
+    exact_touching = tuple(
+        (line, _line_contact_points(stem, line, 1e-6))
+        for line in touching_lines
+        if _line_contact_points(stem, line, 1e-6)
+    )
+    if exact_touching:
+        direct_contacts = tuple(line for line, _ in exact_touching)
+        contact_points = tuple(point for _, points in exact_touching for point in points)
+    else:
+        direct_contacts = touching_lines
+        contact_points = tuple(
+            point
+            for line in direct_contacts
+            for point in _line_contact_points(stem, line, _ROOM_ID_LEADER_JOIN_TOLERANCE_PT)
+        )
+    unique_contact_points: list[tuple[float, float]] = []
+    for point in contact_points:
+        if not any(math.dist(point, existing) <= _ROOM_ID_LEADER_JOIN_TOLERANCE_PT for existing in unique_contact_points):
+            unique_contact_points.append(point)
+    if (
+        not direct_contacts
+        or not unique_contact_points
+        or any(math.dist(point, room_end) > _ROOM_ID_LEADER_JOIN_TOLERANCE_PT for point in unique_contact_points)
+    ):
+        return False, tuple(sorted(line.element_id for line in component)), None
+
+    marker_candidates = []
+    full_marker = _closed_room_tip_marker(extras, room_end, text_height)
+    if full_marker is not None:
+        marker_candidates.append(full_marker)
+    else:
+        # Some source glyphs have one short connector from the leader endpoint
+        # to the closed contour. Try excluding one direct-contact stroke only;
+        # every other non-contour stroke must remain contained inside it.
+        for excluded in direct_contacts:
+            candidate_lines = tuple(
+                line for line in extras if line.element_id != excluded.element_id
+            )
+            candidate = _closed_room_tip_marker(candidate_lines, room_end, text_height)
+            if candidate is not None:
+                marker_candidates.append(candidate)
+    unique_markers = {
+        (
+            tuple((round(x, 4), round(y, 4)) for x, y in polygon),
+            contour_ids,
+        ): (polygon, contour_ids, centroid)
+        for polygon, contour_ids, centroid in marker_candidates
+    }
+    if len(unique_markers) != 1:
+        return False, tuple(sorted(line.element_id for line in component)), None
+    polygon, contour_ids, centroid = next(iter(unique_markers.values()))
+
+    connectors = []
+    direct_contact_ids = {line.element_id for line in direct_contacts}
+    for line in extras:
+        if line.element_id in contour_ids:
+            continue
+        line_length = math.dist(line.start_pt, line.end_pt)
+        if line_length > max(4.0, 0.5 * text_height):
+            return False, tuple(sorted(line.element_id for line in component)), None
+        inside = (
+            _point_in_source_polygon(line.start_pt, polygon, _ROOM_ID_LEADER_JOIN_TOLERANCE_PT)
+            and _point_in_source_polygon(line.end_pt, polygon, _ROOM_ID_LEADER_JOIN_TOLERANCE_PT)
+        )
+        if inside:
+            continue  # source-observed interior fill/spoke within the glyph
+        if line.element_id not in direct_contact_ids:
+            return False, tuple(sorted(line.element_id for line in component)), None
+        if min(math.dist(line.start_pt, room_end), math.dist(line.end_pt, room_end)) > _ROOM_ID_LEADER_JOIN_TOLERANCE_PT:
+            return False, tuple(sorted(line.element_id for line in component)), None
+        if not any(
+            _segment_to_segment_distance_pt(
+                line.start_pt, line.end_pt, start, end,
+            ) <= _ROOM_ID_LEADER_JOIN_TOLERANCE_PT
+            for start, end in zip(polygon, (*polygon[1:], polygon[0]))
+        ):
+            return False, tuple(sorted(line.element_id for line in component)), None
+        connectors.append(line)
+    if len(connectors) > 1:
+        return False, tuple(sorted(line.element_id for line in component)), None
+    return True, tuple(sorted(line.element_id for line in component)), centroid
+
+
+def _distance_to_text_bbox(
+    point: tuple[float, float],
+    bbox: tuple[float, float, float, float],
+) -> float:
+    x, y = point
+    x0, y0, x1, y1 = bbox
+    dx = max(x0 - x, 0.0, x - x1)
+    dy = max(y0 - y, 0.0, y - y1)
+    return math.hypot(dx, dy)
+
+
+def _room_id_leader_attachment(
+    line: PdfLineObservation,
+    bbox: tuple[float, float, float, float],
+    text_height: float,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Return (tag-side endpoint, room-side endpoint) for a room-ID leader.
+
+    The line must be on the explicit room-identifier layer, axis aligned, long
+    enough to leave the text group, and terminate next to exactly one side of
+    the text box. This is a source-geometry relation, not nearest-room logic.
+    """
+    if not _room_id_annotation_line(line):
+        return None
+    start, end = line.start_pt, line.end_pt
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length = math.hypot(dx, dy)
+    tolerance = max(2.0, 1.25 * text_height)
+    if length < max(12.0, 1.5 * text_height):
+        return None
+    if min(abs(dx), abs(dy)) > max(0.5, length * 0.05):
+        return None
+
+    x0, y0, x1, y1 = bbox
+    attachments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for tag_end, room_end in ((start, end), (end, start)):
+        if _distance_to_text_bbox(tag_end, bbox) > tolerance:
+            continue
+        other_distance = _distance_to_text_bbox(room_end, bbox)
+        if other_distance < max(12.0, 2.0 * text_height):
+            continue
+        horizontal = abs(dx) >= abs(dy)
+        if horizontal:
+            aligned = y0 - tolerance <= tag_end[1] <= y1 + tolerance
+            outside = tag_end[0] < x0 or tag_end[0] > x1
+        else:
+            aligned = x0 - tolerance <= tag_end[0] <= x1 + tolerance
+            outside = tag_end[1] < y0 or tag_end[1] > y1
+        if aligned and outside:
+            attachments.append((tag_end, room_end))
+    return attachments[0] if len(attachments) == 1 else None
+
+
+def _has_unique_room_id_leader_near_text(
+    page: PdfPageObservation,
+    observation: PdfTextObservation,
+) -> bool:
+    text_height = max(1.0, observation.bbox_pt[3] - observation.bbox_pt[1])
+    matches = [
+        line for line in page.lines
+        if _room_id_leader_attachment(line, observation.bbox_pt, text_height) is not None
+    ]
+    return len(matches) == 1
+
+
+def _room_id_leader_for_tag(
+    page: PdfPageObservation,
+    room: _RoomLabel,
+) -> tuple[tuple[float, float] | None, tuple[str, ...]] | None:
+    """Return a source-validated leader target or explicit ambiguity."""
+    sources = _room_label_sources(room)
+    if len(sources) < 2 or not room.room_number_pattern:
+        return None
+    x0 = min(item.bbox_pt[0] for item in sources)
+    y0 = min(item.bbox_pt[1] for item in sources)
+    x1 = max(item.bbox_pt[2] for item in sources)
+    y1 = max(item.bbox_pt[3] for item in sources)
+    text_height = max(_observation_font_size(item) for item in sources)
+    matches = [
+        (line, attachment)
+        for line in page.lines
+        if (attachment := _room_id_leader_attachment(
+            line, (x0, y0, x1, y1), text_height,
+        )) is not None
+    ]
+    if len(matches) > 1:
+        source_ids: set[str] = set()
+        for line, (_, room_end) in matches:
+            _, component_ids, _ = _room_id_leader_component(
+                page, line, room_end, text_height,
+            )
+            source_ids.update(component_ids)
+        return None, tuple(sorted(source_ids))
+    if not matches:
+        return None
+    line, (_, room_end) = matches[0]
+    valid_component, component_ids, target_point = _room_id_leader_component(
+        page, line, room_end, text_height,
+    )
+    if not valid_component:
+        return None, component_ids
+    return target_point or room_end, component_ids
+
+
 def _is_leader_tag(page: PdfPageObservation, observation: PdfTextObservation) -> bool:
     text = _clean_text(observation.text)
     if not _LEADER_TAG_RE.fullmatch(text):
@@ -2085,7 +2684,12 @@ def _room_label_candidate_with_reason(
     reason = _room_label_rejection_reason(name)
     if reason is not None:
         return None, reason
-    if _is_leader_tag(page, observation):
+    room_number_pattern = bool(_ROOM_NUMBER_RE.fullmatch(name))
+    leader_number = (
+        room_number_pattern
+        and _has_unique_room_id_leader_near_text(page, observation)
+    )
+    if _is_leader_tag(page, observation) and not leader_number:
         return None, "leader_tag"
 
     return (
@@ -2096,8 +2700,10 @@ def _room_label_candidate_with_reason(
             usage=None,
             confidence=0.98 if explicit else 0.88,
             source_observations=(observation,),
-            room_number_pattern=bool(_ROOM_NUMBER_RE.fullmatch(name)),
-            pairing_only=bool(_SHORT_BARE_NUMBER_RE.fullmatch(name)),
+            room_number_pattern=room_number_pattern,
+            pairing_only=(
+                bool(_SHORT_BARE_NUMBER_RE.fullmatch(name)) or leader_number
+            ),
         ),
         None,
     )
@@ -2198,6 +2804,116 @@ def _pair_adjacent_room_number_and_name(
                 tuple(obs.element_id for obs in _room_label_sources(item)),
             ),
         )
+    )
+
+
+def _pair_adjacent_room_number_and_name_unambiguous(
+    page: PdfPageObservation,
+    labels: tuple[_RoomLabel, ...],
+) -> tuple[tuple[_RoomLabel, ...], tuple[tuple[str, ...], ...]]:
+    """Pair only unique adjacent tag rows before layered identity deduplication.
+
+    The legacy label selector keeps its ranking behavior. The layered-region
+    path uses this stricter variant so duplicate room names are separated by
+    their paired source numbers, while a row with multiple plausible names or
+    numbers remains explicit ambiguity rather than an arbitrary pairing.
+    """
+    if len(labels) < 2:
+        return labels, ()
+
+    page_median = _page_median_font_size(page)
+    ordered_numbers = sorted(
+        (label for label in labels if label.room_number_pattern),
+        key=lambda item: (item.observation.element_id, item.anchor),
+    )
+    names = tuple(label for label in labels if not label.room_number_pattern)
+    candidates_by_number: dict[str, tuple[_RoomLabel, ...]] = {}
+    name_claims: dict[str, int] = {}
+    for number in ordered_numbers:
+        number_obs = number.observation
+        number_size = _room_label_font_size(number)
+        candidates: list[_RoomLabel] = []
+        for name in names:
+            name_obs = name.observation
+            name_size = _room_label_font_size(name)
+            vertical_gap = abs(name_obs.center_pt[1] - number_obs.center_pt[1])
+            if vertical_gap <= max(1.0, 0.35 * max(name_size, number_size)):
+                continue
+            if vertical_gap > max(18.0, 2.4 * page_median):
+                continue
+            horizontal_gap = abs(name_obs.center_pt[0] - number_obs.center_pt[0])
+            half_span = max(
+                name_obs.bbox_pt[2] - name_obs.bbox_pt[0],
+                number_obs.bbox_pt[2] - number_obs.bbox_pt[0],
+                12.0,
+            ) / 2.0
+            if horizontal_gap > half_span + page_median:
+                continue
+            if name_size < page_median * 0.70:
+                continue
+            candidates.append(name)
+        ordered = tuple(sorted(
+            candidates,
+            key=lambda item: (
+                abs(item.observation.center_pt[1] - number_obs.center_pt[1]),
+                abs(item.observation.center_pt[0] - number_obs.center_pt[0]),
+                item.observation.element_id,
+            ),
+        ))
+        candidates_by_number[number.observation.element_id] = ordered
+        for name in ordered:
+            name_claims[name.observation.element_id] = (
+                name_claims.get(name.observation.element_id, 0) + 1
+            )
+
+    combined: list[_RoomLabel] = []
+    used_ids: set[str] = set()
+    ambiguous: list[tuple[str, ...]] = []
+    for number in ordered_numbers:
+        candidates = candidates_by_number[number.observation.element_id]
+        if not candidates:
+            continue
+        if len(candidates) != 1:
+            ambiguous.append(tuple(sorted((
+                number.observation.element_id,
+                *(item.observation.element_id for item in candidates),
+            ))))
+            continue
+        name = candidates[0]
+        if name_claims.get(name.observation.element_id) != 1:
+            competing = [
+                other.observation.element_id
+                for other in ordered_numbers
+                if name in candidates_by_number[other.observation.element_id]
+            ]
+            ambiguous.append(tuple(sorted((
+                name.observation.element_id,
+                *(item for item in competing),
+                number.observation.element_id,
+            ))))
+            continue
+        if number.observation.element_id in used_ids or name.observation.element_id in used_ids:
+            continue
+        paired = _pair_adjacent_room_number_and_name(page, (number, name))
+        if len(paired) != 1 or len(_room_label_sources(paired[0])) != 2:
+            continue
+        combined.append(paired[0])
+        used_ids.update((number.observation.element_id, name.observation.element_id))
+
+    result = [
+        label for label in labels
+        if label.observation.element_id not in used_ids and not label.pairing_only
+    ]
+    result.extend(combined)
+    return (
+        tuple(sorted(
+            result,
+            key=lambda item: (
+                item.anchor,
+                tuple(obs.element_id for obs in _room_label_sources(item)),
+            ),
+        )),
+        tuple(sorted(set(ambiguous))),
     )
 
 
@@ -3044,6 +3760,35 @@ def _layered_region_space(
 ) -> Space:
     confidence = min(room.confidence, scale.confidence, transform.confidence, 0.64)
     identity = f"{source_id}|level:{level_info.anchor}|room:{room.anchor}"
+    room_label_source_ids = sorted({
+        item.element_id for item in _room_label_sources(room)
+    })
+    source_evidence = {
+        "source_wall_elements": list(region.source_wall_ids),
+        "source_opening_elements": list(region.source_opening_ids),
+        "opening_closure_count": region.closure_count,
+        "raster_resolution_pt": 1.0,
+        "height_status": "unresolved",
+        "wall_thickness_status": "unresolved",
+    }
+    if len(room_label_source_ids) > 1:
+        source_evidence["source_room_label_elements"] = room_label_source_ids
+    if region.source_glazing_ids:
+        source_evidence["source_glazing_elements"] = list(region.source_glazing_ids)
+    if region.source_mullion_ids:
+        source_evidence["source_mullion_elements"] = list(region.source_mullion_ids)
+    if region.source_leader_ids:
+        source_evidence["source_room_id_leader_elements"] = list(region.source_leader_ids)
+    if region.source_glazing_ids or region.source_mullion_ids or region.source_leader_ids:
+        source_evidence["spatial_interpretation"] = "inferred_from_observed_vectors"
+    space_attributes = {
+        "identity_anchor": room.anchor,
+        "recognition": "layered_wall_opening_region",
+        "geometry_derivation": "inferred_from_observed_vectors",
+        "label_source_element_id": room.observation.element_id,
+    }
+    if len(room_label_source_ids) > 1:
+        space_attributes["label_source_element_ids"] = room_label_source_ids
     return Space(
         id=stable_id("space", identity),
         name=room.name,
@@ -3061,31 +3806,29 @@ def _layered_region_space(
                 source_id=source_id,
                 source_element_id=room.observation.element_id,
                 page=page.page_number,
-                method="room interior bounded by visible CAD walls and supported opening closures",
+                method=(
+                    "room interior bounded by observed wall and facade vectors with "
+                    "source-supported opening closures"
+                    if region.source_glazing_ids or region.source_mullion_ids
+                    else "room interior bounded by visible CAD walls and supported opening closures"
+                ),
                 confidence=confidence,
-                attributes={
-                    "source_wall_elements": list(region.source_wall_ids),
-                    "source_opening_elements": list(region.source_opening_ids),
-                    "opening_closure_count": region.closure_count,
-                    "raster_resolution_pt": 1.0,
-                    "height_status": "unresolved",
-                    "wall_thickness_status": "unresolved",
-                },
+                attributes=source_evidence,
             ),
             _provenance(
                 source_id,
                 page.page_number,
-                method="room label observed inside closed CAD wall region",
+                method=(
+                    "room name and number linked by an explicit room-ID leader to a "
+                    "bounded source-vector region"
+                    if region.source_leader_ids
+                    else "room label observed inside closed CAD wall region"
+                ),
                 confidence=room.confidence,
                 source_element_id=room.observation.element_id,
             )[0],
         ),
-        attributes={"pdf_architecture": {
-            "identity_anchor": room.anchor,
-            "recognition": "layered_wall_opening_region",
-            "geometry_derivation": "inferred_from_observed_vectors",
-            "label_source_element_id": room.observation.element_id,
-        }},
+        attributes={"pdf_architecture": space_attributes},
     )
 
 
@@ -8496,20 +9239,79 @@ def import_observations(
                         "their distinct level and registration frames are not yet established"
                     ),
                 })
+            paired_rooms, ambiguous_pairs = _pair_adjacent_room_number_and_name_unambiguous(
+                region_page, rooms,
+            )
+            for source_text_ids in ambiguous_pairs:
+                ambiguities.append({
+                    "page": page.page_number,
+                    "code": "room_tag_pair_ambiguous",
+                    "detail": (
+                        "room-name and room-number text did not form one unique adjacent "
+                        "tag pair; no layered room identity was inferred"
+                    ),
+                    "source_text_elements": list(source_text_ids),
+                    "drawing_region_id": region.region_id,
+                })
             unique_rooms = tuple(
-                room for room in rooms
-                if sum(other.anchor == room.anchor for other in rooms) == 1
+                room for room in paired_rooms
+                if sum(other.anchor == room.anchor for other in paired_rooms) == 1
                 and stable_id(
                     "space",
                     f"{document.source_id}|level:{level_info.anchor}|room:{room.anchor}",
                 ) not in used_space_ids
             )
+            room_seeds: list[LayeredRoomSeed] = []
+            for room in unique_rooms:
+                leader = _room_id_leader_for_tag(region_page, room)
+                if leader is not None and leader[0] is None:
+                    ambiguities.append({
+                        "page": page.page_number,
+                        "code": "room_id_leader_ambiguous",
+                        "detail": (
+                            "a room-ID leader did not form one unbranched source-connected "
+                            "component with only short endpoint arrowhead marks; no "
+                            "tag-to-region link was inferred"
+                        ),
+                        "room_anchor": room.anchor,
+                        "source_text_elements": [
+                            item.element_id for item in _room_label_sources(room)
+                        ],
+                        "source_room_id_leader_elements": list(leader[1]),
+                        "drawing_region_id": region.region_id,
+                    })
+                    continue
+                if leader is None:
+                    room_seeds.append(LayeredRoomSeed(
+                        anchor=room.anchor,
+                        point_pt=_room_label_center_pt(room),
+                    ))
+                else:
+                    room_seeds.append(LayeredRoomSeed(
+                        anchor=room.anchor,
+                        point_pt=leader[0],
+                        source_leader_ids=leader[1],
+                    ))
             regions = find_layered_room_regions(
                 region_page,
                 scale.meters_per_point,
-                tuple((room.anchor, _room_label_center_pt(room)) for room in unique_rooms),
+                tuple(room_seeds),
             )
             rooms_by_anchor = {room.anchor: room for room in unique_rooms}
+            found_anchors = {layered_region.anchor for layered_region in regions}
+            for room_seed in room_seeds:
+                if room_seed.source_leader_ids and room_seed.anchor not in found_anchors:
+                    ambiguities.append({
+                        "page": page.page_number,
+                        "code": "room_id_leader_unresolved",
+                        "detail": (
+                            "the explicit room-ID leader endpoint did not resolve to one "
+                            "bounded, uniquely seeded wall/facade component"
+                        ),
+                        "room_anchor": room_seed.anchor,
+                        "source_room_id_leader_elements": list(room_seed.source_leader_ids),
+                        "drawing_region_id": region.region_id,
+                    })
             for layered_region in regions:
                 room = rooms_by_anchor[layered_region.anchor]
                 space = _layered_region_space(
@@ -8522,7 +9324,7 @@ def import_observations(
                 space_origins[space.id] = (region.region_id, region.frame_roots)
                 used_space_ids.add(space.id)
                 layered_room_count += 1
-                ambiguities.append({
+                layered_diagnostic: dict[str, object] = {
                     "page": page.page_number,
                     "code": "layered_room_3d_extent_unresolved",
                     "detail": (
@@ -8530,7 +9332,22 @@ def import_observations(
                         "wall and opening vectors; wall thickness and height remain unresolved"
                     ),
                     "room_anchor": room.anchor,
-                })
+                }
+                if (
+                    layered_region.source_glazing_ids
+                    or layered_region.source_mullion_ids
+                    or layered_region.source_leader_ids
+                ):
+                    layered_diagnostic.update({
+                        "drawing_region_id": region.region_id,
+                        "spatial_interpretation": "inferred_from_observed_vectors",
+                        "source_wall_elements": list(layered_region.source_wall_ids),
+                        "source_opening_elements": list(layered_region.source_opening_ids),
+                        "source_glazing_elements": list(layered_region.source_glazing_ids),
+                        "source_mullion_elements": list(layered_region.source_mullion_ids),
+                        "source_room_id_leader_elements": list(layered_region.source_leader_ids),
+                    })
+                ambiguities.append(layered_diagnostic)
 
         consumed_vector_line_ids = {
             source_element_id

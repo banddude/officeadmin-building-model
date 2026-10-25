@@ -511,8 +511,20 @@ def _eligible_runs_and_specs(
     all describe the same eligible set. The loop is monotone and bounded by
     the number of input routes.
     """
-    skipped: dict[str, str] = {}
     routes_by_id = {route.id: route for route in model.routes}
+    # A whole-route selection is not a product assignment for newly split
+    # branches/trunks. Likewise an assembly or unresolved support request names
+    # the actual supported route, not a geometric corridor. Keep these route
+    # identities until a separate explicit re-selection workflow can bind the
+    # new topology. Never discard unresolved decisions merely to consolidate.
+    skipped = {
+        item.route_id: "whole_route_product_binding_requires_reselection"
+        for item in (*model.raceway_selections, *model.raceway_selection_outcomes)
+    }
+    for item in (*model.support_assemblies, *model.support_selection_outcomes):
+        for object_id in item.supported_object_ids:
+            if object_id in routes_by_id:
+                skipped.setdefault(object_id, "support_binding_requires_reselection")
     while True:
         runs = find_overlapping_route_runs(
             model, tolerance_m=tolerance_m, excluded_route_ids=frozenset(skipped),
@@ -645,6 +657,12 @@ def consolidate_bundled_routes(
     continuing trunk touches it. New entities carry ``inferred`` provenance
     with method ``route-consolidation``. A model with no overlapping runs is
     returned unchanged, so nothing moves unless the caller asks for it.
+
+    Routes with whole-route product decisions or explicit support bindings
+    (including unresolved outcomes) stay untouched with a report reason. Their
+    identities cannot be transferred to new trunks/branches by geometry alone.
+    Other unbound routes may still consolidate. This is not an electrical
+    compatibility, conductor fill, ampacity, or engineering approval check.
     """
 
     if tolerance_m < 0.0:

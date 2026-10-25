@@ -1775,7 +1775,7 @@ def test_dimmed_glazed_wall_never_gets_more_opaque_than_glass(tmp_path: Path) ->
     )
 
 
-def test_dimmed_ids_still_ignore_walls_without_the_glazed_token(
+def test_dimmed_opaque_walls_use_the_standard_ghost_style(
     tmp_path: Path,
 ) -> None:
     model = _construction_model(south="framed")
@@ -1784,12 +1784,13 @@ def test_dimmed_ids_still_ignore_walls_without_the_glazed_token(
     parsed = _parse_glb(tmp_path / "dim.glb")
 
     material = _node_material(parsed, "wall:c-south")
-    assert material["name"] == "wall"
-    assert "alphaMode" not in material
+    assert material["name"] == "wall-dimmed"
+    assert material["alphaMode"] == "BLEND"
+    assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.3)
     node = parsed["gltf"]["nodes"][_by_name(parsed)["wall:c-south"]]
-    assert "display" not in node["extras"]
+    assert node["extras"]["display"] == "dimmed (caller-supplied)"
     assert node["extras"]["construction"] == "framed"
-    assert summary["dimmed"] == 0
+    assert summary["dimmed"] == 2
 
 
 def test_derived_glazed_wall_shares_the_one_glass_material(tmp_path: Path) -> None:

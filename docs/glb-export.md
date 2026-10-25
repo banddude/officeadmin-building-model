@@ -109,12 +109,13 @@ custom properties.
 
 ### Caller-dimmed entities
 
-`dimmed_ids` lists canonical device, equipment or route ids to draw in a grey
-translucent style; `dimmed_color` (default grey) and `dimmed_alpha` (default
-0.3) shape that style. Glazed walls are the one wall kind it reaches, and for
-them only the alpha applies (below). The caller decides which ids to dim and
+`dimmed_ids` lists canonical wall, slab, space, device, equipment or route ids
+to draw in a grey translucent style; `dimmed_color` (default grey) and
+`dimmed_alpha` (default 0.3) shape that style. Glazed walls keep their glass
+colour and take only the lower caller alpha. Physical boxes and support
+records have no ghost style today. The caller decides which ids to dim and
 why; the exporter attaches no meaning to the choice and only draws the style.
-Dimmed entities get a `"<class>-dimmed"` BLEND material and
+Supported dimmed entities get a `"<class>-dimmed"` BLEND material and
 `extras["display"] = "dimmed (caller-supplied)"`; the dimmed style also wins
 over the low-voltage colour below. Ids that match nothing are ignored, and
 the summary reports how many entities were actually dimmed as `dimmed`.
@@ -180,7 +181,9 @@ A glazed wall the caller dims keeps its glass look: the effective alpha is
 `min(0.35, dimmed_alpha)`, so dimming can only make the glass more
 translucent, never more opaque or grey, and the material is named
 `wall-glazed-dimmed`. The wall counts in the `dimmed` summary like every
-other dimmed entity. Walls without the glazed token are not dimmable.
+other dimmed entity. Opaque walls dim to the standard grey translucent
+`wall-dimmed` material; their canonical construction token remains in node
+and mesh extras.
 
 ### Glazed wall outline
 
@@ -277,11 +280,10 @@ saved layer preset (see [Layer selections](layer-selections.md)) into this
 exporter's existing caller-supplied inputs: one group per nonempty state
 with the hidden state's group in `hidden_groups` (starting hidden through
 `KHR_node_visibility`), ghosted ids passed as `dimmed_ids` so supported
-kinds (devices, equipment, routes, glazed walls alpha-only) render
-translucent, and `unsupported_ghost_ids` naming the ghosted ids whose kind
-has no ghost style (plain walls, slabs, space plates, physical boxes, the
-1.3 support components, interfaces and assemblies), which draw at normal
-appearance until a ghost style exists for them. A dimmed route dims the
-conductor wires drawn inside it, so a ghosted conduit ghosts whole. The
-adapter adds no exporter features: with no plan passed, output bytes are
-unchanged.
+kinds (walls, slabs, spaces, devices, equipment and routes; glazed walls
+alpha-only) render translucent, and `unsupported_ghost_ids` naming ghosted
+physical boxes and the 1.3 support components, interfaces and assemblies,
+which draw at normal appearance until a ghost style exists for them. A
+dimmed route dims the conductor wires drawn inside it, so a ghosted conduit
+ghosts whole. The adapter adds no exporter features: with no plan passed,
+output bytes are unchanged.

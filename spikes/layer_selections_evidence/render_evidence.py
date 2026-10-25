@@ -10,9 +10,10 @@ standard library, and renders the actual exported meshes honouring the actual
 ``KHR_node_visibility`` extension and the actual material alphas.
 
 The render is the acceptance evidence issue #275 asks for: hide, isolate and
-ghost behaviour on real GLB output, with the ghosted route's conductor wires
-visibly translucent beside it and the unsupported architecture ghosts named in
-the panel. Run from the repository root:
+ghost behaviour. Selected wall meshes, slab meshes and space plates carry
+translucent GLB materials, as do the chosen route and its wires. The panel
+identifies any member whose ghost style is unavailable. Run this script
+from the repository root:
 
     python spikes/layer_selections_evidence/render_evidence.py out.png
 

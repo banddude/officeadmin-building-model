@@ -9,14 +9,14 @@ exactly those caller-supplied inputs, and nothing else: it never mutates the
 model, changes default export bytes, or invents new GLB features.
 
 Ghosting is disclosed honestly. The exporter can render a ghost (dimmed,
-translucent) style for electrical devices, electrical equipment and routes,
-including the conductor wires drawn inside a dimmed route, so a ghosted
-route ghosts whole; a glazed wall takes the dim only as a lower alpha. For
-every other kind (plain walls, slabs, spaces, physical boxes, and the 1.3
-support components, interfaces and assemblies) there is no ghost style
-today, so those ids still land in the ghosted group node but draw at their
-normal appearance, and :attr:`LayerGlbPlan.unsupported_ghost_ids` names
-them explicitly rather than silently advertising the behaviour as working.
+translucent) style for architectural walls, slabs and spaces, electrical
+devices, electrical equipment and routes, including the conductor wires
+drawn inside a dimmed route, so a ghosted route ghosts whole. A glazed wall
+takes the dim only as a lower alpha. Physical boxes and the 1.3 support
+components, interfaces and assemblies still have no ghost style today, so
+those ids stay in the ghosted group but retain normal appearance, and
+:attr:`LayerGlbPlan.unsupported_ghost_ids` names them explicitly rather than
+silently advertising the behaviour as working.
 """
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from oabm.model import PresetResolution
-from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from oabm.model import BuildingModel
@@ -82,15 +81,18 @@ def _ghost_capable_ids(model: "BuildingModel") -> set[str]:
     """Ids the current GLB exporter can actually draw in a ghost style."""
 
     capable: set[str] = set()
+    for wall in model.walls:
+        # Opaque walls use the common grey BLEND style; glazing keeps its
+        # material and gets only the lower caller alpha in the GLB exporter.
+        capable.add(wall.id)
+    for slab in model.slabs:
+        capable.add(slab.id)
+    for space in model.spaces:
+        capable.add(space.id)
     for device in model.electrical_devices:
         capable.add(device.id)
     for equipment in model.electrical_equipment:
         capable.add(equipment.id)
     for route in model.routes:
         capable.add(route.id)
-    for wall in model.walls:
-        if wall.construction == WALL_CONSTRUCTION_GLAZED:
-            # Supported, alpha-only: the glass gets more translucent, never
-            # grey (the exporter's dim rule for glazed walls).
-            capable.add(wall.id)
     return capable

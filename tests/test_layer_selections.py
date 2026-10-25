@@ -1,9 +1,10 @@
 """Portable saved layer selections: strict config, deterministic resolver, GLB handoff."""
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -970,6 +971,51 @@ def test_support_ghosts_are_reported_unsupported(tmp_path: Path) -> None:
     }
 
 
+def test_mixed_architecture_and_support_ghosts_are_honest_in_actual_glb(
+    tmp_path: Path,
+) -> None:
+    model = _supports_model()
+    document = json.loads(_supports_config().to_json())
+    document["presets"][2]["visible_layer_ids"] = ["layer:electrical"]
+    document["presets"][2]["ghosted_layer_ids"] = ["layer:arch", "layer:supports"]
+    config = LayerSelectionConfig.from_dict(document)
+    resolution = resolve_preset(
+        config, model, preset="preset:ghost-supports", unassigned="hidden",
+    )
+    plan = layer_glb_plan(model, resolution)
+
+    architectural_ids = {
+        "wall:south", "wall:east", "wall:north", "wall:west",
+        "slab:garage", "space:garage",
+    }
+    unsupported_support_ids = {
+        "support-assembly:strut", "support-component:strut", "support-interface:base",
+    }
+    assert set(plan.dimmed_ids) == architectural_ids | unsupported_support_ids
+    assert set(plan.unsupported_ghost_ids) == unsupported_support_ids
+
+    result = _export(tmp_path, model, plan, "mixed-ghost-supports.glb")
+    gltf, summary = result["gltf"], result["summary"]
+    assert summary["dimmed"] == len(architectural_ids)
+    nodes = {node["name"]: node for node in gltf["nodes"]}
+    for node_name in architectural_ids:
+        material = _node_material(gltf, node_name)
+        assert material["alphaMode"] == "BLEND"
+        assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.3)
+        assert nodes[node_name]["extras"]["display"] == "dimmed (caller-supplied)"
+    for node_name in unsupported_support_ids:
+        assert "display" not in nodes[node_name]["extras"]
+    # The support component has geometry and must retain exactly its normal
+    # material; logical assembly/interface records have no mesh but are still
+    # disclosed as unsupported.
+    baseline_path = tmp_path / "normal-supports.glb"
+    to_glb(model, baseline_path)
+    baseline_gltf = _parse_glb(baseline_path)["gltf"]
+    assert _node_material(gltf, "support-component:strut") == _node_material(
+        baseline_gltf, "support-component:strut",
+    )
+
+
 def test_support_selection_outcomes_are_out_of_scope_members() -> None:
     model = _supports_model()
     document = json.loads(_supports_config().to_json())
@@ -1062,6 +1108,13 @@ def _parse_glb(path: Path) -> dict:
     return {"gltf": json.loads(data[20:20 + json_length])}
 
 
+def _node_material(gltf: dict, node_name: str) -> dict:
+    by_name = {node["name"]: index for index, node in enumerate(gltf["nodes"])}
+    node = gltf["nodes"][by_name[node_name]]
+    primitive = gltf["meshes"][node["mesh"]]["primitives"][0]
+    return gltf["materials"][primitive["material"]]
+
+
 def _export(tmp_path: Path, model: BuildingModel, plan, name: str) -> dict:
     summary = to_glb(
         model, tmp_path / name,
@@ -1072,6 +1125,88 @@ def _export(tmp_path: Path, model: BuildingModel, plan, name: str) -> dict:
     return {"gltf": _parse_glb(tmp_path / name)["gltf"], "summary": summary}
 
 
+def test_architectural_ghosts_render_in_actual_glb_without_changing_facts(
+    tmp_path: Path,
+) -> None:
+    model = _two_level_model()
+    inferred_wall = replace(
+        model.walls[0],
+        provenance=(Provenance(
+            source_kind="synthetic", source_id="fixture:wall-ghost",
+            derivation="inferred",
+        ),),
+    )
+    model = replace(model, walls=(inferred_wall, *model.walls[1:]))
+    before_model = model.to_json()
+    from oabm.quantities import extract_quantities
+
+    before_quantities = json.dumps(asdict(extract_quantities(model)), sort_keys=True)
+    resolution = resolve_preset(
+        _demo_config(), model, preset="preset:phase-1", unassigned=UNASSIGNED_VISIBLE,
+    )
+    plan = layer_glb_plan(model, resolution)
+    assert plan.unsupported_ghost_ids == ()
+
+    color = (0.44, 0.46, 0.48)
+    options = {
+        "groups": plan.groups,
+        "hidden_groups": plan.hidden_groups,
+        "dimmed_ids": plan.dimmed_ids,
+        "dimmed_alpha": 0.2,
+        "dimmed_color": color,
+    }
+    target = tmp_path / "architectural-ghosts.glb"
+    summary = to_glb(model, target, **options)
+    gltf = _parse_glb(target)["gltf"]
+    repeat = tmp_path / "architectural-ghosts-repeat.glb"
+    to_glb(model, repeat, **options)
+    assert target.read_bytes() == repeat.read_bytes()
+    assert summary["dimmed"] == 6
+    expected_materials = {
+        "wall:one-a": "wall-dimmed",
+        "wall:two-a": "wall-dimmed",
+        "wall:one-glass": "wall-glazed-dimmed",
+        "slab:one": "slab-dimmed",
+        "slab:two": "slab-dimmed",
+        "space:one": "space-dimmed",
+    }
+    by_name = {node["name"]: node for node in gltf["nodes"]}
+    for node_name, material_name in expected_materials.items():
+        material = _node_material(gltf, node_name)
+        assert material["name"] == material_name
+        assert material["alphaMode"] == "BLEND"
+        expected_color = (0.70, 0.82, 0.88) if node_name == "wall:one-glass" else color
+        assert material["pbrMetallicRoughness"]["baseColorFactor"] == pytest.approx(
+            [*expected_color, 0.2],
+        )
+        assert by_name[node_name]["extras"]["display"] == "dimmed (caller-supplied)"
+    # Dimming changes the derived display only; recorded provenance stays present.
+    assert by_name["wall:one-a"]["extras"]["derivation"] == "inferred"
+    assert model.to_json() == before_model
+    assert json.dumps(asdict(extract_quantities(model)), sort_keys=True) == before_quantities
+
+
+def test_hidden_wins_over_ghosted_overlap_in_actual_glb(tmp_path: Path) -> None:
+    model = _two_level_model()
+    resolution = resolve_preset(
+        _demo_config(), model, preset="preset:ghost-power", unassigned=UNASSIGNED_VISIBLE,
+    )
+    assert {"device:one-recp", "route:one"} <= set(resolution.hidden_ids)
+    plan = layer_glb_plan(model, resolution)
+    result = _export(tmp_path, model, plan, "hidden-over-ghosted.glb")
+    gltf = result["gltf"]
+    by_name = {node["name"]: index for index, node in enumerate(gltf["nodes"])}
+    hidden_group = gltf["nodes"][by_name["group:layer:preset:ghost-power:hidden"]]
+    assert hidden_group["extensions"] == {"KHR_node_visibility": {"visible": False}}
+    hidden_names = {gltf["nodes"][index]["name"] for index in hidden_group["children"]}
+    assert {"device:one-recp", "route:one"} <= hidden_names
+    # These overlapping power members are hidden, not dimmed by the other layer.
+    assert "display" not in gltf["nodes"][by_name["device:one-recp"]]["extras"]
+    assert "display" not in gltf["nodes"][by_name["route:one"]]["extras"]
+    assert _node_material(gltf, "device:one-recp")["name"] == "outlet"
+    assert _node_material(gltf, "route:one")["name"] == "route"
+
+
 def test_hidden_state_lands_as_a_hidden_group_in_actual_glb_output(tmp_path: Path) -> None:
     model = _two_level_model()
     resolution = resolve_preset(
@@ -1080,11 +1215,8 @@ def test_hidden_state_lands_as_a_hidden_group_in_actual_glb_output(tmp_path: Pat
     plan = layer_glb_plan(model, resolution)
     assert plan.hidden_groups == {"layer:preset:phase-1:hidden"}
     assert plan.dimmed_ids == frozenset(resolution.ghosted_ids)
-    # Plain walls, slabs and the space plate have no ghost style today; the
-    # glazed wall does, alpha-only.
-    assert set(plan.unsupported_ghost_ids) == {
-        "wall:one-a", "wall:two-a", "slab:one", "slab:two", "space:one",
-    }
+    # Architectural walls, slabs and the space now have visible ghost styles.
+    assert plan.unsupported_ghost_ids == ()
     result = _export(tmp_path, model, plan, "phased.glb")
     gltf, summary = result["gltf"], result["summary"]
     by_name = _by_name(result)
@@ -1101,8 +1233,7 @@ def test_hidden_state_lands_as_a_hidden_group_in_actual_glb_output(tmp_path: Pat
         "layer:preset:phase-1:hidden": 1,
     }
     assert summary["unmatched_group_ids"] == 0
-    # Only the supported ghost dims: the glazed wall (alpha-only).
-    assert summary["dimmed"] == 1
+    assert summary["dimmed"] == 6
 
 
 def test_supported_ghosts_dim_and_unsupported_are_disclosed(tmp_path: Path) -> None:
@@ -1172,3 +1303,14 @@ def test_empty_plan_keeps_default_export_bytes(tmp_path: Path) -> None:
     planned = tmp_path / "planned.glb"
     to_glb(model, planned, groups={}, hidden_groups=(), dimmed_ids=())
     assert planned.read_bytes() == plain.read_bytes()
+
+
+def test_default_export_byte_fingerprint_is_unchanged(tmp_path: Path) -> None:
+    model = _two_level_model()
+    target = tmp_path / "default-fingerprint.glb"
+    to_glb(model, target)
+    payload = target.read_bytes()
+    assert len(payload) == 20_132
+    assert hashlib.sha256(payload).hexdigest() == (
+        "99fe288dff2c7454bf2034dc90414d1ad89ddf11e5ebd659cc57f8fc20ffa755"
+    )

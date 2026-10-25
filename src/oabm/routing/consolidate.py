@@ -23,6 +23,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 
+from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import (
     BuildingModel, DERIVATION_INFERRED,
     Point3, Polyline3D, Port, Pose, Provenance, Route, RouteFitting, Vector3,
@@ -671,6 +672,9 @@ def consolidate_bundled_routes(
     compatibility, conductor fill, ampacity, or engineering approval check.
     """
 
+    require_no_populated_building_assemblies(
+        model, "consolidate_bundled_routes", error_type=RoutingError,
+    )
     if tolerance_m < 0.0:
         raise ValueError("tolerance_m must be non-negative")
     runs, specs, skipped = _eligible_runs_and_specs(model, tolerance_m)

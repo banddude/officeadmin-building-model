@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, fields, replace
 from typing import Callable, Iterable, Mapping, get_args, get_origin, get_type_hints
 
 from oabm.model import (
+    ASSEMBLY_SCHEMA_VERSIONS,
+    AssemblyComponent,
     BuildingModel,
     Conductor,
     ElectricalDevice,
@@ -26,13 +28,15 @@ from oabm.model import (
     RACEWAY_SCHEMA_VERSION,
     SUPPORT_SCHEMA_VERSION,
     FITTING_SCHEMA_VERSION,
+    ProfileExtrusion,
+    ProfileOutline2D,
 )
 from oabm.routing.overlap import RouteOverlap, find_overlapping_route_runs
 
 LENGTH_UNIT = "m"
 COUNT_UNIT = "ea"
 
-AssemblyResolver = Callable[[str, Entity], str | None]
+AssemblyResolver = Callable[[str, Entity | AssemblyComponent], str | None]
 
 
 class QuantityError(ValueError):
@@ -172,8 +176,8 @@ def extract_quantities(
     multiplied by ``count``.  Devices and equipment are each-counted directly.
 
     An optional ``assembly_resolver`` may map a derived category + canonical
-    entity to a downstream assembly key without storing estimating semantics in
-    the canonical model.
+    quantity-bearing record (including a 1.6 assembly component) to a downstream
+    assembly key without storing estimating semantics in the canonical model.
 
     An optional ``groups`` mapping splits the takeoff lines by caller-supplied
     bid groups (for example ``{"ALTERNATES": [...]}``): group name to the
@@ -218,6 +222,8 @@ def extract_quantities(
         *(member.id for member in model.structural_members),
         *(c.id for c in model.support_components),
         *(a.id for a in model.support_assemblies),
+        *(a.id for a in model.building_assemblies),
+        *(c.id for c in model.assembly_components),
         *(entity.id for name in _ARCHITECTURAL for entity in collections[name]),
     }
     unmatched_group_ids = sum(
@@ -482,7 +488,7 @@ def extract_quantities(
             "No explicit support assembly intents were supplied; route length does not establish support or fastener quantities.",
             tuple(sorted(r.id for r in model.routes))))
 
-    from .architecture import architectural_claims
+    from .architecture import architectural_claims, assembly_component_claims
     for claim in architectural_claims(model):
         if claim.warning is not None:
             warnings.append(QuantityWarning(claim.warning, claim.message, (claim.entity.id,)))
@@ -493,6 +499,76 @@ def extract_quantities(
             assembly_resolver=assembly_resolver, group=group_owner.get(claim.entity.id),
             consumed_paths=claim.consumed_paths,
         ))
+    if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS:
+        assembly_by_id = {row.id: row for row in model.building_assemblies}
+        for claim in assembly_component_claims(model):
+            component = claim.entity
+            owner = assembly_by_id.get(getattr(component, "assembly_id", ""))
+            if claim.warning is not None:
+                warnings.append(QuantityWarning(
+                    claim.warning, claim.message,
+                    tuple(sorted({component.id, *(() if owner is None else (owner.id,))})),
+                ))
+                continue
+            if owner is None:
+                continue
+            contribution = _contribution(
+                category=claim.category, item_type=claim.item_type, quantity=claim.quantity,
+                unit=claim.unit, variant=claim.variant, entities=(component,),
+                assembly_resolver=assembly_resolver,
+                group=group_owner.get(component.id) or group_owner.get(owner.id),
+                consumed_paths=claim.consumed_paths,
+            )
+            geometry_evidence = ()
+            if (isinstance(component.geometry, ProfileExtrusion) and
+                    isinstance(component.geometry.profile, ProfileOutline2D)):
+                geometry_evidence = component.geometry.profile.provenance
+            contributions.append(replace(
+                contribution,
+                provenance=_merge_provenance(component.provenance, owner.provenance, geometry_evidence),
+                confidence=min(component.confidence, owner.confidence,
+                               *(record.confidence for record in geometry_evidence)),
+                quantity_provenance=(
+                    contribution.quantity_provenance if not geometry_evidence else
+                    _merge_provenance(contribution.quantity_provenance or (), geometry_evidence)
+                ),
+            ))
+        envelope_components = tuple(sorted(
+            component.id for component in model.assembly_components
+            if component.geometry_basis == "caller_selected_envelope"
+        ))
+        if envelope_components:
+            warnings.append(QuantityWarning(
+                "assembly_envelope_volume_unknown",
+                "Caller-selected envelopes are reported only as envelope volume; physical material volume is unknown.",
+                envelope_components,
+            ))
+        unknown_material_components = tuple(sorted(
+            component.id for component in model.assembly_components
+            if component.material_basis == "unknown" or component.material_id is None
+        ))
+        if unknown_material_components:
+            warnings.append(QuantityWarning(
+                "assembly_material_identity_unknown",
+                "Component geometry may be measurable, but material identity is unknown and no material-specific purchase quantity is asserted.",
+                unknown_material_components,
+            ))
+        drywall_components = tuple(sorted(
+            component.id for component in model.assembly_components
+            if component.component_kind == "drywall_panel"
+        ))
+        if drywall_components:
+            warnings.append(QuantityWarning(
+                "drywall_sheet_purchase_unresolved",
+                "Drywall area is modeled component area only; stock-sheet counts, seam layout, cutting and waste are not represented.",
+                drywall_components,
+            ))
+        if model.building_assemblies:
+            warnings.append(QuantityWarning(
+                "assembly_engineering_approval_not_evaluated",
+                "Building-assembly geometry is not an engineering, fire-rating, listing or code-approval evaluation.",
+                tuple(sorted(assembly.id for assembly in model.building_assemblies)),
+            ))
     measured = {identity for item in contributions for identity in item.source_entity_ids}
     # These are nonphysical decision/evidence rows, not quantity-bearing
     # inventory. Their selected product details are folded into the existing
@@ -725,9 +801,9 @@ def _contribution(
     quantity: float,
     unit: str,
     variant: tuple[tuple[str, object], ...],
-    entities: tuple[Entity, ...],
+    entities: tuple[Entity | AssemblyComponent, ...],
     assembly_resolver: AssemblyResolver | None,
-    assembly_entity: Entity | None = None,
+    assembly_entity: Entity | AssemblyComponent | None = None,
     group: str | None = None,
     consumed_paths: tuple[str, ...] | None = None,
 ) -> _Contribution:

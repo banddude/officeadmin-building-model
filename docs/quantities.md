@@ -75,3 +75,32 @@ of materials. An `assembly_resolver` labels lines but does not supply those
 construction rules. #80 and #227 remain open for this fuller goal, supported
 opening deductions and separately recorded real raw/helped acceptance. This
 change must not be described as a finished building-material takeoff.
+
+## Explicit building assemblies (schema 1.6)
+
+For a validated 1.6 model, `extract_quantities` consumes each owned
+`AssemblyComponent` record once. It reports component counts by role, basis,
+material identity and supported dimensions, with each physical line retaining
+the component ID as its source. A `wall` or suspended-ceiling `aggregate_host`
+remains a spatial reference, not a second physical bill: wall length stays
+available, but gross host wall/ceiling face area and volume are not emitted.
+Openings remain counted; gross-opening deductions are not asserted over a
+suppressed aggregate wall.
+
+Box, profile-extrusion, panel and straight round-wire geometry is measured only
+from canonical component geometry. Exact represented-geometry volumes are
+separate from caller-selected envelope volumes. When an envelope is the only
+basis, the report labels its volume as envelope-only and explicitly says the
+physical material volume is unknown. A parameterized material-volume line is
+emitted only when a component has both specified parameterized geometry and
+an explicit material identity/basis. Material quantity lines are not prices,
+purchase quantities, product verification or compliance claims.
+
+Drywall component areas are `drywall_modeled_area` for specified geometry
+(`drywall_envelope_area` for a selected envelope). Neither means a count of
+stock sheets: purchase sheet counts, seams, cut layout and waste stay unresolved
+without explicit stock sizes and cutting rules. Bent multi-segment wire length
+is measurable, but joined solid volume is declined until a union/join kernel
+exists. `assembly_engineering_approval_not_evaluated` makes explicit that this
+consumer does not evaluate structural adequacy, fire rating, listings or code.
+Older schema reports retain their prior behavior.

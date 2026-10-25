@@ -14,6 +14,7 @@ The model is the source of truth. A floor plan is a derived view of that model.
 
 - `src/oabm/model`: canonical model and contracts
 - `src/oabm/electrical`: explicit physical-product intent/catalog producers
+- `src/oabm/building_assemblies`: explicit preset-driven physical building parts
 - `src/oabm/ifc`: IFC / IfcOpenShell adapters and round trip
 - `src/oabm/routing`: deterministic 3D electrical routing
 - `src/oabm/importers/roomplan`: RoomPlan / scan ingestion
@@ -36,6 +37,12 @@ assemblies, individually counted components, and unresolved attachment inputs.
 See [Exact-product route fittings](docs/route-fitting-selection-contract.md)
 for the opt-in contract 1.5 catalog-pair selection, unresolved cases, and
 derived consumer/replay boundaries.
+See [Preset-driven wall assemblies](docs/building-assembly-wall-producer-v1.md)
+for the opt-in 1.6 straight timber-wall slice, opening-aware framing/drywall,
+GLB previews and component quantities. Populated assemblies are explicitly
+refused by routing, IFC, drawings and unsupported QA consumers until those
+lanes implement physical-component semantics. This is not full-room framing
+and does not automate engineering decisions.
 See [Layered raceway policy](docs/layered-raceway-policy.md) for portable caller
 baseline/company/job permissions compiled into existing explicit selection rules.
 See [Panel schedule facts](docs/panel-schedule-facts.md) for an opt-in grouped

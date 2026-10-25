@@ -411,6 +411,13 @@ def _pose_components(pose: PoseInput) -> MeshPose:
     )
 
 
+def rotate_vector_xyzw(vector: object, rotation: object) -> Vertex3:
+    """Rotate a finite vector using the kernel's normalized quaternion rules."""
+    return _rotate_normalized_vector(
+        _vector3(vector,"vector"),_quaternion_xyzw(rotation,"rotation")
+    )
+
+
 def _validate_sides(sides: int) -> None:
     if isinstance(sides, bool) or not isinstance(sides, int) or not MIN_WIRE_SIDES <= sides <= MAX_WIRE_SIDES:
         raise GeometryInputError(
@@ -432,18 +439,24 @@ def _rotation_from_local_z(axis: tuple[float, float, float], length: float) -> Q
 
 
 def _transform(vertex: Vertex3, pose: MeshPose) -> Vertex3:
-    x, y, z = vertex
-    qx, qy, qz, qw = pose.rotation_xyzw
+    rotated=_rotate_normalized_vector(vertex,pose.rotation_xyzw)
+    result=tuple(pose.position_m[index]+rotated[index] for index in range(3))
+    for component in result:
+        _ensure_finite(component, "posed mesh coordinate")
+    return result  # type: ignore[return-value]
+
+
+def _rotate_normalized_vector(vector: Vertex3, rotation: QuaternionXYWZ) -> Vertex3:
+    x,y,z=vector
+    qx,qy,qz,qw=rotation
     tx = 2.0 * (qy * z - qz * y)
     ty = 2.0 * (qz * x - qx * z)
     tz = 2.0 * (qx * y - qy * x)
-    result = (
-        pose.position_m[0] + x + qw * tx + qy * tz - qz * ty,
-        pose.position_m[1] + y + qw * ty + qz * tx - qx * tz,
-        pose.position_m[2] + z + qw * tz + qx * ty - qy * tx,
-    )
+    result=(x+qw*tx+qy*tz-qz*ty,
+            y+qw*ty+qz*tx-qx*tz,
+            z+qw*tz+qx*ty-qy*tx)
     for component in result:
-        _ensure_finite(component, "posed mesh coordinate")
+        _ensure_finite(component,"rotated vector component")
     return result
 
 

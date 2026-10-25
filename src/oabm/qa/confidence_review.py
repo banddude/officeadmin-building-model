@@ -44,6 +44,7 @@ import re
 from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Iterable, Mapping, Sequence, get_args, get_origin, get_type_hints
 
+from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import BuildingModel, Entity, Provenance
 from oabm.model.common import _SCOPE_PATH_RE, _validate_id
 from oabm.quantities import QuantityWarning, extract_quantities
@@ -843,6 +844,7 @@ def build_confidence_review(
         raise TypeError("model must be a BuildingModel")
     if not isinstance(config, ReviewConfig):
         raise TypeError("config must be a ReviewConfig")
+    require_no_populated_building_assemblies(model, "build_confidence_review")
     threshold = config.confidence_threshold
     crops_by_entity = _validated_evidence(model, evidence)
 

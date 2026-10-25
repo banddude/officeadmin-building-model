@@ -42,6 +42,7 @@ import math
 from dataclasses import dataclass, fields as dataclass_fields
 from typing import Any, Iterable, Mapping, get_args, get_origin, get_type_hints
 
+from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import BuildingModel, Entity
 from oabm.quantities import extract_quantities
 
@@ -483,6 +484,8 @@ def build_revision_diff(base: BuildingModel, target: BuildingModel) -> RevisionD
     quantities lane as a side effect of the real takeoff on each.
     """
 
+    require_no_populated_building_assemblies(base, "build_revision_diff base snapshot")
+    require_no_populated_building_assemblies(target, "build_revision_diff target snapshot")
     _require_comparable(base, target)
     base_collections = _entity_collections(base)
     target_collections = _entity_collections(target)

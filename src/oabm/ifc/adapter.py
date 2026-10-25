@@ -26,7 +26,9 @@ import ifcopenshell.util.pset
 import ifcopenshell.util.shape
 import numpy as np
 
+from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import (
+    ASSEMBLY_SCHEMA_VERSIONS,
     DERIVATION_INFERRED,
     DERIVATION_OBSERVED,
     DERIVATION_USER,
@@ -262,6 +264,10 @@ def to_ifc(
     and a model whose walls all lack a token writes the same bytes as a
     default export without the option ever being present.
     """
+
+    require_no_populated_building_assemblies(
+        model, "IFC export", error_type=IfcAdapterError,
+    )
 
     # IFC4 where-rules give IfcProject and IfcBuildingElementProxy an
     # ``exists(Name)`` requirement, and ``from_ifc`` reads ``Name`` back as the
@@ -1297,6 +1303,11 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
         document.update(structural_members=[])
     if header["schema_version"] in FITTING_SCHEMA_VERSIONS:
         document.update(fitting_selections=[], fitting_interfaces=[], fitting_selection_outcomes=[])
+    if header["schema_version"] in ASSEMBLY_SCHEMA_VERSIONS:
+        # IFC has no building-assembly payload yet. to_ifc refuses populated
+        # assemblies, so only the exact empty 1.6 collections are reconstructible.
+        # Unknown canonical entity kinds still fail below instead of being dropped.
+        document.update(building_assemblies=[], assembly_components=[])
 
     canonical_items: dict[str, tuple[Any, dict[str, Any], int, str]] = {}
     for item in ifc.by_type("IfcRoot"):
@@ -1380,6 +1391,9 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
 def round_trip(model: BuildingModel) -> BuildingModel:
     """Convenience in-memory canonical -> IFC -> canonical round trip."""
 
+    require_no_populated_building_assemblies(
+        model, "IFC round trip", error_type=IfcAdapterError,
+    )
     return from_ifc(to_ifc(model))
 
 

@@ -8,6 +8,7 @@ import math
 from dataclasses import dataclass
 from typing import Iterable
 
+from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import (
     DERIVATION_INFERRED,
     Box3D,
@@ -366,6 +367,9 @@ def route_between_ports(
     route constraint, not a physical object, and is preserved in provenance.
     """
 
+    require_no_populated_building_assemblies(
+        model, "route_between_ports", error_type=RoutingError,
+    )
     if not route_type:
         raise RoutingError("route_type is required")
     options = options or RoutingOptions()

@@ -14,6 +14,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from types import MappingProxyType
 from typing import Any, Mapping, get_args, get_origin, get_type_hints
 
+from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import BuildingModel, SUPPORT_SCHEMA_VERSIONS, FITTING_SCHEMA_VERSIONS
 from oabm.model.common import Entity
 from oabm.qa.confidence_review import (
@@ -452,6 +453,7 @@ def build_review_bundle(
     """
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")
+    require_no_populated_building_assemblies(model, "build_review_bundle")
     refs = {
         "model": _reference(model_reference, "model_reference"),
         "glb": _reference(glb_reference, "glb_reference"),

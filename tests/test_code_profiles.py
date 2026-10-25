@@ -27,6 +27,35 @@ def resolve(jurisdiction: str, application_date: str | date):
     )
 
 
+@pytest.mark.parametrize('jurisdiction', [JURISDICTION_LA_COUNTY, JURISDICTION_LA_CITY])
+@pytest.mark.parametrize('application_date', ['2023-01-01', '2025-12-30'])
+def test_historical_local_adoption_does_not_borrow_future_ordinance(jurisdiction, application_date):
+    result = resolve(jurisdiction, application_date)
+    assert result.profile is not None
+    assert result.profile.edition == '2022 California Electrical Code'
+    assert result.profile.adoption_reference is None
+    assert result.profile.local_adoption_effective_interval is None
+    assert result.profile.local_adoption_operative_interval is None
+    assert result.profile.local_amendment_references == ()
+    assert 'historical_local_adoption_unverified' in result.unresolved_reasons
+    assert not result.profile_selection_complete
+    assert result.to_dict()['profile']['adoption_reference'] is None
+
+
+@pytest.mark.parametrize('jurisdiction', [JURISDICTION_CALIFORNIA, JURISDICTION_LA_COUNTY, JURISDICTION_LA_CITY])
+def test_scheduled_cycle_cannot_become_verified_supplement_on_transition(jurisdiction):
+    before = resolve(jurisdiction, '2027-06-30')
+    assert before.profile is not None
+    assert before.profile.application_interval.ends_on == date(2027, 6, 30)
+    assert before.profile.supplement_references == ()
+    for day in ('2027-07-01', '2027-07-02'):
+        result = resolve(jurisdiction, day)
+        assert result.profile is None
+        assert 'future_code_timeline_not_registered' in result.unresolved_reasons
+        assert 'ca-bsc-2025-intervening-cycle' in {r.source_id for r in result.source_references}
+        assert result.code_verification_performed is False
+
+
 def test_statewide_selection_is_deterministic_at_and_around_cutoff() -> None:
     before = resolve(JURISDICTION_CALIFORNIA, "2025-12-31")
     after = resolve(JURISDICTION_CALIFORNIA, STATE_TRANSITION_DATE)
@@ -39,6 +68,14 @@ def test_statewide_selection_is_deterministic_at_and_around_cutoff() -> None:
     assert after.profile is not None
     assert after.profile.edition == "2025 California Electrical Code"
     assert after.profile.underlying_nec_edition == "2023 NEC"
+    nfpa_basis = next(
+        item for item in after.profile.boundary_references
+        if item.source_id == "nfpa-2025-cec-nec-basis"
+    )
+    assert nfpa_basis.uri == (
+        "https://www.nfpa.org/for-professionals/codes-and-standards/"
+        "standards-development/nfpa-codes-and-standards-with-jurisdictional-changes"
+    )
     assert after.profile.application_interval.starts_on == date(2026, 1, 1)
     assert after.profile.code_effective_interval == after.profile.code_operative_interval
     assert after.profile.errata_references[0].published_on == date(2026, 1, 1)
@@ -67,10 +104,12 @@ def test_city_and_county_are_distinct_at_the_statewide_transition() -> None:
 
     assert county.profile is not None
     assert county.profile.edition == "2022 California Electrical Code"
-    assert county.profile.local_adoption_effective_interval is not None
-    assert county.profile.local_adoption_effective_interval.starts_on == date(2025, 12, 26)
-    assert county.profile.local_adoption_operative_interval is not None
-    assert county.profile.local_adoption_operative_interval.starts_on == date(2026, 1, 1)
+    assert county.profile.adoption_reference is None
+    assert county.profile.local_adoption_effective_interval is None
+    assert county.profile.local_adoption_operative_interval is None
+    new_county = resolve(JURISDICTION_LA_COUNTY, '2026-01-01').profile
+    assert new_county.local_adoption_effective_interval.starts_on == date(2025, 12, 26)
+    assert new_county.local_adoption_operative_interval.starts_on == date(2026, 1, 1)
     assert "local_amendment_inventory_incomplete" in county.unresolved_reasons
 
     assert city.profile is None
@@ -107,18 +146,38 @@ def test_future_supplement_is_not_active_before_its_effective_date() -> None:
     assert before.profile is not None
     assert before.profile.supplement_references == ()
     assert before.profile.scheduled_supplement_references
-    assert at_effective_date.profile is not None
-    assert {
-        item.source_id for item in at_effective_date.profile.supplement_references
-    } == {
-        "ca-bsc-2025-intervening-cycle",
-        "ca-bsc-calcode-quarterly-fall-2026",
-    }
-    assert at_effective_date.profile.scheduled_supplement_references == ()
+    assert at_effective_date.profile is None
+    assert at_effective_date.unresolved_reasons == ('future_code_timeline_not_registered',)
 
     too_far_ahead = resolve(JURISDICTION_CALIFORNIA, "2027-07-02")
     assert too_far_ahead.profile is None
     assert too_far_ahead.unresolved_reasons == ("future_code_timeline_not_registered",)
+
+
+@pytest.mark.parametrize(
+    "jurisdiction",
+    [JURISDICTION_CALIFORNIA, JURISDICTION_LA_COUNTY, JURISDICTION_LA_CITY],
+)
+def test_2025_application_interval_ends_before_unverified_transition(
+    jurisdiction: str,
+) -> None:
+    day_before = resolve(jurisdiction, date(2027, 6, 30))
+    cutoff = resolve(jurisdiction, NEXT_KNOWN_SUPPLEMENT_DATE)
+    day_after = resolve(jurisdiction, date(2027, 7, 2))
+
+    assert day_before.profile is not None
+    assert day_before.profile.edition == "2025 California Electrical Code"
+    assert day_before.profile.application_interval.ends_on == date(2027, 6, 30)
+    assert day_before.profile.application_interval.contains(date(2027, 6, 30))
+
+    assert not day_before.profile.application_interval.contains(NEXT_KNOWN_SUPPLEMENT_DATE)
+    assert day_before.profile.code_effective_interval.ends_on is None
+    assert day_before.profile.code_operative_interval.ends_on is None
+    assert cutoff.profile is None
+    assert cutoff.unresolved_reasons == ('future_code_timeline_not_registered',)
+
+    assert day_after.profile is None
+    assert day_after.unresolved_reasons == ("future_code_timeline_not_registered",)
 
 
 @pytest.mark.parametrize(

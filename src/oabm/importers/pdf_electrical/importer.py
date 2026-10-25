@@ -2163,6 +2163,9 @@ def _merge_provenance(
 
 _GLYPH_PATH_MAX_EXTENT_PT = 54.0
 _GLYPH_CLUSTER_GAP_PT = 2.5
+# Candidate lookup only: full path boxes are registered, so cell size does not
+# decide connectivity. A gap-scale grid avoids broad quadratic candidate buckets.
+_GLYPH_CLUSTER_INDEX_CELL_PT = max(4.0 * _GLYPH_CLUSTER_GAP_PT, 1.0)
 _LEGEND_LABEL_HORIZONTAL_DISTANCE_PT = 120.0
 _LEGEND_ROW_VERTICAL_TOLERANCE_PT = 12.0
 _LEGEND_TITLE_REGION_RADIUS_PT = 320.0
@@ -3947,7 +3950,7 @@ def _cluster_small_vector_glyphs(
         else:
             parent[first_root] = second_root
 
-    cell_size = _GLYPH_PATH_MAX_EXTENT_PT + _GLYPH_CLUSTER_GAP_PT
+    cell_size = _GLYPH_CLUSTER_INDEX_CELL_PT
     buckets: dict[tuple[int, int, int], list[int]] = {}
     for second_index, (second, second_bbox) in enumerate(small):
         min_cell_x = math.floor(
@@ -7886,12 +7889,19 @@ def _lighting_shape_support(
         return None, None, None
     candidate_class = _cluster_shape_class(cluster)
     ranked = []
+    scores_by_prototype: dict[int, tuple[float, dict[str, Any] | None]] = {}
     for entry in eligible:
-        score, guard = _lighting_shape_class_guard(
-            _cluster_match_score(cluster, entry.prototype),
-            candidate_class=candidate_class,
-            prototype=entry.prototype,
-        )
+        # Schedule tags can share the exact same observed category prototype.
+        # Score that object once, while retaining every semantic entry and its
+        # original ranking/provenance. No approximate shape-key equivalence.
+        prototype_key = id(entry.prototype)
+        if prototype_key not in scores_by_prototype:
+            scores_by_prototype[prototype_key] = _lighting_shape_class_guard(
+                _cluster_match_score(cluster, entry.prototype),
+                candidate_class=candidate_class,
+                prototype=entry.prototype,
+            )
+        score, guard = scores_by_prototype[prototype_key]
         ranked.append((score, guard, entry))
     ranked.sort(
         key=lambda item: (
@@ -8023,6 +8033,18 @@ def _recognize_lighting(
         excluded_text_ids=set(schedule_text_ids),
     )
 
+    from .lighting_categories import (
+        detect_category_legends, bind_schedule_categories,
+        category_geometry_evidence, leader_candidates,
+    )
+    category_entries_by_page, category_keys, category_text_ids, category_problems, category_metadata = detect_category_legends(
+        texts=texts, clusters=clusters,
+        excluded_text_ids=set(schedule_text_ids) | set(legend_text_ids),
+    )
+    prototype_keys.update(category_keys)
+    legend_text_ids.update(category_text_ids)
+    legend_unresolved.extend(category_problems)
+    legend_metadata.extend(category_metadata)
     from .schedule_applicability import resolve_schedule_associations
 
     applicable_schedules, schedule_associations, association_unresolved = resolve_schedule_associations(
@@ -8105,9 +8127,9 @@ def _recognize_lighting(
     references, reference_misses = _resolve_explicit_legend_references(
         texts=texts,
         aliases_by_page=_legend_page_aliases(
-            (), texts, legend_pages=legend_entries_by_page,
+            (), texts, legend_pages=(*legend_entries_by_page, *category_entries_by_page),
         ),
-        active_legend_pages=set(legend_entries_by_page),
+        active_legend_pages=set(legend_entries_by_page) | set(category_entries_by_page),
     )
     references_by_page: dict[int, list[_LegendReference]] = {}
     for reference in references:
@@ -8149,13 +8171,23 @@ def _recognize_lighting(
                 "local_legend_authoritative": page in legend_entries_by_page,
             })
             continue
-        if page in legend_entries_by_page:
+        if page in legend_entries_by_page or page in category_entries_by_page:
             continue
         reference = page_references[0]
-        fixture_entries_by_page[page] = fixture_entries_by_page[reference.legend_page]
-        switch_entries_by_page[page] = switch_entries_by_page[reference.legend_page]
+        fixture_entries_by_page[page] = fixture_entries_by_page.get(reference.legend_page, ())
+        switch_entries_by_page[page] = switch_entries_by_page.get(reference.legend_page, ())
+        category_entries_by_page[page] = category_entries_by_page.get(reference.legend_page, ())
         applied_references[page] = reference
 
+    fixture_entries_by_page, category_bindings, category_binding_problems = bind_schedule_categories(
+        schedules=applicable_schedules, category_entries=category_entries_by_page,
+        tagged_entries=fixture_entries_by_page,
+    )
+    unresolved.extend(category_binding_problems)
+    geometry_entries_by_page = {
+        page: (*fixture_entries_by_page.get(page, ()), *category_entries_by_page.get(page, ()))
+        for page in set(fixture_entries_by_page) | set(category_entries_by_page)
+    }
     fixture_tags_by_page: dict[int, set[str]] = {}
     for page, tag in applicable_schedules:
         fixture_tags_by_page.setdefault(page, set()).add(tag)
@@ -8169,6 +8201,24 @@ def _recognize_lighting(
         for cluster in clusters
         if (cluster.page, cluster.geometry_key) not in prototype_keys
     ]
+    field_clusters = [
+        _strip_cluster_for_matching(cluster, texts=texts,
+            glyph_extent_pt=max(_cluster_extent_pt(entry.prototype)
+                                for entry in category_entries_by_page[cluster.page]))
+        if category_entries_by_page.get(cluster.page) else cluster
+        for cluster in field_clusters
+    ]
+    category_geometry_cache: dict[tuple[int, str, str], tuple[bool, dict[str, Any]]] = {}
+
+    def category_evidence_for(cluster: _VectorCluster, entry: _LightingLegendEntry):
+        cache_key = (cluster.page, cluster.geometry_key, entry.label.element_id)
+        if cache_key not in category_geometry_cache:
+            category_geometry_cache[cache_key] = category_geometry_evidence(
+                cluster, entry, category_entries_by_page.get(cluster.page, ()),
+            )
+        return category_geometry_cache[cache_key]
+
+    tag_leader_evidence: dict[tuple[str, str], dict[str, Any]] = {}
     assignments: dict[tuple[int, str], list[tuple[PdfTextObservation, str]]] = {}
     ambiguous_cluster_keys: set[tuple[int, str]] = set()
     diagnosed_cluster_keys: set[tuple[int, str]] = set()
@@ -8191,24 +8241,43 @@ def _recognize_lighting(
             )
             <= _LIGHTING_TAG_CLUSTER_RADIUS_PT
         ]
+        leader_hits: list[_VectorCluster] = []
+        multiple_category_candidates = False
+        if category_entries_by_page.get(observation.page):
+            leader_hits, leader_info = leader_candidates(observation, field_clusters, vectors)
+            if leader_hits:
+                nearby = leader_hits
+                for geometry_key, evidence in leader_info.items():
+                    tag_leader_evidence[(observation.element_id, geometry_key)] = evidence
+        if (observation.page, tag) in category_bindings and not leader_hits:
+            expected_entry = next(entry for entry in fixture_entries_by_page[observation.page] if entry.tag == tag)
+            supported = [cluster for cluster in nearby if category_evidence_for(cluster, expected_entry)[0]]
+            if supported:
+                nearby = supported
+                multiple_category_candidates = len(supported) > 1
         nearby.sort(
             key=lambda cluster: (
-                _distance_pt(
-                    cluster.center_pt[0],
-                    cluster.center_pt[1],
-                    observation.x_pt,
-                    observation.y_pt,
-                ),
+                _distance_pt(cluster.center_pt[0], cluster.center_pt[1], observation.x_pt, observation.y_pt),
                 cluster.geometry_key,
             )
         )
+        if not nearby and (observation.page, tag) in category_bindings:
+            unresolved.append({
+                "kind": "lighting_fixture", "page": observation.page,
+                "source_element_id": observation.element_id, "fixture_tag": tag,
+                "status": "unresolved_geometry", "reason_code": "lighting_fixture_geometry_not_associated",
+                "category_binding": category_bindings[(observation.page, tag)],
+            })
+            claimed_text_ids.add(observation.element_id)
         if not nearby:
             # A bare schedule-known letter elsewhere on the plan is not enough:
             # it may be a room name or other drafting label.
             continue
         if (
             len(nearby) > 1
-            and _distance_pt(
+            and (multiple_category_candidates
+            or any((observation.element_id, cluster.geometry_key) in tag_leader_evidence for cluster in nearby)
+            or _distance_pt(
                 nearby[1].center_pt[0],
                 nearby[1].center_pt[1],
                 observation.x_pt,
@@ -8220,7 +8289,7 @@ def _recognize_lighting(
                 observation.x_pt,
                 observation.y_pt,
             )
-            < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT
+            < _LIGHTING_TAG_ASSOCIATION_MARGIN_PT)
         ):
             unresolved.append(
                 {
@@ -8245,7 +8314,7 @@ def _recognize_lighting(
                 ambiguous_cluster_keys.add((cluster.page, cluster.geometry_key))
                 if _is_lighting_shaped(
                     cluster,
-                    fixture_entries_by_page.get(cluster.page, ()),
+                    geometry_entries_by_page.get(cluster.page, ()),
                 ):
                     claimed_vector_ids.update(cluster.source_element_ids)
             continue
@@ -8287,7 +8356,7 @@ def _recognize_lighting(
             diagnosed_cluster_keys.add(key)
             if _is_lighting_shaped(
                 cluster,
-                fixture_entries_by_page.get(cluster.page, ()),
+                geometry_entries_by_page.get(cluster.page, ()),
             ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.update(
@@ -8316,11 +8385,28 @@ def _recognize_lighting(
         )
         legend_entry, shape_score, shape_guard = _lighting_shape_support(
             cluster,
-            fixture_entries_by_page.get(cluster.page, ()),
+            geometry_entries_by_page.get(cluster.page, ()),
             tag=tag,
         )
         schedule_row = applicable_schedules.get((cluster.page, tag))
         schedule_association = schedule_associations.get((cluster.page, tag))
+
+        category_binding = category_bindings.get((cluster.page, tag))
+        category_geometry = None
+        if category_binding and legend_entry is not None:
+            confirmed, category_geometry = category_evidence_for(cluster, legend_entry)
+            if not confirmed:
+                unresolved.append({
+                    "kind": "lighting_fixture", "page": cluster.page,
+                    "source_element_id": tag_observation.element_id,
+                    "source_element_ids": list(cluster.source_element_ids), "fixture_tag": tag,
+                    "status": "unresolved_classification", **category_geometry,
+                    "schedule_category_binding": category_binding,
+                })
+                claimed_vector_ids.update(cluster.source_element_ids)
+                claimed_text_ids.add(tag_observation.element_id)
+                diagnosed_cluster_keys.add(key)
+                continue
 
         # A schedule enriches a confirmed fixture but never proves one: a
         # schedule-known letter beside arbitrary small geometry is exactly what
@@ -8372,7 +8458,7 @@ def _recognize_lighting(
             diagnosed_cluster_keys.add(key)
             if _is_lighting_shaped(
                 cluster,
-                fixture_entries_by_page.get(cluster.page, ()),
+                geometry_entries_by_page.get(cluster.page, ()),
             ):
                 claimed_vector_ids.update(cluster.source_element_ids)
             claimed_text_ids.add(tag_observation.element_id)
@@ -8387,7 +8473,7 @@ def _recognize_lighting(
             "source_geometry_key": cluster.geometry_key,
             "shape_signature": cluster.shape_signature,
             "shape_score": shape_score,
-            "tag_is_primary_type_evidence": True,
+            "tag_is_primary_type_evidence": not bool(category_binding),
             "legend": {
                 "page": legend_entry.page,
                 "tag_source_element_id": legend_entry.label.element_id,
@@ -8395,6 +8481,19 @@ def _recognize_lighting(
                 "prototype_geometry_key": legend_entry.prototype.geometry_key,
             },
         }
+        if category_binding:
+            recognition["category_binding"] = category_binding
+            recognition["category_geometry"] = category_geometry
+            if cluster.cleanup_actions or cluster.excluded_source_element_ids:
+                recognition["geometry_cleanup"] = {
+                    "actions": list(cluster.cleanup_actions),
+                    "excluded_source_element_ids": list(cluster.excluded_source_element_ids),
+                }
+            recognition["legend"].pop("tag_source_element_id", None)
+            recognition["legend"]["description_source_element_id"] = legend_entry.label.element_id
+        leader_evidence = tag_leader_evidence.get((tag_observation.element_id, cluster.geometry_key))
+        if leader_evidence:
+            recognition["tag_geometry_association"] = leader_evidence
         if schedule_row is not None:
             recognition["fixture_schedule"] = _lighting_schedule_attributes(
                 schedule_row
@@ -8457,7 +8556,7 @@ def _recognize_lighting(
                 attributes={
                     "source_text": tag_observation.text,
                     "fixture_tag": tag,
-                    "tag_is_primary_type_evidence": True,
+                    "tag_is_primary_type_evidence": not bool(category_binding),
                     "source_geometry_key": cluster.geometry_key,
                 },
             ),
@@ -8468,12 +8567,14 @@ def _recognize_lighting(
                 document,
                 element_id=legend_entry.label.element_id,
                 page=legend_entry.page,
-                method="pdf-lighting-legend-tag",
+                method="pdf-lighting-legend-category" if category_binding else "pdf-lighting-legend-tag",
                 confidence=legend_entry.confidence,
                 attributes={
                     "source_text": legend_entry.label.text,
                     "fixture_tag": tag,
                     "prototype_geometry_key": legend_entry.prototype.geometry_key,
+                    **({"category_binding": category_binding, "category_geometry": category_geometry}
+                       if category_binding else {}),
                 },
             )
         )
@@ -8499,6 +8600,19 @@ def _recognize_lighting(
                 derivation=str(schedule_association["derivation"]),
                 attributes=schedule_association,
             ))
+        if category_binding and schedule_row is not None:
+            candidate.provenance.append(_provenance(
+                document, element_id=schedule_row.source_element_ids[0], page=schedule_row.page,
+                method="pdf-lighting-category-association", confidence=0.90,
+                derivation=DERIVATION_INFERRED, attributes=category_binding,
+            ))
+        if leader_evidence:
+            for source_element_id in leader_evidence["source_element_ids"]:
+                candidate.provenance.append(_provenance(
+                    document, element_id=source_element_id, page=cluster.page,
+                    method="pdf-lighting-tag-leader", confidence=0.90,
+                    derivation=DERIVATION_INFERRED, attributes=leader_evidence,
+                ))
         candidates[candidate.key] = candidate
         matched_vector_ids.update(cluster.source_element_ids)
         claimed_vector_ids.update(cluster.source_element_ids)
@@ -10060,11 +10174,13 @@ class ElectricalPdfImporter:
         source_id: str | None = None,
         page_transforms: Mapping[int, PageTransformInput] | None = None,
         wall_evidence: SourceWallEvidence | None = None,
+        architecture_document: Any | None = None,
     ) -> BuildingModel:
         return self.import_document(
             extract_pdf(path, source_id=source_id),
             page_transforms=page_transforms,
             wall_evidence=wall_evidence,
+            architecture_document=architecture_document,
         )
 
     def import_document(
@@ -10074,9 +10190,15 @@ class ElectricalPdfImporter:
         page_transforms: Mapping[int, PageTransformInput] | None = None,
         page_type_filters: Mapping[int, frozenset[str]] | None = None,
         wall_evidence: SourceWallEvidence | None = None,
+        architecture_document: Any | None = None,
     ) -> BuildingModel:
         if wall_evidence is not None:
             _validate_wall_evidence_binding(document, wall_evidence)
+        if architecture_document is not None:
+            if wall_evidence is None:
+                raise ElectricalPdfError("architecture extraction requires source wall evidence")
+            from .branch_geometry import _bound_wall_evidence
+            _bound_wall_evidence(document, wall_evidence, architecture_document)
         wall_chains_by_page = _wall_chains_by_page(wall_evidence)
         transforms, region_transforms, has_explicit_registration = _resolve_page_transforms(
             document,
@@ -11318,6 +11440,23 @@ class ElectricalPdfImporter:
             confidence: float,
             branch_vector_ids: Sequence[str] = (),
         ) -> None:
+            if (observation.element_id in rejected_branch_annotation_ids
+                    or any(entity.id in rejected_branch_load_ids for entity in load_entities)):
+                unresolved_circuits.append({"kind": "device_circuit_tag", "page": observation.page,
+                    "source_element_id": observation.element_id, "status": "unresolved",
+                    "reason_code": "branch_geometry_rejected",
+                    "reason": "circuit evidence touches a source-bound rejected branch"})
+                return
+            if any(entity.id in unresolved_branch_load_ids for entity in load_entities):
+                unresolved_circuits.append({
+                    "kind": "device_circuit_tag", "page": observation.page,
+                    "source_element_id": observation.element_id, "status": "unresolved",
+                    "source_text": observation.text, "method": method,
+                    "load_ids": [entity.id for entity in load_entities],
+                    "reason_code": "unresolved_branch_circuit",
+                    "reason": "load touches a source-bound branch with no circuit annotation",
+                })
+                return
             source_entity = recognized_panels[panel_tag]
             shared_raceway_group = (
                 stable_id(
@@ -11819,12 +11958,69 @@ class ElectricalPdfImporter:
             )
         ]
 
+        # Evaluate all source-bound branches before materializing ANY circuit.
+        # Otherwise an earlier direct/eligible path could rescue a later rejected run.
+        branch_geometry_diagnostics: list[dict[str, Any]] = []
+        rejected_branch_vector_ids: set[str] = set()
+        rejected_branch_load_ids: set[str] = set()
+        rejected_branch_annotation_ids: set[str] = set()
+        unresolved_branch_vector_ids: set[str] = set()
+        unresolved_branch_load_ids: set[str] = set()
+        if architecture_document is not None:
+            from .branch_geometry import discriminate_branch_geometry
+            source_vectors = {vector.element_id: vector for vector in vectors}
+            checked_components = []
+            for component in homerun_components:
+                page = component[0].page
+                seeds = tuple(arrow.element_id for arrow in homerun_arrowheads
+                    if arrow.page == page and any(_paths_touch(arrow, vector,
+                        tolerance_pt=snap_tolerance_pt) for vector in component))
+                result = discriminate_branch_geometry(
+                    document, seed_vector_ids=seeds,
+                    eligible_vector_ids=tuple(vector.element_id for vector in circuit_vectors),
+                    own_symbol_outline_ids=tuple(vector.element_id for vector in
+                        component_own_symbol_outlines(component) if vector.closed),
+                    wall_evidence=wall_evidence if wall_evidence.page_number == page else None,
+                    architecture_document=architecture_document,
+                    snap_tolerance_pt=snap_tolerance_pt,
+                )
+                row = {"page": result.page, "source_id": result.source_id,
+                    "status": result.status, "reason_code": result.reason_code,
+                    "source_element_ids": list(result.vector_ids),
+                    "arrowhead_ids": list(result.arrowhead_ids),
+                    "wall_chain_ids": list(result.wall_chain_ids),
+                    "wall_evidence_element_ids": list(result.wall_source_element_ids),
+                    "architecture_evidence_status": result.architecture_evidence_status}
+                branch_geometry_diagnostics.append(row)
+                complete = [source_vectors[key] for key in result.vector_ids]
+                if result.status == "eligible":
+                    checked_components.append(complete)
+                    continue
+                rejected_branch_vector_ids.update(result.vector_ids)
+                for entity in devices:
+                    entity_page, x_pt, y_pt = entity_source_positions[entity.id]
+                    if entity_page == page and complete and min(
+                        _point_path_distance_pt((x_pt,y_pt), vector) for vector in complete
+                    ) <= self.topology_endpoint_radius_pt:
+                        rejected_branch_load_ids.add(entity.id)
+                for observation in texts:
+                    if observation.page == page and complete and min(
+                        _point_path_distance_pt((observation.x_pt,observation.y_pt),vector)
+                        for vector in complete
+                    ) <= self.topology_annotation_radius_pt:
+                        rejected_branch_annotation_ids.add(observation.element_id)
+                unresolved_circuits.append({**row, "kind": "homerun",
+                    "source_element_id": result.arrowhead_ids[0],
+                    "reason": "source-bound branch geometry rejected; alternative passes cannot rescue it"})
+            homerun_components = checked_components
+
         # One annotation cannot circuit two disconnected branch runs. Count how
         # many components each annotation is in range of first, so an
         # annotation claimed by more than one fails closed as ambiguous instead
         # of silently attaching every run it happens to sit near.
         annotation_claim_counts: Counter[str] = Counter()
         for component in homerun_components:
+            has_annotation = False
             for observation in texts:
                 if (
                     observation.page != component[0].page
@@ -11843,6 +12039,21 @@ class ElectricalPdfImporter:
                     for vector in component
                 ) <= self.topology_annotation_radius_pt:
                     annotation_claim_counts[observation.element_id] += 1
+                    has_annotation = True
+            if architecture_document is not None and not has_annotation:
+                # Eligibility only excludes supported geometry conflicts. A
+                # positive wall claim elsewhere does not resolve this run's
+                # missing circuit intent. Preserve its no_panel_token outcome
+                # across direct-tag, named-text and topology materializers.
+                unresolved_branch_vector_ids.update(item.element_id for item in component)
+                page = component[0].page
+                for entity in devices:
+                    entity_page, x_pt, y_pt = entity_source_positions[entity.id]
+                    if entity_page == page and min(
+                        _point_path_distance_pt((x_pt, y_pt), vector)
+                        for vector in component
+                    ) <= self.topology_endpoint_radius_pt:
+                        unresolved_branch_load_ids.add(entity.id)
 
         for component in homerun_components:
             page = component[0].page
@@ -11922,7 +12133,7 @@ class ElectricalPdfImporter:
                         "reason": (
                             "branch run contacts positively classified "
                             "architectural wall evidence "
-                            f"({wall_conflict.evidence_kind} classifier "
+                            f"({wall_evidence.evidence_kind} classifier "
                             f"{wall_evidence.classifier} v{wall_evidence.classifier_version}, "
                             + (
                                 "open chain"
@@ -12214,6 +12425,18 @@ class ElectricalPdfImporter:
                 unresolved_circuits.append(evidence)
                 continue
 
+            if (observation.element_id in rejected_branch_annotation_ids
+                    or any(entity.id in rejected_branch_load_ids for entity in load_entities)):
+                unresolved_circuits.append({**evidence, "status": "unresolved",
+                    "reason_code": "branch_geometry_rejected"})
+                continue
+            if any(entity.id in unresolved_branch_load_ids for entity in load_entities):
+                unresolved_circuits.append({
+                    **evidence, "status": "unresolved",
+                    "reason_code": "unresolved_branch_circuit",
+                })
+                continue
+
             voltage_v, _ = _extract_voltage((observation.text,))
             poles_match = _POLES_RE.search(observation.text)
             phase_match = _PHASE_RE.search(observation.text)
@@ -12326,6 +12549,18 @@ class ElectricalPdfImporter:
         ):
             page = component[0].page
             element_ids = sorted(item.element_id for item in component)
+            if rejected_branch_vector_ids.intersection(element_ids):
+                unresolved_topology.append({"page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": [], "status": "unresolved",
+                    "reason": "branch_geometry_rejected"})
+                continue
+            if unresolved_branch_vector_ids.intersection(element_ids):
+                unresolved_topology.append({
+                    "page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": [], "status": "unresolved",
+                    "reason": "unresolved_branch_circuit",
+                })
+                continue
             wall_conflict = _wall_chain_conflict(
                 component,
                 wall_chains_by_page.get(page, ()),
@@ -12392,6 +12627,18 @@ class ElectricalPdfImporter:
                         attached[nearby[0][1].id] = nearby[0][1]
 
             if not attached:
+                continue
+            if rejected_branch_load_ids.intersection(attached):
+                unresolved_topology.append({"page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": sorted(attached), "status": "unresolved",
+                    "reason": "branch_geometry_rejected"})
+                continue
+            if unresolved_branch_load_ids.intersection(attached):
+                unresolved_topology.append({
+                    "page": page, "source_element_ids": element_ids,
+                    "attached_entity_ids": sorted(attached), "status": "unresolved",
+                    "reason": "unresolved_branch_circuit",
+                })
                 continue
 
             topology_row: dict[str, Any] = {
@@ -13042,6 +13289,8 @@ class ElectricalPdfImporter:
                             str(item["source_element_id"]),
                         ),
                     ),
+                    **({"branch_geometry_checks": branch_geometry_diagnostics}
+                       if architecture_document is not None else {}),
                     "branch_wall_evidence": (
                         {
                             "status": "applied",
@@ -13106,12 +13355,14 @@ def import_pdf(
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
+    architecture_document: Any | None = None,
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_pdf(
         path,
         source_id=source_id,
         page_transforms=page_transforms,
         wall_evidence=wall_evidence,
+        architecture_document=architecture_document,
     )
 
 
@@ -13122,11 +13373,13 @@ def import_document(
     instance_hints: Sequence[ElectricalInstanceHint] = (),
     schedule_reviews: Sequence[PanelScheduleReview | Mapping[str, Any]] = (),
     wall_evidence: SourceWallEvidence | None = None,
+    architecture_document: Any | None = None,
 ) -> BuildingModel:
     return ElectricalPdfImporter(instance_hints=instance_hints, schedule_reviews=schedule_reviews).import_document(
         document,
         page_transforms=page_transforms,
         wall_evidence=wall_evidence,
+        architecture_document=architecture_document,
     )
 
 

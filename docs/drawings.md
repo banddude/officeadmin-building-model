@@ -41,3 +41,10 @@ Schedules are stable-ID-sorted views of canonical semantics for rooms, openings,
 ## Determinism
 
 Generation sorts canonical inputs by stable IDs, quantizes output coordinates, uses content-derived primitive IDs, and serializes JSON with sorted keys. Reordering canonical collections therefore does not change output. `fixtures/drawings/v1/expected-drawing-set.sha256` is a golden fingerprint of the serialization generated from the synthetic drawing fixture and fixed view specifications.
+
+## Physical sheet composition
+
+The opt-in [physical sheet composer](physical-sheets.md) places existing views
+at their explicit scale on physical paper and retains source identities. It
+produces a presentation document, not a rendered or permit-ready CAD sheet.
+Existing generators, canonical contracts and default output bytes are unchanged.

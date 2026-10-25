@@ -6,7 +6,7 @@ references. It does not evaluate electrical design or determine compliance.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import json
 import re
 from typing import Final
@@ -141,7 +141,7 @@ class CodeProfile:
     edition: str
     underlying_nec_edition: str | None
     adoption_authority: str
-    adoption_reference: RuleReference
+    adoption_reference: RuleReference | None
     application_interval: DateInterval
     code_effective_interval: DateInterval
     code_operative_interval: DateInterval
@@ -166,8 +166,8 @@ class CodeProfile:
             or not self.underlying_nec_edition.strip()
         ):
             raise ValueError("underlying_nec_edition must be nonempty or None")
-        if not isinstance(self.adoption_reference, RuleReference):
-            raise ValueError("adoption_reference must be a RuleReference")
+        if self.adoption_reference is not None and not isinstance(self.adoption_reference, RuleReference):
+            raise ValueError("adoption_reference must be a RuleReference or None")
         for field_name in (
             "application_interval", "code_effective_interval",
             "code_operative_interval",
@@ -353,9 +353,9 @@ _BSC_BULLETIN_25_01 = CodeSourceReference(
 )
 _NFPA_2025_CEC_BASIS = CodeSourceReference(
     source_id="nfpa-2025-cec-nec-basis",
-    title="NFPA NEC enforcement map, California Electrical Code basis",
+    title="NFPA Codes and Standards with Jurisdictional Changes, California Electrical Code basis",
     authority="National Fire Protection Association",
-    uri="https://www.nfpa.org/education-and-research/electrical/nec-enforcement-maps",
+    uri="https://www.nfpa.org/for-professionals/codes-and-standards/standards-development/nfpa-codes-and-standards-with-jurisdictional-changes",
     document_id="California 2025 Electrical Code",
     revision="2025 CEC based on 2023 NEC",
     evidence_status="official_page_indexed",
@@ -511,7 +511,7 @@ def resolve_code_profile(
             unresolved_reasons=("historical_code_profile_not_registered",),
         )
 
-    if parsed_date > NEXT_KNOWN_SUPPLEMENT_DATE:
+    if parsed_date >= NEXT_KNOWN_SUPPLEMENT_DATE:
         return _resolution(
             jurisdiction_id=normalized_jurisdiction,
             permit_application_date=parsed_date,
@@ -522,8 +522,8 @@ def resolve_code_profile(
             candidate_profile_ids=(),
             source_references=_sources_for_unresolved(normalized_jurisdiction, parsed_date),
             selection_rationale=(
-                f"The registry only records the next known transition through {NEXT_KNOWN_SUPPLEMENT_DATE.isoformat()}.",
-                "No later edition or jurisdictional transition was inferred.",
+                f"The registered profile ends before the scheduled transition on {NEXT_KNOWN_SUPPLEMENT_DATE.isoformat()}.",
+                "A cycle date alone does not establish the applicable adopted supplement inventory.",
             ),
             unresolved_reasons=("future_code_timeline_not_registered",),
         )
@@ -570,16 +570,19 @@ def resolve_code_profile(
         "Occupancy class, project class, and work type are retained as required scope inputs; this resolver does not apply work-specific engineering rules.",
         "Profile selection is separate from engineering verification.",
     ]
-    if normalized_jurisdiction == JURISDICTION_LA_COUNTY:
+    if normalized_jurisdiction == JURISDICTION_LA_COUNTY and edition_year == 2025:
         rationale.append(
             "County Ordinance 2025-0048 is legally effective 2025-12-26 and states that it becomes operative 2026-01-01."
         )
-    if normalized_jurisdiction == JURISDICTION_LA_CITY:
+    if normalized_jurisdiction == JURISDICTION_LA_CITY and edition_year == 2025:
         rationale.append(
             "City Ordinance 188797 is recorded as effective 2025-12-31; its operative date and complete local amendment inventory remain unresolved."
         )
 
     unresolved: list[str] = []
+    if edition_year == 2022 and normalized_jurisdiction != JURISDICTION_CALIFORNIA:
+        unresolved.append("historical_local_adoption_unverified")
+        rationale.append("The historical local adoption instrument and its dates are unverified; no later ordinance is assigned to this edition.")
     if not profile.local_amendments_complete:
         unresolved.append("local_amendment_inventory_incomplete")
     if (
@@ -617,7 +620,8 @@ def _make_profile(
         ends_on=(
             date(2025, 12, 30)
             if is_2022 and jurisdiction_id == JURISDICTION_LA_CITY
-            else STATE_OLD_CUTOFF if is_2022 else None
+            else STATE_OLD_CUTOFF if is_2022
+            else NEXT_KNOWN_SUPPLEMENT_DATE - timedelta(days=1)
         ),
     )
     code_interval = DateInterval(
@@ -640,13 +644,13 @@ def _make_profile(
 
     if jurisdiction_id == JURISDICTION_LA_COUNTY:
         authority = "Los Angeles County Board of Supervisors"
-        adoption_reference = RuleReference(
+        adoption_reference = None if is_2022 else RuleReference(
             authority=authority,
             revision="Ordinance 2025-0048",
             rule_id="Los Angeles County Code, Title 27, Section 80-1.5",
         )
-        local_effective = DateInterval(date(2025, 12, 26), None)
-        local_operative = DateInterval(date(2026, 1, 1), None)
+        local_effective = None if is_2022 else DateInterval(date(2025, 12, 26), None)
+        local_operative = None if is_2022 else DateInterval(date(2026, 1, 1), None)
         boundary_refs = (*boundary_refs, _LA_COUNTY_ORDINANCE_2025_0048)
         if not is_2022:
             amendment_refs = (_LA_COUNTY_ORDINANCE_2025_0048,)
@@ -654,12 +658,12 @@ def _make_profile(
 
     elif jurisdiction_id == JURISDICTION_LA_CITY:
         authority = "Los Angeles City Council"
-        adoption_reference = RuleReference(
+        adoption_reference = None if is_2022 else RuleReference(
             authority=authority,
             revision="Ordinance 188797",
             rule_id="Council File 25-1217",
         )
-        local_effective = DateInterval(date(2025, 12, 31), None)
+        local_effective = None if is_2022 else DateInterval(date(2025, 12, 31), None)
         local_operative = None
         boundary_refs = (
             *boundary_refs,
@@ -679,13 +683,10 @@ def _make_profile(
     if not is_2022:
         boundary_refs = (*boundary_refs, _NFPA_2025_CEC_BASIS)
         errata_refs = (_BSC_ERRATA_2026,)
-        if application_date >= NEXT_KNOWN_SUPPLEMENT_DATE:
-            supplement_refs = (_BSC_2025_INTERVENING_CYCLE, _BSC_FALL_2026_CYCLE_STATUS)
-        else:
-            scheduled_supplements = (
-                _BSC_2025_INTERVENING_CYCLE,
-                _BSC_FALL_2026_CYCLE_STATUS,
-            )
+        scheduled_supplements = (
+            _BSC_2025_INTERVENING_CYCLE,
+            _BSC_FALL_2026_CYCLE_STATUS,
+        )
 
     return CodeProfile(
         profile_id=f"{jurisdiction_id}-cec-{edition_year}",
@@ -718,8 +719,7 @@ def _sources_for_unresolved(
         refs = (*refs, _LA_CITY_COUNCIL_FILE_25_1217, _LA_CITY_ORDINANCE_PDF)
     if application_date is not None and application_date >= STATE_TRANSITION_DATE:
         refs = (*refs, _NFPA_2025_CEC_BASIS, _BSC_ERRATA_2026)
-        if application_date < NEXT_KNOWN_SUPPLEMENT_DATE:
-            refs = (*refs, _BSC_2025_INTERVENING_CYCLE, _BSC_FALL_2026_CYCLE_STATUS)
+        refs = (*refs, _BSC_2025_INTERVENING_CYCLE, _BSC_FALL_2026_CYCLE_STATUS)
     return _dedupe_sources(refs)
 
 

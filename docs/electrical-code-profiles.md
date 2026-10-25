@@ -11,18 +11,18 @@ The registry is versioned as of 2026-10-16.
 | Jurisdiction | Permit-application interval | Selected edition | Additional date evidence |
 | --- | --- | --- | --- |
 | California statewide | 2023-01-01 through 2025-12-31 | 2022 California Electrical Code | BSC Bulletin 25-01 says applications received on or before 2025-12-31 generally use the prior code cycle. |
-| California statewide | 2026-01-01 onward, through the next registered transition | 2025 California Electrical Code | Effective and operative from 2026-01-01. The underlying NEC edition is recorded as 2023 NEC, verified against NFPA's California NEC reference. |
-| Los Angeles County | Through 2025-12-31 | 2022 California Electrical Code | Ordinance 2025-0048 is legally effective 2025-12-26, but says it becomes operative 2026-01-01. |
-| Los Angeles County | From 2026-01-01 through the next registered transition | 2025 California Electrical Code | Ordinance 2025-0048 adopts the 2025 CEC. It says the ordinance's added provisions are administrative and that prior Title 27 provisions continue unless changed or repealed. |
+| California statewide | 2026-01-01 through 2027-06-30 inclusive | 2025 California Electrical Code | Effective and operative from 2026-01-01. The underlying NEC edition is recorded as 2023 NEC, verified against NFPA's California NEC reference. |
+| Los Angeles County | Through 2025-12-31 | 2022 California Electrical Code | Historical local adoption instrument and dates remain unverified; the later 2025 ordinance is not assigned to this edition. |
+| Los Angeles County | From 2026-01-01 through 2027-06-30 inclusive | 2025 California Electrical Code | Ordinance 2025-0048 adopts the 2025 CEC. It says the ordinance's added provisions are administrative and that prior Title 27 provisions continue unless changed or repealed. |
 | City of Los Angeles | Through 2025-12-30 | 2022 California Electrical Code | The available City Council record does not establish the City's exact permit cutoff for the one-day transition. |
 | City of Los Angeles | 2025-12-31 | Unresolved | The statewide bulletin generally places applications received by this date on the previous code cycle, while Ordinance 188797 is recorded effective on 2025-12-31. The resolver returns both candidate editions and no selected profile. |
-| City of Los Angeles | From 2026-01-01 through the next registered transition | 2025 California Electrical Code | Ordinance 188797 is effective 2025-12-31. Its operative date and complete local amendment inventory are unresolved here. |
+| City of Los Angeles | From 2026-01-01 through 2027-06-30 inclusive | 2025 California Electrical Code | Ordinance 188797 is effective 2025-12-31. Its operative date and complete local amendment inventory are unresolved here. |
 
-The 2025 CEC errata source is attached to profiles selected from 2026-01-01. The intervening-cycle supplement is recorded separately as scheduled, with effective date 2027-07-01. It is not an active supplement for a permit dated before that day. Permit dates after 2027-07-01 remain unresolved until a later code timeline is registered.
+The 2025 CEC errata source is attached to profiles selected from 2026-01-01. The intervening-cycle supplement is recorded separately as scheduled, with effective date 2027-07-01. A scheduled cycle reference is never promoted to an active supplement solely because that date arrives. Application intervals for 2025 profiles end on 2027-06-30 inclusive; this registry coverage boundary does not invent a supersession date for the separate code-effective or code-operative intervals. Permit dates on or after 2027-07-01 remain unresolved until the applicable adopted supplement inventory and jurisdictional timeline are registered.
 
 This first snapshot only maps applications from 2023-01-01 onward. Earlier permits stay unresolved instead of inheriting the 2022 or 2025 edition. The 2022 CEC underlying NEC edition is left unset because this slice did not verify that basis from a primary source.
 
-Occupancy class, project class, and work type are required and preserved in the result. This first registry does not contain occupancy-specific adoption rules or work-type engineering rules. Missing or invalid required data, unknown jurisdictions, and ambiguous jurisdiction names return no profile. Local City and County profiles are marked incomplete while their complete amendment histories are not registered.
+Occupancy class, project class, and work type are required and preserved in the result. This first registry does not contain occupancy-specific adoption rules or work-type engineering rules. Missing or invalid required data, unknown jurisdictions, and ambiguous jurisdiction names return no profile. Local City and County profiles are marked incomplete while their complete amendment histories are not registered. For their 2022 profiles, adoption_reference and local adoption dates are null, with historical_local_adoption_unverified explicitly retained. The known jurisdiction authority is not evidence of a verified historical adopting instrument.
 
 ## Provenance and serialization
 
@@ -46,7 +46,7 @@ Primary sources:
 - [2025 California Electrical Code errata](https://www.dgs.ca.gov/-/media/Divisions/BSC/02-Codes/Errta-01012026-Pt3-CEC-locked.pdf), published 2026-01-01
 - [2025 Intervening Code Adoption Cycle](https://www.dgs.ca.gov/BSC/Rulemaking/2025-Intervening-Cycle), supplements effective 2027-07-01
 - [CBSC Fall 2026 cycle update](https://www.dgs.ca.gov/BSC/News/Page-Content/CALCode-Quarterly-Newsletters-Archive/CALCode-Quarterly-Fall-2026), supplement publication and adoption-cycle status
-- [NFPA California NEC reference](https://www.nfpa.org/education-and-research/electrical/nec-enforcement-maps), 2025 CEC based on the 2023 NEC
+- [NFPA Codes and Standards with Jurisdictional Changes](https://www.nfpa.org/for-professionals/codes-and-standards/standards-development/nfpa-codes-and-standards-with-jurisdictional-changes), 2025 CEC based on the 2023 NEC
 - [Los Angeles County Ordinance 2025-0048](https://file.lacounty.gov/SDSInter/bos/supdocs/210269.pdf), including its stated effective and operative dates
 - [Los Angeles City Council File 25-1217](https://cityclerk.lacity.org/lacityclerkconnect/index.cfm?cfnumber=25-1217&fa=ccfi.viewrecord), final Ordinance 188797 and its recorded effective date
 - [Los Angeles City Clerk published packet](https://cityclerk.lacity.org/onlinedocs/2025/25-1217_misc_12-31-25.pdf)

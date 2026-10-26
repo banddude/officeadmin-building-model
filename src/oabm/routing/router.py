@@ -8,23 +8,31 @@ import math
 from dataclasses import dataclass
 from typing import Iterable
 
-from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import (
+    AssemblyComponent,
     DERIVATION_INFERRED,
     Box3D,
     BuildingModel,
+    PanelGeometry,
     Point3,
     Polygon3D,
     Polyline3D,
     Port,
     Pose,
+    ProfileExtrusion,
     Provenance,
+    Quaternion,
     Route,
     RouteConstraint,
     RouteFitting,
+    Size3,
+    Slab,
     Vector3,
+    WireSweep,
     stable_id,
 )
+from oabm.model.assembly_validation import assembly_routing_context_receipt
+from oabm.model.assemblies import rotate_vector as _assembly_rotate_vector
 from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 
 _EPS = 1e-9
@@ -39,6 +47,7 @@ _MAX_ALLOWED_DOMAIN_GRID_NODES = 200_000
 _MAX_ALLOWED_DOMAIN_SEARCH_STATES = 500_000
 _MAX_RECORDED_BLOCKER_IDS = 256
 _ALLOWED_DOMAIN_ALIGNMENT_EPSILON_M = 1e-9
+_ASSEMBLY_CEILING_DOMAIN_KIND = "assembly-derived-suspended-ceiling-plenum-v1"
 
 
 class RoutingError(ValueError):
@@ -233,6 +242,7 @@ class _RoutingGeometry:
     glazed: tuple[_Rule, ...] = ()
     bundle: _BundleIndex | None = None
     allowed_domain: _AllowedDomainIndex | None = None
+    assembly_routing_context: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,16 +375,21 @@ def route_between_ports(
     volumes. When supplied, the whole swept route (including both port stubs)
     must fit inside that union as well as avoid modeled hard geometry. It is a
     route constraint, not a physical object, and is preserved in provenance.
+    Populated 1.6 assembly models require this explicit domain; the request
+    does not authorize penetrations or make route-domain source IDs permissions.
     """
 
-    require_no_populated_building_assemblies(
-        model, "route_between_ports", error_type=RoutingError,
-    )
     if not route_type:
         raise RoutingError("route_type is required")
     options = options or RoutingOptions()
     if allowed_domain is not None and not isinstance(allowed_domain, AllowedRouteDomain):
         raise RoutingError("allowed_domain must be an AllowedRouteDomain value")
+    assembly_context = assembly_routing_context_receipt(model)
+    if assembly_context is not None and allowed_domain is None:
+        raise RoutingError(
+            "routing a model with populated building assemblies requires an explicit "
+            "AllowedRouteDomain; assembly context does not authorize penetrations"
+        )
     ports = {port.id: port for port in model.ports}
     try:
         start_port = ports[start_port_id]
@@ -394,9 +409,14 @@ def route_between_ports(
             "allowed route domain requires a known positive nominal diameter "
             "from nominal_diameter_m or port data"
         )
+    if allowed_domain is not None and allowed_domain.kind == _ASSEMBLY_CEILING_DOMAIN_KIND:
+        _require_current_derived_ceiling_domain(
+            model, allowed_domain, nominal_diameter_m=diameter, options=options,
+        )
     route_radius = (diameter or 0.0) / 2.0
     geometry = _collect_routing_geometry(
         model, route_type, route_radius, options, allowed_domain=allowed_domain,
+        assembly_context=assembly_context,
     )
     type_mismatch = bundle_hints is not None and bundle_hints.route_type is not None and bundle_hints.route_type != route_type
     bundle = _bundle_index(None if type_mismatch else bundle_hints, options.coordinate_precision)
@@ -583,6 +603,10 @@ def route_between_ports(
             "revalidation": "generation_time_only; not_live_after_model_changes",
             "code_review": "not_evaluated",
         }
+        if geometry.assembly_routing_context is not None:
+            attributes["geometry_check"]["assembly_routing_context"] = (
+                geometry.assembly_routing_context
+            )
     if geometry.glazed:
         # Diagnostic, not an error: the route is valid, but each segment whose
         # midpoint remains inside a glazed wall's padded bounds is reported so
@@ -790,6 +814,7 @@ def _collect_routing_geometry(
     options: RoutingOptions,
     *,
     allowed_domain: AllowedRouteDomain | None = None,
+    assembly_context: dict[str, object] | None = None,
 ) -> _RoutingGeometry:
     hard: list[_Rule] = []
     soft: list[_Rule] = []
@@ -860,6 +885,47 @@ def _collect_routing_geometry(
                 f"on {constraint.id}"
             )
 
+    if assembly_context is None:
+        assembly_context = assembly_routing_context_receipt(model)
+    assigned_wall_ids: set[str] = set()
+    assigned_ceiling_ids: set[str] = set()
+    selected_deck_ids: set[str] = set()
+    if assembly_context is not None:
+        assignments = tuple(model.building_assemblies)
+        assigned_wall_ids = {
+            row.host_id for row in assignments if row.assembly_kind == "wall"
+        }
+        assigned_ceiling_ids = {
+            row.host_id for row in assignments if row.assembly_kind == "suspended_ceiling"
+        }
+        selected_deck_ids = {
+            row.deck_id for row in assignments
+            if row.assembly_kind == "suspended_ceiling" and row.deck_id is not None
+        }
+        missing_walls = sorted(row.id for row in model.walls if row.id not in assigned_wall_ids)
+        missing_ceilings = sorted(
+            row.id for row in model.ceilings if row.id not in assigned_ceiling_ids
+        )
+        if missing_walls or missing_ceilings:
+            missing = [*(f"wall:{identity}" for identity in missing_walls),
+                       *(f"ceiling:{identity}" for identity in missing_ceilings)]
+            raise RoutingError(
+                "assembly-aware routing refuses unassigned aggregate hosts because their "
+                "legacy surface rules are not physical collision checks: " + ", ".join(missing)
+            )
+
+        component_padding = route_radius + options.clearance_m
+        for component in sorted(model.assembly_components, key=lambda item: item.id):
+            hard.append(_assembly_component_rule(component, component_padding))
+
+        # A selected existing ceiling deck is reused by its canonical identity
+        # once, not copied into a second assembly geometry record. Other Slab
+        # records are outside this bounded assembly-routing slice.
+        for slab in sorted(model.slabs, key=lambda item: item.id):
+            if slab.id not in selected_deck_ids:
+                continue
+            hard.append(_slab_deck_rule(slab, component_padding))
+
     surfaces: list[_Rule] = []
     glazed: list[_Rule] = []
     allowed_domain_index = None
@@ -878,6 +944,10 @@ def _collect_routing_geometry(
     level_by_id = {level.id: level for level in model.levels}
     surface_pad = options.corridor_tolerance_m + route_radius
     for wall in sorted(model.walls, key=lambda item: item.id):
+        if wall.id in assigned_wall_ids:
+            # Owned framing/drywall records replace the aggregate host's old
+            # pathway preference; do not score a route toward the solid wall.
+            continue
         base = _geometry_bounds(wall.centerline)
         level = level_by_id.get(wall.level_id)
         base_z = min(point.z for point in wall.centerline.points)
@@ -898,6 +968,10 @@ def _collect_routing_geometry(
         else:
             surfaces.append(_Rule(f"wall:{wall.id}", wall_bounds))
     for ceiling in sorted(model.ceilings, key=lambda item: item.id):
+        if ceiling.id in assigned_ceiling_ids:
+            # T-bar/tile/deck children are physical rules instead of an
+            # aggregate ceiling surface preference.
+            continue
         bounds = _geometry_bounds(ceiling.footprint)
         z = sum(point.z for point in ceiling.footprint.points) / len(ceiling.footprint.points)
         ceiling_bounds = _Bounds(
@@ -918,6 +992,7 @@ def _collect_routing_geometry(
         surfaces=tuple(surfaces),
         glazed=tuple(glazed),
         allowed_domain=allowed_domain_index,
+        assembly_routing_context=assembly_context,
     )
 
 
@@ -933,6 +1008,369 @@ def _geometry_bounds(geometry: Box3D | Polyline3D | Polygon3D) -> _Bounds:
                     corners.append(Point3(x=center.x + rx, y=center.y + ry, z=center.z + rz))
         return _bounds_from_points(corners)
     return _bounds_from_points(geometry.points)
+
+
+def _assembly_component_rule(
+    component: AssemblyComponent,
+    routed_padding_m: float,
+) -> _Rule:
+    """Adapt one canonical physical child to a temporary hard router rule."""
+    geometry = component.geometry
+    if isinstance(geometry, Box3D):
+        # Canonical geometry accepts and normalizes near-unit quaternions. The
+        # legacy router's OBB helpers intentionally retain their historical
+        # raw-quaternion math, so give this assembly-only query a normalized
+        # copy rather than mutating the source or changing legacy routing.
+        geometry = _normalized_assembly_box(geometry)
+        return _Rule(
+            component.id,
+            _geometry_bounds(geometry).expanded(routed_padding_m),
+            geometry,
+            routed_padding_m,
+            "AssemblyComponent",
+        )
+    if isinstance(geometry, ProfileExtrusion):
+        # The profile's bounding prism is intentionally conservative. It can
+        # block the open channel/void of a C, U or T profile; it never treats
+        # that void as proven free space or misses a profile flange/web.
+        bounds = _profile_extrusion_bounds(geometry)
+        return _Rule(
+            component.id,
+            bounds.expanded(routed_padding_m),
+            source_type="AssemblyComponentProfileEnvelope",
+        )
+    if isinstance(geometry, PanelGeometry):
+        # Panel boundary is its mid-plane; add half of physical thickness,
+        # routed radius and caller clearance as one Euclidean distance shell.
+        tolerance = geometry.thickness_m / 2.0 + routed_padding_m
+        return _Rule(
+            component.id,
+            _geometry_bounds(geometry.boundary).expanded(tolerance),
+            geometry.boundary,
+            tolerance,
+            "AssemblyComponentPanel",
+        )
+    if isinstance(geometry, WireSweep):
+        tolerance = geometry.diameter_m / 2.0 + routed_padding_m
+        return _Rule(
+            component.id,
+            _geometry_bounds(geometry.centerline).expanded(tolerance),
+            geometry.centerline,
+            tolerance,
+            "AssemblyComponentWire",
+        )
+    raise RoutingError(
+        f"unsupported canonical assembly geometry on component {component.id!r}"
+    )
+
+
+def _normalized_assembly_box(geometry: Box3D) -> Box3D:
+    """Return a query-only Box3D whose quaternion matches canonical geometry."""
+    rotation = geometry.pose.rotation
+    norm = math.hypot(rotation.x, rotation.y, rotation.z, rotation.w)
+    if not math.isfinite(norm) or norm == 0.0 or abs(norm - 1.0) > 1e-5:
+        raise RoutingError("assembly Box3D has an invalid quaternion for collision checking")
+    normalized = Quaternion(
+        x=rotation.x / norm,
+        y=rotation.y / norm,
+        z=rotation.z / norm,
+        w=rotation.w / norm,
+    )
+    if normalized == rotation:
+        return geometry
+    return dataclasses.replace(
+        geometry,
+        pose=dataclasses.replace(geometry.pose, rotation=normalized),
+    )
+
+
+def _profile_extrusion_bounds(geometry: ProfileExtrusion) -> _Bounds:
+    """Conservative world AABB of every vertex at both extrusion ends."""
+    profile = geometry.profile
+    if hasattr(profile, "outline_xy_m"):
+        section_points = profile.outline_xy_m()
+    else:
+        section_points = tuple((point.x, point.y) for point in profile.points_m)
+    pose = geometry.pose
+    points = []
+    for x, y in section_points:
+        for z in (0.0, geometry.length_m):
+            rx, ry, rz = _assembly_rotate_vector((x, y, z), pose.rotation)
+            points.append(Point3(
+                x=pose.position.x + rx,
+                y=pose.position.y + ry,
+                z=pose.position.z + rz,
+            ))
+    return _bounds_from_points(points)
+
+
+def derive_suspended_ceiling_route_domain(
+    model: BuildingModel,
+    assembly_id: str,
+    *,
+    nominal_diameter_m: float,
+    options: RoutingOptions | None = None,
+) -> AllowedRouteDomain:
+    """Derive one ephemeral plenum domain from a supported ceiling assembly.
+
+    The bounded adapter accepts only a cardinal-axis rectangular ``Ceiling``,
+    its selected existing horizontal ``Slab``, and the current generated
+    T-runner/tile geometry. The returned box spans from the highest generated
+    runner/tile surface up to the selected deck's underside. It is a routing
+    volume, not a penetration permission, and callers must pass it explicitly
+    to :func:`route_between_ports` with the same positive diameter/options.
+    """
+    if not isinstance(model, BuildingModel):
+        raise RoutingError("model must be a BuildingModel")
+    if not isinstance(assembly_id, str) or not assembly_id.strip():
+        raise RoutingError("assembly_id must identify a suspended-ceiling assignment")
+    options = options or RoutingOptions()
+    if not isinstance(options, RoutingOptions):
+        raise RoutingError("options must be a RoutingOptions value")
+    if (
+        isinstance(nominal_diameter_m, bool)
+        or not isinstance(nominal_diameter_m, (int, float))
+        or not math.isfinite(nominal_diameter_m)
+        or nominal_diameter_m <= 0
+    ):
+        raise RoutingError(
+            "derived ceiling route domain requires a known positive nominal diameter"
+        )
+    diameter_m = float(nominal_diameter_m)
+
+    if assembly_routing_context_receipt(model) is None:
+        raise RoutingError("derived ceiling route domain requires a populated assembly model")
+    assignments = tuple(
+        row for row in model.building_assemblies if row.id == assembly_id
+    )
+    if len(assignments) != 1 or assignments[0].assembly_kind != "suspended_ceiling":
+        raise RoutingError(
+            f"{assembly_id!r} is not one current suspended-ceiling assignment"
+        )
+    assignment = assignments[0]
+    ceiling = next((row for row in model.ceilings if row.id == assignment.host_id), None)
+    if ceiling is None:
+        raise RoutingError("suspended-ceiling assignment has no current Ceiling host")
+    deck = next((row for row in model.slabs if row.id == assignment.deck_id), None)
+    if deck is None:
+        raise RoutingError(
+            "derived ceiling route domain requires the assignment's existing Slab deck"
+        )
+
+    ceiling_bounds = _horizontal_axis_aligned_rectangle_bounds(
+        ceiling.footprint, f"Ceiling {ceiling.id!r}"
+    )
+    deck_z = tuple(point.z for point in deck.footprint.points)
+    if not deck_z or max(deck_z) - min(deck_z) > _EPS:
+        raise RoutingError(f"derived ceiling route domain does not support sloped Slab {deck.id!r}")
+    deck_underside_z = max(deck_z) - deck.thickness_m
+
+    components_by_id = {row.id: row for row in model.assembly_components}
+    try:
+        components = tuple(components_by_id[identity] for identity in assignment.component_ids)
+    except KeyError as exc:
+        raise RoutingError(
+            f"suspended-ceiling assignment has missing component {exc.args[0]!r}"
+        ) from exc
+    supported_kinds = {
+        "tbar_main_runner", "tbar_cross_runner", "tile", "hanger_wire",
+    }
+    unsupported = sorted({row.component_kind for row in components} - supported_kinds)
+    if unsupported:
+        raise RoutingError(
+            "derived ceiling route domain does not support assembly component roles: "
+            + ", ".join(unsupported)
+        )
+    runners = tuple(
+        row for row in components
+        if row.component_kind in {"tbar_main_runner", "tbar_cross_runner"}
+    )
+    tiles = tuple(row for row in components if row.component_kind == "tile")
+    if not runners or not tiles:
+        raise RoutingError(
+            "derived ceiling route domain requires generated T-runners and tiles"
+        )
+
+    grid_tile_top_z = max(
+        _assembly_component_vertical_bounds(row)[1]
+        for row in (*runners, *tiles)
+    )
+    domain_height = deck_underside_z - grid_tile_top_z
+    if not math.isfinite(domain_height) or domain_height <= _EPS:
+        raise RoutingError(
+            "suspended-ceiling plenum has no positive clearance volume above the "
+            "generated grid/tile top and below the selected deck underside"
+        )
+
+    size_x = ceiling_bounds.max_x - ceiling_bounds.min_x
+    size_y = ceiling_bounds.max_y - ceiling_bounds.min_y
+    size_z = domain_height
+    swept_padding = diameter_m / 2.0 + options.clearance_m
+    if any(
+        dimension - 2.0 * swept_padding <= _EPS
+        for dimension in (size_x, size_y, size_z)
+    ):
+        raise RoutingError(
+            "suspended-ceiling plenum has no positive swept-clearance volume for "
+            "the requested route diameter and clearance"
+        )
+
+    volume = Box3D(
+        pose=Pose(position=Point3(
+            x=(ceiling_bounds.min_x + ceiling_bounds.max_x) / 2.0,
+            y=(ceiling_bounds.min_y + ceiling_bounds.max_y) / 2.0,
+            z=(grid_tile_top_z + deck_underside_z) / 2.0,
+        )),
+        size=Size3(x=size_x, y=size_y, z=size_z),
+    )
+    domain_sources = (assignment.id, ceiling.id, deck.id)
+    identity_payload = {
+        "assembly_id": assignment.id,
+        "input_digest": assignment.input_digest,
+        "output_digest": assignment.output_digest,
+        "ceiling_id": ceiling.id,
+        "deck_id": deck.id,
+        "nominal_diameter_m": diameter_m,
+        "clearance_m": float(options.clearance_m),
+        "volume": {
+            "position": dataclasses.asdict(volume.pose.position),
+            "rotation": dataclasses.asdict(volume.pose.rotation),
+            "size": dataclasses.asdict(volume.size),
+        },
+    }
+    canonical_identity = json.dumps(
+        identity_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    )
+    domain_id = "domain:ceiling-plenum:" + hashlib.sha256(
+        canonical_identity.encode("utf-8")
+    ).hexdigest()
+    return AllowedRouteDomain(
+        id=domain_id,
+        kind=_ASSEMBLY_CEILING_DOMAIN_KIND,
+        volumes=(volume,),
+        source_ids=domain_sources,
+    )
+
+
+def _require_current_derived_ceiling_domain(
+    model: BuildingModel,
+    allowed_domain: AllowedRouteDomain,
+    *,
+    nominal_diameter_m: float | None,
+    options: RoutingOptions,
+) -> None:
+    """Reject an old or caller-forged adapter result before routing."""
+    assignments = tuple(
+        row for row in model.building_assemblies
+        if row.assembly_kind == "suspended_ceiling" and row.id in allowed_domain.source_ids
+    )
+    if len(assignments) != 1 or nominal_diameter_m is None:
+        raise RoutingError(
+            "derived suspended-ceiling route domain must name one current ceiling assignment"
+        )
+    expected = derive_suspended_ceiling_route_domain(
+        model, assignments[0].id,
+        nominal_diameter_m=nominal_diameter_m,
+        options=options,
+    )
+    if allowed_domain != expected:
+        raise RoutingError(
+            "derived suspended-ceiling route domain is stale or does not match current geometry"
+        )
+
+
+def _horizontal_axis_aligned_rectangle_bounds(
+    polygon: Polygon3D,
+    label: str,
+) -> _Bounds:
+    points = polygon.points
+    if len(points) != 4:
+        raise RoutingError(f"{label} must have a four-corner rectangular footprint")
+    z_values = tuple(point.z for point in points)
+    if max(z_values) - min(z_values) > _EPS:
+        raise RoutingError(f"{label} footprint must be horizontal")
+    x_values = tuple(sorted({point.x for point in points}))
+    y_values = tuple(sorted({point.y for point in points}))
+    corners = {(x, y) for x in x_values for y in y_values}
+    if (
+        len(x_values) != 2
+        or len(y_values) != 2
+        or len({(point.x, point.y) for point in points}) != 4
+        or {(point.x, point.y) for point in points} != corners
+    ):
+        raise RoutingError(
+            f"{label} must be a cardinal-axis rectangular footprint for the bounded route domain"
+        )
+    for first, second in zip(points, (*points[1:], points[0])):
+        if (first.x == second.x) == (first.y == second.y):
+            raise RoutingError(
+                f"{label} must be a nondegenerate, cardinal-axis rectangular footprint"
+            )
+    return _Bounds(
+        min_x=x_values[0], min_y=y_values[0], min_z=min(z_values),
+        max_x=x_values[1], max_y=y_values[1], max_z=max(z_values),
+    )
+
+
+def _assembly_component_vertical_bounds(component: AssemblyComponent) -> tuple[float, float]:
+    geometry = component.geometry
+    if isinstance(geometry, Box3D):
+        bounds = _geometry_bounds(_normalized_assembly_box(geometry))
+        return bounds.min_z, bounds.max_z
+    if isinstance(geometry, ProfileExtrusion):
+        bounds = _profile_extrusion_bounds(geometry)
+        return bounds.min_z, bounds.max_z
+    if isinstance(geometry, PanelGeometry):
+        z_values = tuple(point.z for point in geometry.boundary.points)
+        if (
+            max(z_values) - min(z_values) > _EPS
+            or abs(geometry.normal.x) > _EPS
+            or abs(geometry.normal.y) > _EPS
+            or abs(abs(geometry.normal.z) - 1.0) > _EPS
+        ):
+            raise RoutingError(
+                f"ceiling panel {component.id!r} must have horizontal planar geometry"
+            )
+        half_thickness = geometry.thickness_m / 2.0
+        return min(z_values) - half_thickness, max(z_values) + half_thickness
+    raise RoutingError(
+        f"unsupported generated grid/tile geometry on component {component.id!r}"
+    )
+
+
+def _slab_deck_rule(slab: Slab, routed_padding_m: float) -> _Rule:
+    """Use canonical top-face/downward-thickness slab semantics conservatively."""
+    points = slab.footprint.points
+    elevations = tuple(point.z for point in points)
+    if max(elevations) - min(elevations) > 1e-9:
+        raise RoutingError(
+            f"assembly-aware routing does not support sloped Slab {slab.id!r}"
+        )
+    # The contract defines footprint as the top face and thickness downward.
+    # A world-XY bounding rectangle may over-block concave/rotated edges, but
+    # it cannot omit physical deck material and preserves that vertical sense.
+    top = max(elevations)
+    bottom = min(elevations) - slab.thickness_m
+    min_x = min(point.x for point in points)
+    min_y = min(point.y for point in points)
+    max_x = max(point.x for point in points)
+    max_y = max(point.y for point in points)
+    box = Box3D(
+        pose=Pose(position=Point3(
+            x=(min_x + max_x) / 2.0,
+            y=(min_y + max_y) / 2.0,
+            z=(bottom + top) / 2.0,
+        )),
+        size=Size3(x=max_x - min_x, y=max_y - min_y, z=top - bottom),
+    )
+    return _Rule(
+        slab.id,
+        _geometry_bounds(box).expanded(routed_padding_m),
+        box,
+        routed_padding_m,
+        "SelectedSlabDeck",
+    )
 
 
 def _axis_aligned_box_bounds(box: Box3D) -> _Bounds:
@@ -1100,6 +1538,7 @@ def _bounded_routing_context_receipt(
 
     options_data = json_compatible(dataclasses.asdict(options))
     bundle_data = json_compatible(dataclasses.asdict(bundle_hints)) if bundle_hints is not None else None
+    assembly_context = assembly_routing_context_receipt(model)
 
     routing_geometry = {
         "coordinate_system": dataclasses.asdict(model.coordinate_system),
@@ -1124,6 +1563,8 @@ def _bounded_routing_context_receipt(
         "allowed_route_domain": _allowed_route_domain_request(allowed_domain),
         "routing_geometry": routing_geometry,
     }
+    if assembly_context is not None:
+        payload["assembly_routing_context"] = assembly_context
     canonical_payload = json.dumps(
         payload,
         sort_keys=True,
@@ -1131,7 +1572,7 @@ def _bounded_routing_context_receipt(
         ensure_ascii=False,
         allow_nan=False,
     )
-    return {
+    receipt = {
         "version": "bounded-routing-context-v1",
         "sha256": hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest(),
         "model_id": model.model_id,
@@ -1153,11 +1594,30 @@ def _bounded_routing_context_receipt(
             ),
         },
     }
+    if assembly_context is not None:
+        receipt["assembly_routing_context"] = assembly_context
+    return receipt
 
 
 def _checked_blocker_receipt(geometry: _RoutingGeometry) -> dict[str, object]:
     ids = tuple(sorted({item.id for item in geometry.hard_blockers}))
-    return {
+    if geometry.assembly_routing_context is None:
+        limitations = [
+            "Wall and ceiling geometry is a pathway preference, not a hard collision check.",
+            "Slabs and architectural openings are not checked as route blockers.",
+            "The caller volume does not authorize a structural penetration.",
+            "Code compliance and installation engineering were not evaluated.",
+        ]
+    else:
+        limitations = [
+            "Assembly Box3D children use exact oriented-box checks; profile extrusions use conservative world-axis enclosing bounds that block profile voids.",
+            "Panel children use their declared mid-plane expanded by half thickness, routed radius, and caller clearance; wire children use declared wire radius plus routed radius and caller clearance.",
+            "Selected Slab deck blockers use conservative world-XY footprint bounds from the canonical top face down by thickness and are reused by their existing identity; other Slab records are outside this bounded slice.",
+            "Unassigned aggregate walls/ceilings are unsupported and cause routing refusal; no legacy surface preference is claimed as a physical check.",
+            "The caller volume does not authorize drilling, notching, portals, or structural/drywall/deck penetrations.",
+            "Actual outer diameter, fitting envelopes, minimum bend radius, installation clearance, engineering, and code compliance were not evaluated.",
+        ]
+    receipt = {
         "checked_blocker_classes": sorted({
             item.source_type for item in geometry.hard_blockers
             if item.source_type is not None
@@ -1165,13 +1625,11 @@ def _checked_blocker_receipt(geometry: _RoutingGeometry) -> dict[str, object]:
         "checked_blocker_ids": list(ids[:_MAX_RECORDED_BLOCKER_IDS]),
         "checked_blocker_count": len(ids),
         "checked_blocker_ids_truncated": len(ids) > _MAX_RECORDED_BLOCKER_IDS,
-        "limitations": [
-            "Wall and ceiling geometry is a pathway preference, not a hard collision check.",
-            "Slabs and architectural openings are not checked as route blockers.",
-            "The caller volume does not authorize a structural penetration.",
-            "Code compliance and installation engineering were not evaluated.",
-        ],
+        "limitations": limitations,
     }
+    if geometry.assembly_routing_context is not None:
+        receipt["assembly_routing_context"] = geometry.assembly_routing_context
+    return receipt
 
 
 def _swept_bounds(a: Point3, b: Point3, padding_m: float) -> _Bounds:

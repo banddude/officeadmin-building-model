@@ -161,11 +161,18 @@ specifications, evidence, and the full sorted owned component records.
 - Regeneration/replacement of an existing wall assignment, or generation in a
   model that already contains routes. Dependent rebuild and route invalidation
   are not implemented.
-- Assembly-aware routing, IFC, drawings, revision-diff, confidence-review and
-  review bundles. These entrypoints refuse populated assemblies rather than
-  silently dropping parts. GLB and quantities support physical components
-  with aggregate-host suppression; GLB has a model-wide assembly vertex budget
-  and refuses coordinate ranges that lose geometry at float32 precision.
+- Routing beyond the bounded opt-in slice in
+  [3D electrical routing](routing.md): populated assemblies require an explicit
+  `AllowedRouteDomain`, supported physical-component blockers, and complete
+  assignment coverage for aggregate walls and ceilings. A derived domain is
+  limited to the supported rectangular ceiling plenum above generated runners
+  and tiles and below an existing Slab. This creates no holes or penetrations
+  and is not installation engineering or code approval. IFC, drawings,
+  revision-diff, confidence-review and review bundles still refuse populated
+  assemblies rather than silently dropping parts. GLB and quantities support
+  physical components with aggregate-host suppression; GLB has a model-wide
+  assembly vertex budget and refuses coordinate ranges that lose geometry at
+  float32 precision.
 
 The synthetic known-answer helper is
 `oabm.building_assemblies.fixtures.synthetic_two_opening_wall_assembly()`: one

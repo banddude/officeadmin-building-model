@@ -181,9 +181,9 @@ def test_each_public_drawing_entry_refuses_populated_assemblies(populated_model,
         invoke(populated_model)
 
 
-def test_routing_entries_refuse_before_output_and_leave_model_unchanged(populated_model):
+def test_routing_requires_domain_but_consolidation_still_refuses_and_model_is_unchanged(populated_model):
     before = populated_model.to_dict()
-    with pytest.raises(RoutingError, match="route_between_ports does not support populated canonical building assemblies"):
+    with pytest.raises(RoutingError, match="requires an explicit AllowedRouteDomain"):
         route_between_ports(populated_model, "missing:start", "missing:end", "emt")
     with pytest.raises(RoutingError, match="consolidate_bundled_routes does not support populated canonical building assemblies"):
         consolidate_bundled_routes(populated_model)

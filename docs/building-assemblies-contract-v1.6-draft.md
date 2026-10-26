@@ -8,8 +8,10 @@ versioned defaults and creates framing/drywall around rectangular opening
 voids. Separate [insert](building-assembly-opening-inserts-v1.md) and
 [ceiling](building-assembly-suspended-ceiling-producer-v1.md) producers add
 simple door/window parts and a supported rectangular grid layout below an
-existing Slab. GLB and quantities support the physical records; unsupported consumers
-refuse populated assemblies. This is not a complete building/electrical workflow.
+existing Slab. GLB and quantities support the physical records; bounded
+assembly-aware routing supports only the explicit route slice documented in
+`routing.md`; other unsupported consumers refuse populated assemblies. This is
+not a complete building/electrical workflow.
 
 ## Decision captured in the candidate
 
@@ -150,8 +152,8 @@ before mesh creation and rejects coordinates that cannot preserve the supported
 geometry within its declared float32 precision tolerance.
 
 Not implemented: plan/importer/AI recognition; full-room corners/joins;
-metal-stud presets or a generated-deck producer;
-assembly route-domain adaptation and route invalidation; component-aware IFC,
+metal-stud presets or a generated-deck producer; route invalidation or routing
+beyond the bounded assembly-aware slice in `routing.md`; component-aware IFC,
 drawings, revision-diff, confidence-review or review bundles; automatic
 penetration logic or construction/engineering approval. Unsupported output
 entrypoints fail closed on populated assembly collections. Canonical

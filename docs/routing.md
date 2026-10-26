@@ -137,6 +137,29 @@ geometry remain outside this slice. No portals, holes, framing edits,
 penetrations, or equipment-box transitions are generated. Routing is a bounded
 geometric proposal, not installation engineering or code approval.
 
+`derive_wall_cavity_route_domain(model, assembly_id, nominal_diameter_m=...,
+options=...)` is an opt-in adapter for straight horizontal cardinal-axis
+`wall.wood_rect_stock@2.0.0` assignments with no hosted openings. It measures
+the actual generated drywall inner faces, continuous top/bottom plate stacks,
+and full-height ordinary stud boxes; each gap between adjacent studs becomes
+one separate route volume. It does not infer wall thickness or use preset
+spacing to create free space. The router still checks every generated part as a
+hard blocker, so a route stays in its selected bay and cannot pass through a
+stud, plate, or panel. Different bays have no connected route volume between
+them.
+
+The adapter refuses opening framing, non-cardinal or non-straight walls,
+cripples/headers/jacks/kings/sills or other unsupported parts, incomplete or
+misaligned drywall/plate geometry, insufficient swept clearance, and inputs
+that exceed its 512-part, 128-bay, or 65,536 drywall-coverage-cell limits. Its
+domain identity binds the assignment digests, selected wall, all generated
+component IDs, diameter, clearance, and derived cells. Route entry re-derives
+and compares that exact domain. Stored assembly-aware routes retain the
+existing paired context receipt, so changing generated component geometry
+requires regenerating the route. The cells authorize no drilling, notching,
+penetrations, wall/ceiling transitions, or structural work; routing does not
+select circuit sizes or approved installation paths.
+
 An assembly-aware router route retains an `assembly-routing-context-v1`
 receipt on its primary bounded-router provenance. Supplemental provenance such
 as bundle alignment does not duplicate that receipt. It names sorted

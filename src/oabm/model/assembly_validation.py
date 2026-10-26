@@ -118,8 +118,8 @@ def assembly_routing_context_receipt(model: Any) -> dict[str, Any] | None:
     This deliberately is not a generic model-dependency graph. It records only
     the assembly assignments and physical identities the router treats as hard
     geometry, plus the host/deck identities that replace aggregate preferences.
-    ``validate_building_assemblies`` is responsible for validating the assembly
-    digests and ownership before this receipt is used.
+    Canonical assembly validation checks assignment digests and component
+    ownership before this summary is used.
     """
     assemblies = tuple(getattr(model, "building_assemblies", ()))
     components = tuple(getattr(model, "assembly_components", ()))

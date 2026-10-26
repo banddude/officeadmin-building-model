@@ -1507,9 +1507,7 @@ def derive_wall_cavity_route_domain(
                 or abs(extents[4] - cursor) > 1e-6
                 or extents[5] <= extents[4] + _EPS
             ):
-                raise RoutingError(
-                    f"generated {label} plates do not form one continuous full-length stack"
-                )
+                raise RoutingError(f"invalid {label} plate-stack geometry")
             cursor = extents[5]
         if abs(cursor - high_z) > 1e-6:
             raise RoutingError(f"generated {label} plates do not meet the Wall boundary")

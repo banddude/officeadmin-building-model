@@ -21,7 +21,10 @@ from .raceway import RacewaySelection, RacewaySelectionOutcome, wiring_method_fo
 from .structural import StructuralMember
 from .fittings import FittingInterface, FittingSelection, FittingSelectionOutcome
 from .assemblies import AssemblyComponent, BuildingAssembly
-from .assembly_validation import validate_building_assemblies
+from .assembly_validation import (
+    validate_assembly_route_contexts,
+    validate_building_assemblies,
+)
 from .supports import (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome,
                        component_contains_point, component_envelope_key, supported_levels)
 
@@ -487,6 +490,8 @@ def validate_model(model: BuildingModel) -> None:
             raise ContractError(
                 f"{fitting.id} must appear in {fitting.route_id}.fitting_ids to preserve fitting order"
             )
+
+    validate_assembly_route_contexts(model)
 
     for circuit in model.circuits:
         require(circuit.source_port_id, ports, f"{circuit.id}.source_port_id")

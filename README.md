@@ -42,10 +42,13 @@ for opt-in 1.6 opening-aware timber framing and drywall. Separately selected
 [door/window inserts](docs/building-assembly-opening-inserts-v1.md) and
 [suspended ceilings](docs/building-assembly-suspended-ceiling-producer-v1.md)
 add physical frames, leaf/pane geometry, T runners, tiles and hanger wires.
-GLB previews and quantities share those canonical physical component IDs. Populated assemblies are explicitly
-refused by routing, IFC, drawings and unsupported QA consumers until those
-lanes implement physical-component semantics. This is not full-room framing
-and does not automate engineering decisions.
+GLB previews and quantities share those canonical physical component IDs.
+Routing supports an opt-in bounded assembly-aware slice with explicit
+`AllowedRouteDomain` volumes; a geometry-derived plenum domain is available only
+for the supported rectangular suspended-ceiling case documented in
+[3D electrical routing](docs/routing.md). IFC, drawings and unsupported QA
+consumers still refuse populated assemblies. This is not full-room framing,
+does not authorize penetrations, and does not automate engineering decisions.
 See [Layered raceway policy](docs/layered-raceway-policy.md) for portable caller
 baseline/company/job permissions compiled into existing explicit selection rules.
 See [Panel schedule facts](docs/panel-schedule-facts.md) for an opt-in grouped

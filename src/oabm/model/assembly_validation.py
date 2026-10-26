@@ -112,6 +112,191 @@ def compute_assembly_digests(model: Any, assembly: BuildingAssembly,
     return compute_assembly_input_digest(model,assembly),compute_assembly_output_digest(components)
 
 
+def assembly_routing_context_receipt(model: Any) -> dict[str, Any] | None:
+    """Return a finite source-bound summary for routes that check 1.6 parts.
+
+    This deliberately is not a generic model-dependency graph. It records only
+    the assembly assignments and physical identities the router treats as hard
+    geometry, plus the host/deck identities that replace aggregate preferences.
+    ``validate_building_assemblies`` is responsible for validating the assembly
+    digests and ownership before this receipt is used.
+    """
+    assemblies = tuple(getattr(model, "building_assemblies", ()))
+    components = tuple(getattr(model, "assembly_components", ()))
+    if not assemblies and not components:
+        return None
+    if not assemblies or not components:
+        # The canonical validator will give the detailed invalid-model error;
+        # retain a clear deterministic result if this helper is called alone.
+        raise ContractError("assembly routing context requires assignments and owned components")
+
+    component_by_id = {row.id: row for row in components}
+    slab_ids = {row.id for row in getattr(model, "slabs", ())}
+    assignment_digests = []
+    checked_deck_ids: set[str] = set()
+    checked_deck_kinds: dict[str, str] = {}
+    assigned_wall_ids: set[str] = set()
+    assigned_ceiling_ids: set[str] = set()
+    for row in sorted(assemblies, key=lambda item: item.id):
+        assignment_digests.append({
+            "assembly_id": row.id,
+            "assembly_kind": row.assembly_kind,
+            "host_id": row.host_id,
+            "input_digest": row.input_digest,
+            "output_digest": row.output_digest,
+        })
+        if row.assembly_kind == "wall":
+            assigned_wall_ids.add(row.host_id)
+        elif row.assembly_kind == "suspended_ceiling":
+            assigned_ceiling_ids.add(row.host_id)
+            if row.deck_id:
+                checked_deck_ids.add(row.deck_id)
+                if row.deck_id in slab_ids:
+                    checked_deck_kinds[row.deck_id] = "existing_slab"
+                elif row.deck_id in component_by_id:
+                    checked_deck_kinds[row.deck_id] = "owned_deck_panel"
+                else:
+                    checked_deck_kinds[row.deck_id] = "unresolved"
+
+    body: dict[str, Any] = {
+        "version": "assembly-routing-context-v1",
+        "assignment_digests": assignment_digests,
+        "checked_component_ids": sorted(row.id for row in components),
+        "checked_deck_ids": sorted(checked_deck_ids),
+        "checked_deck_kinds": [
+            {"deck_id": identity, "kind": checked_deck_kinds[identity]}
+            for identity in sorted(checked_deck_kinds)
+        ],
+        "assigned_wall_ids": sorted(assigned_wall_ids),
+        "assigned_ceiling_ids": sorted(assigned_ceiling_ids),
+    }
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"),
+                           ensure_ascii=False, allow_nan=False)
+    return {**body, "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest()}
+
+
+def validate_assembly_route_contexts(model: Any) -> None:
+    """Reject stale explicit assembly-aware router receipts on model reload/update.
+
+    Manual routes and older unbounded routes are not promoted to verified
+    assembly routes. A generated assembly-routing claim must retain paired
+    receipts on the primary router provenance and route geometry-check record,
+    matching current canonical assembly identities and digests. Supplemental
+    router provenance does not carry a second bounded receipt.
+    """
+    current = assembly_routing_context_receipt(model)
+    current_assembly_ids = set()
+    if current is not None:
+        current_assembly_ids.update(current.get("checked_component_ids", ()))
+        current_assembly_ids.update(current.get("checked_deck_ids", ()))
+    for route in getattr(model, "routes", ()):
+        route_attributes = getattr(route, "attributes", {})
+        route_attributes = route_attributes if isinstance(route_attributes, dict) else {}
+        geometry_check = route_attributes.get("geometry_check")
+        geometry_check = geometry_check if isinstance(geometry_check, dict) else {}
+        router_provenance = tuple(
+            item for item in getattr(route, "provenance", ())
+            if getattr(item, "source_kind", None) == "router"
+        )
+        engine_method = route_attributes.get("routing_engine")
+        primary_records = tuple(
+            item for item in router_provenance
+            if isinstance(engine_method, str) and getattr(item, "method", None) == engine_method
+        )
+        provenance_attributes = tuple(
+            item.attributes if isinstance(getattr(item, "attributes", None), dict) else {}
+            for item in router_provenance
+        )
+
+        # A receipt in either half is an assembly-routing claim. Keep the
+        # claim paired and source-bound even if the primary bounded receipt is
+        # removed or malformed. Supplemental router provenance (for example,
+        # bundle-source-alignment) is deliberately not a receipt owner.
+        checked_ids = geometry_check.get("checked_blocker_ids", ())
+        checked_classes = geometry_check.get("checked_blocker_classes", ())
+        claims_assembly_check = (
+            "assembly_routing_context" in geometry_check
+            or (
+                isinstance(checked_ids, (list, tuple))
+                and any(
+                    isinstance(identity, str) and identity in current_assembly_ids
+                    for identity in checked_ids
+                )
+            )
+            or (
+                isinstance(checked_classes, (list, tuple))
+                and any(
+                    isinstance(name, str) and name.startswith("AssemblyComponent")
+                    for name in checked_classes
+                )
+            )
+            or any(
+                "assembly_routing_context" in attributes
+                or (
+                    isinstance(attributes.get("bounded_routing_context"), dict)
+                    and "assembly_routing_context" in attributes["bounded_routing_context"]
+                )
+                for attributes in provenance_attributes
+            )
+        )
+        if not claims_assembly_check:
+            # Preserve older bounded/unbounded route semantics, but retain the
+            # established fail-closed check when a bounded primary route is
+            # evaluated against a populated assembly model.
+            if current is not None:
+                for item, attributes in zip(router_provenance, provenance_attributes):
+                    if not any(item is primary for primary in primary_records):
+                        continue
+                    bounded = attributes.get("bounded_routing_context")
+                    if isinstance(bounded, dict) and "assembly_routing_context" not in bounded:
+                        raise ContractError(
+                            f"{route.id} is a bounded router route without an assembly-context receipt; "
+                            "regenerate it against the current assembly model"
+                        )
+            continue
+
+        if len(primary_records) != 1:
+            raise ContractError(
+                f"{route.id} claims assembly-aware routing but does not have exactly one primary "
+                "router provenance record; regenerate the route"
+            )
+        primary = primary_records[0]
+        primary_attributes = (
+            primary.attributes if isinstance(getattr(primary, "attributes", None), dict) else {}
+        )
+        bounded = primary_attributes.get("bounded_routing_context")
+
+        # Do not silently accept duplicate or malformed receipt fields attached
+        # to supplemental provenance; the primary router record owns the one
+        # source-bound bounded context for this route.
+        for item in router_provenance:
+            if item is primary:
+                continue
+            attributes = item.attributes if isinstance(getattr(item, "attributes", None), dict) else {}
+            if "bounded_routing_context" in attributes or "assembly_routing_context" in attributes:
+                raise ContractError(
+                    f"{route.id} stores an assembly routing receipt outside its primary router "
+                    "provenance record"
+                )
+
+        if not isinstance(bounded, dict):
+            raise ContractError(
+                f"{route.id} claims assembly-aware routing without its paired bounded "
+                "assembly-context receipt; regenerate the route"
+            )
+        if (
+            current is None
+            or bounded.get("version") != "bounded-routing-context-v1"
+            or "assembly_routing_context" not in bounded
+            or bounded.get("assembly_routing_context") != current
+            or "assembly_routing_context" not in geometry_check
+            or geometry_check.get("assembly_routing_context") != current
+        ):
+            raise ContractError(
+                f"{route.id} has stale assembly routing context; regenerate the route"
+            )
+
+
 def _distance2(a, b) -> float:
     return math.hypot(a[0]-b[0],a[1]-b[1])
 

@@ -2,7 +2,7 @@
 
 from .router import (
     AllowedRouteDomain, BundleHints, NoRouteError, RoutingError, RoutingOptions,
-    route_between_ports,
+    derive_suspended_ceiling_route_domain, route_between_ports,
 )
 from .placement import (
     EquipmentPlacementProposal, PlacementCandidate, PlacementError,
@@ -19,6 +19,7 @@ from .consolidate import (
 
 __all__ = [
     "AllowedRouteDomain", "BundleHints", "NoRouteError", "RoutingError",
+    "derive_suspended_ceiling_route_domain",
     "RoutingOptions", "route_between_ports",
     "EquipmentPlacementProposal", "PlacementCandidate", "PlacementError",
     "apply_equipment_proposal", "propose_equipment_placement", "set_user_equipment_placement",

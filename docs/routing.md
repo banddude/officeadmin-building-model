@@ -74,17 +74,13 @@ as unverified. Route attributes add
 `geometry_check.status = "contained_and_clear_of_checked_blockers"`, the
 supported blocker classes and up to 256 sorted blocker IDs, plus explicit
 limitations and a generation-time-only revalidation marker. The checked hard
-blockers in this slice are `Obstacle`, `StructuralMember`, and hard no-go/avoid
-`RouteConstraint` geometry. This is
-not a complete building clash check: `Wall` and `Ceiling` geometry remain
-pathway preferences, while `Slab` and `Opening` geometry is not checked as a
-blocker. The status says only that the swept route fits the caller volume and
-avoids those checked hard blockers; it does not say that a wall is buildable to
-traverse, authorize a penetration, or establish code compliance. A future assembly generator can adapt explicit
-free-space geometry into this input, but this API itself generates no domain
-or penetration. If no domain is passed, legacy routing is unchanged and emits
-no domain metadata. `design_proposed_circuits(..., allowed_domain=...)` passes
-the same explicit domain to every generated route leg.
+blockers for models without populated assemblies are `Obstacle`,
+`StructuralMember`, and hard no-go/avoid `RouteConstraint` geometry. In that
+legacy no-assembly case, `Wall` and `Ceiling` geometry remain pathway
+preferences, while `Slab` and `Opening` geometry is not checked as a blocker.
+If no domain is passed, legacy no-assembly routing is unchanged and emits no
+domain metadata. `design_proposed_circuits(..., allowed_domain=...)` passes the
+same explicit domain to every generated route leg.
 
 An endpoint or stub outside the selected volume raises `NoRouteError` with a
 stable reason code. A route blocked within the union raises
@@ -107,6 +103,54 @@ changed port, clearance, or blocker fails closed and needs a fresh decision ID
 to regenerate. The geometry-check receipt describes the calculation when
 that route was produced; it is not live validation and does not update after
 host-model changes.
+
+### Assembly-aware route slice (#356, opt-in)
+
+A model with populated 1.6 building assemblies can be routed only when the
+caller supplies an explicit `AllowedRouteDomain` and a known positive nominal
+diameter. The domain is still caller-selected finite free space: its `source_ids`
+are descriptive references, not permission to drill, notch, create portals,
+cross drywall/deck, or infer an equipment-box exit. Routes and port stubs must
+remain inside the swept-envelope union and avoid the hard geometry below.
+
+The existing router temporarily adapts every owned `AssemblyComponent` into a
+hard rule keyed by the canonical component ID. `Box3D` children use the router's
+exact oriented-box distance checks after a query-only quaternion normalization
+matching canonical 1.6 geometry; the source quaternion is not changed. Panels
+use their declared mid-plane with half physical thickness plus routed radius
+and caller clearance; `WireSweep` children use declared wire radius plus routed
+radius and clearance. `Profile` extrusions use a conservative world-axis
+enclosing bound. That may block a
+C/U/T profile's void, but never treats its void as verified free space. For a
+suspended-ceiling assignment that references an existing `Slab`, that same
+canonical slab is reused once as a hard blocker from its footprint top face
+downward by `thickness_m`; a conservative world-XY footprint bound may
+over-block a rotated/irregular edge. A generated `deck_panel` remains its one
+owned component blocker.
+
+Wall/ceiling aggregate pathway preferences are suppressed where an assigned
+aggregate's physical children replace them. This first slice refuses routing
+when any modeled `Wall` or `Ceiling` aggregate is unassigned; its old soft
+surface rule is not represented as physical collision coverage. Other `Slab`
+records, architectural openings/voids, unmodeled trades, and outside-domain
+geometry remain outside this slice. No portals, holes, framing edits,
+penetrations, or equipment-box transitions are generated. Routing is a bounded
+geometric proposal, not installation engineering or code approval.
+
+An assembly-aware router route retains an `assembly-routing-context-v1`
+receipt on its primary bounded-router provenance. Supplemental provenance such
+as bundle alignment does not duplicate that receipt. It names sorted
+assembly input/output digests, checked component IDs, selected deck IDs, and
+the aggregate wall/ceiling IDs whose preferences were suppressed. Canonical
+model construction/load requires the assembly receipt to remain paired between
+the primary bounded-router provenance and geometry-check record, and rejects
+stale, missing, or malformed halves when either side or checked blocker
+identities claim assembly routing. Bounded design idempotence includes the same
+subreceipt; changed canonical parts require a fresh routing decision. This is a
+narrow assembly freshness rule, not generic dependency tracking and not a new
+schema field/version. Manual routes and legacy unbounded routes without that
+explicit claim are not promoted to assembly-checked routes, and legacy
+no-assembly route edit semantics remain unchanged.
 
 ## Bundle hints (optional)
 

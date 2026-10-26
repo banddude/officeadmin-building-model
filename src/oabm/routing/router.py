@@ -33,7 +33,7 @@ from oabm.model import (
 )
 from oabm.model.assembly_validation import assembly_routing_context_receipt
 from oabm.model.assemblies import rotate_vector as _assembly_rotate_vector
-from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
+from oabm.model.entities import WALL_CONSTRUCTION_GLAZED, Wall
 
 _EPS = 1e-9
 _ALGORITHM = "deterministic-rectilinear-v1"
@@ -48,6 +48,10 @@ _MAX_ALLOWED_DOMAIN_SEARCH_STATES = 500_000
 _MAX_RECORDED_BLOCKER_IDS = 256
 _ALLOWED_DOMAIN_ALIGNMENT_EPSILON_M = 1e-9
 _ASSEMBLY_CEILING_DOMAIN_KIND = "assembly-derived-suspended-ceiling-plenum-v1"
+_ASSEMBLY_WALL_DOMAIN_KIND = "assembly-derived-wall-cavity-bays-v1"
+_MAX_WALL_DOMAIN_COMPONENTS = 512
+_MAX_WALL_DOMAIN_PANEL_CELLS = 65_536
+_MAX_WALL_DOMAIN_BAYS = _MAX_ALLOWED_DOMAIN_VOLUMES
 
 
 class RoutingError(ValueError):
@@ -411,6 +415,10 @@ def route_between_ports(
         )
     if allowed_domain is not None and allowed_domain.kind == _ASSEMBLY_CEILING_DOMAIN_KIND:
         _require_current_derived_ceiling_domain(
+            model, allowed_domain, nominal_diameter_m=diameter, options=options,
+        )
+    if allowed_domain is not None and allowed_domain.kind == _ASSEMBLY_WALL_DOMAIN_KIND:
+        _require_current_derived_wall_cavity_domain(
             model, allowed_domain, nominal_diameter_m=diameter, options=options,
         )
     route_radius = (diameter or 0.0) / 2.0
@@ -1277,6 +1285,473 @@ def _require_current_derived_ceiling_domain(
     if allowed_domain != expected:
         raise RoutingError(
             "derived suspended-ceiling route domain is stale or does not match current geometry"
+        )
+
+
+def derive_wall_cavity_route_domain(
+    model: BuildingModel,
+    assembly_id: str,
+    *,
+    nominal_diameter_m: float,
+    options: RoutingOptions | None = None,
+) -> AllowedRouteDomain:
+    """Derive bounded per-bay routing cells from a generated v2 timber wall.
+
+    This adapter is deliberately limited to the straight, cardinal-axis,
+    no-opening ``wall.wood_rect_stock@2.0.0`` producer. It measures the cavity
+    between generated drywall inner faces and plate surfaces, then creates one
+    route cell for each open interval between actual full-height ordinary
+    studs. The result is a route constraint, not a penetration permission or
+    an engineering approval.
+    """
+    if not isinstance(model, BuildingModel):
+        raise RoutingError("model must be a BuildingModel")
+    if not isinstance(assembly_id, str) or not assembly_id.strip():
+        raise RoutingError("assembly_id must identify a wall assignment")
+    options = options or RoutingOptions()
+    if not isinstance(options, RoutingOptions):
+        raise RoutingError("options must be a RoutingOptions value")
+    if (
+        isinstance(nominal_diameter_m, bool)
+        or not isinstance(nominal_diameter_m, (int, float))
+        or not math.isfinite(nominal_diameter_m)
+        or nominal_diameter_m <= 0
+    ):
+        raise RoutingError(
+            "derived wall route domain requires a known positive nominal diameter"
+        )
+    diameter_m = float(nominal_diameter_m)
+
+    if assembly_routing_context_receipt(model) is None:
+        raise RoutingError("derived wall route domain requires a populated assembly model")
+    assignments = tuple(row for row in model.building_assemblies if row.id == assembly_id)
+    if len(assignments) != 1 or assignments[0].assembly_kind != "wall":
+        raise RoutingError(f"{assembly_id!r} is not one current wall assignment")
+    assignment = assignments[0]
+    if (
+        assignment.preset_id != "wall.wood_rect_stock"
+        or assignment.preset_revision != "2.0.0"
+        or assignment.generator_version != "oabm-wall-producer/2.0.0"
+    ):
+        raise RoutingError(
+            "derived wall route domain supports only wall.wood_rect_stock@2.0.0"
+        )
+    wall = next((row for row in model.walls if row.id == assignment.host_id), None)
+    if not isinstance(wall, Wall):
+        raise RoutingError("wall assignment has no current Wall host")
+    if any(row.host_id == wall.id for row in model.openings):
+        raise RoutingError("derived wall route domain does not support walls with openings")
+
+    axis, normal, wall_length = _wall_domain_frame(wall, assignment.wall_frame)
+    wall_base_z = wall.centerline.points[0].z
+    wall_top_z = wall_base_z + wall.height_m
+    components_by_id = {row.id: row for row in model.assembly_components}
+    try:
+        components = tuple(components_by_id[identity] for identity in assignment.component_ids)
+    except KeyError as exc:
+        raise RoutingError(
+            f"wall assignment has missing component {exc.args[0]!r}"
+        ) from exc
+    if len(components) > _MAX_WALL_DOMAIN_COMPONENTS:
+        raise RoutingError(
+            "derived wall route domain exceeds its bounded component limit "
+            f"({_MAX_WALL_DOMAIN_COMPONENTS})"
+        )
+    supported_kinds = {"stud", "top_plate", "bottom_plate", "drywall_panel"}
+    unsupported = sorted({row.component_kind for row in components} - supported_kinds)
+    if unsupported:
+        raise RoutingError(
+            "derived wall route domain does not support assembly component roles: "
+            + ", ".join(unsupported)
+        )
+    if not all(
+        any(
+            isinstance(record.attributes, dict)
+            and record.attributes.get("generator_version") == "oabm-wall-producer/2.0.0"
+            for record in row.provenance
+        )
+        for row in components
+    ):
+        raise RoutingError("derived wall route domain requires current generated wall components")
+
+    origin = wall.centerline.points[0]
+    box_extents: dict[str, tuple[float, float, float, float, float, float]] = {}
+    for component in components:
+        if component.component_kind == "drywall_panel":
+            continue
+        if not isinstance(component.geometry, Box3D) or component.opening_id is not None:
+            raise RoutingError(
+                f"derived wall route domain requires solid no-opening box components: {component.id!r}"
+            )
+        box_extents[component.id] = _wall_domain_box_extents(
+            component, origin, axis, normal,
+        )
+
+    panel_faces: dict[int, list[tuple[float, float, float, float, float]]] = {
+        -1: [], 1: [],
+    }
+    for component in components:
+        if component.component_kind != "drywall_panel":
+            continue
+        if not isinstance(component.geometry, PanelGeometry) or component.opening_id is not None:
+            raise RoutingError(
+                f"derived wall route domain requires supported drywall panels: {component.id!r}"
+            )
+        panel = component.geometry
+        panel_normal = panel.normal
+        face_dot = panel_normal.x * normal.x + panel_normal.y * normal.y
+        if (
+            abs(panel_normal.z) > _EPS
+            or abs(abs(face_dot) - 1.0) > _EPS
+        ):
+            raise RoutingError(
+                f"derived wall route domain requires cardinal drywall face normals: {component.id!r}"
+            )
+        t_values: list[float] = []
+        n_values: list[float] = []
+        z_values: list[float] = []
+        for point in panel.boundary.points:
+            dx, dy = point.x - origin.x, point.y - origin.y
+            t_values.append(dx * axis.x + dy * axis.y)
+            n_values.append(dx * normal.x + dy * normal.y)
+            z_values.append(point.z)
+        if (
+            len(panel.boundary.points) != 4
+            or max(n_values) - min(n_values) > 1e-6
+            or len({round(value, 9) for value in t_values}) != 2
+            or len({round(value, 9) for value in z_values}) != 2
+            or len({(round(t, 9), round(z, 9)) for t, z in zip(t_values, z_values)}) != 4
+        ):
+            raise RoutingError(
+                f"derived wall route domain requires rectangular axis-aligned drywall panels: {component.id!r}"
+            )
+        t_min, t_max = min(t_values), max(t_values)
+        z_min, z_max = min(z_values), max(z_values)
+        if (
+            t_min < -1e-6 or t_max > wall_length + 1e-6
+            or z_min < wall_base_z - 1e-6 or z_max > wall_top_z + 1e-6
+        ):
+            raise RoutingError(
+                f"drywall panel {component.id!r} extends beyond its supported Wall host"
+            )
+        side = 1 if face_dot > 0 else -1
+        inner_face = sum(n_values) / len(n_values) - side * panel.thickness_m / 2.0
+        panel_faces[side].append((t_min, t_max, z_min, z_max, inner_face))
+
+    if not panel_faces[-1] or not panel_faces[1]:
+        raise RoutingError("derived wall route domain requires generated drywall on both faces")
+    for side, label in ((-1, "negative"), (1, "positive")):
+        faces = panel_faces[side]
+        inner_values = [row[4] for row in faces]
+        if max(inner_values) - min(inner_values) > 1e-6:
+            raise RoutingError(
+                f"generated {label}-face drywall panels do not share one inner cavity face"
+            )
+        _require_wall_panel_coverage(
+            tuple((row[0], row[1], row[2], row[3]) for row in faces),
+            wall_length, wall_base_z, wall_top_z, label,
+        )
+
+    negative_inner = sum(row[4] for row in panel_faces[-1]) / len(panel_faces[-1])
+    positive_inner = sum(row[4] for row in panel_faces[1]) / len(panel_faces[1])
+    if positive_inner - negative_inner <= _EPS:
+        raise RoutingError("generated drywall leaves no positive wall cavity depth")
+
+    bottom_plates = tuple(
+        box_extents[row.id] for row in components if row.component_kind == "bottom_plate"
+    )
+    top_plates = tuple(
+        box_extents[row.id] for row in components if row.component_kind == "top_plate"
+    )
+    stud_rows = tuple(
+        row for row in components if row.component_kind == "stud"
+    )
+    if not bottom_plates or not top_plates or len(stud_rows) < 2:
+        raise RoutingError(
+            "derived wall route domain requires generated top/bottom plates and at least two studs"
+        )
+
+    def require_framing_depth(extents, component_id: str) -> None:
+        if (
+            abs(extents[2] - negative_inner) > 1e-6
+            or abs(extents[3] - positive_inner) > 1e-6
+        ):
+            raise RoutingError(
+                f"generated framing depth does not meet drywall inner faces at {component_id!r}"
+            )
+
+    for component in components:
+        if component.component_kind in {"bottom_plate", "top_plate", "stud"}:
+            extents = box_extents[component.id]
+            require_framing_depth(extents, component.id)
+            if component.component_kind == "stud":
+                roles = tuple(
+                    record.attributes.get("framing_role")
+                    for record in component.provenance
+                    if isinstance(record.attributes, dict)
+                    and "framing_role" in record.attributes
+                )
+                if roles != ("ordinary",):
+                    raise RoutingError(
+                        "derived wall route domain supports ordinary studs only; "
+                        f"unsupported framing role on {component.id!r}"
+                    )
+
+    def validate_plate_stack(plates, low_z: float, high_z: float, label: str) -> None:
+        ordered = sorted(plates, key=lambda row: (row[4], row[5]))
+        cursor = low_z
+        for extents in ordered:
+            if (
+                abs(extents[0]) > 1e-6
+                or abs(extents[1] - wall_length) > 1e-6
+                or abs(extents[4] - cursor) > 1e-6
+                or extents[5] <= extents[4] + _EPS
+            ):
+                raise RoutingError(f"invalid {label} plate-stack geometry")
+            cursor = extents[5]
+        if abs(cursor - high_z) > 1e-6:
+            raise RoutingError(f"generated {label} plates do not meet the Wall boundary")
+
+    validate_plate_stack(bottom_plates, wall_base_z, max(row[5] for row in bottom_plates), "bottom")
+    validate_plate_stack(top_plates, min(row[4] for row in top_plates), wall_top_z, "top")
+    cavity_bottom_z = max(row[5] for row in bottom_plates)
+    cavity_top_z = min(row[4] for row in top_plates)
+    if cavity_top_z - cavity_bottom_z <= _EPS:
+        raise RoutingError("generated plate stacks leave no positive wall cavity height")
+
+    stud_extents = []
+    for component in stud_rows:
+        extents = box_extents[component.id]
+        if (
+            extents[0] < -1e-6 or extents[1] > wall_length + 1e-6
+            or abs(extents[4] - cavity_bottom_z) > 1e-6
+            or abs(extents[5] - cavity_top_z) > 1e-6
+            or extents[1] - extents[0] <= _EPS
+        ):
+            raise RoutingError(
+                f"derived wall route domain requires full-height ordinary studs between plates: {component.id!r}"
+            )
+        stud_extents.append((extents[0], extents[1], component.id))
+    stud_extents.sort()
+    if abs(stud_extents[0][0]) > 1e-6 or abs(stud_extents[-1][1] - wall_length) > 1e-6:
+        raise RoutingError("generated ordinary studs do not close both ends of the wall cavity")
+
+    swept_padding = diameter_m / 2.0 + options.clearance_m
+    cells: list[tuple[float, float]] = []
+    cursor = stud_extents[0][1]
+    for next_min, next_max, _identity in stud_extents[1:]:
+        if next_min < cursor - 1e-6:
+            raise RoutingError("generated ordinary studs overlap along the wall axis")
+        if next_min - cursor > _EPS:
+            cells.append((cursor, next_min))
+        cursor = max(cursor, next_max)
+    if len(cells) > _MAX_WALL_DOMAIN_BAYS:
+        raise RoutingError(
+            "derived wall route domain exceeds the bounded bay limit "
+            f"({_MAX_WALL_DOMAIN_BAYS})"
+        )
+    if not cells:
+        raise RoutingError("generated ordinary studs leave no open wall cavity bays")
+
+    volumes = []
+    cavity_depth = positive_inner - negative_inner
+    cavity_height = cavity_top_z - cavity_bottom_z
+    for t_min, t_max in cells:
+        bay_width = t_max - t_min
+        if any(
+            dimension - 2.0 * swept_padding <= _EPS
+            for dimension in (bay_width, cavity_depth, cavity_height)
+        ):
+            raise RoutingError(
+                "wall cavity has no positive swept-clearance volume for the requested "
+                "route diameter and clearance"
+            )
+        center_t = (t_min + t_max) / 2.0
+        center_n = (negative_inner + positive_inner) / 2.0
+        center_z = (cavity_bottom_z + cavity_top_z) / 2.0
+        center = Point3(
+            x=origin.x + axis.x * center_t + normal.x * center_n,
+            y=origin.y + axis.y * center_t + normal.y * center_n,
+            z=center_z,
+        )
+        volumes.append(Box3D(
+            pose=Pose(position=center),
+            size=Size3(
+                x=abs(axis.x) * bay_width + abs(normal.x) * cavity_depth,
+                y=abs(axis.y) * bay_width + abs(normal.y) * cavity_depth,
+                z=cavity_height,
+            ),
+        ))
+
+    domain_sources = (assignment.id, wall.id)
+    identity_payload = {
+        "assembly_id": assignment.id,
+        "input_digest": assignment.input_digest,
+        "output_digest": assignment.output_digest,
+        "wall_id": wall.id,
+        "wall_frame": dataclasses.asdict(assignment.wall_frame),
+        "component_ids": sorted(row.id for row in components),
+        "nominal_diameter_m": diameter_m,
+        "clearance_m": float(options.clearance_m),
+        "volumes": [
+            {
+                "position": dataclasses.asdict(volume.pose.position),
+                "rotation": dataclasses.asdict(volume.pose.rotation),
+                "size": dataclasses.asdict(volume.size),
+            }
+            for volume in volumes
+        ],
+    }
+    canonical_identity = json.dumps(
+        identity_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    )
+    domain_id = "domain:wall-cavity:" + hashlib.sha256(
+        canonical_identity.encode("utf-8")
+    ).hexdigest()
+    return AllowedRouteDomain(
+        id=domain_id,
+        kind=_ASSEMBLY_WALL_DOMAIN_KIND,
+        volumes=tuple(volumes),
+        source_ids=domain_sources,
+    )
+
+
+def _wall_domain_frame(wall: Wall, frame) -> tuple[Vector3, Vector3, float]:
+    points = wall.centerline.points
+    if len(points) != 2:
+        raise RoutingError("derived wall route domain supports exactly two centerline points")
+    first, last = points
+    dx, dy, dz = last.x - first.x, last.y - first.y, last.z - first.z
+    length = math.hypot(dx, dy)
+    if length <= _EPS or abs(dz) > 1e-6:
+        raise RoutingError("derived wall route domain requires a straight horizontal wall")
+    ux, uy = dx / length, dy / length
+    cardinal = (
+        abs(abs(ux) - 1.0) <= _EPS and abs(uy) <= _EPS
+    ) or (
+        abs(abs(uy) - 1.0) <= _EPS and abs(ux) <= _EPS
+    )
+    if not cardinal:
+        raise RoutingError("derived wall route domain supports cardinal-axis walls only")
+    if (
+        frame is None
+        or abs(frame.origin.x - first.x) > 1e-6
+        or abs(frame.origin.y - first.y) > 1e-6
+        or abs(frame.origin.z - first.z) > 1e-6
+        or abs(frame.base_z_m - first.z) > 1e-6
+        or abs(frame.axis.x - ux) > 1e-6
+        or abs(frame.axis.y - uy) > 1e-6
+        or abs(frame.left_normal.x + uy) > 1e-6
+        or abs(frame.left_normal.y - ux) > 1e-6
+    ):
+        raise RoutingError("wall assignment frame does not match its current straight Wall host")
+    return frame.axis, frame.left_normal, length
+
+
+def _wall_domain_box_extents(
+    component: AssemblyComponent,
+    origin: Point3,
+    axis: Vector3,
+    normal: Vector3,
+) -> tuple[float, float, float, float, float, float]:
+    geometry = _normalized_assembly_box(component.geometry)
+    for local_axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+        vx, vy, vz = _rotate_vector(local_axis, geometry.pose.rotation)
+        projections = (
+            vx * axis.x + vy * axis.y,
+            vx * normal.x + vy * normal.y,
+            vz,
+        )
+        if (
+            sum(abs(value) > 1.0 - 1e-6 for value in projections) != 1
+            or sum(abs(value) > 1e-6 for value in projections) != 1
+        ):
+            raise RoutingError(
+                f"derived wall route domain requires cardinal stock geometry: {component.id!r}"
+            )
+    hx, hy, hz = geometry.size.x / 2, geometry.size.y / 2, geometry.size.z / 2
+    projected = []
+    center = geometry.pose.position
+    for x in (-hx, hx):
+        for y in (-hy, hy):
+            for z in (-hz, hz):
+                rx, ry, rz = _rotate_vector((x, y, z), geometry.pose.rotation)
+                px, py, pz = center.x + rx, center.y + ry, center.z + rz
+                dx, dy = px - origin.x, py - origin.y
+                projected.append((
+                    dx * axis.x + dy * axis.y,
+                    dx * normal.x + dy * normal.y,
+                    pz,
+                ))
+    return (
+        min(row[0] for row in projected), max(row[0] for row in projected),
+        min(row[1] for row in projected), max(row[1] for row in projected),
+        min(row[2] for row in projected), max(row[2] for row in projected),
+    )
+
+
+def _require_wall_panel_coverage(
+    rectangles: tuple[tuple[float, float, float, float], ...],
+    wall_length: float,
+    wall_base_z: float,
+    wall_top_z: float,
+    label: str,
+) -> None:
+    t_edges = sorted({0.0, wall_length, *(value for row in rectangles for value in row[:2])})
+    z_edges = sorted({wall_base_z, wall_top_z, *(value for row in rectangles for value in row[2:])})
+    cell_count = (len(t_edges) - 1) * (len(z_edges) - 1)
+    if cell_count > _MAX_WALL_DOMAIN_PANEL_CELLS:
+        raise RoutingError(
+            "derived wall route domain exceeds its bounded drywall coverage cell limit "
+            f"({_MAX_WALL_DOMAIN_PANEL_CELLS})"
+        )
+    for z_low, z_high in zip(z_edges, z_edges[1:]):
+        if z_high - z_low <= _EPS:
+            continue
+        z_mid = (z_low + z_high) / 2.0
+        intervals = sorted(
+            (t_low, t_high)
+            for t_low, t_high, panel_low_z, panel_high_z in rectangles
+            if panel_low_z <= z_mid <= panel_high_z
+        )
+        cursor = 0.0
+        for t_low, t_high in intervals:
+            if t_low > cursor + 1e-6:
+                raise RoutingError(
+                    f"generated {label}-face drywall panels leave an unsupported coverage gap"
+                )
+            cursor = max(cursor, t_high)
+        if cursor < wall_length - 1e-6:
+            raise RoutingError(
+                f"generated {label}-face drywall panels leave an unsupported coverage gap"
+            )
+
+
+def _require_current_derived_wall_cavity_domain(
+    model: BuildingModel,
+    allowed_domain: AllowedRouteDomain,
+    *,
+    nominal_diameter_m: float | None,
+    options: RoutingOptions,
+) -> None:
+    """Reject a stale or caller-forged generated wall-domain value."""
+    assignments = tuple(
+        row for row in model.building_assemblies
+        if row.assembly_kind == "wall" and row.id in allowed_domain.source_ids
+    )
+    if len(assignments) != 1 or nominal_diameter_m is None:
+        raise RoutingError(
+            "derived wall route domain must name one current wall assignment and a positive diameter"
+        )
+    expected = derive_wall_cavity_route_domain(
+        model, assignments[0].id,
+        nominal_diameter_m=nominal_diameter_m,
+        options=options,
+    )
+    if allowed_domain != expected:
+        raise RoutingError(
+            "derived wall route domain is stale or does not match current geometry"
         )
 
 

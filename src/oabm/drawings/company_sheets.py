@@ -11,6 +11,8 @@ import hashlib
 import io
 import json
 import math
+from functools import lru_cache
+import subprocess
 import os
 from pathlib import Path
 import re
@@ -29,6 +31,53 @@ DEFAULT_TEMPLATE = {'width_mm':914.4,'height_mm':609.6,'margin_mm':7.055555556,
                     'rail_width_mm':87.136111111,'rail_inset_mm':6.35}
 
 
+def _xml_strings(value):
+    """Reject XML 1.0 invalid code points before any output is reserved."""
+    if isinstance(value,str):
+        if any(not (ord(c) in (9,10,13) or 0x20<=ord(c)<=0xD7FF or
+                    0xE000<=ord(c)<=0xFFFD or 0x10000<=ord(c)<=0x10FFFF) for c in value):
+            raise ValueError('input contains an XML-invalid character')
+    elif isinstance(value,dict):
+        for key,item in value.items():_xml_strings(key);_xml_strings(item)
+    elif isinstance(value,(list,tuple)):
+        for item in value:_xml_strings(item)
+
+
+def _printable(text):
+    _xml_strings(text)
+    if any(not 32<=ord(c)<=126 for c in text):
+        raise ValueError('sheet text supports printable ASCII only; supply an explicit supported spelling')
+    return text
+
+
+@lru_cache(maxsize=16)
+def _font(family='Liberation Sans',weight=400):
+    """Resolve a real installed face and use its actual FreeType advances.
+
+    The resolved family is written into SVG, rather than measuring one font
+    and asking Cairo/browser fallback to choose another. Fontconfig and the
+    selected font file are explicit local runtime requirements.
+    """
+    from PIL import ImageFont
+    try:
+        query=family+(':style=Bold' if weight>=600 else ':style=Regular')
+        result=subprocess.run(['fc-match','-f','%{file}\n%{family}\n',query],
+                              check=True,capture_output=True,text=True).stdout.splitlines()
+        path,actual=result[0],result[1].split(',')[0]
+        font=ImageFont.truetype(path,1000)
+    except (OSError,subprocess.SubprocessError,IndexError) as exc:
+        raise ValueError('sheet text requires Fontconfig (fc-match) and a readable installed TrueType/OpenType font') from exc
+    return font,actual,path
+
+
+def _advance(text,size,weight=400,family='Liberation Sans'):
+    _printable(text)
+    font,_,_=_font(family,weight)
+    # One percent margin covers converter rounding; bounds also include ink
+    # bearings separately for body text. No per-character average is used.
+    return font.getlength(text)*size/1000*1.01
+
+
 def _object(value, allowed, label, required=()):
     if not isinstance(value, dict) or set(value)-set(allowed) or not set(required)<=set(value):
         raise ValueError(f'{label}: expected fields {sorted(allowed)}; required {sorted(required)}')
@@ -40,6 +89,7 @@ def _fields(value, label):
     for key, text in value.items():
         if not isinstance(text,str) or any(ord(c)<32 for c in text):
             raise ValueError(f'{label}.{key}: supply a single-line string (empty explicitly clears it)')
+        _printable(text)
     return dict(value)
 
 
@@ -110,6 +160,7 @@ def resolve_company_sheet_set(profile_path, job_path):
     pp,jp=Path(profile_path),Path(job_path)
     pr,jr=pp.read_bytes(),jp.read_bytes()
     profile,job=_decode(pr),_decode(jr)
+    _xml_strings(profile);_xml_strings(job)
     _object(profile, {'version','fields','template','logos'}, 'profile', {'version','fields','template'})
     if profile['version']!='company-sheet-profile-v1': raise ValueError('unsupported company profile version')
     _object(job, {'version','set_id','fields','template','logos','date','revision','formats','sheets'}, 'job',
@@ -138,6 +189,7 @@ def resolve_company_sheet_set(profile_path, job_path):
         title=row['title']
         if not isinstance(title,str) or not title.strip() or any(ord(c)<32 for c in title): raise ValueError('sheet.title: nonempty single-line title required')
         _object(row.get('template',{}),DEFAULT_TEMPLATE,'sheet.template')
+        _printable(title)
         t=_template({**template,**row.get('template',{})})
         effective={**fields,**_fields(row.get('fields',{}),'sheet.fields'),'date':issued,'revision':revision}
         assets={**logos,**_logos(row.get('logos',{}),jp.parent)}
@@ -151,16 +203,17 @@ def _el(parent,tag,**attrs):
     return ET.SubElement(parent,f'{{{SVG}}}'+tag,{k.replace('_','-'):str(v) for k,v in attrs.items()})
 
 
-def _rows(text, width, size):
-    # Conservative 0.72 em advance, including bold capitals. Never truncate.
-    cap=int(width/(size*.72))
-    if cap<1: raise ValueError('text cell has no capacity')
+def _rows(text, width, size, weight=400):
+    _printable(text)
     result=[]; current=''
     for word in text.split():
-        if len(word)>cap: raise ValueError(f'text token exceeds cell capacity ({cap} characters); shorten or widen the rail')
-        if current and len(current)+len(word)+1>cap: result.append(current);current=''
-        current=(current+' '+word).strip()
-    if current: result.append(current)
+        if _advance(word,size,weight)>width:
+            raise ValueError('text token exceeds measured cell capacity; shorten or widen the rail')
+        candidate=(current+' '+word).strip()
+        if current and _advance(candidate,size,weight)>width:
+            result.append(current);current=word
+        else:current=candidate
+    if current:result.append(current)
     return result
 
 
@@ -207,11 +260,19 @@ def _body_group(body, bounds):
             node.attrib.setdefault('font-family','Liberation Sans')
             x,y,size=n('x'),n('y'),n('font-size',3)
             if size<=0: raise ValueError('body: positive font size required')
-            width=len(node.text or '')*size*.72
+            value=_printable(node.text or '')
+            weight=int(node.get('font-weight','400'))
+            if weight not in {300,400,500,600,700}:raise ValueError('body: unsupported font weight')
+            family=node.get('font-family','Liberation Sans')
+            font,actual,_=_font(family,weight)
+            node.set('font-family',actual)
+            width=_advance(value,size,weight,family)
+            ink=font.getbbox(value,anchor='ls')
+            ink=tuple(v*size/1000 for v in ink)
             anchor=node.get('text-anchor','start')
             if anchor not in {'start','middle','end'}: raise ValueError('body: invalid text anchor')
             x-=width*({'start':0,'middle':.5,'end':1}[anchor])
-            box=(x,y-size,x+width,y+size*.3)
+            box=(x+min(0,ink[0]),y+min(-size,ink[1]),x+max(width,ink[2]),y+max(size*.3,ink[3]))
         if box and (box[0]-pad<l or box[1]-pad<t or box[2]+pad>r or box[3]+pad>b):
             raise ValueError('body: content exceeds drawing_bounds_mm; paginate or move/resize content')
         node.tag=f'{{{SVG}}}'+tag
@@ -233,10 +294,10 @@ def render_company_sheet_svg(sheet, *, body_svg=None):
     def line(frac): _el(root,'line',x1=left,y1=yy(frac),x2=right,y2=yy(frac),stroke='#4a4a4a',stroke_width=.15)
     def text(value,frac,size=2.8,weight=400,max_lines=1,xx=None,width=None):
         size*=rh/595.488888888
-        rows=_rows(value,cw if width is None else width,size)
+        rows=_rows(value,cw if width is None else width,size,weight)
         if len(rows)>max_lines: raise ValueError(f'sheet {sheet.id}: title-block text overflows {max_lines}-line cell: {value!r}; shorten text or widen rail')
         for j,row in enumerate(rows):
-            _el(root,'text',x=left if xx is None else xx,y=yy(frac)+j*size*1.35,font_family='Liberation Sans',font_size=size,font_weight=weight,fill='#161616').text=row
+            _el(root,'text',x=left if xx is None else xx,y=yy(frac)+j*size*1.35,font_family=_font('Liberation Sans',weight)[1],font_size=size,font_weight=weight,fill='#161616').text=row
     def field(key,frac,**kwargs):text(f.get(key,''),frac,**kwargs)
     text('PROJECT / LOCATION',.017,3,500)
     field('project',.040,size=5.5,weight=600,max_lines=2)
@@ -269,7 +330,9 @@ def render_company_sheet_svg(sheet, *, body_svg=None):
     text(sheet.title,.920,size=3.3,weight=500,max_lines=2)
     text('SHEET NO.',.955,size=2.8)
     text(sheet.id,.995,size=22,weight=600)
-    return ET.tostring(root,encoding='unicode')
+    result=ET.tostring(root,encoding='unicode')
+    ET.fromstring(result)  # Final well-formed XML check before successful output.
+    return result
 
 
 def _pdf(sheets, svgs, title):
@@ -341,6 +404,9 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
             stage='PDF';raw,pdf=_pdf(resolved.sheets,svgs,resolved.set_id);write('sheet-set.pdf',raw)
         manifest={'version':'company-sheet-delivery-v1','set_id':resolved.set_id,'sheet_order':[s.id for s in resolved.sheets],
                   'engineering_approval':False,'status':'presentation_only','pdf':pdf,'files':files,'runtime':_runtime(),
+                  'font_faces':[{'requested_family':family,'weight':weight,'resolved_family':_font(family,weight)[1],
+                                 'sha256':_sha(Path(_font(family,weight)[2]).read_bytes())}
+                                for family in ('Liberation Sans','DejaVu Sans','sans-serif') for weight in (400,700)],
                   'limitations':['Supplied text is not approval evidence.','Conservative text capacity checks require independent visual/font QA.',
                                  'Original inputs and portable editable inputs are both retained; keep private deliveries private.']}
         for row in files:
@@ -374,9 +440,11 @@ def update_company_profile(profile_path, changes_path, *, expected_sha256):
     path=Path(profile_path);raw=path.read_bytes()
     if _sha(raw)!=expected_sha256: raise ValueError('profile changed; inspect current defaults before updating')
     profile=_decode(raw)
+    _xml_strings(profile)
     _object(profile,{'version','fields','template','logos'},'profile',{'version','fields','template'})
     if profile['version']!='company-sheet-profile-v1': raise ValueError('unsupported company profile version')
     changes=_decode(Path(changes_path).read_bytes())
+    _xml_strings(changes)
     _object(changes,{'fields','template','logos'},'changes')
     merged=dict(profile)
     for key,value in changes.items():

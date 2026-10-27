@@ -125,7 +125,7 @@ def test_body_text_defaults_are_physical_and_text_overflow_refused(tmp_path):
     p,j=inputs(tmp_path);s=cs.resolve_company_sheet_set(p,j).sheets[0]
     xml=cs.render_company_sheet_svg(s,body_svg='<g><text x="20" y="20">LABEL</text></g>')
     node=next(n for n in ET.fromstring(xml).iter() if n.text=='LABEL')
-    assert node.get('font-size')=='3' and node.get('font-family')=='Liberation Sans'
+    assert node.get('font-size')=='3' and node.get('font-family')==cs._font('Liberation Sans',400)[1]
     with pytest.raises(ValueError,match='drawing_bounds_mm'):
         cs.render_company_sheet_svg(s,body_svg='<g><text x="20" y="20" font-size="30">'+('W'*100)+'</text></g>')
 
@@ -143,3 +143,46 @@ def test_portable_rebuild_uses_retained_assets_and_body(tmp_path):
     assert (a/'sheet-set.pdf').read_bytes()==(b/'sheet-set.pdf').read_bytes()
     (a/'inputs/job-portable.json').write_text('{}')
     with pytest.raises(ValueError,match='receipt mismatch'):cs.rebuild_company_sheet_set(a,output_directory=tmp_path/'bad')
+
+
+def test_wide_glyph_advance_blocks_title_rail_intrusion(tmp_path):
+    p,j=inputs(tmp_path);sheet=cs.resolve_company_sheet_set(p,j).sheets[0]
+    right=sheet.drawing_bounds_mm[2]
+    value='W'*20
+    actual=cs._font('Liberation Sans',400)[0].getlength(value)*10/1000
+    assert actual>144  # Previously admitted len(text)*size*.72.
+    body=f'<g><text x="{right-144}" y="50" font-size="10">{value}</text></g>'
+    with pytest.raises(ValueError,match='drawing_bounds_mm'):
+        cs.render_company_sheet_svg(sheet,body_svg=body)
+    assert len(cs._rows('WWWW WWWW',70,10))==2
+
+
+@pytest.mark.parametrize('where',['profile_field','job_field','sheet_title','revision','logo_path','field_name'])
+@pytest.mark.parametrize('invalid',['\uffff','\ud800','\x00'])
+def test_xml_invalid_inputs_refused_before_publication(tmp_path,where,invalid):
+    p,j=inputs(tmp_path);profile=json.loads(p.read_bytes());job=json.loads(j.read_bytes())
+    if where=='profile_field':profile['fields']['company']=invalid
+    elif where=='job_field':job['fields']['project']=invalid
+    elif where=='sheet_title':job['sheets'][0]['title']=invalid
+    elif where=='revision':job['revision']=invalid
+    elif where=='logo_path':profile['logos']={'icon':invalid+'.png'}
+    else:profile['fields'][invalid]='VALUE'
+    p.write_text(json.dumps(profile));j.write_text(json.dumps(job))
+    with pytest.raises(ValueError,match='XML-invalid'):
+        cs.create_company_sheet_set(p,j,output_directory=tmp_path/'bad')
+    assert not (tmp_path/'bad').exists()
+
+
+def test_unsupported_unicode_text_is_explicit_and_final_svg_parses(tmp_path):
+    p,j=inputs(tmp_path);sheet=cs.resolve_company_sheet_set(p,j).sheets[0]
+    with pytest.raises(ValueError,match='printable ASCII'):
+        cs.render_company_sheet_svg(sheet,body_svg='<g><text x="20" y="20">中</text></g>')
+    assert ET.fromstring(cs.render_company_sheet_svg(sheet)).tag.endswith('svg')
+
+
+def test_wide_rail_company_value_cannot_clip_paper(tmp_path):
+    p,j=inputs(tmp_path);profile=json.loads(p.read_bytes())
+    profile['fields']['company']='W'*36;p.write_text(json.dumps(profile))
+    with pytest.raises(ValueError,match='measured cell capacity'):
+        cs.create_company_sheet_set(p,j,output_directory=tmp_path/'bad')
+    assert not (tmp_path/'bad').exists()

@@ -16,7 +16,13 @@ requires the `pdf` optional extra plus native Cairo, as described in
 [sheet-pdf.md](sheet-pdf.md). Conversion runs locally. Logos are optional bounded
 local PNGs, embedded at their original aspect ratio. These are raster logo
 components within otherwise vector pages, not whole-page raster conversion.
-No address lookup, external asset fetching or network conversion occurs.
+Text layout also requires Fontconfig (`fc-match`) and readable installed fonts.
+Pillow measures the selected face's actual advances and ink bounds; the resolved
+family is written into SVG and font-file hashes are recorded in the delivery.
+For reliable metrics without implicit fallback glyphs, presentation text supports
+printable ASCII only. Unsupported text fails explicitly; it is never replaced or
+silently truncated. All inputs reject XML-invalid characters and each final SVG
+is parsed before publication. No address lookup, external asset fetching or network conversion occurs.
 
 See `fixtures/company_sheets/v1/profile.json` and `job.json` for complete editable
 examples. Profile version is `company-sheet-profile-v1`; job version is
@@ -67,7 +73,7 @@ down. Supported elements: groups (no transforms), rect, line, circle, polyline,
 polygon and plain text. Use explicit physical font sizes and solid `#RRGGBB`
 colors. Text fonts are Liberation Sans, DejaVu Sans or sans-serif. Scripts,
 images, CSS, transforms, paths and external resources are refused. Consumers own
-wrapping, pagination and semantic source maps; this layer checks conservative
+wrapping, pagination and semantic source maps; this layer checks measured
 text/shape extents against the drawing bounds and supplies the common frame.
 Keep ink, including stroke width, inside those bounds. Unsupported content is
 an actionable failure, never silently dropped.

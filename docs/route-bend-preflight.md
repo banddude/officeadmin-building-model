@@ -40,6 +40,18 @@ turns are diagnostics. Non-elbow fittings, such as consolidation tees, are left
 alone. This is not a validator for already sampled curves, manufacturer CAD,
 physical mating ports, terminal approach directions or fitting envelopes.
 
+The supported input is **interior sharp-vertex bends within each route**.
+Consolidation can split a physical corner into two straight routes and assign
+its junction elbow to one trunk endpoint. That canonical representation is
+valid, but this per-route gate reports the endpoint elbow as `elbow_off_turn`
+and does not evaluate its cross-route bend radius or tangent-space budget.
+Treat that diagnostic as an unsupported junction configuration requiring
+separate review, not proof that the consolidation output is wrong. Do not
+remove the fitting to make the gate pass. Use the preflight on the original
+interior-vertex routes before consolidation when applicable; a passing
+pre-consolidation report does not validate the consolidated junction geometry.
+Cross-route junction-bend checking is deliberately outside this gate.
+
 Report JSON is versioned, sorted by route ID and diagnostic location, and has no
 timestamps or local paths. It includes the supplied radius and computed setback
 for each bend, plus the distance and angular tolerances used. `ready` means only that these bounded checks passed. It does not

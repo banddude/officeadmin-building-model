@@ -182,3 +182,34 @@ def test_named_elbow_type_must_agree_with_turn():
     model = model_for(((0,0,0),(2,0,0),(2,2,0)))
     fitting = replace(model.route_fittings[0],fitting_type="elbow-45")
     assert codes(report(replace(model,route_fittings=(fitting,)))) == ["elbow_type_mismatch"]
+
+
+def test_valid_consolidated_corner_endpoint_elbow_is_outside_gate_scope():
+    """Pin the limitation: valid cross-route elbows are not interior turns."""
+    from oabm.model import validate_model
+    from oabm.routing import consolidate_bundled_routes
+
+    model = model_for(((0,0,0),(2,0,0),(2,2,0)))
+    original = model.routes[0]
+    second_fitting = replace(model.route_fittings[0],id="fitting:second",
+                             route_id="route:second")
+    second_route = replace(original,id="route:second",fitting_ids=(second_fitting.id,))
+    model = replace(model,routes=(original,second_route),
+                    route_fittings=(*model.route_fittings,second_fitting))
+    assert check_route_bends(model,radii_m={r.id:.3 for r in model.routes}).ready
+
+    consolidated = consolidate_bundled_routes(model).model
+    validate_model(consolidated)
+    assert len(consolidated.route_fittings) == 1
+    elbow = consolidated.route_fittings[0]
+    owner = next(r for r in consolidated.routes if r.id == elbow.route_id)
+    assert elbow.fitting_type == "elbow-90"
+    assert len(owner.centerline.points) == 2
+    assert elbow.pose.position in owner.centerline.points
+    before = consolidated.to_json()
+    result = check_route_bends(consolidated,radii_m={r.id:.3 for r in consolidated.routes})
+    assert not result.ready
+    assert result.bends == ()  # No cross-route bend-space claim.
+    assert codes(result) == ["elbow_off_turn"]
+    assert result.diagnostics[0].fitting_ids == (elbow.id,)
+    assert consolidated.to_json() == before  # Keep the valid fitting intact.

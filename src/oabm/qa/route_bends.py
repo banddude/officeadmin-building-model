@@ -71,6 +71,9 @@ def check_route_bends(model: BuildingModel, *, radii_m: Mapping[str, float],
     Collinear redundant vertices are coalesced for length budgets only; report
     indices always refer to original canonical vertices. Fitting matches use
     canonical vertex poses, as emitted by the router, not tangent endpoints.
+    Supports interior turns within each route only. A valid consolidation
+    junction elbow at a straight trunk endpoint reports elbow_off_turn; its
+    cross-route bend budget is unsupported, not evidence of invalid topology.
     """
     validate_model(model)
     for value in (tolerance_m, angle_tolerance_rad):

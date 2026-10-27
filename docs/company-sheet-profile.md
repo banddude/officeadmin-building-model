@@ -18,7 +18,13 @@ local PNGs, embedded at their original aspect ratio. These are raster logo
 components within otherwise vector pages, not whole-page raster conversion.
 Text layout also requires Fontconfig (`fc-match`) and readable installed fonts.
 Pillow measures the selected face's actual advances and ink bounds; the resolved
-family is written into SVG and font-file hashes are recorded in the delivery.
+family is written into SVG and font-file hashes/PostScript names are recorded
+in the delivery. For example, a machine without Liberation Sans may explicitly
+resolve Arial; that actual family is measured and written into SVG. The PDF
+adapter checks its embedded PostScript font names against those resolved faces
+and refuses silent converter substitution. This validates the installed fallback,
+not fidelity to a reference font that was unavailable. Matching source/runtime
+and font hashes are required for byte-identical rebuilds across hosts.
 For reliable metrics without implicit fallback glyphs, presentation text supports
 printable ASCII only. Unsupported text fails explicitly; it is never replaced or
 silently truncated. All inputs reject XML-invalid characters and each final SVG

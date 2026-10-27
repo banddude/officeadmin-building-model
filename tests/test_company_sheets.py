@@ -186,3 +186,25 @@ def test_wide_rail_company_value_cannot_clip_paper(tmp_path):
     with pytest.raises(ValueError,match='measured cell capacity'):
         cs.create_company_sheet_set(p,j,output_directory=tmp_path/'bad')
     assert not (tmp_path/'bad').exists()
+
+
+def test_pdf_refuses_font_substitution_before_delivery(tmp_path,monkeypatch):
+    try:cs._dependencies()
+    except ImportError as exc:pytest.skip(str(exc))
+    p,j=inputs(tmp_path,('svg','pdf'))
+    real=cs._font
+    def mismatch(family='Liberation Sans',weight=400):
+        font,actual,path,ps=real(family,weight)
+        return font,actual,path,'UnmatchedFontFace'
+    monkeypatch.setattr(cs,'_font',mismatch)
+    with pytest.raises(ValueError,match='PDF font substitution'):
+        cs.create_company_sheet_set(p,j,output_directory=tmp_path/'bad')
+    assert not (tmp_path/'bad/delivery').exists()
+
+
+def test_public_text_helper_matches_real_face_and_rejects_unsupported_input():
+    font,_,_,_=cs._font('Liberation Sans',400)
+    assert cs.measure_sheet_text('W'*20,10)>=font.getlength('W'*20)*10/1000
+    for bad in ('\uffff','\ud800','中'):
+        with pytest.raises(ValueError):cs.validate_sheet_text(bad)
+    with pytest.raises(ValueError):cs.measure_sheet_text('TEXT',float('nan'))

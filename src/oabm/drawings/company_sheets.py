@@ -61,13 +61,13 @@ def _font(family='Liberation Sans',weight=400):
     from PIL import ImageFont
     try:
         query=family+(':style=Bold' if weight>=600 else ':style=Regular')
-        result=subprocess.run(['fc-match','-f','%{file}\n%{family}\n',query],
+        result=subprocess.run(['fc-match','-f','%{file}\n%{family}\n%{postscriptname}\n',query],
                               check=True,capture_output=True,text=True).stdout.splitlines()
-        path,actual=result[0],result[1].split(',')[0]
+        path,actual,postscript=result[0],result[1].split(',')[0],result[2].split(',')[0]
         font=ImageFont.truetype(path,1000)
     except (OSError,subprocess.SubprocessError,IndexError) as exc:
         raise ValueError('sheet text requires Fontconfig (fc-match) and a readable installed TrueType/OpenType font') from exc
-    return font,actual,path
+    return font,actual,path,postscript
 
 
 def validate_sheet_text(text: str) -> str:
@@ -90,7 +90,7 @@ def measure_sheet_text(text: str, font_size_mm: float, *,
         raise ValueError('font size must be positive finite millimetres')
     if font_family not in {'Liberation Sans','DejaVu Sans','sans-serif'} or font_weight not in {300,400,500,600,700}:
         raise ValueError('unsupported sheet font family/weight')
-    font,_,_=_font(font_family,font_weight)
+    font,_,_,_=_font(font_family,font_weight)
     ink=font.getbbox(text,anchor='ls')
     return (max(font.getlength(text),ink[2])-min(0,ink[0]))*font_size_mm/1000*1.01
 
@@ -285,7 +285,7 @@ def _body_group(body, bounds):
             weight=int(node.get('font-weight','400'))
             if weight not in {300,400,500,600,700}:raise ValueError('body: unsupported font weight')
             family=node.get('font-family','Liberation Sans')
-            font,actual,_=_font(family,weight)
+            font,actual,_,_=_font(family,weight)
             node.set('font-family',actual)
             width=font.getlength(value)*size/1000
             ink=font.getbbox(value,anchor='ls')
@@ -319,7 +319,7 @@ def render_company_sheet_svg(sheet, *, body_svg=None):
         rows=_rows(value,cw if width is None else width,size,weight)
         if len(rows)>max_lines: raise ValueError(f'sheet {sheet.id}: title-block text overflows {max_lines}-line cell: {value!r}; shorten text or widen rail')
         for j,row in enumerate(rows):
-            font,_,_=_font('Liberation Sans',weight)
+            font,_,_,_=_font('Liberation Sans',weight)
             bearing=min(0,font.getbbox(row,anchor='ls')[0])*size/1000
             _el(root,'text',x=(left if xx is None else xx)-bearing,y=yy(frac)+j*size*1.35,font_family=_font('Liberation Sans',weight)[1],font_size=size,font_weight=weight,fill='#161616').text=row
     def field(key,frac,**kwargs):text(f.get(key,''),frac,**kwargs)
@@ -370,8 +370,16 @@ def _pdf(sheets, svgs, title):
             raise ValueError('PDF physical page dimensions differ from resolved sheet')
         text=' '.join((page.extract_text() or '').split())
         if sheet.id not in text: raise ValueError('PDF sheet identity text missing')
+        expected_fonts=set()
+        for element in ET.fromstring(svg).iter(f'{{{SVG}}}text'):
+            if (element.text or '').strip():
+                expected_fonts.add(_font(element.get('font-family','Liberation Sans'),int(element.get('font-weight','400')))[3])
+        actual_fonts={re.sub(r'^[A-Z]{6}\+','',str(font.get_object()['/BaseFont']).removeprefix('/'))
+                      for font in page['/Resources'].get('/Font',{}).values()}
+        if actual_fonts!=expected_fonts:
+            raise ValueError(f'PDF font substitution: expected {sorted(expected_fonts)}, embedded {sorted(actual_fonts)}; install matching fonts before delivery')
         writer.add_page(page);writer.add_outline_item(sheet.id,len(pages))
-        pages.append({'sheet_id':sheet.id,'svg_sha256':_sha(svg.encode()),'width_mm':sheet.width_mm,'height_mm':sheet.height_mm})
+        pages.append({'sheet_id':sheet.id,'svg_sha256':_sha(svg.encode()),'width_mm':sheet.width_mm,'height_mm':sheet.height_mm,'embedded_fonts':sorted(actual_fonts)})
     out=io.BytesIO();writer.write(out)
     return out.getvalue(),{'pages':pages,'CairoSVG':cairo.__version__,'cairo':ffi.cairo_version_string(),'pypdf':pypdf.__version__}
 
@@ -429,7 +437,7 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
         manifest={'version':'company-sheet-delivery-v1','set_id':resolved.set_id,'sheet_order':[s.id for s in resolved.sheets],
                   'engineering_approval':False,'status':'presentation_only','pdf':pdf,'files':files,'runtime':_runtime(),
                   'font_faces':[{'requested_family':family,'weight':weight,'resolved_family':_font(family,weight)[1],
-                                 'sha256':_sha(Path(_font(family,weight)[2]).read_bytes())}
+                                 'postscript_name':_font(family,weight)[3],'sha256':_sha(Path(_font(family,weight)[2]).read_bytes())}
                                 for family in ('Liberation Sans','DejaVu Sans','sans-serif') for weight in (400,700)],
                   'limitations':['Supplied text is not approval evidence.','Conservative text capacity checks require independent visual/font QA.',
                                  'Original inputs and portable editable inputs are both retained; keep private deliveries private.']}

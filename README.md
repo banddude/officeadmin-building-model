@@ -81,6 +81,10 @@ See [Bounded model-view label placement](docs/view-label-layout.md) for
 deterministic SVG label offsets, source-bound leaders and explicit unplaced
 label reports. The model delivery workflow applies this pass to plans.
 
+See [Blank sheet production](docs/blank-sheet-set.md) for one command taking
+job metadata and an ordered sheet list to populated-titleblock blank SVGs and
+optional DXFs, without a model or design. Combined PDF is not yet supported.
+
 ## Agent entrypoint
 
 Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.

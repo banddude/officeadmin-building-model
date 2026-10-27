@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .model import DrawingSet
-from .sheets import SheetSpec, ViewPlacement, compose_sheet
+from .sheets import SheetSpec, ViewPlacement, compose_blank_sheet, compose_sheet
 
 _WEIGHTS = {"normal": 25, "heavy": 50, "thin": 13}
 _STROKES = {"object", "cut", "space", "opening", "electrical", "route", "obstacle", "constraint", "annotation"}
@@ -112,7 +112,15 @@ def _sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vi
     """Fixed serialization profiles; 1.0.0 exists only for saved-byte replay."""
     if version not in _REPLAY_VERSIONS:
         raise ValueError("unsupported DXF exporter version")
-    sheet = compose_sheet(drawing_set, spec, placements).to_dict()
+    return _composed_sheet_to_dxf(compose_sheet(drawing_set,spec,placements).to_dict(),spec,version=version)
+
+
+def blank_sheet_to_dxf(spec: SheetSpec) -> SheetDxf:
+    """Editable blank paperspace sheet and supplied titleblock, without a model."""
+    return _composed_sheet_to_dxf(compose_blank_sheet(spec).to_dict(),spec,version=_EXPORT_VERSION)
+
+
+def _composed_sheet_to_dxf(sheet: dict, spec: SheetSpec, *, version: str) -> SheetDxf:
     if (spec.title or spec.revision) and not spec.titleblock_height_mm:
         raise ValueError("sheet title/revision require a reserved titleblock")
     try:

@@ -216,3 +216,24 @@ def compose_sheet(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vi
                                 "metadata": source_views[view.id]["metadata"],
                                 "primitives": primitives, "dimensions": dimensions})
     return ComposedSheet(json.dumps(result, sort_keys=True, allow_nan=False))
+
+
+def compose_blank_sheet(spec: SheetSpec) -> ComposedSheet:
+    """First-class blank stationery, with no model, views or invented geometry."""
+    if not isinstance(spec, SheetSpec):
+        raise ValueError("blank sheet requires a SheetSpec")
+    margin = spec.margin_mm
+    right = spec.width_mm - margin
+    bottom = spec.height_mm - margin - spec.titleblock_height_mm
+    document = {
+        "kind": "oabm.blank-sheet", "version": "1.0.0", "content": "blank",
+        "id": spec.id, "title": spec.title, "revision": spec.revision,
+        "model_id": None, "drawing_set_sha256": None, "drawing_output_version": None,
+        "paper": {"width_mm": spec.width_mm, "height_mm": spec.height_mm,
+                  "margin_mm": margin, "coordinate_system": "top-left,+x-right,+y-down", "length_unit": "mm"},
+        "titleblock": {"height_mm": spec.titleblock_height_mm, "fields": dict(spec.titleblock_fields),
+                       "bounds_mm": None if not spec.titleblock_height_mm else [margin,bottom,right,spec.height_mm-margin]},
+        "source_index": [], "views": [],
+        "limitations": ["Blank sheet stationery only; no model or design content.",
+                        "Supplied titleblock text is not survey, design or approval evidence."]}
+    return ComposedSheet(json.dumps(document,sort_keys=True,allow_nan=False))

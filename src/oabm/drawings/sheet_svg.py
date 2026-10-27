@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from .model import DrawingSet, Point2, _finite
-from .sheets import SheetSpec, ViewPlacement, compose_sheet
+from .sheets import ComposedSheet, SheetSpec, ViewPlacement, compose_blank_sheet, compose_sheet
 
 _STROKES = {
     'object': '#000000', 'cut': '#000000', 'opening': '#000000',
@@ -111,13 +111,24 @@ def render_sheet_svg(
     visual QA; the document does not certify layout, design or permit readiness.
     A titleblock is required so sheet identity/revision are visibly printed.
     """
+    return _render_composed_sheet_svg(compose_sheet(drawing_set,spec,placements),spec,
+                                      options=options,symbols=symbols,drawing_set=drawing_set)
+
+
+def render_blank_sheet_svg(spec: SheetSpec, *, options: SheetSvgOptions | None = None) -> RenderedSheetSvg:
+    """Render a populated titleblock and blank drawing body, without a model."""
+    return _render_composed_sheet_svg(compose_blank_sheet(spec),spec,options=options)
+
+
+def _render_composed_sheet_svg(composed: ComposedSheet, spec: SheetSpec, *,
+        options: SheetSvgOptions | None = None, symbols: Mapping[str, SheetSymbol] | None = None,
+        drawing_set: DrawingSet | None = None) -> RenderedSheetSvg:
     options = options or SheetSvgOptions()
     symbols = dict(symbols or {})
     for token, symbol in symbols.items():
         if not isinstance(token, str) or not token.strip() or not isinstance(symbol, SheetSymbol):
             raise ValueError('symbol registry must map non-empty tokens to SheetSymbol')
         _xml(token)
-    composed = compose_sheet(drawing_set, spec, placements)
     sheet = composed.to_dict()
     if spec.titleblock_height_mm <= 0:
         raise ValueError('SVG output requires a reserved titleblock for sheet identity')
@@ -249,7 +260,8 @@ def render_sheet_svg(
         '<?xml version="1.0" encoding="UTF-8"?>',
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(spec.width_mm)}mm" height="{_fmt(spec.height_mm)}mm" viewBox="0 0 {_fmt(spec.width_mm)} {_fmt(spec.height_mm)}">',
         f'<title>{_xml(title)}</title>',
-        '<desc>Model-derived presentation only. Review fonts, layout and design before use.</desc>',
+        ('<desc>Blank sheet stationery only. No model, design or approval content.</desc>' if drawing_set is None else
+         '<desc>Model-derived presentation only. Review fonts, layout and design before use.</desc>'),
         *fragments, *annotations, *title_svg, '</svg>', '',
     ])
     manifest = {
@@ -259,8 +271,8 @@ def render_sheet_svg(
         'svg_sha256': hashlib.sha256(svg.encode()).hexdigest(),
         'source_index': sheet['source_index'], 'items': items,
         'views': [{key: view[key] for key in ('placement_id', 'view_id', 'title', 'scale', 'bounds_mm', 'metadata')} for view in sheet['views']],
-        'unplaced_view_ids': sorted({view.id for view in drawing_set.views} - {view['view_id'] for view in sheet['views']}),
-        'unrendered_schedule_ids': sorted(schedule.id for schedule in drawing_set.schedules),
+        'unplaced_view_ids': sorted({view.id for view in drawing_set.views} - {view['view_id'] for view in sheet['views']}) if drawing_set is not None else [],
+        'unrendered_schedule_ids': sorted(schedule.id for schedule in drawing_set.schedules) if drawing_set is not None else [],
         'render_options': {key: getattr(options, key) for key in options.__dataclass_fields__},
         'symbol_geometry_mm': {token: [[[p.x, p.y] for p in segment] for segment in symbols[token].segments] for token in sorted(used_symbols)},
         'styles': {'stroke_colors': _STROKES, 'lineweights_mm': _WEIGHTS, 'dash_patterns_mm': _PATTERNS},

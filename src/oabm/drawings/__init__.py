@@ -34,7 +34,7 @@ from .model import (
     SourceReference,
 )
 from .projection import ProjectionFrame, clip_polygon, clip_polyline, clip_segment, frame_from_view_direction
-from .sheets import ComposedSheet, SheetSpec, ViewPlacement, compose_sheet
+from .sheets import ComposedSheet, SheetSpec, ViewPlacement, compose_blank_sheet, compose_sheet
 from .svg import paper_text_height_m, view_to_svg
 
 __all__ = [
@@ -42,6 +42,7 @@ __all__ = [
     "SheetSpec",
     "ViewPlacement",
     "compose_sheet",
+    "compose_blank_sheet",
     "OUTPUT_VERSION",
     "Bounds2",
     "DrawingDimension",

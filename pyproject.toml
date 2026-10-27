@@ -14,6 +14,9 @@ dependencies = [
     "Pillow>=11,<13",
 ]
 
+[project.scripts]
+oabm-blank-sheets = "oabm.drawings.blank_set:main"
+
 [project.optional-dependencies]
 # Bounded physical-sheet DXF adapter and repeatability contract.
 cad = ["ezdxf>=1.4.4,<1.5"]

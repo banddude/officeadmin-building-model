@@ -1,0 +1,30 @@
+{
+  "version": "blank-sheet-set-v1",
+  "set_id": "SYNTHETIC-SET",
+  "job": {
+    "Project": "Synthetic Workshop",
+    "Project number": "SYN-001",
+    "Prepared by": "Example Team",
+    "Discipline": "Electrical"
+  },
+  "paper": {
+    "width_mm": 609.6,
+    "height_mm": 457.2,
+    "margin_mm": 10,
+    "titleblock_height_mm": 60
+  },
+  "revision": "0",
+  "date": "2026-01-15",
+  "formats": ["svg", "dxf"],
+  "sheets": [
+    {"id": "E0.0", "title": "General information"},
+    {"id": "E1.0", "title": "Power plan - blank", "fields": {"Discipline": "Power"}},
+    {
+      "id": "E2.0",
+      "title": "Equipment details - blank",
+      "revision": "A",
+      "date": "2026-02-01",
+      "paper": {"width_mm": 297, "height_mm": 210}
+    }
+  ]
+}

@@ -102,3 +102,5 @@ The two upstream files in `spikes/graph_studio/upstream/` retain their separate
 Apache-2.0 license and NOTICE; see the spike README for attribution and hashes.
 
 Native IFC4 wall/opening intake has a separate explicit [bounded reader](docs/native-ifc-import.md); strict OABM IFC round-trip behavior remains unchanged.
+
+See [Shared company sheet profiles](docs/company-sheet-profile.md) for saved company defaults, job-only overrides and reusable right-rail sheet/PDF composition.

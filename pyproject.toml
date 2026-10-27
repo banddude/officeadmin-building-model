@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
+oabm-company-sheets = "oabm.drawings.company_sheets:main"
 oabm-blank-sheets = "oabm.drawings.blank_set:main"
 
 [project.optional-dependencies]

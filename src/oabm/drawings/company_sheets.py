@@ -24,6 +24,7 @@ from .blank_set import _decode, _json, _sha, _identifier, _date, _runtime, Blank
 from .sheet_pdf import _dependencies
 
 SVG = 'http://www.w3.org/2000/svg'
+XML_SPACE = '{http://www.w3.org/XML/1998/namespace}space'
 ET.register_namespace('', SVG)
 FIELDS = {'company','license','phone','email','company_address','company_city','project','client',
           'address','city','project_number','drawn_by','checked_by','scale','issue','revision_description'}
@@ -227,10 +228,10 @@ def _el(parent,tag,**attrs):
 def _rows(text, width, size, weight=400):
     _printable(text)
     result=[]; current=''
-    for word in text.split():
+    for word in re.findall(r' *[^ ]+| +$',text):
         if _advance(word,size,weight)>width:
             raise ValueError('text token exceeds measured cell capacity; shorten or widen the rail')
-        candidate=(current+' '+word).strip()
+        candidate=current+word
         if current and _advance(candidate,size,weight)>width:
             result.append(current);current=word
         else:current=candidate
@@ -242,17 +243,18 @@ def _body_group(body, bounds):
     if '<!' in body: raise ValueError('body: declarations/entities are unsupported')
     try:root=ET.fromstring(body)
     except (ET.ParseError,TypeError) as exc:raise ValueError('body: supply a valid SVG g subtree') from exc
-    allowed={'g':set(),'rect':{'x','y','width','height','fill','stroke','stroke-width'},
+    allowed={'g':{XML_SPACE},'rect':{'x','y','width','height','fill','stroke','stroke-width'},
              'line':{'x1','y1','x2','y2','stroke','stroke-width'},
              'circle':{'cx','cy','r','fill','stroke','stroke-width'},
              'polyline':{'points','fill','stroke','stroke-width'},
              'polygon':{'points','fill','stroke','stroke-width'},
-             'text':{'x','y','font-size','font-family','font-weight','text-anchor','fill'}}
+             'text':{'x','y','font-size','font-family','font-weight','text-anchor','fill',XML_SPACE}}
     l,t,r,b=bounds
     for node in root.iter():
         tag=node.tag.split('}')[-1]
         if tag not in allowed or set(node.attrib)-allowed[tag]: raise ValueError(f'body: unsupported {tag} element/attributes')
         for key,value in node.attrib.items():
+            if key==XML_SPACE and value not in {'preserve','default'}:raise ValueError('body: invalid xml:space value')
             if key in {'fill','stroke'} and not re.fullmatch(r'none|#[0-9a-fA-F]{6}',value): raise ValueError('body: solid hex colors only')
             if key=='font-family' and value not in {'sans-serif','Liberation Sans','DejaVu Sans'}: raise ValueError('body: unsupported font family')
         def n(key,default=0):
@@ -277,6 +279,7 @@ def _body_group(body, bounds):
             box=(min(numbers[::2]),min(numbers[1::2]),max(numbers[::2]),max(numbers[1::2]))
         elif tag=='text':
             if list(node): raise ValueError('body: text must be plain text, no child spans')
+            node.attrib.setdefault(XML_SPACE,'preserve')
             node.attrib.setdefault('font-size','3')
             node.attrib.setdefault('font-family','Liberation Sans')
             x,y,size=n('x'),n('y'),n('font-size',3)
@@ -321,7 +324,8 @@ def render_company_sheet_svg(sheet, *, body_svg=None):
         for j,row in enumerate(rows):
             font,_,_,_=_font('Liberation Sans',weight)
             bearing=min(0,font.getbbox(row,anchor='ls')[0])*size/1000
-            _el(root,'text',x=(left if xx is None else xx)-bearing,y=yy(frac)+j*size*1.35,font_family=_font('Liberation Sans',weight)[1],font_size=size,font_weight=weight,fill='#161616').text=row
+            element=_el(root,'text',x=(left if xx is None else xx)-bearing,y=yy(frac)+j*size*1.35,font_family=_font('Liberation Sans',weight)[1],font_size=size,font_weight=weight,fill='#161616')
+            element.set(XML_SPACE,'preserve');element.text=row
     def field(key,frac,**kwargs):text(f.get(key,''),frac,**kwargs)
     text('PROJECT / LOCATION',.017,3,500)
     field('project',.040,size=5.5,weight=600,max_lines=2)

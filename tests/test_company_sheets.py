@@ -208,3 +208,14 @@ def test_public_text_helper_matches_real_face_and_rejects_unsupported_input():
     for bad in ('\uffff','\ud800','中'):
         with pytest.raises(ValueError):cs.validate_sheet_text(bad)
     with pytest.raises(ValueError):cs.measure_sheet_text('TEXT',float('nan'))
+
+
+def test_text_whitespace_preserved_in_body_and_rail(tmp_path):
+    p,j=inputs(tmp_path);profile=json.loads(p.read_bytes());profile['fields']['company']=' A  B '
+    p.write_text(json.dumps(profile));sheet=cs.resolve_company_sheet_set(p,j).sheets[0]
+    body='<g xml:space="preserve"><text x="20" y="20" font-size="3"> A  B </text></g>'
+    root=ET.fromstring(cs.render_company_sheet_svg(sheet,body_svg=body))
+    labels=[node for node in root.iter() if node.tag.endswith('text') and node.text==' A  B ']
+    assert len(labels)==2 and all(node.get(cs.XML_SPACE)=='preserve' for node in labels)
+    with pytest.raises(ValueError,match='xml:space'):
+        cs.render_company_sheet_svg(sheet,body_svg='<g xml:space="bad"/>')

@@ -90,6 +90,10 @@ job metadata and an ordered sheet list to populated-titleblock blank SVGs and
 optional DXFs, without a model or design. The optional [local PDF adapter](docs/sheet-pdf.md)
 adds a combined vector PDF with explicit native/runtime dependencies.
 
+See [Electrical single-line production](docs/electrical-single-line.md) for explicit
+canonical equipment/circuit topology, compact connected branch diagrams, equipment
+continuation references and editable SVG/PDF packets using the shared company profile.
+
 ## Agent entrypoint
 
 Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.

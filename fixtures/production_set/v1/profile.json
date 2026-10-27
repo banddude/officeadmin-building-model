@@ -1,0 +1,18 @@
+{
+  "version": "company-sheet-profile-v1",
+  "fields": {
+    "company": "EXAMPLE ELECTRIC",
+    "license": "LICENSE: SUPPLIED PRIVATELY",
+    "phone": "000-000-0000",
+    "email": "design@example.invalid",
+    "company_address": "SYNTHETIC OFFICE",
+    "company_city": "EXAMPLE CITY"
+  },
+  "template": {
+    "width_mm": 914.4,
+    "height_mm": 609.6,
+    "margin_mm": 7.055555556,
+    "rail_width_mm": 87.136111111,
+    "rail_inset_mm": 6.35
+  }
+}

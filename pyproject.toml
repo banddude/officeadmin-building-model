@@ -15,6 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
+oabm-production-sheets = "oabm.drawings.production_set:main"
 oabm-company-sheets = "oabm.drawings.company_sheets:main"
 oabm-site-plan = "oabm.drawings.site_plan:main"
 oabm-panel-schedule-sheets = "oabm.drawings.schedule_set:main"

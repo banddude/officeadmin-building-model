@@ -1,0 +1,49 @@
+{
+  "version": "cover-sheet-v1",
+  "id": "G0.0",
+  "project": {
+    "name": "SYNTHETIC WORKSHOP",
+    "location": "SYNTHETIC SITE",
+    "number": "DEMO-001"
+  },
+  "scope": [
+    "Present explicitly supplied synthetic site, panel circuit facts and equipment-envelope details.",
+    "Single-line integration remains pending; this is a partial presentation set."
+  ],
+  "sheets": [
+    {
+      "id": "G0.0",
+      "title": "COVER SHEET"
+    },
+    {
+      "id": "E1.0",
+      "title": "SITE PLAN"
+    },
+    {
+      "id": "E3.0",
+      "title": "PANEL SCHEDULES"
+    },
+    {
+      "id": "D1",
+      "title": "Equipment mounting elevation"
+    },
+    {
+      "id": "D2",
+      "title": "Connection envelope close-up"
+    },
+    {
+      "id": "D3",
+      "title": "Supported cabinet section"
+    }
+  ],
+  "contacts": [
+    {
+      "role": "Designer",
+      "name": "EXAMPLE DESIGN TEAM",
+      "email": "design@example.invalid"
+    }
+  ],
+  "notes": [
+    "Synthetic demonstration only. No survey, installation-fit, engineering or permit approval."
+  ]
+}

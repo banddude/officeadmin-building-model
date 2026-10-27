@@ -110,3 +110,5 @@ Native IFC4 wall/opening intake has a separate explicit [bounded reader](docs/na
 See [Shared company sheet profiles](docs/company-sheet-profile.md) for saved company defaults, job-only overrides and reusable right-rail sheet/PDF composition.
 See [Supplied site-plan production](docs/supplied-site-plan.md) for explicit
 site geometry to scaled editable sheets using the shared company sheet profile.
+
+See [Shared production chain](docs/production-sheet-set.md) for one ordered cover/site/schedule/detail SVG/PDF packet using one company profile and canonical model, with single-line integration explicitly pending.

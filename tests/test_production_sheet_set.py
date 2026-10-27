@@ -55,7 +55,7 @@ def test_cover_project_contradiction_and_single_line_false_completion_refused(tm
     assert not (tmp_path/'bad').exists()
     request=json.loads((inputs/'production.json').read_bytes());request['single_line']='not-produced.json'
     (inputs/'production.json').write_text(json.dumps(request))
-    with pytest.raises(ValueError,match='integration pending'):
+    with pytest.raises(ValueError,match='single_line'):
         ps.create_production_sheet_set(inputs/'production.json',output_directory=tmp_path/'bad')
 
 
@@ -68,3 +68,33 @@ def test_shared_export_failure_retains_attempt_without_success_packet(tmp_path,m
     assert (tmp_path/'bad/failure.json').exists()
     assert not (tmp_path/'bad/delivery').exists()
     assert (tmp_path/'bad/.pending/inputs/model.json').read_bytes()==(inputs/'model.json').read_bytes()
+
+
+def test_local_compact_chain_single_line_and_three_details_share_one_model(tmp_path):
+    try:_dependencies()
+    except ImportError as exc:pytest.skip(str(exc))
+    from oabm.model import BuildingModel
+    source=FIXTURE.parent/'compact'
+    inputs=tmp_path/'compact-inputs';shutil.copytree(source,inputs)
+    result=ps.create_production_sheet_set(inputs/'production.json',output_directory=tmp_path/'compact')
+    manifest=json.loads((result/'PRODUCTION-MANIFEST.json').read_bytes())
+    assert manifest['single_line']=={'status':'supplied_topology_only','sheet_produced':True,'sheet_ids':['E601']}
+    assert manifest['content_owners']['details']==['ED1']
+    assert manifest['sheet_order']==['G0.0','E1.0','E601','E3.0','ED1']
+    sections=json.loads((result/'derived/schedule-sections.json').read_bytes())
+    assert len(sections)>1 and {s['sheet_id'] for s in sections}=={'E3.0'}
+    model=BuildingModel.from_json((inputs/'model.json').read_bytes())
+    topology=json.loads((result/'derived/single-line-topology-layout.json').read_bytes())['topology']
+    assert topology['model_sha256']==hashlib.sha256(model.to_json(indent=None).encode()).hexdigest()
+    assert {e['id'] for e in topology['equipment']}=={e.id for e in model.electrical_equipment}
+    assert len(topology['connections'])==3
+    detail_request=json.loads((result/'inputs/details.json').read_bytes())
+    assert [d['scale'] for d in detail_request['details']]==[10,5,10]
+    assert {p['sheet_id'] for p in detail_request['placements']}=={'ED1'}
+    pdf=PdfReader(io.BytesIO((result/'company/delivery/sheet-set.pdf').read_bytes()))
+    assert len(pdf.pages)==len(manifest['sheet_order'])
+    for sid in manifest['sheet_order']:assert sid in pdf.pages[0].extract_text()
+    sl=pdf.pages[manifest['sheet_order'].index('E601')].extract_text()
+    assert 'F001' in sl and 'F002' in sl and 'F003' in sl
+    detail_page=pdf.pages[manifest['sheet_order'].index('ED1')].extract_text()
+    for detail in detail_request['details']:assert detail['title'] in detail_page

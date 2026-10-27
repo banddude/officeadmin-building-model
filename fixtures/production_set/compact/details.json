@@ -1,0 +1,136 @@
+{
+  "details": [
+    {
+      "bounds": {
+        "max_x": 0,
+        "max_y": 2,
+        "min_x": -2,
+        "min_y": 0
+      },
+      "connection_spec": "Connection not supplied; no terminal or conductor geometry",
+      "direction": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "far_m": 1,
+      "id": "D1",
+      "mounting_spec": "Supplied pose only; anchors and substrate unspecified",
+      "near_m": -1,
+      "notes": [
+        "Synthetic envelope. Dimensions are not a product or installation approval."
+      ],
+      "number": "1",
+      "origin": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "recipe": "equipment-mounting-elevation@1",
+      "scale": 10,
+      "source_ids": [
+        "MAIN"
+      ],
+      "title": "Equipment mounting elevation"
+    },
+    {
+      "bounds": {
+        "max_x": -0.4,
+        "max_y": 1.7,
+        "min_x": -1.6,
+        "min_y": 0.3
+      },
+      "connection_spec": "Connection not supplied; no terminal or conductor geometry",
+      "direction": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "far_m": 1,
+      "id": "D2",
+      "mounting_spec": "Supplied pose only; anchors and substrate unspecified",
+      "near_m": -1,
+      "notes": [
+        "Synthetic envelope. Dimensions are not a product or installation approval."
+      ],
+      "number": "2",
+      "origin": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "recipe": "connection-close-up@1",
+      "scale": 5,
+      "source_ids": [
+        "MAIN"
+      ],
+      "title": "Connection envelope close-up"
+    },
+    {
+      "bounds": {
+        "max_x": 0,
+        "max_y": 2,
+        "min_x": -2,
+        "min_y": 0
+      },
+      "connection_spec": "Connection not supplied; no terminal or conductor geometry",
+      "direction": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "far_m": 1,
+      "id": "D3",
+      "mounting_spec": "Supplied pose only; anchors and substrate unspecified",
+      "near_m": -1,
+      "notes": [
+        "Synthetic envelope. Dimensions are not a product or installation approval."
+      ],
+      "number": "3",
+      "origin": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "recipe": "supported-section@1",
+      "scale": 10,
+      "source_ids": [
+        "MAIN"
+      ],
+      "title": "Supported cabinet section"
+    }
+  ],
+  "placements": [
+    {
+      "bounds_mm": [
+        15,
+        20,
+        275,
+        400
+      ],
+      "detail_id": "D1",
+      "sheet_id": "ED1"
+    },
+    {
+      "bounds_mm": [
+        280,
+        20,
+        540,
+        400
+      ],
+      "detail_id": "D2",
+      "sheet_id": "ED1"
+    },
+    {
+      "bounds_mm": [
+        545,
+        20,
+        805,
+        400
+      ],
+      "detail_id": "D3",
+      "sheet_id": "ED1"
+    }
+  ],
+  "version": "detail-sheet-set@2"
+}

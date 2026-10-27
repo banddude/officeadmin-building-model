@@ -1,0 +1,9 @@
+{
+  "version": "panel-schedule-sheet-set-v1",
+  "layout": {
+    "text_height_mm": 2.5,
+    "line_height_mm": 4,
+    "padding_mm": 1.5,
+    "packing": "compact"
+  }
+}

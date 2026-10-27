@@ -18,8 +18,11 @@ class ScheduleLayout:
     line_height_mm: float = 4.0
     padding_mm: float = 1.5
     column_widths_mm: dict[str, float] = field(default_factory=dict)
+    packing: str = 'one_table_per_sheet'
 
     def __post_init__(self):
+        if self.packing not in {'one_table_per_sheet', 'compact'}:
+            raise ValueError('packing: use one_table_per_sheet or compact')
         for key in ('text_height_mm', 'line_height_mm', 'padding_mm'):
             value = _finite(getattr(self, key), key)
             if value <= 0:
@@ -72,9 +75,10 @@ class SchedulePage:
     drawing_set: DrawingSet
     placement: ViewPlacement
     row_map: tuple[dict, ...]
-    schedule_id: str
-    schedule_page: int
-    schedule_pages: int
+    schedule_id: str | None
+    schedule_page: int | None
+    schedule_pages: int | None
+    sections: tuple[dict, ...] = ()
 
     def body_svg(self, layout: ScheduleLayout) -> str:
         """Bounded paper-mm subtree for the shared company sheet renderer."""
@@ -99,7 +103,7 @@ class SchedulePage:
 
 
 def paginate_schedules(drawing_set: DrawingSet, sheet, *, layout=None, empty_schedule_sources=None) -> tuple[SchedulePage, ...]:
-    """One schedule per physical page, with deterministic row-preserving pagination.
+    """Deterministic row-preserving pagination with optional ordered packing.
 
     The template's titleblock is owned by the shared sheet renderer. Body bounds
     derive only from SheetSpec. Rows never split: an oversized row is actionable
@@ -228,4 +232,81 @@ def paginate_schedules(drawing_set: DrawingSet, sheet, *, layout=None, empty_sch
             projected = DrawingSet(drawing_set.model_id, (view,), (), drawing_set.source_index)
             pages.append(SchedulePage(spec, projected, ViewPlacement(view_id, view_id,
                 left + inset, top + inset), tuple(row_map), schedule.id, part, len(chunks)))
-    return tuple(pages)
+    return _pack_sections(tuple(pages), sheet.id, layout) if layout.packing == 'compact' else tuple(pages)
+
+
+def _pack_sections(pages, first_sheet_id, layout):
+    """Pack complete pre-paginated sections in source order without shrinking.
+
+    A bounded second pass: never split/reorder a section or alter cell wrapping.
+    Full continuation sections retain repeated headers. Every packed section
+    retains its own panel title and schedule N/M reference. Final physical IDs,
+    primitive references, row bounds and section bounds are rebuilt together.
+    """
+    first = pages[0]
+    bounds = first.drawing_set.views[0].bounds
+    height, width = bounds.height * 1000, bounds.width * 1000
+    footer_height = 2 * layout.line_height_mm + 2 * layout.padding_mm
+    gap = layout.line_height_mm + 2 * layout.padding_mm
+    groups = [[]]
+    used = 0.0
+    for page in pages:
+        primitives = tuple(p for p in page.drawing_set.views[0].primitives if ('role', 'page_reference') not in p.metadata)
+        if page.row_map:
+            table_bottom = max(r['bounds_mm'][3] for r in page.row_map) - page.placement.y_mm
+        else:
+            table_bottom = max(height - point.y * 1000 + (layout.text_height_mm * .3 if p.kind == 'text' else 0)
+                               for p in primitives for point in p.points) + layout.padding_mm
+        section_height = table_bottom + footer_height
+        if section_height > height + 1e-7:
+            raise ValueError('compact section exceeds available body height; enlarge paper')
+        offset = used + (gap if groups[-1] else 0)
+        if groups[-1] and offset + section_height > height + 1e-7:
+            groups.append([])
+            offset = 0.0
+        groups[-1].append((page, primitives, table_bottom, section_height, offset))
+        used = offset + section_height
+    packed = []
+    for number, group in enumerate(groups, 1):
+        match = re.fullmatch(r'(.*?)([0-9]+)', first_sheet_id)
+        sid = (match[1] + str(int(match[2]) + number - 1).zfill(len(match[2]))) if match else f'{first_sheet_id}{number:03d}'
+        spec = replace(first.spec, id=sid)
+        view_id = f'schedule-packed-page:{number:03d}'
+        primitives, row_map, sections = [], [], []
+        for section_index, (page, content, table_bottom, section_height, offset) in enumerate(group):
+            identities = {}
+            for p in content:
+                identity = f'{view_id}:item:{len(primitives):06d}'
+                identities[p.id] = identity
+                primitives.append(replace(p, id=identity,
+                    points=tuple(Point2(pt.x, pt.y - offset / 1000) for pt in p.points),
+                    metadata=(*p.metadata, ('section_index', str(section_index)))))
+            for row in page.row_map:
+                box = list(row['bounds_mm'])
+                box[1] += offset
+                box[3] += offset
+                row_map.append({**row, 'sheet_id': sid, 'page': number,
+                    'primitive_ids': [identities[i] for i in row['primitive_ids']], 'bounds_mm': box})
+            sections.append({'schedule_id': page.schedule_id, 'schedule_page': page.schedule_page,
+                'schedule_pages': page.schedule_pages, 'bounds_mm': [page.placement.x_mm,
+                page.placement.y_mm + offset, page.placement.x_mm + width,
+                page.placement.y_mm + offset + section_height]})
+            footer = f'Schedule page {page.schedule_page}/{page.schedule_pages} | Sheet {sid}'
+            footer_lines = wrap_cell(footer, width, layout)
+            if len(footer_lines) > 2:
+                raise ValueError('packed page reference exceeds footer capacity; shorten sheet ID or enlarge paper')
+            source = content[0].source_ids
+            for line, value in enumerate(footer_lines):
+                identity = f'{view_id}:item:{len(primitives):06d}'
+                y = offset + table_bottom + layout.padding_mm + layout.text_height_mm + line * layout.line_height_mm
+                primitives.append(DrawingPrimitive(identity, 'text', 'schedule', source,
+                    (Point2(layout.padding_mm / 1000, (height - y) / 1000),), text=value,
+                    metadata=(('role', 'page_reference'), ('section_index', str(section_index)))))
+        view = DrawingView(view_id, 'plan', spec.title, bounds, 1, tuple(primitives),
+            metadata=(('presentation', 'packed schedule sections; no geometric scale'),))
+        drawing = DrawingSet(first.drawing_set.model_id, (view,), (), first.drawing_set.source_index)
+        only = sections[0] if len(sections) == 1 else {}
+        packed.append(SchedulePage(spec, drawing, ViewPlacement(view_id, view_id,
+            first.placement.x_mm, first.placement.y_mm), tuple(row_map), only.get('schedule_id'),
+            only.get('schedule_page'), only.get('schedule_pages'), tuple(sections)))
+    return tuple(packed)

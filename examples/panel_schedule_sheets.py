@@ -37,7 +37,7 @@ def write_example_inputs(directory):
     directory.mkdir(parents=True, exist_ok=True)
     (directory / 'model.json').write_text(synthetic_two_panel_model().to_json() + '\n')
     (directory / 'settings.json').write_text(json.dumps({'version': VERSION, 'layout': {
-        'text_height_mm': 2.5, 'line_height_mm': 4.0, 'padding_mm': 1.5}}, indent=2) + '\n')
+        'text_height_mm': 2.5, 'line_height_mm': 4.0, 'padding_mm': 1.5, 'packing': 'compact'}}, indent=2) + '\n')
     return directory
 
 

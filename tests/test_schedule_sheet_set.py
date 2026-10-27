@@ -288,3 +288,57 @@ def test_narrow_column_wrap_boundary_spaces_remain_distinct_in_actual_pdf(tmp_pa
                   top + 2 * 1.5 + maximum_lines * 4 - .5)
             crops.append(image.crop(tuple(round(v * 72 / 25.4 * 3) for v in mm)))
     assert ImageChops.difference(*crops).getbbox() is not None
+
+
+def test_compact_two_panel_packet_uses_two_pages_and_keeps_all_facts(tmp_path):
+    import pypdf
+    files = inputs(tmp_path, ['svg', 'pdf'], 90)
+    separate = create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'separate')
+    files[3].write_text(json.dumps({'version': VERSION, 'layout': {'packing': 'compact'}}))
+    compact = create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'compact')
+    repeated = create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'repeated')
+    baseline = json.loads((separate / 'SCHEDULE-MANIFEST.json').read_text())
+    result = json.loads((compact / 'SCHEDULE-MANIFEST.json').read_text())
+    assert len(baseline['sheet_order']) == 5 and result['sheet_order'] == ['E6', 'E7']
+    assert result == json.loads((repeated / 'SCHEDULE-MANIFEST.json').read_text())
+    assert (compact / 'sheet-set.pdf').read_bytes() == (repeated / 'sheet-set.pdf').read_bytes()
+    assert result['row_count'] == baseline['row_count'] == 92
+    assert result['panel_totals'] == baseline['panel_totals']
+    fact = lambda row: {k: row[k] for k in ('schedule_id', 'row_index', 'source_id', 'cells', 'wrapped_cells')}
+    assert list(map(fact, result['rows'])) == list(map(fact, baseline['rows']))
+    assert len(pypdf.PdfReader(compact / 'sheet-set.pdf').pages) == 2
+    assert len(result['schedule_pages']) == 5  # section index, distinct from physical sheet index
+    assert len({s['sheet_id'] for s in result['schedule_pages']}) == 2
+    for sheet in result['sheet_order']:
+        sections = [s for s in result['schedule_pages'] if s['sheet_id'] == sheet]
+        for a, b in zip(sections, sections[1:]):
+            assert a['bounds_mm'][3] < b['bounds_mm'][1]
+        for row in (r for r in result['rows'] if r['sheet_id'] == sheet):
+            section = next(s for s in sections if s['schedule_id'] == row['schedule_id'])
+            assert section['bounds_mm'][1] <= row['bounds_mm'][1] < row['bounds_mm'][3] <= section['bounds_mm'][3]
+        drawing = json.loads((compact / f'schedule-source/{sheet}.drawing.json').read_text())
+        primitives = drawing['views'][0]['primitives']
+        identities = {p['id'] for p in primitives}
+        assert all(set(r['primitive_ids']) <= identities for r in result['rows'] if r['sheet_id'] == sheet)
+        headers = {dict(p['metadata'])['section_index'] for p in primitives if ['role', 'repeated_header'] in p['metadata']}
+        assert len(headers) == len(sections)
+        page_references = [p['text'] for p in primitives if ['role', 'page_reference'] in p['metadata']]
+        assert len(page_references) == len(sections) and all(f'Sheet {sheet}' in text for text in page_references)
+        assert all(p['text'] is None or p['text'] != '' for p in primitives if ['role', 'schedule_title'] in p['metadata'])
+    # Shared resolved job is the final physical index a cover/index consumer uses.
+    job = json.loads((compact / 'schedule-source/expanded-job.json').read_text())
+    assert [s['id'] for s in job['sheets']] == result['sheet_order']
+    assert result['layout']['text_height_mm'] == baseline['layout']['text_height_mm'] == 2.5
+
+
+def test_compact_empty_panels_and_invalid_packing(tmp_path):
+    files = inputs(tmp_path, count=12)
+    files[0].write_text(replace(example.synthetic_two_panel_model(12), circuits=()).to_json())
+    files[3].write_text(json.dumps({'version': VERSION, 'layout': {'packing': 'compact'}}))
+    out = create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'empty-compact')
+    manifest = json.loads((out / 'SCHEDULE-MANIFEST.json').read_text())
+    assert len(manifest['sheet_order']) == 1 and manifest['row_count'] == 2
+    assert len(manifest['schedule_pages']) == 4
+    files[3].write_text(json.dumps({'version': VERSION, 'layout': {'packing': 'shrink'}}))
+    with pytest.raises(ValueError, match='packing:'):
+        create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'invalid-packing')

@@ -33,6 +33,12 @@
             "type": "number",
             "exclusiveMinimum": 0
           }
+        },
+        "packing": {
+          "enum": [
+            "one_table_per_sheet",
+            "compact"
+          ]
         }
       }
     }

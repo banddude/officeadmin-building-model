@@ -31,9 +31,11 @@ PYTHONPATH=src python examples/panel_schedule_sheets.py \
   fixtures/schedule_sheets/v1/job.json /tmp/synthetic-schedule-demo
 ```
 
-This generates two explicitly supplied synthetic panels and 90 circuit rows,
+This uses compact packing and generates two explicitly supplied synthetic panels and 90 circuit rows,
 including an explicit zero, an unknown load and a duplicate opaque circuit
-label. The large panel spans multiple pages. The settings input is generated
+label. The large panel spans two pages; both supplied-load summaries and the
+second panel share remaining space on page two. The same data needs five pages
+in explicit one-table-per-sheet mode. The settings input is generated
 beside the editable canonical model; production callers supply their own files:
 
 ```json
@@ -43,7 +45,8 @@ beside the editable canonical model; production callers supply their own files:
     "text_height_mm": 2.5,
     "line_height_mm": 4.0,
     "padding_mm": 1.5,
-    "column_widths_mm": {}
+    "column_widths_mm": {},
+    "packing": "compact"
   }
 }
 ```
@@ -69,7 +72,15 @@ reusable derived-table paginator. It accepts existing `DrawingSchedule`s and
 retains the canonical source index. It produces paper-mm SVG `<g>` bodies,
 editable derived drawing JSON, and one row-map entry per actual source row.
 The body stays inset from the shared `drawing_bounds_mm`; it cannot enter the
-rail. One schedule starts on each page, with repeated title and column headers.
+rail. The default `packing: "one_table_per_sheet"` starts each table on a new page.
+`packing: "compact"` instead packs complete pre-paginated sections vertically in
+source order, using remaining space when the next section fits. It does not
+shrink text, split rows, change wrapping or reorder panels. Each section retains
+its own full panel identity/title, column headers and schedule N/M reference.
+Continuation sections retain repeated headers. A fixed gap separates sections.
+A section that cannot fit in remaining space starts a new physical page.
+Final sheet IDs and row coordinates are assigned after packing. No table is
+omitted to obtain fewer pages.
 Rows stay intact across page boundaries. Long opaque
 identifiers wrap deterministically using shared `measure_sheet_text` actual
 installed-font advances and ink bearings (including its 1% safety margin),
@@ -83,6 +94,14 @@ its zero padding: E6.0 becomes E6.1, E6.2, etc. A nonnumeric prefix gets a
 three-digit suffix. Title-rail capacity is checked by the shared renderer;
 choose a short template ID or explicitly widen the shared profile rail if it
 fails. Each footer prints schedule page N/M and its physical sheet ID.
+
+The manifest's `sheet_order` and retained expanded shared job are the final
+physical sheet index, suitable for the cover/index consumer. Its
+`schedule_pages` list indexes table sections, so multiple entries can point at
+one physical sheet in compact mode. Each compact section includes its bounds;
+rows keep final physical page/ID, translated bounds and regenerated primitive
+references. `SchedulePage.sections` is authoritative for packed pages containing
+multiple tables; the singular schedule fields are null on those pages.
 
 `delivery/SCHEDULE-MANIFEST.json` binds each row to schedule ID, zero-based
 row index, canonical source ID, physical sheet/page, bounds, exact original

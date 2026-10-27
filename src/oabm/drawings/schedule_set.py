@@ -162,8 +162,9 @@ def create_panel_schedule_sheet_set(model_path, profile_path, job_path, settings
                 'status': 'supplied_facts_only', 'engineering_approval': False,
                 'sheet_order': [p.spec.id for p in pages], 'row_count': len(rows), 'rows': rows,
                 'layout': asdict(layout), 'verification': verification, 'schedule_pages': [
-                    {'sheet_id': p.spec.id, 'schedule_id': p.schedule_id,
-                     'schedule_page': p.schedule_page, 'schedule_pages': p.schedule_pages} for p in pages],
+                    {'sheet_id': p.spec.id, **section} for p in pages for section in (p.sections or (
+                        {'schedule_id': p.schedule_id, 'schedule_page': p.schedule_page,
+                         'schedule_pages': p.schedule_pages},))],
                 'panel_totals': [{'panel_id': p.panel.id, 'known_connected_va': p.known_connected_va,
                     'all_listed_loads_known': p.all_listed_loads_known,
                     'subtotal_source_circuit_ids': list(p.subtotal_source_circuit_ids),

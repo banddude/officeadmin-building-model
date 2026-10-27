@@ -69,6 +69,10 @@ source-bound architectural wall evidence handoff and open-chain rejection.
 See [Open-source reuse audit](docs/open-source-reuse-audit.md) for component
 decisions and the reproducible, public-safe calculation prototype from #93.
 
+See [Conduit bend preflight](docs/route-bend-preflight.md) for a read-only
+canonical-route gate that checks elbow inventory and caller-supplied bend-radius
+space before producing plan and 3D deliveries.
+
 ## Agent entrypoint
 
 Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.

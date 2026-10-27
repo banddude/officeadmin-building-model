@@ -1,0 +1,32 @@
+{
+  "angle_tolerance_rad": 1e-06,
+  "bends": [
+    {
+      "angle_radians": 1.5707963267948966,
+      "radius_m": 0.3,
+      "route_id": "route:synthetic",
+      "tangent_setback_m": 0.29999999999999993,
+      "vertex_index": 1
+    },
+    {
+      "angle_radians": 1.5707963267948966,
+      "radius_m": 0.3,
+      "route_id": "route:synthetic",
+      "tangent_setback_m": 0.29999999999999993,
+      "vertex_index": 2
+    }
+  ],
+  "diagnostics": [
+    {
+      "available_m": 0.5,
+      "code": "short_straight",
+      "fitting_ids": [],
+      "index": 1,
+      "required_m": 0.5999999999999999,
+      "route_id": "route:synthetic"
+    }
+  ],
+  "ready": false,
+  "tolerance_m": 1e-06,
+  "version": "route-bend-preflight-v1"
+}

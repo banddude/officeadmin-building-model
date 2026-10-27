@@ -18,6 +18,8 @@ dependencies = [
 oabm-blank-sheets = "oabm.drawings.blank_set:main"
 
 [project.optional-dependencies]
+# Local SVG-to-vector-PDF sheet conversion; native Cairo must be installed.
+pdf = ["CairoSVG>=2.9.1,<3"]
 # Bounded physical-sheet DXF adapter and repeatability contract.
 cad = ["ezdxf>=1.4.4,<1.5"]
 ifc = ["ifcopenshell>=0.8.5,<0.9", "numpy>=1.26,<3"]

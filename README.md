@@ -83,7 +83,8 @@ label reports. The model delivery workflow applies this pass to plans.
 
 See [Blank sheet production](docs/blank-sheet-set.md) for one command taking
 job metadata and an ordered sheet list to populated-titleblock blank SVGs and
-optional DXFs, without a model or design. Combined PDF is not yet supported.
+optional DXFs, without a model or design. The optional [local PDF adapter](docs/sheet-pdf.md)
+adds a combined vector PDF with explicit native/runtime dependencies.
 
 ## Agent entrypoint
 

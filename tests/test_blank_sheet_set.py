@@ -70,7 +70,7 @@ def test_ordered_set_populates_actual_svg_with_shared_and_sheet_overrides(tmp_pa
     assert manifest['status']=='blank_no_design_content'
     assert manifest['model_id'] is None and manifest['engineering_approval'] is False
     assert (root/'config.json').read_bytes()==original
-    assert manifest['pdf']['status']=='unsupported'
+    assert manifest['pdf']['status']=='not_requested'
     svg,words=svg_text(root/'sheets/001-E2.0.svg')
     assert svg.attrib['width']=='297mm' and svg.attrib['height']=='210mm'
     assert 'E2.0 | Equipment details - blank' in words
@@ -123,7 +123,7 @@ def test_explicit_empty_sheet_field_clears_shared_value(tmp_path):
 @pytest.mark.parametrize('change,message',[
     (lambda c:c.pop('date'),'exact blank-sheet'),
     (lambda c:c.update(date='2026-02-30'),'invalid calendar'),
-    (lambda c:c.update(formats=['svg','pdf']),'Combined PDF is unsupported'),
+    (lambda c:c.update(formats=['svg','unsupported']),'include svg'),
     (lambda c:c.update(formats=['dxf']),'include svg'),
     (lambda c:c.update(sheets=[]),'ordered list'),
     (lambda c:c['job'].update(Date='2026-01-01'),'reserved'),

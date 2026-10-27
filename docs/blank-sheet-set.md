@@ -65,7 +65,8 @@ and synthetic examples are public.
 - Sheet IDs/titles are explicit. List order is preserved, not sorted by ID.
   IDs are unique ignoring case, with 1-64 portable letters/digits/`.`/`_`/`-`,
   starting with a letter or digit. Filenames include a padded ordinal and ID.
-- `formats` must include `svg`; optional `dxf` uses the existing `cad` extra.
+- `formats` must include `svg`; optional `dxf` uses the existing `cad` extra, and `pdf` requests a combined
+  PDF using the optional `pdf` extra plus native Cairo.
   A requested unavailable format fails rather than silently disappearing.
 
 The existing renderers print ID/title/revision and sorted supplied field rows.
@@ -109,14 +110,15 @@ writer, a power-loss durability guarantee or a signature. No files are uploaded
 by this command. CLI exit 0 means blank files were published, never design or
 permit readiness; exit 1 means failure.
 
-## PDF boundary
+## Optional combined PDF
 
-**Combined PDF is not supported in this batch.** The repository has no supported
-SVG/DXF-to-PDF conversion route. Its declared `pypdf` dependency reads/assembles
-PDFs and cannot convert these sheet SVGs. A `pdf` format request is refused
-explicitly before output reservation; every manifest records this limitation.
-The physical-size SVGs and editable DXFs are usable outputs, but this command
-does not promise a combined print PDF. No rasterizer or new dependency is added.
+Use `"formats": ["svg", "pdf"]` to request `sheet-set.pdf` in caller sheet order.
+Install the maintained optional `pdf` extra and native Cairo first. Conversion
+uses only internally generated SVG, remains local and preserves physical page
+sizes and supplied text. A requested conversion failure publishes no completed
+packet. See [Local vector PDF](sheet-pdf.md) for dependencies, supported scope,
+licensing, checks and cloud visual-QA requirements. No engineering approval or
+private-template fidelity is implied.
 
 ## Executable synthetic demonstration
 

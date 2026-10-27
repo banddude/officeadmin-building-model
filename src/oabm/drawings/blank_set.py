@@ -20,7 +20,7 @@ VERSION = "blank-sheet-set-v1"
 _PAPER = {"width_mm", "height_mm", "margin_mm", "titleblock_height_mm"}
 _RESERVED = {"sheet", "sheet_id", "sheet_number", "title", "sheet_title", "revision", "date"}
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
-PDF_LIMITATION = "Combined PDF is unsupported: this repository has no supported SVG/DXF-to-PDF converter; pypdf does not convert SVG."
+PDF_REQUIREMENT = "PDF is optional and requires the pdf extra plus native Cairo; only locally generated blank sheets are converted."
 
 
 def _json(value):
@@ -98,11 +98,9 @@ def resolve_blank_sheet_set(config):
         raise ValueError("paper: explicitly supply width_mm, height_mm, margin_mm and titleblock_height_mm")
     formats=config["formats"]
     if not isinstance(formats,list) or not formats or any(not isinstance(f,str) for f in formats):
-        raise ValueError("formats: expected a unique list including svg, optionally dxf")
-    if "pdf" in formats:
-        raise ValueError(PDF_LIMITATION)
-    if len(set(formats))!=len(formats) or "svg" not in formats or not set(formats)<={"svg","dxf"}:
-        raise ValueError("formats: include svg and optionally dxf, without duplicates")
+        raise ValueError("formats: expected a unique list including svg, optionally dxf/pdf")
+    if len(set(formats))!=len(formats) or "svg" not in formats or not set(formats)<={"svg","dxf","pdf"}:
+        raise ValueError("formats: include svg and optionally dxf/pdf, without duplicates")
     sheets=config["sheets"]
     if not isinstance(sheets,list) or not sheets:
         raise ValueError("sheets: supply a nonempty ordered list")
@@ -195,7 +193,7 @@ def create_blank_sheet_set(config_path, *, output_directory):
             resolved.append({**{k:v for k,v in item.items() if k!="spec"},"spec":asdict(spec)})
             stage=f"sheet {spec.id} composition"
             write(prefix+".sheet.json",(compose_blank_sheet(spec).to_json()+"\n").encode(),"blank_composition")
-            for fmt in config["formats"]:
+            for fmt in (f for f in config["formats"] if f!="pdf"):
                 stage=f"sheet {spec.id} {fmt} titleblock"
                 try:
                     if fmt=="svg":
@@ -209,8 +207,25 @@ def create_blank_sheet_set(config_path, *, output_directory):
                     raise ValueError(str(exc)+"; check titleblock_height_mm, row count, field length and requested format support") from exc
                 write(prefix+"."+fmt,data,"blank_"+fmt)
                 write(prefix+"."+fmt+".map.json",(artifact.manifest_json+"\n").encode(),"source_map")
+        pdf_status={"status":"not_requested","requirement":PDF_REQUIREMENT}
+        if "pdf" in config["formats"]:
+            stage="combined PDF"
+            from .sheet_pdf import render_blank_sheet_set_pdf
+            packet=render_blank_sheet_set_pdf((s["spec"] for s in sheets),title=config["set_id"])
+            pdf_map=packet.manifest()
+            if (pdf_map["page_order"]!=[s["spec"].id for s in sheets] or len(pdf_map["pages"])!=len(sheets)
+                    or pdf_map["pdf_sha256"]!=_sha(packet.pdf)):
+                raise ValueError("combined PDF metadata differs from the requested packet")
+            for item,page in zip(sheets,pdf_map["pages"]):
+                source=pending/("sheets/"+item["stem"]+".svg")
+                if page["sheet_id"]!=item["spec"].id or _sha(source.read_bytes())!=page["svg_sha256"]:
+                    raise ValueError("combined PDF source differs from the retained SVG sheet")
+            write("sheet-set.pdf",packet.pdf,"combined_pdf")
+            write("sheet-set.pdf.map.json",(packet.manifest_json+"\n").encode(),"source_map")
+            pdf_status={"status":"generated","path":"sheet-set.pdf","page_count":len(sheets),
+                        "map":"sheet-set.pdf.map.json"}
         write("resolved-sheets.json",_json(resolved),"resolved_input")
-        write("READ-ME.txt",("BLANK SHEET SET - NO DESIGN CONTENT\n"+PDF_LIMITATION+"\n"
+        write("READ-ME.txt",("BLANK SHEET SET - NO DESIGN CONTENT\n"+PDF_REQUIREMENT+"\n"
              "Generic bottom titleblock only. Supplied job fields are not approval evidence.\n"
              "Keep source config private when it contains private job information.\n").encode(),"notice")
         stage="verify"
@@ -223,7 +238,7 @@ def create_blank_sheet_set(config_path, *, output_directory):
         manifest={"version":VERSION,"set_id":config["set_id"],"status":"blank_no_design_content",
                   "model_id":None,"engineering_approval":False,"template":"generic-bottom-titleblock-v1",
                   "sheet_order":[s["spec"].id for s in sheets],"formats":config["formats"],
-                  "pdf":{"status":"unsupported","reason":PDF_LIMITATION},"sheets":resolved,
+                  "pdf":pdf_status,"sheets":resolved,
                   "runtime":_runtime(),"files":sorted(receipts,key=lambda r:r["path"])}
         (pending/"MANIFEST.json").write_bytes(_json(manifest))
         stage="publish"

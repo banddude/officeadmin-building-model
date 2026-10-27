@@ -90,3 +90,10 @@ rebuild with `python -m oabm.drawings.company_sheets rebuild /delivery /fresh/at
 This verifies receipts and calls the same composition API; generated SVG/PDF
 bytes match when the recorded source/runtime/fonts match. Protect the whole delivery as private when its inputs
 are private. It is not a permit-set completeness or design approval gate.
+
+Consumers should reuse `measure_sheet_text(text, font_size_mm, *,
+font_family="Liberation Sans", font_weight=400) -> float` for wrapping and
+capacity checks. The result is occupied width in millimetres, including ink
+bearings and a one-percent margin. `validate_sheet_text(text) -> str` exposes
+the same XML-safe printable-ASCII contract. Final shared composition still
+checks positioned content; measured width alone is not a layout approval.

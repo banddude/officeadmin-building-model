@@ -70,13 +70,33 @@ def _font(family='Liberation Sans',weight=400):
     return font,actual,path
 
 
-def _advance(text,size,weight=400,family='Liberation Sans'):
-    _printable(text)
-    font,_,_=_font(family,weight)
-    # One percent margin covers converter rounding; bounds also include ink
-    # bearings separately for body text. No per-character average is used.
+def validate_sheet_text(text: str) -> str:
+    """Validate XML-safe printable ASCII presentation text; never replace glyphs."""
+    if not isinstance(text,str):raise ValueError('sheet text must be a string')
+    return _printable(text)
+
+
+def measure_sheet_text(text: str, font_size_mm: float, *,
+                       font_family: str = 'Liberation Sans', font_weight: int = 400) -> float:
+    """Return occupied width in mm, including ink bearings and 1% margin.
+
+    This is the shared wrapping/capacity helper. It measures the installed face
+    selected by Fontconfig with Pillow/FreeType. Only printable ASCII and the
+    three documented families are supported; unsupported input fails explicitly.
+    Final sheet composition remains responsible for position/bounds validation.
+    """
+    validate_sheet_text(text)
+    if type(font_size_mm) not in (int,float) or not math.isfinite(font_size_mm) or font_size_mm<=0:
+        raise ValueError('font size must be positive finite millimetres')
+    if font_family not in {'Liberation Sans','DejaVu Sans','sans-serif'} or font_weight not in {300,400,500,600,700}:
+        raise ValueError('unsupported sheet font family/weight')
+    font,_,_=_font(font_family,font_weight)
     ink=font.getbbox(text,anchor='ls')
-    return (max(font.getlength(text),ink[2])-min(0,ink[0]))*size/1000*1.01
+    return (max(font.getlength(text),ink[2])-min(0,ink[0]))*font_size_mm/1000*1.01
+
+
+def _advance(text,size,weight=400,family='Liberation Sans'):
+    return measure_sheet_text(text,size,font_weight=weight,font_family=family)
 
 
 def _object(value, allowed, label, required=()):

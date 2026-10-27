@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 from importlib import metadata
 import json
@@ -12,7 +12,8 @@ from pathlib import Path
 import platform
 
 import oabm
-from oabm.drawings import PlanSpec, generate_drawing_set, paper_text_height_m, view_to_svg
+from oabm.drawings import PlanSpec, generate_drawing_set, layout_view_labels, paper_text_height_m, view_to_svg
+from oabm.drawings.label_layout import VERSION as LABEL_LAYOUT_VERSION
 from oabm.model import BuildingModel, ContractError, validate_model
 from oabm.qa.route_bends import check_route_bends
 from .gltf import to_glb
@@ -23,9 +24,9 @@ LIMITATIONS = (
     "Bend checks support interior sharp-vertex turns per route, not consolidated cross-route junction bends.",
     "Consolidated endpoint elbows can report elbow_off_turn despite valid canonical topology; do not remove them to pass.",
     "Bend checks do not realize curved geometry or evaluate swept clearance, terminal approach or internal fit.",
-    "Plan SVGs are model views, not composed physical permit sheets; label suppression is reported in drawing metadata.",
+    "Plan SVGs are model views, not composed physical permit sheets; label layout is estimated and unplaced text requires review.",
 )
-PLAN_OPTIONS = {"dimension_decimals": 2, "label_overlap": "skip_with_dimensions",
+PLAN_OPTIONS = {"dimension_decimals": 2, "label_overlap": "keep",
                 "dimension_overlap": "skip_shorter", "include_schedules": False}
 
 
@@ -162,16 +163,25 @@ def deliver_model(model_path, options_path, *, output_directory) -> Path:
                 raise ContractError("required bend preflight unresolved; inspect retained bend-report.json")
         status = {"outputs": "generated_review_outputs", "bend_policy": options["bend_policy"],
                   "bend_check": bend_state, "engineering_approval": False}
-        write("READ-ME.txt", ("MODEL REVIEW DELIVERY\n" + f"Bend check: {bend_state}\n" +
-                              "\n".join(LIMITATIONS) + "\n").encode(), "readiness_notice")
         stage = "plans"
+        label_summary = None
+        status["label_layout"] = "not_requested"
         if plans:
             drawings = generate_drawing_set(model, plans=plans, **PLAN_OPTIONS)
+            drawings = replace(drawings,views=tuple(layout_view_labels(view,pixels_per_model_unit=100,
+                text_height_m=paper_text_height_m(view.scale)) for view in drawings.views))
+            label_summary = {"version":LABEL_LAYOUT_VERSION, "clearance_px":2.,
+                "relocated_labels":sum(int(dict(v.metadata)["relocated_labels"]) for v in drawings.views),
+                "unplaced_labels":sum(int(dict(v.metadata)["unplaced_labels_count"]) for v in drawings.views)}
+            status["label_layout"] = "needs_review" if label_summary["unplaced_labels"] else "passed_estimated_clearance"
             write("drawing-set.json", (drawings.to_json()+"\n").encode(), "derived_drawings")
             for number, view in enumerate(drawings.views, 1):
                 svg = view_to_svg(view, pixels_per_model_unit=100,
                                   text_height_m=paper_text_height_m(view.scale))
                 write(f"plans/plan-{number:02}.svg", svg.encode(), "plan_svg")
+        write("READ-ME.txt", ("MODEL REVIEW DELIVERY\n" + f"Bend check: {bend_state}\n" +
+            f"Label layout: {status['label_layout']}; see drawing-set.json for any unplaced labels.\n" +
+            "\n".join(LIMITATIONS) + "\n").encode(), "readiness_notice")
         stage = "preview_glb"
         if options["preview_glb"]:
             path = pending / "preview.glb"
@@ -193,6 +203,7 @@ def deliver_model(model_path, options_path, *, output_directory) -> Path:
                     "model_id": model.model_id, "status": status, "limitations": LIMITATIONS,
                     "effective_plans": [asdict(plan) for plan in plans],
                     "plan_options": PLAN_OPTIONS if plans else None,
+                    "label_layout": label_summary,
                     "svg_options": {"pixels_per_model_unit": 100, "paper_text_height_m": .0025} if plans else None,
                     "glb_options": "existing_exporter_defaults" if options["preview_glb"] else None,
                     "plan_files": [{"view_id": p.id, "path": f"plans/plan-{i:02}.svg"} for i,p in enumerate(plans,1)],

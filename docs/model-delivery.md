@@ -54,9 +54,14 @@ the manifest records each view ID and filename. Bounds and visibility use the
 existing PlanSpec defaults; this initial portable interface deliberately does
 not expose every exporter option.
 
-Plan generation uses the existing dimension/label collision suppression and
-matching paper text height. `drawing-set.json` retains source references and
-metadata including suppressed labels/dimensions. SVGs are inspection views,
+Plan generation uses the existing dimension collision suppression, then the
+bounded [model-view label placement](view-label-layout.md) pass with matching
+paper text height. Labels clear symbols and geometry using conservative SVG
+text rectangles and short source-bound leaders. `drawing-set.json` retains
+source references and full metadata for labels that cannot be placed. The
+manifest reports relocated/unplaced counts, and unplaced labels mark label
+layout `needs_review`. This does not block review publication even when bend
+policy is `require`; that policy only gates bends. SVGs are inspection views,
 not composed physical sheets, checked note layouts or permit documents. They
 are not stamped with the package bend-check status; keep the notice, report and
 manifest with the artifacts. The GLB uses existing default geometry, including

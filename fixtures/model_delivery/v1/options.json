@@ -1,0 +1,18 @@
+{
+  "bend_policy": "require",
+  "plans": [
+    {
+      "cut_height_m": 1.2,
+      "id": "plan:synthetic",
+      "level_id": "level:synthetic",
+      "scale": 50,
+      "view_depth_above_m": 0.25,
+      "view_depth_below_m": 0.25
+    }
+  ],
+  "preview_glb": true,
+  "radii_m": {
+    "route:synthetic": 0.3
+  },
+  "version": "model-delivery-v1"
+}

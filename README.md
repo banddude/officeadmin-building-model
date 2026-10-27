@@ -73,6 +73,10 @@ See [Conduit bend preflight](docs/route-bend-preflight.md) for a read-only
 canonical-route gate that checks elbow inventory and caller-supplied bend-radius
 space before producing plan and 3D deliveries.
 
+See [One-command model delivery](docs/model-delivery.md) to run the bend gate
+and requested plan/GLB exports together with retained inputs, explicit review
+status and a deterministic hash manifest.
+
 ## Agent entrypoint
 
 Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.

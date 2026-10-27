@@ -1,0 +1,16 @@
+{
+  "angle_tolerance_rad": 1e-06,
+  "bends": [
+    {
+      "angle_radians": 1.5707963267948966,
+      "radius_m": 0.3,
+      "route_id": "route:synthetic",
+      "tangent_setback_m": 0.29999999999999993,
+      "vertex_index": 1
+    }
+  ],
+  "diagnostics": [],
+  "ready": true,
+  "tolerance_m": 1e-06,
+  "version": "route-bend-preflight-v1"
+}

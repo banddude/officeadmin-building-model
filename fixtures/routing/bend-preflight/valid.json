@@ -1,0 +1,181 @@
+{
+  "attributes": {},
+  "ceilings": [],
+  "circuits": [],
+  "conductors": [],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "equipment:synthetic",
+      "level_id": null,
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [],
+      "rated_voltage_v": null,
+      "size": null,
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "levels": [],
+  "model_id": "model:bend-preflight",
+  "name": null,
+  "obstacles": [],
+  "openings": [],
+  "ports": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:start",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "equipment:synthetic",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [],
+      "role": "connection"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "port:end",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "equipment:synthetic",
+      "pose": {
+        "position": {
+          "x": 2,
+          "y": 2,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [],
+      "role": "connection"
+    }
+  ],
+  "provenance": [],
+  "route_constraints": [],
+  "route_fittings": [
+    {
+      "angle_radians": 1.5707963267948966,
+      "attributes": {},
+      "confidence": 1.0,
+      "fitting_type": "elbow",
+      "id": "fitting:1",
+      "name": null,
+      "nominal_diameter_m": null,
+      "pose": {
+        "position": {
+          "x": 2,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [],
+      "route_id": "route:synthetic"
+    }
+  ],
+  "routes": [
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 2,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 2,
+            "y": 2,
+            "z": 0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "port:end",
+      "fitting_ids": [
+        "fitting:1"
+      ],
+      "id": "route:synthetic",
+      "name": null,
+      "nominal_diameter_m": null,
+      "provenance": [],
+      "route_type": "conduit",
+      "start_port_id": "port:start"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "slabs": [],
+  "spaces": [],
+  "walls": []
+}

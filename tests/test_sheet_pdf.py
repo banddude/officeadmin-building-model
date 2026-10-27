@@ -162,3 +162,22 @@ def test_explicit_literal_url_text_is_not_a_fetchable_asset(runtime):
     spec=replace(specs()[0],titleblock_fields=(('Project','https://example.invalid/literal'),))
     result=sheet_pdf.render_blank_sheet_set_pdf((spec,),title='Synthetic')
     assert 'https://example.invalid/literal' in PdfReader(io.BytesIO(result.pdf)).pages[0].extract_text()
+
+
+def test_pdf_text_paint_is_black_fill_without_covering_white_stroke(runtime):
+    from pypdf.generic import ContentStream
+    packet=sheet_pdf.render_blank_sheet_set_pdf(specs(),title='Paint regression')
+    reader=PdfReader(io.BytesIO(packet.pdf))
+    for page in reader.pages:
+        # Cairo's defective halo conversion uses text rendering mode 2
+        # (fill then stroke). Mode 0 paints the glyph fill alone. This checks
+        # the actual PDF paint operators rather than extractable text presence.
+        modes=[args[0] for args,op in ContentStream(page.get_contents(),reader).operations if op==b'Tr']
+        assert all(mode==0 for mode in modes)  # Absence means PDF default mode 0.
+        operations=ContentStream(page.get_contents(),reader).operations
+        assert any(op==b'rg' and list(args)==[0,0,0] for args,op in operations)
+        assert any(op in {b'Tj',b'TJ'} for args,op in operations)
+        # Cairo can emulate stroke text as separate paths rather than Tr=2;
+        # prohibit the actual white stroking paint that erased these glyphs.
+        assert not any(op==b'RG' and list(args)==[1,1,1] for args,op in operations)
+    assert packet.manifest()['text_paint_policy']=='fill_only_no_svg_halo'

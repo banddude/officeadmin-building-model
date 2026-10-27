@@ -106,7 +106,16 @@ def render_blank_sheet_set_pdf(specs, *, title: str) -> BlankSheetPdf:
     for number,spec in enumerate(specs,1):
         svg=_renderer_svg(spec)
         try:
-            converted=cairosvg.svg2pdf(bytestring=svg,dpi=96,unsafe=False)
+            # CairoSVG does not implement SVG paint-order. A white halo painted
+            # after a small black glyph can erase it despite extractable text.
+            # Blank titleblocks have no underlying drawing strokes to mask;
+            # convert their text as black fill only, retaining original SVG hash.
+            conversion_root=ET.fromstring(svg)
+            for text in conversion_root.iter('{http://www.w3.org/2000/svg}text'):
+                for attr in ('paint-order','stroke','stroke-width','stroke-linejoin'):
+                    text.attrib.pop(attr,None)
+            conversion_svg=ET.tostring(conversion_root)
+            converted=cairosvg.svg2pdf(bytestring=conversion_svg,dpi=96,unsafe=False)
         except Exception as exc:
             raise ValueError(f"sheet {spec.id}: local CairoSVG PDF conversion failed: {exc}") from exc
         reader=pypdf.PdfReader(io.BytesIO(converted),strict=True)
@@ -127,6 +136,7 @@ def render_blank_sheet_set_pdf(specs, *, title: str) -> BlankSheetPdf:
     for page,spec in zip(readback.pages,specs):
         _check_page(page,spec)
     manifest={"kind":"oabm.blank-sheet-pdf","version":VERSION,"pdf_sha256":hashlib.sha256(data).hexdigest(),
+              "text_paint_policy":"fill_only_no_svg_halo",
               "page_order":[s.id for s in specs],"pages":pages,"title":title,
               "converter":{"CairoSVG":cairosvg.__version__,"cairo":cairo.cairo_version_string(),"pypdf":pypdf.__version__},
               "limitations":["Local vector conversion of internally generated blank sheets only.",

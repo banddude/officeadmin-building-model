@@ -77,6 +77,10 @@ See [One-command model delivery](docs/model-delivery.md) to run the bend gate
 and requested plan/GLB exports together with retained inputs, explicit review
 status and a deterministic hash manifest.
 
+See [Bounded model-view label placement](docs/view-label-layout.md) for
+deterministic SVG label offsets, source-bound leaders and explicit unplaced
+label reports. The model delivery workflow applies this pass to plans.
+
 ## Agent entrypoint
 
 Coding agents should read `AGENTS.md` first. It contains the implementation, fix-pass, independent-review, duplicate-PR, testing, safety, and dependency-relay rules needed to work from a short issue/PR assignment without private chat context. See `docs/agent-playbook.md` for minimal dispatch prompts.

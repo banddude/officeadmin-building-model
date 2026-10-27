@@ -7,7 +7,7 @@ import struct
 
 import pytest
 
-from oabm.drawings import PlanSpec, generate_drawing_set, paper_text_height_m, view_to_svg
+from oabm.drawings import PlanSpec, generate_drawing_set, layout_view_labels, paper_text_height_m, view_to_svg
 from oabm.exports.gltf import to_glb
 from oabm.exports import model_delivery as delivery
 from oabm.model import BuildingModel, ContractError, validate_model
@@ -47,7 +47,8 @@ def test_one_model_outputs_match_existing_exporters_and_input_hashes(tmp_path):
     root, manifest = publish(tmp_path)
     verify(root, manifest)
     assert manifest["status"] == {"outputs":"generated_review_outputs", "bend_policy":"require",
-                                   "bend_check":"passed_bounded_checks", "engineering_approval":False}
+                                   "bend_check":"passed_bounded_checks", "engineering_approval":False,
+                                   "label_layout":"passed_estimated_clearance"}
     assert not (root.parent / ".pending").exists()
     model = BuildingModel.load(root / "inputs/model.json")
     compact = model.to_json(indent=None).encode()
@@ -64,6 +65,8 @@ def test_one_model_outputs_match_existing_exporters_and_input_hashes(tmp_path):
     assert original.read_bytes() == raw
     config = json.loads((root / "inputs/options.json").read_bytes())
     drawings = generate_drawing_set(model, plans=(PlanSpec(**config["plans"][0]),), **delivery.PLAN_OPTIONS)
+    drawings = replace(drawings,views=tuple(layout_view_labels(v,pixels_per_model_unit=100,
+        text_height_m=paper_text_height_m(v.scale)) for v in drawings.views))
     assert (root / "drawing-set.json").read_text() == drawings.to_json()+"\n"
     assert (root / "plans/plan-01.svg").read_text() == view_to_svg(
         drawings.views[0], pixels_per_model_unit=100, text_height_m=paper_text_height_m(50))
@@ -260,3 +263,23 @@ def test_repeated_option_key_and_nonfinite_plan_are_rejected(tmp_path):
     config.write_text(json.dumps(options))
     with pytest.raises(ContractError,match="finite"):
         delivery.deliver_model(model,config,output_directory=tmp_path/"nonfinite")
+
+
+def test_unplaced_labels_publish_explicit_review_status_and_full_text(tmp_path):
+    model, config = inputs(tmp_path)
+    canonical=BuildingModel.load(model)
+    full="Synthetic equipment description "*12
+    canonical=replace(canonical,electrical_equipment=(replace(canonical.electrical_equipment[0],name=full),))
+    canonical.dump(model)
+    root=delivery.deliver_model(model,config,output_directory=tmp_path/"attempt")
+    manifest=json.loads((root/"MANIFEST.json").read_bytes())
+    assert manifest["status"]["bend_check"]=="passed_bounded_checks"
+    assert manifest["status"]["label_layout"]=="needs_review"
+    assert manifest["label_layout"]["unplaced_labels"]==1
+    assert "Label layout: needs_review" in (root/"READ-ME.txt").read_text()
+    drawings=json.loads((root/"drawing-set.json").read_bytes())
+    missing=json.loads(dict(drawings["views"][0]["metadata"])["unplaced_labels"])
+    assert missing[0]["text"]==full
+    assert missing[0]["reason"]=="text_exceeds_view"
+    assert full not in (root/"plans/plan-01.svg").read_text()
+    verify(root,manifest)

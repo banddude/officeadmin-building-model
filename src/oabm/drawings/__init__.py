@@ -17,6 +17,7 @@ from .generator import (
     generate_schedules,
     generate_section,
 )
+from .label_layout import layout_view_labels
 from .model import (
     OUTPUT_VERSION,
     Bounds2,
@@ -50,6 +51,7 @@ __all__ = [
     "DrawingView",
     "ElevationSpec",
     "LabelProvider",
+    "layout_view_labels",
     "LineStyle",
     "PlanSpec",
     "Point2",

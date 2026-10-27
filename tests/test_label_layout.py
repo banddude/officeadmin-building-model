@@ -117,12 +117,18 @@ def test_closed_polygon_edge_and_dimension_text_are_obstacles():
 
 def test_no_clear_candidate_reports_label_and_preserves_all_geometry():
     text=primitive("label:a","text",((0,0),),text="X",source="a")
-    # A symbol footprint fills the tiny view, leaving no label candidate.
+    # The 0.12 x 0.125 estimated text rectangle fits this 0.16 x 0.16 view,
+    # but cannot avoid the central symbol. Prove fit without the obstacle first.
+    bounds=Bounds2(min_x=-.08,min_y=-.08,max_x=.08,max_y=.08)
+    clear=layout(view(text,bounds=bounds))
+    assert dict(clear.metadata)["unplaced_labels_count"]=="0"
+    assert label(clear).text=="X"
     symbol=primitive("symbol:block","symbol",((0,0),),symbol="obstruction")
-    original=view(symbol,text,bounds=Bounds2(min_x=-.04,min_y=-.04,max_x=.04,max_y=.04))
+    original=view(symbol,text,bounds=bounds)
     result=layout(original)
     assert result.primitives==(symbol,)
     assert dict(result.metadata)["unplaced_labels_count"]=="1"
+    assert json.loads(dict(result.metadata)["unplaced_labels"])[0]["reason"]=="no_clear_candidate"
 
 
 @pytest.mark.parametrize("argument",[0,-1,True,float("nan"),float("inf")])

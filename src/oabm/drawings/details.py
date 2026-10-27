@@ -195,22 +195,71 @@ def detail_body_svg(detail: DetailResult, *, drawing_bounds_mm) -> str:
     return '\n'.join(out)
 
 
-def company_detail_bodies(model, specs, resolved_sheets):
-    """Validate the complete package before calling shared output creation.
+@dataclass(frozen=True)
+class DetailPlacement:
+    """Caller-selected paper slot; no fit-to-slot resizing or pagination."""
 
-    Explicit detail IDs are sheet IDs. No fallback titleblock or PDF converter.
+    detail_id: str
+    sheet_id: str
+    bounds_mm: tuple[float, float, float, float]
+
+    def __post_init__(self):
+        _text(self.detail_id, "placement detail ID")
+        _text(self.sheet_id, "placement sheet ID")
+        if len(self.bounds_mm) != 4 or any(type(v) not in (int,float) or not math.isfinite(v) for v in self.bounds_mm):
+            raise ValueError("placement bounds_mm requires four finite paper millimetres")
+        object.__setattr__(self, "bounds_mm", tuple(self.bounds_mm))
+        l,t,r,b = self.bounds_mm
+        if l >= r or t >= b:
+            raise ValueError("placement slot must have positive width and height")
+
+
+def company_detail_bodies(model, specs, resolved_sheets, *, placements=None):
+    """Preflight every detail and slot before returning any sheet body.
+
+    Without placements, retain the original one-detail-per-sheet ID mapping.
+    Explicit slots use paper millimetres and must partition all requested details
+    exactly once across the resolved sheets, without overlapping one another.
     """
     details = generate_details(model, specs)
     sheets = {sheet.id: sheet for sheet in resolved_sheets}
-    if set(sheets) != {d.spec.id for d in details}:
-        raise ValueError("detail IDs must exactly match resolved company sheet IDs")
-    return {d.spec.id: detail_body_svg(d, drawing_bounds_mm=sheets[d.spec.id].drawing_bounds_mm) for d in details}
+    if placements is None:
+        if set(sheets) != {d.spec.id for d in details}:
+            raise ValueError("detail IDs must exactly match resolved company sheet IDs")
+        return {d.spec.id: detail_body_svg(d, drawing_bounds_mm=sheets[d.spec.id].drawing_bounds_mm) for d in details}
+    placements = tuple(placements)
+    detail_ids = {d.spec.id for d in details}
+    if len(placements) != len(detail_ids) or {p.detail_id for p in placements} != detail_ids:
+        raise ValueError("placements must include each detail ID exactly once")
+    if {p.sheet_id for p in placements} != set(sheets):
+        raise ValueError("placement sheet IDs must exactly match resolved company sheets")
+    by_detail = {p.detail_id:p for p in placements}
+    for i, slot in enumerate(placements):
+        l,t,r,b = slot.bounds_mm
+        sl,st,sr,sb = sheets[slot.sheet_id].drawing_bounds_mm
+        if l < sl or t < st or r > sr or b > sb:
+            raise ValueError(f"sheet {slot.sheet_id} detail {slot.detail_id}: slot exceeds shared drawing bounds")
+        for other in placements[:i]:
+            ol,ot,orr,ob = other.bounds_mm
+            if other.sheet_id == slot.sheet_id and l < orr and ol < r and t < ob and ot < b:
+                raise ValueError(f"sheet {slot.sheet_id}: slots for details {slot.detail_id} and {other.detail_id} overlap; supply separate bounds")
+    groups = {sid:[] for sid in sheets}
+    for detail in details:
+        slot = by_detail[detail.spec.id]
+        try:
+            body = detail_body_svg(detail, drawing_bounds_mm=slot.bounds_mm)
+        except ValueError as exc:
+            raise ValueError(f"sheet {slot.sheet_id} detail {slot.detail_id} slot {slot.bounds_mm}: {exc}; enlarge the slot or explicitly revise the requested view") from exc
+        groups[slot.sheet_id].append(body)
+    return {sid:'<g>\n'+'\n'.join(bodies)+'\n</g>' for sid,bodies in groups.items()}
 
 
 def detail_specs_from_dict(request):
     """Read editable explicit recipe inputs. Unknown or omitted fields fail."""
-    if not isinstance(request, dict) or set(request) != {"version", "details"} or request["version"] != "detail-sheet-set@1":
-        raise ValueError("expected detail-sheet-set@1 and explicit details")
+    versions = {"detail-sheet-set@1": {"version", "details"},
+                "detail-sheet-set@2": {"version", "details", "placements"}}
+    if not isinstance(request, dict) or request.get("version") not in versions or set(request) != versions[request["version"]]:
+        raise ValueError("expected detail-sheet-set@1 or @2 with explicit details and @2 placements")
     specs = []
     for raw in request["details"]:
         item = dict(raw)
@@ -234,7 +283,12 @@ def create_detail_sheet_set(model_path, details_path, profile_path, job_path, *,
     request = json.loads(request_bytes)
     specs = detail_specs_from_dict(request)
     resolved = resolve_company_sheet_set(profile_path, job_path)
-    bodies = company_detail_bodies(model, specs, resolved.sheets)
+    placements = None
+    if request["version"] == "detail-sheet-set@2":
+        if not isinstance(request["placements"],list) or not request["placements"]:
+            raise ValueError("placements requires a nonempty explicit slot list")
+        placements = tuple(DetailPlacement(**{**item,"bounds_mm":tuple(item["bounds_mm"])}) for item in request["placements"])
+    bodies = company_detail_bodies(model, specs, resolved.sheets, placements=placements)
     import hashlib
     import os
     import tempfile
@@ -249,10 +303,11 @@ def create_detail_sheet_set(model_path, details_path, profile_path, job_path, *,
                     "detail-request.json": request_bytes}
         for name, data in retained.items():
             (package / name).write_bytes(data)
-        manifest = {"version": "detail-sheet-set@1", "model_id": model.model_id,
+        manifest = {"version": request["version"], "model_id": model.model_id,
                     "recipes": {s.id: s.recipe for s in sorted(specs, key=lambda s:s.number)},
                     "source_ids": {s.id: sorted(s.source_ids) for s in specs},
                     "view_inputs": request["details"],
+                    "placements": request.get("placements"),
                     "inputs": {name: hashlib.sha256(data).hexdigest() for name,data in retained.items()},
                     "status": "supplied facts only; no engineering approval"}
         (package / "detail-manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2)+"\n")

@@ -49,3 +49,31 @@ This bounded tool does not select installation arrangements, connect equipment,
 size electrical components, verify engineering or imply construction approval.
 Unspecified connection geometry stays absent. Multiple closely spaced objects
 can still need separate caller-selected details for readability.
+
+## Multiple details on one sheet
+
+`detail-sheet-set@2` retains the identical `details` list and adds an explicit
+`placements` list. Each row supplies `detail_id`, `sheet_id`, and `bounds_mm` as
+`[left, top, right, bottom]` in absolute paper millimetres. This is a caller-chosen
+slot, not a request to fit or resize the view. Every detail must occur exactly
+once and every requested sheet must receive content. Slots must stay inside the
+resolved shared drawing area and must not overlap. View geometry, dimension
+callouts, all supplied notes and measured text must fit their slot; otherwise
+the error identifies the sheet, detail and slot and asks for revised inputs.
+
+The original `detail-sheet-set@1` one-detail-per-sheet mode is unchanged. The
+one-page fixture contains the same three details, IDs, numbers, titles, model
+bounds and 1:10 / 1:5 / 1:10 scales as the original fixture. Its job explicitly
+selects 36 by 24 inch paper and three nonoverlapping slots on sheet ED1. The
+shared profile renderer supplies the single company title block.
+
+```sh
+PYTHONPATH=src python examples/detail_sheet_set.py \
+  --profile fixtures/detail_sheets/profile.json \
+  --job fixtures/detail_sheets/job-one-sheet.json \
+  --details fixtures/detail_sheets/details-one-sheet.json \
+  --output detail-one-page
+```
+
+The retained request and detail manifest include the exact slot assignments.
+There is no automatic scale adjustment, note omission or fallback pagination.

@@ -155,3 +155,77 @@ def test_note_overflow_does_not_create_partial_package(tmp_path):
         create_detail_sheet_set(root/'model.json',request_path,root/'profile.json',root/'job.json',output_directory=output)
     assert not output.exists()
     assert not list(tmp_path.glob('.detail-stage-*'))
+
+
+def one_sheet_case():
+    import json
+    from pathlib import Path
+    from oabm.drawings.details import DetailPlacement, detail_specs_from_dict
+    from oabm.drawings.company_sheets import resolve_company_sheet_set
+    root=Path(__file__).resolve().parents[1]/'fixtures'/'detail_sheets'
+    request=json.loads((root/'details-one-sheet.json').read_text())
+    specs=detail_specs_from_dict(request)
+    placements=tuple(DetailPlacement(**row) for row in request['placements'])
+    sheets=resolve_company_sheet_set(root/'profile.json',root/'job-one-sheet.json').sheets
+    return root,specs,placements,sheets
+
+
+def test_explicit_slots_preserve_all_detail_scales_titles_notes_and_order():
+    import xml.etree.ElementTree as ET
+    root,specs,placements,sheets=one_sheet_case()
+    m=BuildingModel.load(root/'model.json')
+    bodies=company_detail_bodies(m,specs,sheets,placements=placements)
+    assert bodies==company_detail_bodies(m,tuple(reversed(specs)),sheets,placements=tuple(reversed(placements)))
+    tree=ET.fromstring(bodies['ED1'])
+    texts=[node.text for node in tree.iter('text')]
+    groups=list(tree)
+    assert len(groups)==3
+    for spec_,group in zip(specs,groups):
+        points=[tuple(map(float,point.split(','))) for polygon in group.iter('polygon') for point in polygon.get('points').split()]
+        assert max(p[0] for p in points)-min(p[0] for p in points)==pytest.approx(.6*1000/spec_.scale)
+        assert max(p[1] for p in points)-min(p[1] for p in points)==pytest.approx(.8*1000/spec_.scale)
+        assert f'{spec_.number} | {spec_.title} | 1:{spec_.scale:g}' in texts
+        assert spec_.notes[0] in texts
+    assert texts.count(specs[0].notes[0])==3
+
+
+@pytest.mark.parametrize('change,match',[
+    ('overlap','overlap'),('outside','shared drawing bounds'),
+    ('small','sheet ED1 detail D1 slot'),('missing','exactly once'),('unknown','sheet IDs')])
+def test_slot_refusals_are_actionable(change,match):
+    root,specs,slots,sheets=one_sheet_case()
+    slots=list(slots)
+    if change=='overlap':slots[1]=replace(slots[1],bounds_mm=slots[0].bounds_mm)
+    elif change=='outside':slots[0]=replace(slots[0],bounds_mm=(0,20,275,400))
+    elif change=='small':slots[0]=replace(slots[0],bounds_mm=(15,20,100,100))
+    elif change=='missing':slots.pop()
+    else:slots[0]=replace(slots[0],sheet_id='missing')
+    with pytest.raises(ValueError,match=match):
+        company_detail_bodies(BuildingModel.load(root/'model.json'),specs,sheets,placements=slots)
+
+
+def test_one_page_shared_delivery_and_failed_slots_leave_no_partial_package(tmp_path):
+    import json
+    from pypdf import PdfReader
+    from oabm.drawings.details import create_detail_sheet_set
+    root,_,_,_=one_sheet_case()
+    output=tmp_path/'one-sheet'
+    create_detail_sheet_set(root/'model.json',root/'details-one-sheet.json',root/'profile.json',root/'job-one-sheet.json',output_directory=output)
+    repeated=tmp_path/'one-sheet-repeated'
+    create_detail_sheet_set(root/'model.json',root/'details-one-sheet.json',root/'profile.json',root/'job-one-sheet.json',output_directory=repeated)
+    assert (output/'delivery'/'sheet-set.pdf').read_bytes()==(repeated/'delivery'/'sheet-set.pdf').read_bytes()
+    pages=PdfReader(output/'delivery'/'sheet-set.pdf').pages
+    assert len(pages)==1
+    text=pages[0].extract_text()
+    assert all(title in text for title in ['Equipment mounting elevation','Connection envelope close-up','Supported cabinet section'])
+    manifest=json.loads((output/'detail-manifest.json').read_text())
+    assert len(manifest['placements'])==3
+    assert {row['detail_id'] for row in manifest['placements']}=={'D1','D2','D3'}
+    bad=json.loads((root/'details-one-sheet.json').read_text())
+    bad['placements'][1]['bounds_mm']=bad['placements'][0]['bounds_mm']
+    request=tmp_path/'bad-slots.json';request.write_text(json.dumps(bad))
+    failed=tmp_path/'failed'
+    with pytest.raises(ValueError,match='overlap'):
+        create_detail_sheet_set(root/'model.json',request,root/'profile.json',root/'job-one-sheet.json',output_directory=failed)
+    assert not failed.exists()
+    assert not list(tmp_path.glob('.detail-stage-*'))

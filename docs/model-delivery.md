@@ -111,9 +111,16 @@ runtime, complete rebuilds are byte-identical.
 A failure retains `.pending/` and `failure.json` for diagnosis, with no published
 `delivery/`. Existing attempts, successful or failed, cannot be reused or
 replaced; retry at a fresh path. No stale plan/GLB from an old attempt can be
-mixed into a later delivery. Invalid model/options or unknown plan levels fail
-before reserving a directory. Publication uses a local directory rename; it does
-not claim power-loss durability, protection against concurrent external edits
+mixed into a later delivery. Invalid canonical models, malformed options JSON,
+unsupported option structure and unknown plan levels fail before reserving a
+directory. Invalid radius values and unknown route IDs are checked during bend
+preflight after reservation and input snapshotting; they retain a failed attempt.
+
+The caller must maintain exclusive ownership of the attempt contents throughout
+generation and publication. Validating hashes followed by a local directory
+rename provides atomic publication, not protection against an external writer
+changing files between validation and rename. This workflow does not claim
+power-loss durability, protection against concurrent external edits during or
 after publication, or distribution/upload to any external system. Verify recorded
 hashes before consuming a delivery that may have been edited.
 

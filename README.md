@@ -51,6 +51,10 @@ consumers still refuse populated assemblies. This is not full-room framing,
 does not authorize penetrations, and does not automate engineering decisions.
 See [Layered raceway policy](docs/layered-raceway-policy.md) for portable caller
 baseline/company/job permissions compiled into existing explicit selection rules.
+See [Physical schedule sheets](docs/schedule-sheet-production.md) for explicit supplied
+panel/circuit facts laid out as editable vector tables using the shared company
+profile, repeated headers, deterministic pagination and verified PDF output.
+
 See [Panel schedule facts](docs/panel-schedule-facts.md) for an opt-in grouped
 report of supplied circuit values, missing facts and connected-load completeness.
 
@@ -104,3 +108,5 @@ Apache-2.0 license and NOTICE; see the spike README for attribution and hashes.
 Native IFC4 wall/opening intake has a separate explicit [bounded reader](docs/native-ifc-import.md); strict OABM IFC round-trip behavior remains unchanged.
 
 See [Shared company sheet profiles](docs/company-sheet-profile.md) for saved company defaults, job-only overrides and reusable right-rail sheet/PDF composition.
+See [Supplied site-plan production](docs/supplied-site-plan.md) for explicit
+site geometry to scaled editable sheets using the shared company sheet profile.

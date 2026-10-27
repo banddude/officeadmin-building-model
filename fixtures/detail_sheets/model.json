@@ -1,0 +1,75 @@
+{
+  "attributes": {},
+  "ceilings": [],
+  "circuits": [],
+  "conductors": [],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "cabinet",
+      "host_id": null,
+      "id": "equipment:demo",
+      "level_id": null,
+      "name": "Synthetic cabinet",
+      "pose": {
+        "position": {
+          "x": 1,
+          "y": 0,
+          "z": 1
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:detail-input",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": null,
+      "size": {
+        "x": 0.6,
+        "y": 0.2,
+        "z": 0.8
+      },
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "levels": [],
+  "model_id": "synthetic:detail-demo",
+  "name": null,
+  "obstacles": [],
+  "openings": [],
+  "ports": [],
+  "provenance": [],
+  "route_constraints": [],
+  "route_fittings": [],
+  "routes": [],
+  "schema_version": "1.0.0",
+  "slabs": [],
+  "spaces": [],
+  "walls": []
+}

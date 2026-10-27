@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:oabm:supplied-site-plan-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "supplied-site-plan-v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "units": {
+      "enum": [
+        "m",
+        "mm",
+        "ft"
+      ]
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f]+$"
+        },
+        "axes": {
+          "const": "local-xy,+x-right,+y-up"
+        }
+      },
+      "required": [
+        "id",
+        "axes"
+      ]
+    },
+    "drawing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "placement_mm": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "padding_mm": {
+          "type": "number",
+          "minimum": 5
+        },
+        "legend_width_mm": {
+          "type": "number",
+          "minimum": 95
+        },
+        "north_degrees": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "exclusiveMaximum": 360
+            }
+          ]
+        }
+      },
+      "required": [
+        "scale",
+        "placement_mm",
+        "padding_mm",
+        "legend_width_mm",
+        "north_degrees"
+      ]
+    },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          },
+          "kind": {
+            "enum": [
+              "building",
+              "curb",
+              "parking",
+              "landscape",
+              "equipment",
+              "route"
+            ]
+          },
+          "frame_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f]+$"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f]+$"
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f]+$"
+              },
+              "reference": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f]+$"
+              },
+              "qualification": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f]+$"
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": [
+              "source_id",
+              "reference",
+              "qualification",
+              "confidence"
+            ]
+          },
+          "route_status": {
+            "enum": [
+              "supplied",
+              "empty",
+              "future"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "frame_id",
+          "points",
+          "closed",
+          "label",
+          "evidence"
+        ]
+      }
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "units",
+    "frame",
+    "drawing",
+    "features"
+  ]
+}

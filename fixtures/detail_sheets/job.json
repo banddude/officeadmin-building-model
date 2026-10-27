@@ -1,0 +1,13 @@
+{
+  "version": "company-sheet-job-v1",
+  "set_id": "synthetic-details",
+  "date": "2026-10-27",
+  "revision": "S1",
+  "fields": {"project": "Synthetic details", "issue": "Review only"},
+  "formats": ["svg", "pdf"],
+  "sheets": [
+    {"id": "D1", "title": "Equipment mounting elevation"},
+    {"id": "D2", "title": "Connection envelope close-up"},
+    {"id": "D3", "title": "Supported cabinet section"}
+  ]
+}

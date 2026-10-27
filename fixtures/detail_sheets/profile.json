@@ -1,0 +1,13 @@
+{
+  "version": "company-sheet-profile-v1",
+  "fields": {
+    "company": "Synthetic Company",
+    "license": "SYNTHETIC",
+    "phone": "Not supplied",
+    "email": "synthetic@example.invalid"
+  },
+  "template": {
+    "width_mm": 609.6,
+    "height_mm": 457.2
+  }
+}

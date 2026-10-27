@@ -1,0 +1,6 @@
+{
+  "version": "company-sheet-profile-v1",
+  "fields": {"company": "Synthetic Company", "license": "SYNTHETIC ONLY"},
+  "template": {"width_mm": 650, "height_mm": 420, "margin_mm": 10, "rail_width_mm": 100, "rail_inset_mm": 6.35},
+  "logos": {}
+}

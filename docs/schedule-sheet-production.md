@@ -1,0 +1,116 @@
+# Supplied panel facts on physical sheets
+
+`oabm-panel-schedule-sheets MODEL PROFILE JOB SETTINGS OUTPUT` (or
+`python -m oabm.drawings.schedule_set ...`) consumes an explicit canonical
+BuildingModel, the shared company-sheet profile, a shared job with exactly one
+schedule template sheet, and explicit layout settings. It produces editable
+vector SVG sheets and optional combined vector PDF through
+`oabm.drawings.company_sheets.create_company_sheet_set`. Company identity,
+logo/field precedence, frame, title rail, paper dimensions and PDF conversion
+remain owned by that shared tool. There is no schedule-specific title block.
+
+The input model supplies panel/circuit/load facts; it is not reconstructed from
+a schedule. Existing `generate_panel_schedule_report` and
+`panel_report_to_drawing_schedules` own the report, owner assignment, arithmetic,
+unknowns and duplicate printed-label conflicts. Circuit tables now visibly name
+conflicting circuit IDs. Every panel receives its circuit table and supplied
+connected-load summary. Unsupported source owners remain in an explicit table.
+An empty panel has an explicit no-listed-circuits note and no invented data row.
+
+Connected VA is only the supplied known subtotal. Missing loads remain unknown.
+No demand factors, service sizing, breaker selection, spare slots or regulatory
+approval are inferred. The result is presentation output requiring review.
+
+## Synthetic demonstration
+
+After the shared company profile dependency is installed:
+
+```sh
+PYTHONPATH=src python examples/panel_schedule_sheets.py \
+  fixtures/company_sheets/v1/profile.json \
+  fixtures/schedule_sheets/v1/job.json /tmp/synthetic-schedule-demo
+```
+
+This generates two explicitly supplied synthetic panels and 90 circuit rows,
+including an explicit zero, an unknown load and a duplicate opaque circuit
+label. The large panel spans multiple pages. The settings input is generated
+beside the editable canonical model; production callers supply their own files:
+
+```json
+{
+  "version": "panel-schedule-sheet-set-v1",
+  "layout": {
+    "text_height_mm": 2.5,
+    "line_height_mm": 4.0,
+    "padding_mm": 1.5,
+    "column_widths_mm": {}
+  }
+}
+```
+
+`contracts/schedule-sheet-settings-v1.schema.json` describes the settings shape.
+The runtime also enforces line height at least 1.5 times text height. Column
+widths are optional paper-mm overrides keyed by existing schedule column key;
+remaining columns divide remaining body width equally. Unknown keys, nonfinite
+values, impossible widths and oversized rows fail explicitly. Use wider paper,
+wider columns or smaller text to resolve overflow. No text is ellipsized.
+
+The shared renderer supports XML `space="preserve"` on group/text elements.
+Leading, trailing and repeated supplied ASCII spaces are retained exactly in
+source, wrapped cells and SVG. The schedule renderer explicitly opts into that
+mode. Unsupported non-ASCII/control glyphs fail through shared
+`validate_sheet_text`; an explicit source newline is laid out as separate lines.
+No source value is silently trimmed or canonicalized.
+
+## Layout and traceability
+
+`paginate_schedules(drawing_set, resolved_company_sheet, layout=...)` is a
+reusable derived-table paginator. It accepts existing `DrawingSchedule`s and
+retains the canonical source index. It produces paper-mm SVG `<g>` bodies,
+editable derived drawing JSON, and one row-map entry per actual source row.
+The body stays inset from the shared `drawing_bounds_mm`; it cannot enter the
+rail. One schedule starts on each page, with repeated title and column headers.
+Rows stay intact across page boundaries. Long opaque
+identifiers wrap deterministically using shared `measure_sheet_text` actual
+installed-font advances and ink bearings (including its 1% safety margin),
+with binary search for the longest fitting substring. All characters, including
+spaces, remain in the wrapped source lines.
+The shared renderer's supported DejaVu Sans font is used. Glyph and pixel
+appearance still require independent review.
+
+Continuation sheets increment the trailing numeric sheet ID while retaining
+its zero padding: E6.0 becomes E6.1, E6.2, etc. A nonnumeric prefix gets a
+three-digit suffix. Title-rail capacity is checked by the shared renderer;
+choose a short template ID or explicitly widen the shared profile rail if it
+fails. Each footer prints schedule page N/M and its physical sheet ID.
+
+`delivery/SCHEDULE-MANIFEST.json` binds each row to schedule ID, zero-based
+row index, canonical source ID, physical sheet/page, bounds, exact original
+cells, wrapped cell lines, and primitive IDs in the retained drawing JSON.
+It binds all shared exports and retained inputs by hash and lists panel
+subtotals/unknown-load IDs copied from the fact report. Repeated headers are
+presentation content and are excluded from source row counts. Original values,
+confidence, provenance and report diagnostics remain in retained model/report
+JSON. Source indexes preserve actual canonical IDs; schedule/layout IDs never
+become model entities.
+
+`delivery/schedule-source/` retains the exact original four inputs, portable
+profile plus expanded shared job, effective logo bytes, report, schedule data,
+per-page drawing JSON and SVG body. The portable profile/expanded job and
+retained assets can be passed to the shared company tool with the retained
+bodies to reproduce the sheets without relying on original asset paths.
+The original shared MANIFEST remains intact; the schedule manifest is the
+outer receipt and includes its hash.
+
+The exporter checks exact SVG text line retention, row count/order/coverage,
+PDF page count and physical dimensions, and every projected nonspace glyph run
+in PDF extraction. Cairo writes PDF spaces as positioned gaps, so extraction
+cannot distinguish one space from two or retain all leading/trailing spaces.
+The manifest states that limit explicitly; exact whitespace remains in the
+source/SVG and actual PDF pixel regressions verify wider internal gaps and
+leading offsets for `A B`, `A  B` and ` A B `. Shared PDF checks also verify the
+embedded font identities used for measured layout. Missing/unsupported PDF glyphs fail instead of issuing a
+successful packet. Output must be a fresh path. A failure retains a failure
+receipt (or raises before reserving the path for invalid input); there is no
+`delivery` directory until the whole packet succeeds. No canonical mutation,
+network call, external service, or production execution is involved.

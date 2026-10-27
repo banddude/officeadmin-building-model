@@ -1,0 +1,9 @@
+{
+  "version": "company-sheet-job-v1",
+  "set_id": "synthetic-site-demonstration",
+  "fields": {"project": "Synthetic site", "drawn_by": "Example", "scale": "1:200", "issue": "Demonstration"},
+  "date": "2026-10-27",
+  "revision": "A",
+  "formats": ["svg", "pdf"],
+  "sheets": [{"id": "E1", "title": "SITE PLAN"}]
+}

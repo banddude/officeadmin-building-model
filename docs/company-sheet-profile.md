@@ -103,3 +103,8 @@ capacity checks. The result is occupied width in millimetres, including ink
 bearings and a one-percent margin. `validate_sheet_text(text) -> str` exposes
 the same XML-safe printable-ASCII contract. Final shared composition still
 checks positioned content; measured width alone is not a layout approval.
+
+Joined polyline/polygon strokes use an explicit emitted `stroke-linejoin="round"`
+policy. Non-round requested joins are refused. Round joins keep ink within the
+vertex bounds plus half stroke width; default SVG miters can exceed that bound
+at acute angles and are not admitted. No clipping is used to enforce this.

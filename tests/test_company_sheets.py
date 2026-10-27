@@ -219,3 +219,18 @@ def test_text_whitespace_preserved_in_body_and_rail(tmp_path):
     assert len(labels)==2 and all(node.get(cs.XML_SPACE)=='preserve' for node in labels)
     with pytest.raises(ValueError,match='xml:space'):
         cs.render_company_sheet_svg(sheet,body_svg='<g xml:space="bad"/>')
+
+
+@pytest.mark.parametrize('tag',['polyline','polygon'])
+def test_acute_join_emits_round_policy_without_miter_rail_intrusion(tmp_path,tag):
+    p,j=inputs(tmp_path);sheet=cs.resolve_company_sheet_set(p,j).sheets[0]
+    right=sheet.drawing_bounds_mm[2]
+    # Default SVG miter extends ~3.48mm from this acute tip, past the
+    # admitted right bound. Round ink extends at most one mm for stroke=2.
+    points=f'{right-11},47 {right-1},50 {right-11},53'
+    body=f'<g><{tag} points="{points}" fill="none" stroke="#000000" stroke-width="2"/></g>'
+    root=ET.fromstring(cs.render_company_sheet_svg(sheet,body_svg=body))
+    node=next(n for n in root.iter() if n.tag.endswith(tag))
+    assert node.get('stroke-linejoin')=='round'
+    with pytest.raises(ValueError,match='stroke-linejoin=round'):
+        cs.render_company_sheet_svg(sheet,body_svg=body.replace('stroke-width="2"','stroke-width="2" stroke-linejoin="miter"'))

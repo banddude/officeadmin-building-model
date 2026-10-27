@@ -246,8 +246,8 @@ def _body_group(body, bounds):
     allowed={'g':{XML_SPACE},'rect':{'x','y','width','height','fill','stroke','stroke-width'},
              'line':{'x1','y1','x2','y2','stroke','stroke-width'},
              'circle':{'cx','cy','r','fill','stroke','stroke-width'},
-             'polyline':{'points','fill','stroke','stroke-width'},
-             'polygon':{'points','fill','stroke','stroke-width'},
+             'polyline':{'points','fill','stroke','stroke-width','stroke-linejoin'},
+             'polygon':{'points','fill','stroke','stroke-width','stroke-linejoin'},
              'text':{'x','y','font-size','font-family','font-weight','text-anchor','fill',XML_SPACE}}
     l,t,r,b=bounds
     for node in root.iter():
@@ -274,6 +274,12 @@ def _body_group(body, bounds):
             if rad<0: raise ValueError('body: negative radius')
             box=(x-rad,y-rad,x+rad,y+rad)
         elif tag in {'polyline','polygon'}:
+            # Round joins cannot extend more than half the stroke width from
+            # a vertex; SVG's default miter can extend several times farther.
+            # Emit the policy, so admitted geometry and actual ink agree.
+            if node.get('stroke-linejoin','round')!='round':
+                raise ValueError('body: joined strokes require stroke-linejoin=round')
+            node.set('stroke-linejoin','round')
             numbers=[float(v) for v in re.split(r'[\s,]+',node.get('points','').strip()) if v]
             if len(numbers)<4 or len(numbers)%2 or not all(math.isfinite(v) for v in numbers): raise ValueError('body: invalid points')
             box=(min(numbers[::2]),min(numbers[1::2]),max(numbers[::2]),max(numbers[1::2]))

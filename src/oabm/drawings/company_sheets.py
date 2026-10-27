@@ -75,7 +75,8 @@ def _advance(text,size,weight=400,family='Liberation Sans'):
     font,_,_=_font(family,weight)
     # One percent margin covers converter rounding; bounds also include ink
     # bearings separately for body text. No per-character average is used.
-    return font.getlength(text)*size/1000*1.01
+    ink=font.getbbox(text,anchor='ls')
+    return (max(font.getlength(text),ink[2])-min(0,ink[0]))*size/1000*1.01
 
 
 def _object(value, allowed, label, required=()):
@@ -266,13 +267,14 @@ def _body_group(body, bounds):
             family=node.get('font-family','Liberation Sans')
             font,actual,_=_font(family,weight)
             node.set('font-family',actual)
-            width=_advance(value,size,weight,family)
+            width=font.getlength(value)*size/1000
             ink=font.getbbox(value,anchor='ls')
             ink=tuple(v*size/1000 for v in ink)
             anchor=node.get('text-anchor','start')
             if anchor not in {'start','middle','end'}: raise ValueError('body: invalid text anchor')
             x-=width*({'start':0,'middle':.5,'end':1}[anchor])
-            box=(x+min(0,ink[0]),y+min(-size,ink[1]),x+max(width,ink[2]),y+max(size*.3,ink[3]))
+            safety=size*.01
+            box=(x+min(0,ink[0])-safety,y+min(-size,ink[1]),x+max(width,ink[2])+safety,y+max(size*.3,ink[3]))
         if box and (box[0]-pad<l or box[1]-pad<t or box[2]+pad>r or box[3]+pad>b):
             raise ValueError('body: content exceeds drawing_bounds_mm; paginate or move/resize content')
         node.tag=f'{{{SVG}}}'+tag
@@ -297,7 +299,9 @@ def render_company_sheet_svg(sheet, *, body_svg=None):
         rows=_rows(value,cw if width is None else width,size,weight)
         if len(rows)>max_lines: raise ValueError(f'sheet {sheet.id}: title-block text overflows {max_lines}-line cell: {value!r}; shorten text or widen rail')
         for j,row in enumerate(rows):
-            _el(root,'text',x=left if xx is None else xx,y=yy(frac)+j*size*1.35,font_family=_font('Liberation Sans',weight)[1],font_size=size,font_weight=weight,fill='#161616').text=row
+            font,_,_=_font('Liberation Sans',weight)
+            bearing=min(0,font.getbbox(row,anchor='ls')[0])*size/1000
+            _el(root,'text',x=(left if xx is None else xx)-bearing,y=yy(frac)+j*size*1.35,font_family=_font('Liberation Sans',weight)[1],font_size=size,font_weight=weight,fill='#161616').text=row
     def field(key,frac,**kwargs):text(f.get(key,''),frac,**kwargs)
     text('PROJECT / LOCATION',.017,3,500)
     field('project',.040,size=5.5,weight=600,max_lines=2)

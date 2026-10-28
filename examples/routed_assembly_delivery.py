@@ -55,7 +55,7 @@ def run(root):
         'attempts':selection.attempts,'qualification':'Passed bounded geometry and tangent-space checks only; curved swept clearance and installation approval remain unverified.'},sort_keys=True,indent=2)+'\n')
     source=root/'model.json';source.write_text(model.to_json())
     config={'version':'model-delivery-v2','assembly_geometry':'cut','bend_policy':'require',
-        'radii_m':{model.routes[0].id:.08},'preview_glb':True,
+        'radii_m':{model.routes[0].id:.08},'preview_glb':True,'preview_bends':'caller_radius',
         'plans':[{'id':'framing-cut','level_id':model.levels[0].id,'cut_height_m':1.2,
                   'view_depth_below_m':0.,'view_depth_above_m':0.,'scale':20},
                  {'id':'plenum-route','level_id':model.levels[0].id,'cut_height_m':2.6,
@@ -72,6 +72,7 @@ def run(root):
         'quantity_items':len(quantities.items),
         'limitations':['Synthetic one-wall and ceiling-region proof, not a complete building.',
                       'The route remains within the plenum; no wall/plate penetrations are created.',
+                      'Curved GLB uses the supplied radius; canonical polyline quantities remain unchanged.',
                       'Nominal route geometry is not manufacturer fitting geometry or installation approval.',
                       'Read the retained bend report; routing does not prove swept elbow clearance.']}
     (root/'proof.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')

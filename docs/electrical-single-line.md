@@ -141,3 +141,15 @@ taller paper, so the default 87 mm rail supports the 1200 x 900 mm case. Earlier
 standalone large-paper proofs explicitly used 140 mm; that historical override
 is not a requirement of the integrated shared renderer. Explicit caller rail
 constraints remain unchanged and impossible text capacity still fails clearly.
+
+## Readable paper typography
+
+Diagram body labels use 3.2 mm type with 4.3 mm line pitch. Secondary ratings
+and navigation use 2.8 mm type; section headings use 4.2 mm. Equipment side
+labels align toward their own symbol, with their measured label region retained
+in the drawing receipt. Transformer and other non-bus name regions may use four
+lines; bus equipment reserves three name lines plus separate ratings. A compact
+backbone that cannot contain its measured names is rejected in favor of the
+existing continuation/group planner. Supplied names are neither abbreviated nor
+shrunk to force them into a cell. Register tables retain their own measured
+schedule typography. The source model and electrical connections are unchanged.

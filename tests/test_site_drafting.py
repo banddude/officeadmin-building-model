@@ -212,3 +212,27 @@ def test_focus_annotation_reports_unplaced_when_all_candidates_are_blocked():
     assert center is None and not retained and not list(group)
     assert diagnostics['state']=='partially_unplaced'
     assert diagnostics['source_geometry_modified'] is False
+
+
+def test_note_wrap_uses_actual_size_and_bold_weight_without_losing_text():
+    from oabm.drawings.site_plan import _wrap_legend_text
+    from oabm.drawings.company_sheets import measure_sheet_text
+    source='  WIDE BOLD ANNOTATION  '*7
+    lines=_wrap_legend_text(source,36,size=3.2,weight=700)
+    assert ''.join(lines)==source
+    assert all(measure_sheet_text(line,3.2,font_family='DejaVu Sans',font_weight=700)<=36 for line in lines)
+
+
+def test_long_symbol_legend_wraps_inside_notes_panel(tmp_path):
+    data,graphics,paths=saved(tmp_path)
+    label='LONG SUPPLIED CONTROL EQUIPMENT DESCRIPTION '*9
+    next(row for row in data['features'] if row['id']=='control')['label']=label
+    graphics['label_feature_ids'].remove('control')
+    sheet=resolve_company_sheet_set(paths[2],paths[3]).sheets[0]
+    original=copy.deepcopy(data)
+    body,drawings,composed,audit,mapping=render_site_body(data,sheet,graphics=graphics)
+    assert data==original
+    assert audit['legend_layout']['text_height_mm']==3.2
+    rows=[row for row in mapping['items'] if dict(row.get('source_item_metadata',{})).get('full_text')==label+' - generic mark']
+    assert len(rows)>1
+    assert all(row['source_ids']==['control'] for row in rows)

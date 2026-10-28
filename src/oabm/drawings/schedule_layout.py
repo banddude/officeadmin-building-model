@@ -407,10 +407,7 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
     font, line = layout.text_height_mm, layout.line_height_mm
     pad = layout.padding_mm
     heading = max(font * 1.4, font)
-    widths = [card_width * n / 102 for n in (5, 24, 3, 6, 7, 4, 4, 4, 7, 6, 3, 24, 5)]
-    xedges = [0.0]
-    for width in widths:
-        xedges.append(xedges[-1] + width)
+    paired_widths = [card_width * n / 102 for n in (5, 24, 3, 6, 7, 4, 4, 4, 7, 6, 3, 24, 5)]
     # Drawing source rows remain the report adapter's full, lossless facts.
     source_schedules = {s.id: s for s in drawing_set.schedules}
     row_lookup = {(s.id, row.source_id): (i, row) for s in drawing_set.schedules for i, row in enumerate(s.rows)}
@@ -480,6 +477,12 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                 raise ValueError(f'{fact.circuit.id}: phase_va accepts explicit A/B/C supplied values only')
             if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in phase.values()):
                 raise ValueError(f'{fact.circuit.id}: phase_va requires finite nonnegative supplied VA')
+        unpositioned_card = bool(facts) and not positions
+        widths = ([card_width * n / 100 for n in (8, 38, 4, 8, 12, 10, 10, 10)]
+                  if unpositioned_card else paired_widths)
+        xedges = [0.0]
+        for width in widths:
+            xedges.append(xedges[-1] + width)
         physical_rows = []
         previous_row = 0
         for n in sorted({n for n, side in positions}):
@@ -496,6 +499,7 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
         intro_lines = tuple(part for text in intro for part in wrapped(text, card_width))
         head_height = len(title_lines) * heading * 1.4 + len(intro_lines) * line + 4 * pad
         headers = ('ROW / CKT', 'LOAD / DESCRIPTION', 'P', 'OCPD', 'VA', 'A', 'B', 'C', 'VA', 'OCPD', 'P', 'LOAD / DESCRIPTION', 'ROW / CKT')
+        if unpositioned_card:headers = ('CKT', 'LOAD / DESCRIPTION', 'P', 'OCPD', 'VA', 'A', 'B', 'C')
         header_cells = tuple(wrapped(v, w, weight=600) for v, w in zip(headers, widths))
         header_height = max(map(len, header_cells)) * line + 2 * pad
         notes = ('TBD = not supplied. Unassigned side is not a spare or an available circuit.',
@@ -503,7 +507,8 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
         note_lines = tuple(part for text in notes for part in wrapped(text, card_width))
         tail_height = len(note_lines) * line + 2 * pad + 2 * line
         summary_height = 8 * line + 4 * pad if panel else 0
-        position_text = 'Positions shown only where explicitly supplied; remaining rows are display order.'
+        position_text = ('CIRCUIT POSITIONS NOT SUPPLIED. Listed rows do not identify panel slots.' if unpositioned_card else
+                         'Positions shown only where explicitly supplied; remaining rows are display order.')
         position_height = len(wrapped(position_text, card_width)) * line + 3 * pad
         available = region_height - head_height - header_height - tail_height - summary_height - position_height
         if available <= 0:
@@ -526,7 +531,8 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                     description += ' [LABEL CONFLICT]'
                 if 'phase_va' in fields and c.get('load_va') is not None and not math.isclose(math.fsum(fields['phase_va'].values()), c['load_va']):
                     description += ' [PHASE/LOAD CONFLICT]'
-                return (f'{value(fields.get("row"))} / ' + value(c.get('circuit_number')), description, value(c.get('poles')), fields.get('ocpd', 'TBD'), value(c.get('load_va')))
+                identity = value(c.get('circuit_number')) if unpositioned_card else f'{value(fields.get("row"))} / ' + value(c.get('circuit_number'))
+                return (identity, description, value(c.get('poles')), fields.get('ocpd', 'TBD'), value(c.get('load_va')))
             left_values, right_values = side(left_item), side(right_item)
             assigned = [item for item in (left_item, right_item) if item is not None]
             phases = []
@@ -538,7 +544,7 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                     phases.append(str(total))
                 else:
                     phases.append('TBD')
-            values = (*left_values, *phases, *reversed(right_values))
+            values = (*left_values, *phases) if unpositioned_card else (*left_values, *phases, *reversed(right_values))
             cells = tuple(wrapped(v, w) for v, w in zip(values, widths))
             row_height = max(map(len, cells)) * line + 2 * pad
             gap_lines = wrapped(f'ROWS {gap_before[0]}-{gap_before[1]} NOT SUPPLIED - NO SPARE CAPACITY INFERRED', card_width, weight=600) if gap_before else ()
@@ -607,7 +613,7 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                         'phase_cells': list(values[5:8]),
                         'phase_basis': 'sum of explicitly supplied per-circuit phase_va; missing remains TBD',
                         'position_status': 'supplied' if explicit_position else 'not_supplied_display_order_only',
-                        'supplied_side': fields.get('side'), 'supplied_row': fields.get('row'), 'display_side': side,
+                        'supplied_side': fields.get('side'), 'supplied_row': fields.get('row'), 'display_side': 'unpositioned' if unpositioned_card else side,
                         'primitive_ids': [identity for i in indices for identity in cell_ids[i]],
                         'bounds_mm': [0 if side == 'left' else xedges[5], y,
                                       xedges[8] if side == 'left' else card_width, y + row_height]})
@@ -622,7 +628,6 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                     add('line', [(max(.3, min(card_width - .3, edge)), start),
                                  (max(.3, min(card_width - .3, edge)), end)], anchor_sources,
                         weight='normal' if edge in (xedges[0], xedges[5], xedges[8], xedges[-1]) else 'thin', role='column_rule')
-            position_text = 'Positions shown only where explicitly supplied; remaining rows are display order.'
             text_lines(wrapped(position_text, card_width), 0, y + pad, anchor_sources, role='position_status')
             y += len(wrapped(position_text, card_width)) * line + 3 * pad
             if panel and part == len(chunks):

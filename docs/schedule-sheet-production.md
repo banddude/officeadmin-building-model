@@ -139,3 +139,15 @@ Printable Unicode spaces such as NBSP may be represented by Cairo as positioned
 gaps or extracted as ordinary spaces. Their exact code points and counts remain
 bound in canonical input, row cells, wrapped lines and SVG; PDF extraction does
 not prove those whitespace identities. Missing visible glyphs still fail.
+
+### Circuits without supplied positions
+
+Drafted presentation uses a single eight-column circuit list when a panel has
+listed circuits but no supplied side/row positions. It prints the circuit label,
+description, poles, supplied OCPD, connected VA and supplied phase values across
+the card. It does not draw a fictitious empty right-hand bank or imply that every
+listed circuit occupies the left side. The position qualification is visible,
+and row receipts mark `display_side: unpositioned` while preserving null supplied
+side/row values. Panels with explicit positions retain the mirrored left/right
+panel-card layout. The packet identifies this presentation as
+`paired-panel-card-v2`; canonical facts, totals and source coverage are unchanged.

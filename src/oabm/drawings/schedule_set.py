@@ -169,7 +169,7 @@ def create_panel_schedule_sheet_set(model_path, profile_path, job_path, settings
                 'status': 'supplied_facts_only', 'engineering_approval': False,
                 'sheet_order': [p.spec.id for p in pages], 'row_count': len(rows), 'rows': rows,
                 'layout': asdict(layout), 'drafting_settings': {'presentation': presentation, 'table_width_mm': drafted_width_mm, 'region_bounds_mm': drafted_region_mm},
-                'drafting_grammar': ('paired-panel-card-v1' if presentation == 'drafted' else 'fact-ledger-v1'), 'verification': verification, 'schedule_pages': [
+                'drafting_grammar': ('paired-panel-card-v2' if presentation == 'drafted' else 'fact-ledger-v1'), 'verification': verification, 'schedule_pages': [
                     {'sheet_id': p.spec.id, **section} for p in pages for section in (p.sections or (
                         {'schedule_id': p.schedule_id, 'schedule_page': p.schedule_page,
                          'schedule_pages': p.schedule_pages},))],

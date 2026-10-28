@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
-from .layout import FONT,wrap_mm,backbone_geometry,symbol_lane,fan_geometry,_segments_cross,_paper_clear_segment
+from .layout import FONT,TEXT_MM,SMALL_TEXT_MM,TEXT_LINE_MM,wrap_mm,backbone_geometry,symbol_lane,fan_geometry,_segments_cross,_paper_clear_segment
 from .drafting_facts import status_tag,protection_label
 from ..company_sheets import measure_sheet_text
 
@@ -19,7 +19,7 @@ def render_body(topology,layout,page,sheet):
     terminals=[];symbols=[];paths=[];labels=[];glyphs=[];seen=set();owner=None;symbol_lanes={};source_buses=[]
     def node(kind,**attrs):
         return ET.SubElement(root,'{'+NS+'}'+kind,{k.replace('_','-'):str(v) for k,v in attrs.items()})
-    def text(x,y,value,size=2.5,anchor='start'):
+    def text(x,y,value,size=TEXT_MM,anchor='start'):
         n=node('text',x=x,y=y,font_size=size,text_anchor=anchor,font_family=FONT,fill='#000000');n.text=value
         width=measure_sheet_text(value,size,font_family=FONT)
         start=x-width*{'start':0,'middle':.5,'end':1}[anchor]
@@ -41,7 +41,7 @@ def render_body(topology,layout,page,sheet):
         for a,b in [((x,y),(x+w,y)),((x+w,y),(x+w,y+h)),((x+w,y+h),(x,y+h)),((x,y+h),(x,y))]:dash(a,b)
     def section(number,title,x,y,width):
         circle(x+4,y+6,3.7);text(x+4,y+7.1,str(number),3.1,'middle')
-        text(x+11,y+7.2,title,3.4);line(x+.2,y+12,x+width-.2,y+12,.3)
+        text(x+11,y+7.2,title,4.2);line(x+.2,y+12,x+width-.2,y+12,.3)
     def record_glyph(kind,source_id,bounds,path):
         glyphs.append({'kind':kind,'source_id':source_id,'source_path':path,'bounds_mm':bounds})
     def terminal_bar(identity,network_kind,a,b):
@@ -84,18 +84,21 @@ def render_body(topology,layout,page,sheet):
         symbols[-1]['continued']=bool(continued)
         symbols[-1]['same_sheet_context']=same_sheet_context
         seen.add(identity)
-        text(text_left+2,y+3.5,status_tag(facts['status'])+' '+identity,2.8)
+        label_x=text_left+text_width+2 if side else text_left+2
+        label_anchor='end' if side else 'start'
+        text(label_x,y+3.5,status_tag(facts['status'])+' '+identity,3.5,label_anchor)
         names=wrap_mm(e['name'],text_width)
-        if len(names)>3:raise ValueError(f'{identity}: equipment name exceeds three measured lines; select a larger diagram area')
-        for i,value in enumerate(names):text(text_left+2,y+9+i*3.4,value)
+        name_limit=4 if side and kind not in {'panelboard','switchboard','disconnect','transfer_switch'} else 3
+        if len(names)>name_limit:raise ValueError(f'{identity}: equipment name exceeds its measured label lane; select a larger diagram area')
+        for i,value in enumerate(names):text(label_x,y+9+i*TEXT_LINE_MM,value,anchor=label_anchor)
         bus_kinds={'panelboard','switchboard','disconnect','transfer_switch'}
         if kind in bus_kinds:
             outline(sx,y+5,sw,h-5.5)
             volts='V ?' if e['rated_voltage_v'] is None else f'{e["rated_voltage_v"]:g} V'
             current='BUS A ?' if facts['bus_current_a'] is None else f'{facts["bus_current_a"]:g} A BUS'
-            rating=wrap_mm(current+' / '+volts,text_width,size=2.3)
+            rating=wrap_mm(current+' / '+volts,text_width,size=SMALL_TEXT_MM)
             if len(rating)>2:raise ValueError(f'{identity}: bus rating needs a wider label lane')
-            for i,value in enumerate(rating):text(text_left+2,y+(22 if side else 20)+i*3,value,2.3)
+            for i,value in enumerate(rating):text(label_x,y+22+i*3.8,value,SMALL_TEXT_MM,label_anchor)
             if kind=='transfer_switch':
                 line(axis-8,y+21,axis-3,y+21);line(axis-8,y+27,axis-3,y+27)
                 line(axis+2,y+24,axis+8,y+24);line(axis+2,y+24,axis-2,y+22)
@@ -111,10 +114,10 @@ def render_body(topology,layout,page,sheet):
                 record_glyph('bus',identity,(sx+6,y+22.6,sx+sw-6,y+23.4),'equipment_type')
             kinds={edge['drafting']['connection_kind'] for edge in topology.connections if identity in {edge['source_id'],edge['load_id']}}
             if 'neutral' in kinds:
-                line(sx+4,y+28,sx+19,y+28,.45);text(sx+4,y+26,'N',2.3)
+                line(sx+4,y+28,sx+19,y+28,.45);text(sx+4,y+26,'N',SMALL_TEXT_MM)
                 terminal_bar(identity,'neutral',(sx+4,y+28),(sx+19,y+28))
             if 'grounding' in kinds:
-                line(sx+sw-19,y+32,sx+sw-4,y+32,.45);text(sx+sw-18,y+30,'G',2.3)
+                line(sx+sw-19,y+32,sx+sw-4,y+32,.45);text(sx+sw-18,y+30,'G',SMALL_TEXT_MM)
                 terminal_bar(identity,'grounding',(sx+sw-19,y+32),(sx+sw-4,y+32))
         elif kind=='transformer':
             for winding_side in (-1,1):
@@ -158,8 +161,8 @@ def render_body(topology,layout,page,sheet):
         if not e['incoming'] and not e['outgoing']:footer.append('ISOLATED / NO EXPLICIT CIRCUITS')
         if len(footer)>2:raise ValueError(f'{identity}: electrical status needs a larger symbol area')
         for i,value in enumerate(footer):
-            if measure_sheet_text(value,2.3,font_family=FONT)>(text_width if side else w-4):raise ValueError(f'{identity}: electrical status exceeds symbol width')
-            text(text_left+2,y+h-4-(len(footer)-1-i)*3.5,value,2.3)
+            if measure_sheet_text(value,SMALL_TEXT_MM,font_family=FONT)>(text_width if side else w-4):raise ValueError(f'{identity}: electrical status exceeds symbol width')
+            text(label_x,y+h-4-(len(footer)-1-i)*4.0,value,SMALL_TEXT_MM,label_anchor)
         owner=previous
     def terminal(identity,bounds,boundary,kind,source,role=None):
         x,y,r,b=bounds;w=r-x;h=b-y;e=equipment[identity]
@@ -227,9 +230,9 @@ def render_body(topology,layout,page,sheet):
             terminals.append({'connection_id':key,'endpoint':endpoint,'sheet_id':page['id'],'counterpart_sheet':page['id'],'tag':refs[key]['tag']})
     section(1,'ELECTRICAL REFERENCES' if page['kind']=='reference-index' else 'FEEDER SCHEDULE CONTINUED' if page['kind']=='facts-register' else 'ONE-LINE NOTES CONTINUED' if page['kind']=='notes-continuation' else 'POWER ONE-LINE',left+2,top+1,right-left-4)
     header='NOT TO SCALE / '+page.get('navigation_header','REFERENCES UNRESOLVED')
-    header_lines=wrap_mm(header,right-left-26,size=2.5)
+    header_lines=wrap_mm(header,right-left-26,size=TEXT_MM)
     if len(header_lines)>2:raise ValueError('actual reference links exceed the reserved header; shorten IDs or allocate a notes region')
-    for i,value in enumerate(header_lines):text(left+13,top+19+i*3.4,value,2.5)
+    for i,value in enumerate(header_lines):text(left+13,top+19+i*TEXT_LINE_MM,value,TEXT_MM)
     positions={n['equipment_id']:n for n in page['nodes']}
     for n in page['nodes']:equipment_symbol(n['equipment_id'],n['x']-n['width']/2,n['y'],n['width'],n['height'],lane=n.get('drafting_lane'))
     if positions:
@@ -239,7 +242,7 @@ def render_body(topology,layout,page,sheet):
                 n=positions[identity];return (n['x']-n['width']/2,n['y'],n['x']+n['width']/2,n['y']+n['height'])
             feeder(key,geometry['points'],bounds(edge['source_id']),bounds(edge['load_id']))
             x,y=geometry['label']
-            for i,value in enumerate(edge['drawing_labels']):text(x,y+i*3.4,value)
+            for i,value in enumerate(edge['drawing_labels']):text(x,y+i*TEXT_LINE_MM,value)
     for group in page['groups']:
         x,y,w=group['x'],group['y'],group['width'];height=group['height'];keys=group['connections']
         if group.get('kind')=='chain':
@@ -252,10 +255,10 @@ def render_body(topology,layout,page,sheet):
             for i,key in enumerate(keys):
                 a=(boxes[i][2],y+36);b=(boxes[i+1][0],y+36)
                 feeder(key,[a,b],boxes[i],boxes[i+1])
-                text((a[0]+b[0])/2,y+9,refs[key]['tag'],2.5,'middle')
+                text((a[0]+b[0])/2,y+9,refs[key]['tag'],TEXT_MM,'middle')
                 reference='REG '+(refs[key].get('register_sheet') or 'DELEGATED')
-                if measure_sheet_text(reference,2.3,font_family=FONT)>gap-2:reference='REG INDEX'
-                text((a[0]+b[0])/2,y+47,reference,2.3,'middle')
+                if measure_sheet_text(reference,SMALL_TEXT_MM,font_family=FONT)>gap-2:reference='REG INDEX'
+                text((a[0]+b[0])/2,y+47,reference,SMALL_TEXT_MM,'middle')
         else:
             parent=group['equipment_id']
             parent_bounds,children,bus_left,bus_right=fan_geometry(group)
@@ -268,19 +271,19 @@ def render_body(topology,layout,page,sheet):
             for a,b in zip(bus_path,bus_path[1:]):line(*a,*b,.65)
             line(bus_left,bus_y,bus_right,bus_y,.65)
             source_buses.append({'equipment_id':parent,'terminal_key':group['source_terminal_key'],'stroke_width_mm':.65,'connection_ids':keys,'path_mm':bus_path,'row_mm':group['bus_row_mm']})
-            text(parent_bounds[0]+2,bus_y-5,group['source_bus_caption'],2.3)
+            text(parent_bounds[0]+2,bus_y-5,group['source_bus_caption'],SMALL_TEXT_MM)
             for i,key in enumerate(keys):
                 child=group['target_home_bounds_mm'][key];cw=child[2]-child[0];target=edges[key]['load_id']
                 if target not in seen:equipment_symbol(target,child[0],child[1],cw,child[3]-child[1],lane=group['target_home_lanes'][key])
                 row_path=group['feeder_paths_mm'][key]
                 feeder(key,row_path,home,child,private_start=group['private_branch_index'][key])
                 for j,value in enumerate(edges[key]['drawing_labels'][:2]):
-                    if measure_sheet_text(value,2.5,font_family=FONT)>cw-8:
+                    if measure_sheet_text(value,TEXT_MM,font_family=FONT)>cw-8:
                         value=refs[key]['tag']+' / REG '+(refs[key].get('register_sheet') or 'DELEGATED')
                     label_lane=symbol_lane(children[i])
-                    if measure_sheet_text(value,2.5,font_family=FONT)>label_lane['text_width']:value=refs[key]['tag'] if j==0 else 'REG '+(refs[key].get('register_sheet') or 'DELEGATED')
-                    if measure_sheet_text(value,2.5,font_family=FONT)>label_lane['text_width']:value=refs[key]['tag'] if j==0 else 'REG INDEX'
-                    text(label_lane['text_left']+2,y+50+j*3.4,value)
+                    if measure_sheet_text(value,TEXT_MM,font_family=FONT)>label_lane['text_width']:value=refs[key]['tag'] if j==0 else 'REG '+(refs[key].get('register_sheet') or 'DELEGATED')
+                    if measure_sheet_text(value,TEXT_MM,font_family=FONT)>label_lane['text_width']:value=refs[key]['tag'] if j==0 else 'REG INDEX'
+                    text(label_lane['text_left']+2,y+50+j*TEXT_LINE_MM,value)
     if page.get('notes_bounds'):
         nl,nt,nr,nb=page['notes_bounds'];line(nl+.2,nt+.2,nl+.2,nb-.2,.22);section(2,'ONE-LINE NOTES / REFERENCES',nl,nt+1,nr-nl)
         for i,value in enumerate(page['note_lines']):text(nl+2,nt+23+i*4.6,value,3.2)
@@ -291,11 +294,11 @@ def render_body(topology,layout,page,sheet):
         root.append(ET.fromstring(grid['body_svg']))
     for row in page.get('entries',[]):
         x,y=row['x'],row['y'];line(x,y,x+row['width'],y,.13)
-        for i,value in enumerate(row['lines']):text(x,y+3.3+i*3.4,value)
+        for i,value in enumerate(row['lines']):text(x,y+3.3+i*TEXT_LINE_MM,value)
     index='SHEET INDEX: '+', '.join(p['id'] for p in layout['sheet_index'])
-    for i,value in enumerate(wrap_mm(index,right-left-6,size=2.3)):
+    for i,value in enumerate(wrap_mm(index,right-left-6,size=SMALL_TEXT_MM)):
         if i>=3:raise ValueError('electrical sheet index requires more footer space')
-        text(left+3,bottom-9+i*2.8,value,2.3)
+        text(left+3,bottom-9+i*3.8,value,SMALL_TEXT_MM)
     # Fail closed even if a future layout regression misses a bar crossing.
     for path in paths:
         network_kind=edges[path['connection_id']]['drafting']['connection_kind']
@@ -318,5 +321,6 @@ def render_body(topology,layout,page,sheet):
             raise ValueError(f'{bus["equipment_id"]}: shared bus ink intersects unrelated enclosure or terminal network; diagram refused')
     return ET.tostring(root,encoding='unicode'),{'sheet_id':page['id'],'kind':page['kind'],'terminal_occurrences':terminals,
         'equipment_symbols':symbols,'source_buses':source_buses,'connection_paths':paths,'text_bounds':labels,'electrical_symbols':glyphs,'drafting_style':'electrical-bus-v1',
+        'typography_mm':{'body':TEXT_MM,'small':SMALL_TEXT_MM,'line_pitch':TEXT_LINE_MM,'heading':4.2},
         'feeder_references':page.get('feeder_references',[]),'terminal_references':page.get('terminal_references',[]),
         'feeder_grid_rows':[row for grid in page.get('feeder_grids',[]) for row in grid['row_map']],'feeder_grid_engine':[grid['engine'] for grid in page.get('feeder_grids',[])]}

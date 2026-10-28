@@ -369,3 +369,46 @@ def test_exact_large_mixed_terminal_buses_have_separate_ink_and_clear_enclosures
             for other in buses[i+1:]:
                 if bus['terminal_key']==other['terminal_key']:continue
                 assert all(distance(a,b,c,d)>=.90-1e-6 for a,b in segments(bus) for c,d in segments(other)),(page['sheet_id'],bus['terminal_key'],other['terminal_key'])
+
+
+def test_readable_type_and_side_labels_stay_close_to_their_symbols():
+    model,bodies,document=rendered()
+    for page in document['sheets']:
+        assert page['typography_mm']=={'body':3.2,'small':2.8,'line_pitch':4.3,'heading':4.2}
+        for symbol in page['equipment_symbols']:
+            lane=symbol['label_lane']
+            if lane is None:continue
+            owned=[row for row in page['text_bounds'] if row['equipment_id']==symbol['equipment_id'] and row['text'] not in {'S','M','G','N'}]
+            assert owned
+            for row in owned:
+                left,top,right,bottom=row['bounds_mm']
+                assert left>=lane[0]-1e-8 and right<=lane[2]+1e-8
+                assert top>=lane[1]-1e-8 and bottom<=lane[3]+1e-8
+                assert row['font_size_mm']>=2.8
+            # Side annotations share an aligned edge adjacent to the device,
+            # rather than floating at the far left of an oversized label lane.
+            edges={round(row['bounds_mm'][2],6) for row in owned}
+            assert len(edges)==1
+
+
+def test_larger_transformer_name_retains_all_lines_and_model():
+    from test_single_line import make_model as topology_model,build
+    model=topology_model(True);before=model.to_json()
+    bodies,doc=build(model=model)
+    assert model.to_json()==before
+    transformer=next(e for e in model.electrical_equipment if e.id=='XFMR')
+    texts=[row['text'] for page in doc['sheets'] for row in page['text_bounds'] if row['equipment_id']=='XFMR']
+    assert all(word in ' '.join(texts) for word in transformer.name.split())
+    assert len(doc['topology']['connections'])==sum(len(c.load_port_ids) for c in model.circuits)
+
+
+@pytest.mark.parametrize('version',[None,'paper-type-v1'])
+def test_precomputed_old_type_metrics_require_replanning(version):
+    from oabm.drawings.single_line.layout import _plan_fingerprint,validate_precomputed_layout
+    topology=project_topology(make_model())
+    plan=plan_pages(topology,BOUNDS,first_sheet_id='E3.1')
+    if version is None:plan.pop('typography_version')
+    else:plan['typography_version']=version
+    plan['plan_fingerprint']=_plan_fingerprint(plan)
+    with pytest.raises(ValueError,match='typography'):
+        validate_precomputed_layout(plan,topology,BOUNDS)

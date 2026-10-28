@@ -239,3 +239,10 @@ world-to-paper translation and nearby-label/fallback placement can change. The
 A3 5x5 m regression verifies an actual 35 mm site viewport at 1:200 (25 mm
 geometry plus 5 mm padding each side), with an independently taller legend and
 unchanged input vertices. Transform provenance describes the final placement.
+
+Drafted notes and legend labels use 3.2 mm type. Wrapping measures the actual
+font size and weight, including bold notes, and keeps the full supplied wording
+in the source mapping. Long symbol-key labels wrap within the notes region
+rather than extending into the title rail. Site geometry and map-label scale
+remain unchanged. Section headings use the same 4.2 mm hierarchy as the other
+technical sheet tools.

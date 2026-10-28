@@ -42,7 +42,7 @@ def render_drafted_detail(detail, *, drawing_bounds_mm, audit=None):
     # Circled numbered heading and separate scale, with no copied title block.
     out.append(f'<circle cx="{left+5:g}" cy="{top+7:g}" r="4" fill="none" stroke="#000000" stroke-width="0.35"/>')
     text(left+5,top+8.4,spec.number,3.5,'middle',700)
-    text(left+12,top+8.5,spec.title,3.8,weight=700)
+    text(left+12,top+8.5,spec.title,4.2,weight=700)
     line(((left+1,top+13),(right-1,top+13)),.3)
     text(left+12,top+18.5,f'SCALE 1:{view.scale:g}  |  DIMENSIONS IN METRES',2.5)
     source_points={}; source_segments={}; port_sources=set()
@@ -133,7 +133,7 @@ def render_drafted_detail(detail, *, drawing_bounds_mm, audit=None):
     if y<gy+height+8:
         raise ValueError('notes block overlaps the explicit figure canvas; revise notes_y_mm')
     line(((left+2,y-5),(right-2,y-5)),.25)
-    text(left+2,y,'DETAIL NOTES / EXPLICIT LIMITS',3.1,weight=700)
+    text(left+2,y,'DETAIL NOTES / EXPLICIT LIMITS',4.2,weight=700)
     y+=7
     # Word wrap preserves every supplied character. Long words fail rather
     # than changing fonts, hiding notes, or silently reducing view scale.
@@ -144,12 +144,12 @@ def render_drafted_detail(detail, *, drawing_bounds_mm, audit=None):
         validate_sheet_text(paragraph)
         current=''
         for token in re.findall(r'\s+|\S+',paragraph):
-            if measure_sheet_text(token,2.8)>right-left-4:
+            if measure_sheet_text(token,3.2)>right-left-4:
                 raise ValueError('detail note token exceeds slot width; supply a larger slot')
-            if current and measure_sheet_text(current+token,2.8)>right-left-4:
-                text(left+2,y,current);y+=4.8;current=''
+            if current and measure_sheet_text(current+token,3.2)>right-left-4:
+                text(left+2,y,current,size=3.2);y+=4.8;current=''
             current+=token
-        if current:text(left+2,y,current);y+=4.8
+        if current:text(left+2,y,current,size=3.2);y+=4.8
         y+=1.8
     if audit is not None:
         audit.update(leaders=leader_bindings,dimension_text_boxes=dimension_boxes,dimension_witnesses=dimension_witnesses,source_points=source_points,labels=labels,note_baseline_mm=(gy+height+8 if spec.notes_y_mm is None else top+spec.notes_y_mm))

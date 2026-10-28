@@ -39,24 +39,26 @@ def inputs(tmp_path, *, count=12, positioned=False, layout=None):
     return (model, ROOT / 'fixtures/company_sheets/v1/profile.json', ROOT / 'fixtures/schedule_sheets/v1/job.json', settings)
 
 
-def test_default_drafted_sparse_packet_has_mirrored_grammar_lineweights_and_source_coverage(tmp_path):
+def test_unpositioned_packet_has_no_fictitious_bank_and_preserves_source_coverage(tmp_path):
     paths = inputs(tmp_path)
     before = paths[0].read_bytes()
     out = create_panel_schedule_sheet_set(*paths, output_directory=tmp_path / 'drafted')
     manifest = json.loads((out / 'SCHEDULE-MANIFEST.json').read_text())
-    assert manifest['drafting_grammar'] == 'paired-panel-card-v1'
+    assert manifest['drafting_grammar'] == 'paired-panel-card-v2'
     assert manifest['row_count'] == 14
     section_ids = {sid for section in manifest['schedule_pages'] for sid in section['included_schedule_ids']}
     assert {row['schedule_id'] for row in manifest['rows']} <= section_ids
     assert paths[0].read_bytes() == (out / 'schedule-source/model.json').read_bytes() == before
     svg = ET.fromstring(sorted((out / 'sheets').glob('*.svg'))[0].read_bytes())
     texts = [n.text or '' for n in svg.findall('.//{http://www.w3.org/2000/svg}text')]
-    assert texts.count('ROW / CKT') >= 4 and texts.count('LOAD / DESCRIPTION') >= 4
+    assert texts.count('CKT') >= 2 and texts.count('LOAD / DESCRIPTION') >= 2
+    assert 'ROW / CKT' not in texts
     assert 'SUPPLIED CONNECTED-LOAD SUMMARY' in texts
     assert 'KNOWN CONNECTED SUBTOTAL' in texts
     assert any('A  B' in v for v in texts) and any(v.startswith(' A B ') for v in texts)
     assert any('LABEL CONFLICT' in v for v in texts)
-    assert any('UNASSIGNED' == v for v in texts)
+    assert not any('UNASSIGNED' == v for v in texts)
+    assert any('CIRCUIT POSITIONS NOT SUPPLIED' in v for v in texts)
     weights = {n.get('stroke-width') for n in svg.findall('.//{http://www.w3.org/2000/svg}polyline')}
     assert {'0.13', '0.25', '0.5'} <= weights
     assert {'400', '600'} <= {n.get('font-weight') for n in svg.findall('.//{http://www.w3.org/2000/svg}text')}
@@ -71,6 +73,7 @@ def test_default_drafted_sparse_packet_has_mirrored_grammar_lineweights_and_sour
     assert 'Actual source port' not in text and 'Circuit source confidence' not in text
     circuits = [r for r in manifest['rows'] if r['source_id'].startswith('circuit:')]
     assert len(circuits) == 12 and all(r['position_status'] == 'not_supplied_display_order_only' for r in circuits)
+    assert all(r['display_side']=='unpositioned' and r['supplied_side'] is None and r['supplied_row'] is None for r in circuits)
 
 
 def test_dense_explicit_pairing_preserves_every_circuit_and_does_not_infer_spares(tmp_path):

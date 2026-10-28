@@ -66,6 +66,10 @@ def _options(data):
             raise ContractError("model-delivery-v2 requires explicit assembly_geometry='cut'")
     elif value.get("version") != VERSION:
         raise ContractError("exact model-delivery-v1 or v2 options required")
+    if 'preview_bends' in value:
+        keys = keys | {'preview_bends'}
+        if value['preview_bends'] != 'caller_radius' or value.get('preview_glb') is not True or value.get('bend_policy') != 'require':
+            raise ContractError('preview_bends=caller_radius requires preview_glb=true and bend_policy=require')
     if set(value) != keys:
         raise ContractError("exact model-delivery-v1 or v2 option keys required")
     if type(value["preview_glb"]) is not bool or value["bend_policy"] not in ("require", "report", "skip"):
@@ -103,6 +107,8 @@ def _options(data):
         raise ContractError("radii_m must be an explicit object")
     if value["bend_policy"] == "skip" and radii:
         raise ContractError("skip policy requires empty radii_m to avoid ignored assumptions")
+    if value.get('preview_bends') == 'caller_radius' and not radii:
+        raise ContractError('caller-radius preview requires explicit nonempty radii_m')
     return value, tuple(sorted(plans, key=lambda p: p.id))
 
 
@@ -174,6 +180,8 @@ def deliver_model(model_path, options_path, *, output_directory) -> Path:
                 raise ContractError("required bend preflight unresolved; inspect retained bend-report.json")
         status = {"outputs": "generated_review_outputs", "bend_policy": options["bend_policy"],
                   "bend_check": bend_state, "engineering_approval": False}
+        if options.get('preview_bends') == 'caller_radius':
+            status['preview_geometry'] = 'sampled_caller_radius_fillets; swept_clearance_unverified'
         stage = "plans"
         label_summary = None
         status["label_layout"] = "not_requested"
@@ -194,11 +202,16 @@ def deliver_model(model_path, options_path, *, output_directory) -> Path:
                 write(f"plans/plan-{number:02}.svg", svg.encode(), "plan_svg")
         write("READ-ME.txt", ("MODEL REVIEW DELIVERY\n" + f"Bend check: {bend_state}\n" +
             f"Label layout: {status['label_layout']}; see drawing-set.json for any unplaced labels.\n" +
-            "\n".join(LIMITATIONS) + "\n").encode(), "readiness_notice")
+            "\n".join(LIMITATIONS) + "\n" +
+            ("GLB preview uses supplied-radius fillets. Canonical polylines and quantity lengths are unchanged; curved swept clearance and manufacturer fittings are unverified.\n"
+             if options.get('preview_bends') == 'caller_radius' else "")).encode(), "readiness_notice")
         stage = "preview_glb"
         if options["preview_glb"]:
             path = pending / "preview.glb"
-            to_glb(model, path)  # original exporter and original default geometry
+            if options.get('preview_bends') == 'caller_radius':
+                to_glb(model, path, route_bend_radii_m=options['radii_m'])
+            else:
+                to_glb(model, path)  # original exporter and original default geometry
             data = path.read_bytes()
             receipts.append({"path": "preview.glb", "kind": "preview_glb",
                              "bytes": len(data), "sha256": _sha(data)})
@@ -218,7 +231,8 @@ def deliver_model(model_path, options_path, *, output_directory) -> Path:
                     "plan_options": drawing_options if plans else None,
                     "label_layout": label_summary,
                     "svg_options": {"pixels_per_model_unit": 100, "paper_text_height_m": .0025} if plans else None,
-                    "glb_options": "existing_exporter_defaults" if options["preview_glb"] else None,
+                    "glb_options": ({"route_bend_radii_m": options['radii_m']} if options.get('preview_bends') == 'caller_radius'
+                                    else "existing_exporter_defaults" if options["preview_glb"] else None),
                     "plan_files": [{"view_id": p.id, "path": f"plans/plan-{i:02}.svg"} for i,p in enumerate(plans,1)],
                     "runtime": _runtime(), "files": sorted(receipts, key=lambda r:r["path"])}
         if options.get("assembly_geometry") == "cut":

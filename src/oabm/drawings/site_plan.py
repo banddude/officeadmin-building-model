@@ -92,7 +92,7 @@ def _simple(points, closed):
         raise ValueError("polygon area must be positive")
 
 
-def _wrap_legend_text(text, width_mm):
+def _wrap_legend_text(text, width_mm, *, size=2.5, weight=400):
     """Measured wrapping without deleting characters or changing source facts."""
     validate_sheet_text(text,font_family="DejaVu Sans")
     remaining=text
@@ -102,7 +102,7 @@ def _wrap_legend_text(text, width_mm):
         count=0
         while low<=high:
             middle=(low+high)//2
-            if measure_sheet_text(remaining[:middle],2.5,font_family="DejaVu Sans")<=width_mm:
+            if measure_sheet_text(remaining[:middle],size,font_family="DejaVu Sans",font_weight=weight)<=width_mm:
                 count=middle
                 low=middle+1
             else:
@@ -834,11 +834,11 @@ def _render_drafted_site_body(request,sheet,graphics):
         return add("line",{"x1":x1,"y1":y1,"x2":x2,"y2":y2,"stroke":color,"stroke-width":weight},sources=sources)
     def heading(number,title,box,scale=None):
         l,t,r,b=box
-        if measure_sheet_text(title,3.5,font_family="DejaVu Sans",font_weight=700)>r-l-50:
+        if measure_sheet_text(title,4.2,font_family="DejaVu Sans",font_weight=700)>r-l-50:
             raise ValueError("drafting section title exceeds panel width")
         add("circle",{"cx":l+4,"cy":t+5,"r":3.8,"fill":"none","stroke":"#000000","stroke-width":.35})
         text(number,l+4,t+6,size=3.5,weight=700,anchor="middle")
-        text(title,l+11,t+6.2,size=3.5,weight=700)
+        text(title,l+11,t+6.2,size=4.2,weight=700)
         if scale is not None:text(f"1:{scale:g}",r-2,t+6,size=2.5,anchor="end")
         line(l,t+10,r,t+10,weight=.5)
     def merge(identifier,result,box):
@@ -916,16 +916,25 @@ def _render_drafted_site_body(request,sheet,graphics):
     # Real supplied notes and identity-bound fallback labels, not generic filler.
     box=tuple(graphics["notes_bounds_mm"]);heading("3","SITE PLAN NOTES",box)
     x,y=box[0]+2,box[1]+17;width=box[2]-box[0]-4
-    def note(value,sources,*,size=2.5,bold=False):
+    def note(value,sources,*,size=3.2,bold=False):
         nonlocal y
-        for index,fragment in enumerate(_wrap_legend_text(value,width)):
+        for index,fragment in enumerate(_wrap_legend_text(value,width,size=size,weight=700 if bold else 400)):
             if y+1>box[3]:raise ValueError("drafting notes/coverage panel overflows; provide more explicit paper area")
             text(fragment,x,y,size=size,weight=700 if bold else 400,sources=sources,
                  metadata={"full_text":value,"line_index":index})
-            y+=4.2
+            y+=max(4.2,size*1.5)
         y+=1.3
     for i,row in enumerate(graphics["notes"],1):note(f"{i}. "+row["text"],tuple(row["source_ids"]))
     y+=3;note("PLAN GRAPHICS",(reference,),bold=True)
+    def legend_label(value,sources=(reference,),minimum_height=6):
+        nonlocal y
+        fragments=_wrap_legend_text(value,width-21,size=3.2)
+        if y+(len(fragments)-1)*4.8+1>box[3]:
+            raise ValueError("drafting graphics key overflows notes panel")
+        for index,fragment in enumerate(fragments):
+            text(fragment,x+21,y+index*4.8,size=3.2,sources=sources,
+                 metadata={"full_text":value,"line_index":index})
+        y+=max(minimum_height,len(fragments)*4.8)
     for description,color,weight,pattern in (("Proposed route - supplied status","#000000",.5,None),
             ("Existing route - supplied status","#666666",.13,"dash"),("Future route / reserved intent","#000000",.25,"dash"),
             ("Context / parking linework","#666666",.13,None)):
@@ -934,11 +943,11 @@ def _render_drafted_site_body(request,sheet,graphics):
         if pattern:sample.set("stroke-dasharray","3 1.5")
         key=f"graphics-key:{count}";position=len(body);body.append(_company_body_node(sample));paths[key]=[position]
         items.append({"svg_id":key,"source_ids":[reference],"kind":"legend-sample","source_item_id":key,"view_id":"drafting-notes"})
-        text(description,x+21,y,size=2.5);y+=6
+        legend_label(description)
     for key in graphics["symbols"]:
         if y+1>box[3]:raise ValueError("drafting symbol key overflows notes panel")
         for a,b in SYMBOLS[graphics["symbols"][key]].segments:line(x+7+a.x,y-1+a.y,x+7+b.x,y-1+b.y,sources=(key,))
-        text(features[key]["label"]+" - generic mark",x+21,y,sources=(key,));y+=7
+        legend_label(features[key]["label"]+" - generic mark",sources=(key,),minimum_height=7)
     y+=3;note("SOURCE / PRESENTATION BASIS",(reference,),bold=True)
     for qualification in dict.fromkeys(row["evidence"]["qualification"] for row in request["features"]):
         note(qualification,tuple(row["id"] for row in request["features"] if row["evidence"]["qualification"]==qualification))
@@ -957,7 +966,7 @@ def _render_drafted_site_body(request,sheet,graphics):
     render_company_sheet_svg(sheet,body_svg=xml)
     audit=result[3]
     audit["legend_layout"]={"role":"drafting-notes-panel","bounds_mm":list(graphics["notes_bounds_mm"]),
-        "used_height_mm":y-graphics["notes_bounds_mm"][1],"text_height_mm":2.5,"geometry_independent":True}
+        "used_height_mm":y-graphics["notes_bounds_mm"][1],"text_height_mm":3.2,"geometry_independent":True}
     audit["presentation"]["legend_layout"]=audit["legend_layout"]
     audit["presentation"]["sheet_scale_label"]="AS NOTED" if len({view["scale"] for view in transforms.values()})>1 else f"1:{selected_scale:g}"
     audit["presentation"]["view_scales"]={key:value["scale"] for key,value in transforms.items()}

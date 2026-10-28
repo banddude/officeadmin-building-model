@@ -298,6 +298,7 @@ class _DisplayOptions(NamedTuple):
     glazed_outline: bool = False
     # Walls thinner than this draw at this thickness; None draws canonically.
     min_display_wall_thickness_m: float | None = None
+    route_bend_radii_m: tuple[tuple[str, float], ...] = ()
 
 
 def to_glb(
@@ -316,6 +317,7 @@ def to_glb(
     hidden_groups: Iterable[str] = (),
     glazed_outline: bool = False,
     min_display_wall_thickness_m: float | None = None,
+    route_bend_radii_m: Mapping[str, float] | None = None,
     _return_payload: bool = False,
 ) -> dict[str, Any] | bytes:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
@@ -336,6 +338,14 @@ def to_glb(
     The keyword-only options are display-only rendering parameters, each
     defaulting off:
 
+    - ``route_bend_radii_m`` maps selected route IDs to explicitly supplied
+      centerline bend radii in metres. Selected routes must pass the existing
+      bend preflight and have a known diameter smaller than twice the radius.
+      Their tube and conductor previews follow sampled tangent circular arcs.
+      The original sharp centerlines, route IDs, fittings and quantity lengths
+      remain unchanged. Node extras disclose this display derivation and that
+      swept clearance and manufacturer fitting geometry remain unverified.
+      Omitted or empty mapping preserves the original export bytes.
     - ``reference_planes`` adds a translucent floor plane per level that has
       no canonical slab, and — where the level height is known — a fainter
       ceiling plane per level that has no canonical ceiling, so heights have
@@ -475,6 +485,22 @@ def to_glb(
                     )
                 owner_of[member_id] = name
 
+    normalized_radii = {}
+    if route_bend_radii_m is not None:
+        from oabm.qa.route_bends import check_route_bends
+        report = check_route_bends(model, radii_m=route_bend_radii_m)
+        normalized_radii = dict(route_bend_radii_m)
+        failures = [d for d in report.diagnostics if d.route_id in normalized_radii]
+        if failures:
+            raise ValueError('curved preview requires passing bend preflight: '+', '.join(d.code for d in failures))
+        selected_fittings = {f.id for f in model.route_fittings if f.route_id in normalized_radii}
+        if any(s.fitting_id in selected_fittings and s.geometry_basis == 'dimension_derived_envelope'
+               for s in model.fitting_selections):
+            raise ValueError('curved preview cannot relocate or reconcile selected fitting envelopes; retain the canonical preview')
+        for route in model.routes:
+            if route.id in normalized_radii and (route.nominal_diameter_m is None or normalized_radii[route.id] <= route.nominal_diameter_m/2):
+                raise ValueError('curved preview requires a known route diameter smaller than twice its centerline bend radius')
+
     group_names = {name for name, _ in normalized_groups}
     options = _DisplayOptions(
         reference_planes=reference_planes,
@@ -491,6 +517,7 @@ def to_glb(
         ),
         glazed_outline=glazed_outline,
         min_display_wall_thickness_m=min_display_wall_thickness_m,
+        route_bend_radii_m=tuple(sorted(normalized_radii.items())),
     )
     document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
@@ -949,8 +976,21 @@ def _build_document(
             )
             add({"name": fitting.id, "meshless": True, "extras": extras,
                  "pose": fitting.pose})
+    from .curved_routes import fillet_points, sweep_vertices
+    bend_radii = dict(options.route_bend_radii_m)
+    curved_points = {route.id: fillet_points(route.centerline.points, bend_radii[route.id])
+                     for route in model.routes if route.id in bend_radii}
     for entity in model.routes:
         extras = _route_extras(model, entity)
+        if entity.id in curved_points:
+            extras['curved_preview'] = {
+                'centerline_radius_m': bend_radii[entity.id],
+                'sampled_centerline_length_m': _polyline_length(curved_points[entity.id]),
+                'maximum_arc_step_degrees': 5,
+                'basis': 'caller radius; canonical sharp polyline and quantities unchanged',
+                'clearance_verified': False,
+                'manufacturer_fitting_geometry': False,
+            }
         _add_name(extras, entity)
         if entity.id in options.dimmed_ids:
             dimmed_count += 1
@@ -964,11 +1004,12 @@ def _build_document(
             material_key = ("route", _is_derived(entity.provenance, entity.attributes))
         add({
             "name": entity.id,
-            "vertices": _route_vertices(entity),
+            "vertices": (sweep_vertices(curved_points[entity.id], entity.nominal_diameter_m/2, _CYLINDER_SIDES)
+                         if entity.id in curved_points else _route_vertices(entity)),
             "material_key": material_key,
             "extras": extras,
         })
-    wire_entries = _wire_entries(model, options.dimmed_ids)
+    wire_entries = _wire_entries(model, options.dimmed_ids, curved_points=curved_points)
     dimmed_wire_count = sum(
         1 for entry in wire_entries if entry["material_key"][0] == "dimmed"
     )
@@ -1797,6 +1838,7 @@ def _wire_node_name(conductor_id: str, route_id: str, index: int) -> str:
 def _wire_entries(
     model: BuildingModel,
     dimmed_route_ids: frozenset[str] = frozenset(),
+    *, curved_points=None,
 ) -> list[dict[str, Any]]:
     """One wire mesh per conductor per route it rides, bundled in the conduit.
 
@@ -1813,6 +1855,8 @@ def _wire_entries(
     default export stays byte-identical.
     """
 
+    curved_points = curved_points or {}
+    from .curved_routes import sweep_vertices
     route_by_id = {route.id: route for route in model.routes}
     phase_seen: dict[str, int] = {}
     material_by_conductor: dict[str, str] = {}
@@ -1855,6 +1899,8 @@ def _wire_entries(
                 "route_id": route_id,
                 "canonical_id": conductor.id,
             }
+            if route_id in curved_points:
+                extras["curved_preview"] = "follows caller-radius preview; not manufacturer or swept-clearance approval"
             if conductor.size:
                 extras["size"] = conductor.size
             if derivation is not None:
@@ -1869,7 +1915,9 @@ def _wire_entries(
                 )
             entries.append({
                 "name": _wire_node_name(conductor.id, route_id, index),
-                "vertices": _wire_vertices(route, offset, 2.0 * math.pi * position / total),
+                "vertices": (sweep_vertices(curved_points[route_id], _WIRE_RADIUS_M, _CYLINDER_SIDES,
+                            offset_m=offset, offset_angle=2.0*math.pi*position/total)
+                             if route_id in curved_points else _wire_vertices(route, offset, 2.0 * math.pi * position / total)),
                 "material_key": material_key,
                 "extras": extras,
             })

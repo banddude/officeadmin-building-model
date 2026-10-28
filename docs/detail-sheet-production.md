@@ -130,3 +130,8 @@ canonical source coverage for the production coordinator after body preflight.
 The detail manifest retains this map, explicit callouts, exact original inputs,
 slot assignments and canonical IDs. Source review and independent cloud pixel
 review remain separate acceptance gates.
+
+Technical section and note-block headings use 4.2 mm type; detail note bodies
+use measured 3.2 mm type with 4.8 mm line pitch. Existing geometry, dimensions,
+callout positions and explicit figure scales are unchanged. Notes that cannot
+fit the supplied slot still fail explicitly rather than shrinking or clipping.

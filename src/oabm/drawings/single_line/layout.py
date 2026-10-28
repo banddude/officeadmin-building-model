@@ -9,7 +9,9 @@ from .topology import Topology
 from ..company_sheets import measure_sheet_text, validate_sheet_text
 
 FONT='DejaVu Sans'
-TEXT_MM=2.5
+TEXT_MM=3.2
+SMALL_TEXT_MM=2.8
+TEXT_LINE_MM=4.3
 
 
 def wrap_mm(value, width_mm, *, size=TEXT_MM):
@@ -87,6 +89,12 @@ def _core(topology, ids, bounds):
                           'y':top+12+rank*pitch,'width':bus_width,'height':40,'equipment_type':e['equipment_type'],'network_kinds':sorted({edge['drafting']['connection_kind'] for edge in topology.connections if e['id'] in {edge['source_id'],edge['load_id']}}),
                           'drafting_lane':'side-wide' if outgoing>1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch'} else 'side',
                           'axis_x':symbol_lane((xx-bus_width/2,top+12+rank*pitch,xx+bus_width/2,top+52+rank*pitch),wide=outgoing>1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch'})['axis_x']})
+    by_id={e['id']:e for e in selected}
+    for node in nodes:
+        lane=symbol_lane((0,0,node['width'],node['height']),wide=node['drafting_lane']=='side-wide')
+        limit=3 if by_id[node['equipment_id']]['equipment_type'] in {'panelboard','switchboard','disconnect','transfer_switch'} else 4
+        if len(wrap_mm(by_id[node['equipment_id']]['name'],lane['text_width']))>limit:
+            return None
     return {'nodes':nodes,'connections':[e['id'] for e in edges],'core_bounds':bounds}
 
 
@@ -118,7 +126,7 @@ def _place_facts(rows,bounds):
     y=top
     for i,row in enumerate(rows):
         lines=[line for value in row['values'] for line in wrap_mm(value,right-left-6)]
-        height=len(lines)*3.4+4
+        height=len(lines)*TEXT_LINE_MM+4
         if y+height>bottom:return output,rows[i:]
         output.append({**row,'x':left+3,'y':y,'width':right-left-6,'lines':lines,'height':height})
         y+=height
@@ -321,8 +329,8 @@ def _clear_segment(a,b,boxes,segments=()):
 def _label_location(points,edge,bounds,boxes,segments,labels):
     voltage='V UNKNOWN' if edge['voltage_v'] is None else f'{edge["voltage_v"]:g} V'
     label_lines=edge.get('drawing_labels')
-    width=max([measure_sheet_text(line,2.5,font_family=FONT) for line in label_lines] or [0])+1 if label_lines else max(measure_sheet_text('C000 / '+voltage,2.5,font_family=FONT),
-              measure_sheet_text(edge['load_role'],2.3,font_family=FONT))+1
+    width=max([measure_sheet_text(line,TEXT_MM,font_family=FONT) for line in label_lines] or [0])+1 if label_lines else max(measure_sheet_text('C000 / '+voltage,TEXT_MM,font_family=FONT),
+              measure_sheet_text(edge['load_role'],SMALL_TEXT_MM,font_family=FONT))+1
     candidates=[]
     for a,b in sorted(zip(points,points[1:]),key=lambda pair:-math.dist(*pair)):
         for portion in (.5,.25,.75):
@@ -330,7 +338,7 @@ def _label_location(points,edge,bounds,boxes,segments,labels):
             if abs(a[0]-b[0])<1e-8:candidates.extend(((x+3,y),(x-width-3,y)))
             else:candidates.extend(((x-width/2,y-7),(x-width/2,y+5)))
     for x,y in candidates:
-        box=(x-.1,y-2.6,x+width,y+(len(label_lines)-1)*3.4+.8 if label_lines else y+4.1)
+        box=(x-.1,y-TEXT_MM-.1,x+width,y+(len(label_lines)-1)*TEXT_LINE_MM+TEXT_MM*.3 if label_lines else y+5.1)
         if box[0]<bounds[0]+1 or box[1]<bounds[1]+1 or box[2]>bounds[2]-1 or box[3]>bounds[3]-1:continue
         if any(not (box[2]<r[0] or r[2]<box[0] or box[3]<r[1] or r[3]<box[1]) for r in boxes+labels):continue
         if any(_crosses_box(a,b,box) for a,b in segments+list(zip(points,points[1:]))):continue
@@ -662,13 +670,16 @@ def _consolidate_buses(result,topology,bounds):
         homes={n['equipment_id']:(n['x']-n['width']/2,n['y'],n['x']+n['width']/2,n['y']+n['height']) for n in page['nodes']}
         lanes={n['equipment_id']:n.get('drafting_lane') for n in page['nodes']}
         rows={}
+        repeated_chain_boxes=[]
         for index,group in enumerate(page['groups']):
             if group.get('kind')=='chain':
                 ids=[group['equipment_id']]+[edges[key]['load_id'] for key in group['connections']]
                 gap=34;width=(group['width']-gap*(len(ids)-1))/len(ids)
                 for i,identity in enumerate(ids):
                     l=group['x']+i*(width+gap);t=group['y']+13
-                    homes.setdefault(identity,(l,t,l+width,t+40));lanes.setdefault(identity,None)
+                    box=(l,t,l+width,t+40)
+                    if identity in homes and homes[identity]!=box:repeated_chain_boxes.append((identity,box))
+                    homes.setdefault(identity,box);lanes.setdefault(identity,None)
                 continue
             parent,children,left,right=fan_geometry(group)
             owner=group['equipment_id']
@@ -706,7 +717,7 @@ def _consolidate_buses(result,topology,bounds):
                 start_x=(bar[0][0]+bar[1][0])/2;source_y=bar[0][1]
             start=(start_x,source_y)
             trunk=max([home[2]+3]+[right for _,_,right,_ in items])
-            boxes=[(l-.6,t-.6,r+.6,b+.6) for identity,(l,t,r,b) in homes.items() if identity!=owner]
+            boxes=[(l-.6,t-.6,r+.6,b+.6) for identity,(l,t,r,b) in [*homes.items(),*repeated_chain_boxes] if identity!=owner]
             foreign=[*routed_bus_segments,*routed_private_segments]
             for path in core_geometry:
                 if _bus_key(edges[path['connection_id']])!=terminal_key:foreign.extend(zip(path['points'],path['points'][1:]))
@@ -716,7 +727,7 @@ def _consolidate_buses(result,topology,bounds):
                     foreign.append(((l,yy),(r,yy)))
                     parent,_,_,_=fan_geometry(other_group)
                     caption=_bus_caption(other,result['equipment_home_sheets'][other[0]])
-                    boxes.append((parent[0]+1.8,yy-7.5,parent[0]+2.2+measure_sheet_text(caption,2.3,font_family=FONT),yy-4.1))
+                    boxes.append((parent[0]+1.8,yy-5-SMALL_TEXT_MM,parent[0]+2.2+measure_sheet_text(caption,SMALL_TEXT_MM,font_family=FONT),yy-5+SMALL_TEXT_MM*.3))
             lane=source_lane
             # Other networks on the same equipment are real conductive bars,
             # including while traversing the equipment's own envelope.
@@ -781,7 +792,7 @@ def _consolidate_buses(result,topology,bounds):
                             body=_paper_route(escape,approach,bounds,private_boxes,[*avoid,*own_bus])
                             if body is None:continue
                             # The final approach crosses only its own equipment boundary.
-                            other_boxes=[box for identity,box in homes.items() if identity not in {owner,target}]
+                            other_boxes=[box for identity,box in [*homes.items(),*repeated_chain_boxes] if identity not in {owner,target}]
                             if not _paper_clear_segment(approach,port,other_boxes,avoid):continue
                             private=_simplify_path([branch,*body,port])
                             found=(branch,private);break
@@ -865,7 +876,7 @@ def _resolve_navigation(result,topology,bounds,regions,reserved_sheet_ids=()):
             target=next(iter(destinations));header='ALL FEEDER TAGS: REGISTER '+(target or 'DELEGATED')
         else:header=' / '.join(row['tag']+' REG '+(row['register_sheet'] or 'DELEGATED') for row in feeder_refs if row['connection_id'] in shown)
         page['navigation_header']=header or 'FEEDER REGISTER INDEX'
-        header_fits=len(wrap_mm(page['navigation_header'],regions['diagram'][2]-regions['diagram'][0]-26,size=2.5))<=2
+        header_fits=len(wrap_mm(page['navigation_header'],regions['diagram'][2]-regions['diagram'][0]-26,size=TEXT_MM))<=2
         needs_index=bool(terminal_refs) or not header_fits or bool(registered and not shown and any(refs[key]['source_sheet']!=page['id'] for key in registered))
         if not needs_index:continue
         index_consumers.append(page)
@@ -907,6 +918,7 @@ def _resolve_navigation(result,topology,bounds,regions,reserved_sheet_ids=()):
 
 def _seal_layout(result,topology,bounds,regions,delegated=False,reserved_sheet_ids=()):
     if not result.get('bus_layout_prepared'):_consolidate_buses(result,topology,regions['diagram'])
+    result['typography_version']='paper-type-v2'
     result['drawing_bounds_mm']=tuple(bounds)
     result['effective_regions']=regions
     result['topology_fingerprint']=_topology_fingerprint(topology)
@@ -1026,6 +1038,8 @@ def validate_precomputed_layout(layout,topology,drawing_bounds_mm):
         raise ValueError('precomputed layout topology fingerprint differs from the supplied model')
     if layout.get('plan_fingerprint')!=_plan_fingerprint(layout):
         raise ValueError('precomputed layout content changed; obtain a fresh plan')
+    if layout.get('typography_version')!='paper-type-v2':
+        raise ValueError('precomputed layout typography differs; obtain a fresh plan')
     if tuple(layout.get('drawing_bounds_mm',()))!=tuple(drawing_bounds_mm):
         raise ValueError('precomputed layout drawing bounds differ from resolved shared sheets')
     if layout.get('navigation_version')!='terminal-register-v1':raise ValueError('precomputed layout has unresolved navigation; obtain a fresh plan')

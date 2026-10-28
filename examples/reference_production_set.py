@@ -65,7 +65,7 @@ def with_detail_geometry(model,targets):
     return result,mapping
 
 
-def prepare(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=False):
+def prepare(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=False,reference_cover=False):
     root=Path(root)
     request=prepare_electrical(root,pdf=pdf)
     model,targets=source_model(variant);model,mapping=with_detail_geometry(model,targets)
@@ -102,6 +102,22 @@ def prepare(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fal
         'contacts':[{'role':'Design example','name':'EXAMPLE DESIGN TEAM'}],
         'notes':['SYNTHETIC DEMONSTRATION. No manufacturer/internal fit, attachment capacity, code, survey or engineering approval.',
             'Unspecified branch circuits, equipment internals and protective ratings remain unknown. No spares or demand are inferred.']}
+    if reference_cover:
+        cover.update(layout='reference-grid',pagination={'text_height_mm':3.5},
+            code_basis=['Demonstration only. The project jurisdiction and adopted code basis must be supplied for a real job.'],
+            existing_system=['Equipment topology and declared ratings are supplied in the synthetic canonical model.',
+                             'Field conditions, available fault current and manufacturer fit are not established by this example.'],
+            linework_conventions=['Solid lines show the explicitly supplied proposed routes.',
+                                  'Dashed lines show the separately supplied existing or future site features; see the site legend.'],
+            key_abbreviations=['MS: main switchboard. PNL: panel. ATS: transfer switch.',
+                               'TBD: not supplied. NTS: not to scale.'],
+            location_map={'caption':'SYNTHETIC VICINITY DIAGRAM / NTS / NOT A SURVEY',
+                'width':100,'height':60,
+                'segments':[[0,14,100,14],[0,18,100,18],[0,44,100,44],[0,48,100,48],
+                            [18,0,18,60],[22,0,22,60],[72,0,72,60],[76,0,76,60]],
+                'labels':[{'x':45,'y':14,'text':'EXAMPLE ACCESS WAY'},
+                          {'x':45,'y':44,'text':'EXAMPLE SERVICE WAY'}],
+                'site_marker':{'x':60,'y':32,'label':'SYNTHETIC SITE'}})
     site=json.loads((ROOT/'fixtures/reference_production/site.json').read_bytes())
     site['features']=site['features']
     for f in site['features']:
@@ -122,7 +138,7 @@ def prepare(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fal
     return request
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root');p.add_argument('--variant',choices=('reference','residential','commercial'),default='reference');p.add_argument('--profile',type=Path);p.add_argument('--adaptive-layout',action='store_true')
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root');p.add_argument('--variant',choices=('reference','residential','commercial'),default='reference');p.add_argument('--profile',type=Path);p.add_argument('--adaptive-layout',action='store_true');p.add_argument('--reference-cover',action='store_true')
     a=p.parse_args();root=Path(a.root);root.mkdir(parents=True,exist_ok=False)
-    request=prepare(root/'inputs',variant=a.variant,profile=a.profile,adaptive_layout=a.adaptive_layout)
+    request=prepare(root/'inputs',variant=a.variant,profile=a.profile,adaptive_layout=a.adaptive_layout,reference_cover=a.reference_cover)
     print(create_production_sheet_set(request,output_directory=root/'attempt'))

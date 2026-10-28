@@ -96,3 +96,27 @@ typed placements for plan-set coordinators. The current OA snapshot response
 lacks verified geographic image bounds: acquired maps are explicitly labeled
 VICINITY ONLY and contain no inferred site marker. This limitation concerns
 marker placement; address-to-image acquisition works independently.
+
+### Reference-style cover arrangement
+
+Set `layout: "reference-grid"` to arrange the supplied sections in coordinated
+bands: project, responsible parties and index across the top; scope, code basis
+and existing system below; general notes and linework at lower left and the
+vicinity map at lower right. The regions are proportions of the shared drawing
+area, not job-specific coordinates. Optional empty sections remain absent.
+
+All source text still uses the same measured wrapping, source offsets and
+continuation engine. Oversized sections continue at the configured text height;
+the derived index includes every continuation. On drawing areas narrower than
+500 mm or with less than 300 mm below the heading, the tool uses the original
+readable two-column flow. The layout receipt states which design was used.
+`layout: "flow"` and omitted layout retain the existing behavior.
+
+Both supplied vector maps and verified Apple snapshots use the reserved map
+region. Apple images stay uncropped with attribution and their existing location
+qualification; this layout does not confirm an ambiguous address or place a pin.
+
+A complete public-safe example with all optional sections and an explicitly
+synthetic vicinity diagram is available through
+`python examples/reference_production_set.py OUTPUT --adaptive-layout --reference-cover`.
+The diagram is a layout test, not a replacement for a real job's map.

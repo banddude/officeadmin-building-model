@@ -60,11 +60,13 @@ class CoverCapacityError(ValueError):
 
 def validate_cover(config):
     required = {'version', 'id', 'project', 'scope', 'sheets', 'contacts'}
-    optional = {'notes', 'location_map', 'pagination', 'code_basis', 'existing_system', 'linework_conventions', 'key_abbreviations'}
+    optional = {'layout', 'notes', 'location_map', 'pagination', 'code_basis', 'existing_system', 'linework_conventions', 'key_abbreviations'}
     if not isinstance(config, dict) or not required <= config.keys() or config.keys() - required - optional:
         raise ValueError('cover: required version, id, project, scope, sheets, contacts; optional notes/location_map/pagination')
     if config['version'] != VERSION:
         raise ValueError('unsupported cover version')
+    if config.get('layout', 'flow') not in ('flow', 'reference-grid'):
+        raise ValueError('layout: flow or reference-grid required')
     _identifier(config['id'], 'id')
     project = config['project']
     if not isinstance(project, dict) or not {'name', 'location'} <= project.keys():
@@ -240,6 +242,39 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
     continuation_top = top+size*5
     if first_top+size*12 >= bottom:
         raise CoverCapacityError('body: insufficient width/height for heading and drafting regions')
+    grid = config.get('layout') == 'reference-grid'
+    # A reusable proportioned cover, derived only from the shared drawing area.
+    # Narrow sheets retain the readable flow arrangement, rather than shrinking.
+    grid = grid and right-left >= 500 and bottom-first_top >= 300
+    grid_regions = {}
+    if grid:
+        w, h = right-left, bottom-first_top
+        gap = max(8., size*3)
+        def region(x0, y0, x1, y1):
+            return (left+w*x0+(gap/2 if x0 else 0), first_top+h*y0,
+                    left+w*x1-(gap/2 if x1<1 else 0), first_top+h*y1-gap)
+        grid_regions = {
+            'Project': region(0,0,.23,.24),
+            'Contacts': region(.23,0,.52,.24),
+            'Sheet index': region(.52,0,1,.19),
+            'Key abbreviations': region(.52,.19,1,.29),
+            'Scope': region(0,.29,.48,.46),
+            'Code basis': region(.48,.29,.74,.46),
+            'Existing system': region(.74,.29,1,.46),
+            'Job notes': region(0,.49,.48,.79),
+            'Linework conventions': region(0,.81,.48,1),
+            'Location map': region(.48,.49,1,1),
+        }
+    standard_width = width
+    # Row fragments are wrapped to the smaller of first-page and continuation
+    # widths. This preserves source offsets unchanged when flowing onward.
+    def set_width(title, index=0):
+        nonlocal width, text_width, project_label_width, table_index
+        width = grid_regions[title][2]-grid_regions[title][0] if grid and index==0 else standard_width
+        text_width = min(width, standard_width)-2*pad
+        project_label_width=min(text_width*.35,size*9)
+        table_index=id_width < text_width*.45
+
     project_labels = {'name':'Project','location':'Location','number':'Project no.'}
     project_keys=[k for k in ('name','location','number') if k in config['project']]+sorted(set(config['project'])-{'name','location','number'})
     sections = [
@@ -268,12 +303,17 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
             ('location_map.resolved_address','Resolved address: '+map_snapshot.provenance['resolved_address']),
             ('location_map.attribution',map_snapshot.attribution),
             ('location_map.marker_status','Site marker pending verified geographic image bounds.')],1))
+    if grid:
+        numbering={'Project':1,'Contacts':2,'Sheet index':3,'Scope':4,'Code basis':5,
+                   'Existing system':6,'Job notes':7,'Linework conventions':8,'Location map':9,'Key abbreviations':10}
+        sections=[(title,numbering[title],facts,column) for title,_,facts,column in sections]
     id_width = max(size*10,max(measure_sheet_text(r['id'],size,font_family=SUPPORTED_FONT,font_weight=600)+size*2 for r in config['sheets']))
     table_index = id_width < text_width*.45
     project_label_width=min(text_width*.35,size*9)
     bullet_indent=size*1.1
     source_text,prepared = {},[]
     for title,number,facts,column in sections:
+        set_width(title)
         rows=[]
         for source,value in facts:
             offset=0
@@ -322,7 +362,10 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
             source_text[source]=value
         prepared.append((title,number,rows,column))
     def region_heading(title,part,x,y,number):
-        label=title.upper()+(' / CONT.' if part else '')
+        display_title=({'Project':'Project / site','Contacts':'Responsible parties',
+                        'Scope':'Scope of work','Job notes':'General notes','Location map':'Vicinity map'}.get(title,title)
+                       if grid else title)
+        label=display_title.upper()+(' / CONT.' if part else '')
         available=text_width-2*radius-3
         if available <= 0:
             raise CoverCapacityError('body: insufficient width for numbered headings')
@@ -341,16 +384,21 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
             pages.append({'elements':list(header_elements) if n==0 else [],'panels':[], 'columns':[y,y], 'images':[]})
         return pages[index]
     last_locations={}
+    grid_cursors={}
     def place(title,number,rows,part,index,column):
+        set_width(title,index)
         p=page(index);y=p['columns'][column]
-        x=left+column*(width+gutter)
+        x=left+column*(standard_width+gutter)
+        limit=bottom
+        if grid and index==0:
+            x,y,_,limit=grid_regions[title]
         h,decor=region_heading(title,part,x,y,number)
         if title=='Sheet index' and table_index:
             decor.extend([text('SHEET',x+pad,y+h+size,height=size*.85,weight=600),
                           text('TITLE',x+pad+id_width,y+h+size,height=size*.85,weight=600),
                           rule(x,y+h+size*1.5,width,.15)])
             h+=line_height*1.3
-        available=bottom-y-h-pad
+        available=limit-y-h-pad
         # Keep a contact card or paragraph together when it fits a fresh
         # column. Truly oversized facts still flow with exact source offsets.
         first_source=rows[0]['source']
@@ -401,6 +449,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                             'lines':[r['text'] for r in selected],'source_spans':selected})
         p['columns'][column]=y+total_h+size*2
         last_locations[title]=(index,column)
+        if grid and index==0:grid_cursors[title]=y+total_h+size*2
         return count
     overflow=[]
     # First-page regions retain their architectural cover arrangement.
@@ -416,6 +465,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
         while cursor<len(rows):
             count=place(title,number,rows[cursor:],part,flow_page,flow_column)
             if not count:
+                set_width(title,flow_page)
                 h,_=region_heading(title,part,left,continuation_top,number)
                 if title=='Sheet index' and table_index:
                     h+=line_height*1.3
@@ -428,13 +478,19 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                 flow_page,flow_column=(flow_page,1) if flow_column==0 else (flow_page+1,0)
     if 'location_map' in config:
         m=config['location_map'];index,column=last_locations['Location map'];p=page(index)
-        x=left+column*(width+gutter);y=p['columns'][column]
+        set_width('Location map',index)
+        x=left+column*(standard_width+gutter);y=p['columns'][column]
+        map_bottom=bottom
+        if grid and index==0:
+            x,_,_,map_bottom=grid_regions['Location map']
+            y=grid_cursors['Location map']
         richer=bool(m.get('labels') or m.get('site_marker'))
         margin=size*3 if richer else 0
         minimum=min(100 if richer else 40,(bottom-continuation_top)*.35)
-        available=bottom-y-pad
+        available=map_bottom-y-pad
         if available<minimum:
             index,column=flow_page,flow_column
+            set_width('Location map',index);map_bottom=bottom
             p=page(index);x=left+column*(width+gutter);y=p['columns'][column]
             h,decor=region_heading('Location map',1,x,y,6)
             if bottom-y-h-pad<minimum:
@@ -442,7 +498,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                 p=page(index);x=left+column*(width+gutter);y=p['columns'][column]
                 h,decor=region_heading('Location map',1,x,y,6)
             p['elements'].extend(decor);y+=h
-            available=bottom-y-pad
+            available=map_bottom-y-pad
         if available<=2*margin or text_width<=2*margin:
             raise CoverCapacityError('Location map: paper cannot fit supplied diagram and readable labels')
         scale=min((text_width-2*margin)/m['width'],(available-2*margin)/m['height'])
@@ -503,16 +559,22 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                             'supplied_segment_count':len(m['segments'])})
     if map_snapshot is not None:
         index,column=last_locations['Location map'];p=page(index)
-        x=left+column*(width+gutter);y=p['columns'][column]
-        available=bottom-y-pad
+        set_width('Location map',index)
+        x=left+column*(standard_width+gutter);y=p['columns'][column]
+        map_bottom=bottom
+        if grid and index==0:
+            x,_,_,map_bottom=grid_regions['Location map']
+            y=grid_cursors['Location map']
+        available=map_bottom-y-pad
         minimum=min(100,(bottom-continuation_top)*.35)
         if available<minimum:
-            index,column=flow_page,flow_column;p=page(index)
-            x=left+column*(width+gutter);y=p['columns'][column]
+            index,column=flow_page,flow_column
+            set_width('Location map',index);map_bottom=bottom;p=page(index)
+            x=left+column*(standard_width+gutter);y=p['columns'][column]
             h,decor=region_heading('Location map',1,x,y,6)
             if bottom-y-h-pad<minimum:
                 index,column=(index,1) if column==0 else (index+1,0)
-                p=page(index);x=left+column*(width+gutter);y=p['columns'][column]
+                p=page(index);x=left+column*(standard_width+gutter);y=p['columns'][column]
                 h,decor=region_heading('Location map',1,x,y,6)
             p['elements'].extend(decor);y+=h;available=bottom-y-pad
         image_size=min(text_width,available)
@@ -535,7 +597,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                 raise CoverCapacityError('continuation page heading exceeds body width')
             p['elements'][:0]=[text(label,left+pad,top+size*1.6,height=size*1.4,weight=600),
                                rule(left,top+size*2.7,right-left,.45)]
-        result.append(CoverBody('\n'.join(p['elements']),{'version':VERSION,'design':'drafting-cover-v3',
+        result.append(CoverBody('\n'.join(p['elements']),{'version':VERSION,'design':'drafting-cover-reference-grid-v1' if grid else 'drafting-cover-v3',
             'bounds_mm':list(bounds),'page_number':i+1,'page_count':len(pages),'font_family':SUPPORTED_FONT,
             'text_height_mm':size,'heading_height_mm':heading_size,'project_heading_height_mm':title_size,
             'gutter_mm':gutter,'panels':p['panels'],'source_text':source_text},tuple(p['images'])))

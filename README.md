@@ -46,8 +46,11 @@ GLB previews and quantities share those canonical physical component IDs.
 Routing supports an opt-in bounded assembly-aware slice with explicit
 `AllowedRouteDomain` volumes; a geometry-derived plenum domain is available only
 for the supported rectangular suspended-ceiling case documented in
-[3D electrical routing](docs/routing.md). IFC, drawings and unsupported QA
-consumers still refuse populated assemblies. This is not full-room framing,
+[3D electrical routing](docs/routing.md). Default IFC/drawing consumers and unsupported QA consumers still refuse populated
+assemblies. [Physical assembly consumers](docs/physical-assembly-consumers.md)
+provide explicit opt-in IFC tessellation and plan/section cut outlines; assembly
+elevations remain unsupported. Explicit cut-only drawing sets and versioned
+model/physical-sheet deliveries use the supported plan/section adapters. This is not full-room framing,
 does not authorize penetrations, and does not automate engineering decisions.
 See [Layered raceway policy](docs/layered-raceway-policy.md) for portable caller
 baseline/company/job permissions compiled into existing explicit selection rules.
@@ -115,4 +118,6 @@ See [Shared company sheet profiles](docs/company-sheet-profile.md) for saved com
 See [Supplied site-plan production](docs/supplied-site-plan.md) for explicit
 site geometry to scaled editable sheets using the shared company sheet profile.
 
-See [Shared production chain](docs/production-sheet-set.md) for one ordered cover/site/schedule/detail SVG/PDF packet using one company profile and canonical model, with single-line integration explicitly pending.
+See [Electrical sheet composition](docs/electrical-sheet-composition.md) for shared schematic/feeder/register regions and explicit useful-panel selection. The connected drafting samples are `examples/reference_production_set.py --variant reference|residential|commercial` (supply a fresh output path); their visual review status remains explicit.
+
+See [Shared production chain](docs/production-sheet-set.md) for one ordered cover/site/single-line/schedule/detail SVG/PDF packet using one company profile and canonical model. See the [dated current-state audit](docs/current-state-audit-2026-10-27.md) for implementation boundaries and outstanding professional drafting acceptance.

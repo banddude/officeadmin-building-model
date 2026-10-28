@@ -9,11 +9,11 @@ import html
 import math
 
 from oabm.assembly_compat import require_no_populated_building_assemblies
-from oabm.model import BuildingModel, Point3, Vector3, ElectricalEquipment
+from oabm.model import BuildingModel, Point3, Vector3, ElectricalEquipment, Route, Port, Wall, SupportComponent
 from .generator import (ElevationSpec, SectionSpec, VisibilityPolicy,
                         generate_elevation, generate_section, _entity_points,
                         _fitting_selection_by_id)
-from .model import Bounds2, DrawingView
+from .model import Bounds2, DrawingView, DrawingPrimitive, Point2
 from .projection import frame_from_view_direction
 from .company_sheets import measure_sheet_text, validate_sheet_text
 
@@ -21,18 +21,50 @@ RECIPES = {
     "equipment-mounting-elevation@1": "elevation",
     "connection-close-up@1": "elevation",
     "supported-section@1": "section",
+    "equipment-mounting-elevation@2": "elevation",
+    "connection-close-up@2": "elevation",
+    "supported-section@2": "section",
 }
-_COLLECTIONS = ("electrical_equipment", "electrical_boxes", "support_components", "route_fittings")
+_COLLECTIONS = ("electrical_equipment", "electrical_boxes", "support_components", "route_fittings", "routes", "ports", "walls")
 
 
 def _text(value, name):
     if not isinstance(value, str) or not value.strip() or any(ord(c) < 32 for c in value):
         raise ValueError(f"{name} requires nonblank single-line supplied text")
     try:
-        validate_sheet_text(value)
+        validate_sheet_text(value,font_family="Liberation Sans")
     except ValueError as exc:
         raise ValueError(f"{name}: {exc}") from exc
     return value
+
+
+@dataclass(frozen=True)
+class DetailCallout:
+    source_id: str
+    text: str
+    x_mm: float
+    y_mm: float
+    anchor: str = "start"
+
+    def __post_init__(self):
+        _text(self.source_id, "callout source")
+        _text(self.text, "callout text")
+        if self.anchor not in {"start", "end"} or any(type(v) not in (int,float) or not math.isfinite(v) for v in (self.x_mm,self.y_mm)):
+            raise ValueError("callout requires finite paper positions and start/end anchor")
+
+
+@dataclass(frozen=True)
+class DetailDimensionLane:
+    source_id: str
+    vertical_side: str
+    gap_mm: float = 7
+
+    def __post_init__(self):
+        _text(self.source_id, "dimension lane source")
+        if self.vertical_side not in {"left","right"}:
+            raise ValueError("dimension vertical_side must be left or right")
+        if type(self.gap_mm) not in (int,float) or not math.isfinite(self.gap_mm) or self.gap_mm<4:
+            raise ValueError("dimension gap_mm must be finite and at least 4 mm")
 
 
 @dataclass(frozen=True)
@@ -51,6 +83,10 @@ class DetailSpec:
     mounting_spec: str
     connection_spec: str
     notes: tuple[str, ...] = ()
+    callouts: tuple[DetailCallout, ...] = ()
+    dimension_source_ids: tuple[str, ...] = ()
+    notes_y_mm: float | None = None
+    dimension_lanes: tuple[DetailDimensionLane, ...] = ()
 
     def __post_init__(self):
         for name in ("id", "number", "title", "mounting_spec", "connection_spec"):
@@ -70,6 +106,15 @@ class DetailSpec:
         if RECIPES[self.recipe] == "section" and not (self.near_m <= 0 < self.far_m):
             raise ValueError("section interval must include its explicit cut plane")
         frame_from_view_direction(origin=self.origin, direction=self.direction)
+        if len({d.source_id for d in self.dimension_lanes}) != len(self.dimension_lanes) or not {d.source_id for d in self.dimension_lanes} <= set(self.dimension_source_ids):
+            raise ValueError("dimension lanes require unique measured source IDs")
+        if self.notes_y_mm is not None and (type(self.notes_y_mm) not in (int,float) or not math.isfinite(self.notes_y_mm) or self.notes_y_mm<=0):
+            raise ValueError("notes_y_mm requires a positive finite paper offset")
+        if self.recipe.endswith("@2"):
+            if {c.source_id for c in self.callouts} != set(self.source_ids) or len(self.callouts) != len(self.source_ids):
+                raise ValueError("recipe @2 requires one explicit direct callout for every source ID")
+            if not self.dimension_source_ids or not set(self.dimension_source_ids) <= set(self.source_ids):
+                raise ValueError("recipe @2 requires explicit dimension source IDs from selected sources")
 
 
 @dataclass(frozen=True)
@@ -77,6 +122,7 @@ class DetailResult:
     spec: DetailSpec
     view: DrawingView
     facts: tuple[str, ...]
+    anchors: tuple[tuple[str, Point2], ...] = ()
 
 
 def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
@@ -87,6 +133,7 @@ def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
     selected = []
     facts = []
+    anchors = []
     for source_id in sorted(spec.source_ids):
         if source_id not in entities:
             raise ValueError(f"{source_id}: missing or unsupported detail source")
@@ -96,9 +143,12 @@ def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
             selection = selections[source_id]
             if selection.geometry_basis == "dimension_derived_envelope":
                 size = selection.size
-        if size is None or min(size.x, size.y, size.z) <= 0:
+        non_solid = isinstance(entity, (Route, Port, Wall))
+        if non_solid and spec.recipe.endswith("@1"):
+            raise ValueError(f"{source_id}: routes, ports and host context require a named @2 recipe")
+        if not non_solid and (size is None or min(size.x, size.y, size.z) <= 0):
             raise ValueError(f"{source_id}: explicit supported positive envelope dimensions required")
-        points = _entity_points(entity, fitting_selection_by_id=selections)
+        points = (entity.pose.position,) if isinstance(entity, Port) else _entity_points(entity, fitting_selection_by_id=selections)
         for point in points:
             projected, depth = frame.project(point)
             b = spec.bounds
@@ -107,10 +157,26 @@ def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
             if not spec.near_m <= depth <= spec.far_m:
                 raise ValueError(f"{source_id}: depth bounds would clip supplied geometry")
         selected.append(entity)
-        p = entity.pose.position
-        facts.append(f"A{len(selected)} {source_id}: local X/Y/Z {size.x:g}/{size.y:g}/{size.z:g} m; position {p.x:g},{p.y:g},{p.z:g} m")
-    if spec.recipe == "equipment-mounting-elevation@1" and not any(isinstance(e, ElectricalEquipment) for e in selected):
+        anchor = entity.pose.position if hasattr(entity,"pose") else entity.centerline.points[0]
+        anchors.append((source_id,frame.project(anchor)[0]))
+        if isinstance(entity, Route):
+            facts.append(f"{source_id}: supplied {entity.route_type} centerline; no conductor or fitting internals inferred")
+        elif isinstance(entity, Port):
+            facts.append(f"{source_id}: supplied connection location on {entity.owner_id}; not terminal geometry")
+        elif isinstance(entity, Wall):
+            facts.append(f"{source_id}: host wall {entity.thickness_m:g} m thick; {entity.height_m:g} m high")
+        else:
+            p = entity.pose.position
+            facts.append(f"A{len(selected)} {source_id}: local X/Y/Z {size.x:g}/{size.y:g}/{size.z:g} m; position {p.x:g},{p.y:g},{p.z:g} m")
+    if spec.recipe.startswith("equipment-mounting-elevation@") and not any(isinstance(e, ElectricalEquipment) for e in selected):
         raise ValueError("equipment mounting recipe requires supplied equipment")
+    if spec.recipe.endswith("@2"):
+        if spec.recipe.startswith("connection-close-up") and not (any(isinstance(e,Route) for e in selected) and any(isinstance(e,Port) for e in selected)):
+            raise ValueError("connection @2 requires an explicit route and supplied connection port locations")
+        if spec.recipe.startswith("equipment-mounting") and not any(isinstance(e,SupportComponent) for e in selected):
+            raise ValueError("mounting @2 requires explicit canonical support components; anchors are not inferred")
+        if spec.recipe.startswith("supported-section") and not any(isinstance(e,Wall) for e in selected):
+            raise ValueError("section @2 requires explicit canonical host wall geometry")
     visibility = VisibilityPolicy(labels=False, dimensions=False)
     common = dict(id=spec.id, origin=spec.origin, direction=spec.direction,
                   bounds=spec.bounds, scale=spec.scale, visibility=visibility)
@@ -122,12 +188,13 @@ def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
         view = generate_elevation(model, ElevationSpec(**common, near_m=spec.near_m, far_m=spec.far_m), symbol_provider=lambda *_: None)
     ids = set(spec.source_ids)
     primitives = tuple(p for p in view.primitives if set(p.source_ids) <= ids)
+    primitives += tuple(DrawingPrimitive(id=f"{spec.id}:{e.id}:location",kind="symbol",layer="detail:ports",source_ids=(e.id,),points=(frame.project(e.pose.position)[0],),symbol="supplied_connection_location") for e in selected if isinstance(e,Port))
     for source_id in ids:
-        if not any(source_id in p.source_ids and p.kind in {"polygon", "polyline", "line"} for p in primitives):
+        if not any(source_id in p.source_ids and p.kind in {"polygon", "polyline", "line", "symbol"} for p in primitives):
             raise ValueError(f"{source_id}: recipe produced no supported geometry")
     view = replace(view, title=spec.title, primitives=primitives,
                    metadata=view.metadata + (("detail_recipe", spec.recipe), ("detail_number", spec.number)))
-    return DetailResult(spec, view, tuple(facts))
+    return DetailResult(spec, view, tuple(facts), tuple(anchors))
 
 
 def generate_details(model, specs):
@@ -144,6 +211,9 @@ def detail_body_svg(detail: DetailResult, *, drawing_bounds_mm) -> str:
     Shared installed-font measurement refuses overflow, including long notes.
     Unsupported text fails before package staging; no glyph substitution occurs.
     """
+    if detail.spec.recipe.endswith("@2"):
+        from .detail_drafting import render_drafted_detail
+        return render_drafted_detail(detail, drawing_bounds_mm=drawing_bounds_mm)
     left, top, right, bottom = drawing_bounds_mm
     if any(not math.isfinite(v) for v in drawing_bounds_mm) or left >= right or top >= bottom:
         raise ValueError("invalid shared drawing bounds")
@@ -254,6 +324,21 @@ def company_detail_bodies(model, specs, resolved_sheets, *, placements=None):
     return {sid:'<g>\n'+'\n'.join(bodies)+'\n</g>' for sid,bodies in groups.items()}
 
 
+def detail_sheet_coverage(specs, resolved_sheets, *, placements=None):
+    """Final IDs/titles and requested canonical coverage for the coordinator.
+
+    Call after company_detail_bodies preflight. Detail recipes do not paginate or
+    rename caller IDs. This map concerns requested sources, not entire-model QA.
+    """
+    assigned = ({s.id:s.id for s in specs} if placements is None else
+                {p.detail_id:p.sheet_id for p in placements})
+    return tuple({"sheet_id":sheet.id,"title":sheet.title,
+                  "detail_ids":[s.id for s in sorted(specs,key=lambda s:s.number) if assigned[s.id]==sheet.id],
+                  "canonical_source_ids":sorted({sid for s in specs if assigned[s.id]==sheet.id for sid in s.source_ids}),
+                  "coverage_scope":"requested detail sources"}
+                 for sheet in resolved_sheets)
+
+
 def detail_specs_from_dict(request):
     """Read editable explicit recipe inputs. Unknown or omitted fields fail."""
     versions = {"detail-sheet-set@1": {"version", "details"},
@@ -268,6 +353,9 @@ def detail_specs_from_dict(request):
         item["bounds"] = Bounds2(**item["bounds"])
         item["source_ids"] = tuple(item["source_ids"])
         item["notes"] = tuple(item.get("notes", ()))
+        item["callouts"] = tuple(DetailCallout(**c) for c in item.get("callouts",()))
+        item["dimension_source_ids"] = tuple(item.get("dimension_source_ids",()))
+        item["dimension_lanes"] = tuple(DetailDimensionLane(**d) for d in item.get("dimension_lanes",()))
         specs.append(DetailSpec(**item))
     return tuple(specs)
 
@@ -308,6 +396,7 @@ def create_detail_sheet_set(model_path, details_path, profile_path, job_path, *,
                     "source_ids": {s.id: sorted(s.source_ids) for s in specs},
                     "view_inputs": request["details"],
                     "placements": request.get("placements"),
+                    "sheet_coverage": detail_sheet_coverage(specs,resolved.sheets,placements=placements),
                     "inputs": {name: hashlib.sha256(data).hexdigest() for name,data in retained.items()},
                     "status": "supplied facts only; no engineering approval"}
         (package / "detail-manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2)+"\n")

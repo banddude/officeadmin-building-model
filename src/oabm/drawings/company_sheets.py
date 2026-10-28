@@ -13,6 +13,7 @@ import json
 import math
 from functools import lru_cache
 import subprocess
+import unicodedata
 import os
 from pathlib import Path
 import re
@@ -45,9 +46,11 @@ def _xml_strings(value):
 
 
 def _printable(text):
+    if not isinstance(text,str):raise ValueError('sheet text must be a string')
     _xml_strings(text)
-    if any(not 32<=ord(c)<=126 for c in text):
-        raise ValueError('sheet text supports printable ASCII only; supply an explicit supported spelling')
+    for index,char in enumerate(text):
+        if unicodedata.category(char) in {'Cc','Cf','Cs','Cn','Zl','Zp'}:
+            raise ValueError(f'sheet text contains non-printing/control character U+{ord(char):04X} at character {index}')
     return text
 
 
@@ -61,20 +64,52 @@ def _font(family='Liberation Sans',weight=400):
     """
     from PIL import ImageFont
     try:
+        from fontTools.ttLib import TTFont, TTLibError
+    except ImportError as exc:
+        raise ValueError(f'sheet font {family}: fontTools is required; install the declared project dependencies') from exc
+    actual=family
+    try:
         query=family+(':style=Bold' if weight>=600 else ':style=Regular')
-        result=subprocess.run(['fc-match','-f','%{file}\n%{family}\n%{postscriptname}\n',query],
+        result=subprocess.run(['fc-match','-f','%{file}\n%{family}\n%{postscriptname}\n%{index}\n',query],
                               check=True,capture_output=True,text=True).stdout.splitlines()
         path,actual,postscript=result[0],result[1].split(',')[0],result[2].split(',')[0]
-        font=ImageFont.truetype(path,1000)
-    except (OSError,subprocess.SubprocessError,IndexError) as exc:
-        raise ValueError('sheet text requires Fontconfig (fc-match) and a readable installed TrueType/OpenType font') from exc
+        index=int(result[3])
+        if index<0 or index>65535:raise ValueError('named variable-font instances are unsupported')
+        raw=Path(path).read_bytes()
+        if raw[:4] not in {b'\x00\x01\x00\x00',b'OTTO',b'ttcf',b'true'}:
+            kind={b'wOF2':'WOFF2',b'wOFF':'WOFF'}.get(raw[:4],'unknown')
+            raise ValueError(f'resolved font {actual} requested as {family} uses unsupported {kind} format; '
+                             'select/install a readable TrueType/OpenType face; webfont decoding is not supported')
+        font=ImageFont.truetype(io.BytesIO(raw),1000,index=index)
+        with TTFont(io.BytesIO(raw),fontNumber=index,lazy=True) as face:
+            cmap=face.getBestCmap() or {}
+            font._oabm_codepoints=frozenset(cp for cp,glyph in cmap.items() if face.getGlyphID(glyph)!=0)
+        font._oabm_font_sha256=_sha(raw)
+    except (OSError,subprocess.SubprocessError,IndexError,ValueError,TTLibError,ImportError) as exc:
+        raise ValueError(f'sheet font {family} (resolved {actual}): {exc}; requires Fontconfig (fc-match), '
+                         'fontTools and a readable supported TrueType/OpenType face') from exc
     return font,actual,path,postscript
 
 
-def validate_sheet_text(text: str) -> str:
-    """Validate XML-safe printable ASCII presentation text; never replace glyphs."""
-    if not isinstance(text,str):raise ValueError('sheet text must be a string')
-    return _printable(text)
+def validate_sheet_text(text: str, *, font_family: str | None = None,
+                        font_weight: int = 400) -> str:
+    """Validate printable XML text; optionally require every glyph in one face.
+
+    Omit the family for source validation before layout chooses a font. Every
+    actual measurement/render path supplies the selected face and checks cmap
+    coverage; no fallback, normalization or replacement glyph is inferred.
+    """
+    _printable(text)
+    if font_family is not None:
+        if font_family not in {'Liberation Sans','DejaVu Sans','sans-serif'} or font_weight not in {300,400,500,600,700}:
+            raise ValueError('unsupported sheet font family/weight')
+        font,actual,_,postscript=_font(font_family,font_weight)
+        for index,char in enumerate(text):
+            if ord(char) not in font._oabm_codepoints:
+                raise ValueError(f'sheet text glyph U+{ord(char):04X} {char!r} at character {index} is unavailable '
+                    f'in resolved font {actual} ({postscript}), requested {font_family}; '
+                    'choose a font containing that glyph or supply an explicit supported value')
+    return text
 
 
 def measure_sheet_text(text: str, font_size_mm: float, *,
@@ -82,11 +117,11 @@ def measure_sheet_text(text: str, font_size_mm: float, *,
     """Return occupied width in mm, including ink bearings and 1% margin.
 
     This is the shared wrapping/capacity helper. It measures the installed face
-    selected by Fontconfig with Pillow/FreeType. Only printable ASCII and the
-    three documented families are supported; unsupported input fails explicitly.
+    selected by Fontconfig with Pillow/FreeType. Printable XML-valid Unicode
+    must have complete coverage in the selected face; missing glyphs fail explicitly.
     Final sheet composition remains responsible for position/bounds validation.
     """
-    validate_sheet_text(text)
+    validate_sheet_text(text,font_family=font_family,font_weight=font_weight)
     if type(font_size_mm) not in (int,float) or not math.isfinite(font_size_mm) or font_size_mm<=0:
         raise ValueError('font size must be positive finite millimetres')
     if font_family not in {'Liberation Sans','DejaVu Sans','sans-serif'} or font_weight not in {300,400,500,600,700}:
@@ -138,6 +173,48 @@ class ResolvedCompanySheet:
     template: Mapping[str,float]
     # Detached, immutable asset bytes; rendering never rereads mutable paths.
     logos: tuple[tuple[str,bytes], ...] = ()
+
+
+@dataclass(frozen=True)
+class SheetImageAsset:
+    """Explicit local PNG presentation asset; never accepted through body SVG."""
+    id: str
+    png_bytes: bytes
+    bounds_mm: tuple[float,float,float,float]
+    attribution: str
+    provenance: Mapping[str,str]
+
+
+def _sheet_images(images, bounds):
+    from PIL import Image
+    images=tuple(images)
+    if len(images)>8:raise ValueError('at most eight sheet images supported')
+    result=[];seen=set()
+    for asset in images:
+        if not isinstance(asset,SheetImageAsset):raise ValueError('typed SheetImageAsset required')
+        _identifier(asset.id,'image id')
+        if asset.id in seen:raise ValueError('duplicate sheet image id')
+        seen.add(asset.id)
+        if not isinstance(asset.png_bytes,bytes) or len(asset.png_bytes)>8*1024*1024:raise ValueError('bounded immutable PNG bytes required')
+        try:
+            with Image.open(io.BytesIO(asset.png_bytes)) as image:
+                if image.format!='PNG' or image.width*image.height>16_000_000:raise ValueError('bounded PNG required')
+                image.verify()
+            # CRC/header verification alone accepts invalid compressed IDAT data.
+            with Image.open(io.BytesIO(asset.png_bytes)) as image:
+                image.load()
+        except (OSError,ValueError,SyntaxError) as exc:raise ValueError('invalid sheet image PNG') from exc
+        box=tuple(asset.bounds_mm)
+        if len(box)!=4 or any(not isinstance(v,(int,float)) or isinstance(v,bool) or not math.isfinite(v) for v in box):raise ValueError('finite image bounds required')
+        l,t,r,b=box;bl,bt,br,bb=bounds
+        if not(bl<=l<r<=br and bt<=t<b<=bb):raise ValueError('sheet image outside drawing bounds')
+        if not isinstance(asset.attribution,str) or not asset.attribution.strip():raise ValueError('image attribution required')
+        if not isinstance(asset.provenance,Mapping) or not asset.provenance or any(not isinstance(k,str) or not isinstance(v,str) for k,v in asset.provenance.items()):raise ValueError('image string provenance required')
+        # Validate text without interpreting provenance as links or resources.
+        for text in (asset.attribution,*asset.provenance.keys(),*asset.provenance.values()):_printable(text)
+        if any(l<other.bounds_mm[2] and r>other.bounds_mm[0] and t<other.bounds_mm[3] and b>other.bounds_mm[1] for other in result):raise ValueError('sheet images overlap')
+        result.append(SheetImageAsset(asset.id,asset.png_bytes,box,asset.attribution,MappingProxyType(dict(asset.provenance))))
+    return tuple(result)
 
 
 @dataclass(frozen=True)
@@ -294,6 +371,7 @@ def _body_group(body, bounds):
             weight=int(node.get('font-weight','400'))
             if weight not in {300,400,500,600,700}:raise ValueError('body: unsupported font weight')
             family=node.get('font-family','Liberation Sans')
+            validate_sheet_text(value,font_family=family,font_weight=weight)
             font,actual,_,_=_font(family,weight)
             node.set('font-family',actual)
             width=font.getlength(value)*size/1000
@@ -311,7 +389,7 @@ def _body_group(body, bounds):
     return root
 
 
-def render_company_sheet_svg(sheet, *, body_svg=None):
+def render_company_sheet_svg(sheet, *, body_svg=None, images=()):
     """Compose the shared right rail and optional bounded consumer body."""
     t,f=sheet.template,sheet.fields
     w,h,m,r,i=(t[k] for k in DEFAULT_TEMPLATE)
@@ -319,12 +397,19 @@ def render_company_sheet_svg(sheet, *, body_svg=None):
     root=ET.Element(f'{{{SVG}}}svg',{'width':f'{w}mm','height':f'{h}mm','viewBox':f'0 0 {w} {h}'})
     _el(root,'title').text=f'{sheet.id} | {sheet.title}'
     _el(root,'rect',x=m,y=m,width=w-2*m,height=h-2*m,fill='#ffffff',stroke='#161616',stroke_width=.35)
+    for asset in _sheet_images(images,sheet.drawing_bounds_mm):
+        l,t,r,b=asset.bounds_mm
+        _el(root,'image',x=l,y=t,width=r-l,height=b-t,preserveAspectRatio='xMidYMid meet',
+            href='data:image/png;base64,'+base64.b64encode(asset.png_bytes).decode())
     if body_svg is not None: root.append(_body_group(body_svg,sheet.drawing_bounds_mm))
     _el(root,'line',x1=x,y1=top,x2=x,y2=h-m,stroke='#4a4a4a',stroke_width=.2)
     def yy(frac):return top+rh*frac
     def line(frac): _el(root,'line',x1=left,y1=yy(frac),x2=right,y2=yy(frac),stroke='#4a4a4a',stroke_width=.15)
     def text(value,frac,size=2.8,weight=400,max_lines=1,xx=None,width=None):
-        size*=rh/595.488888888
+        # Paper zones may grow taller, but a fixed-width rail must not
+        # inflate its type indefinitely. Retain reference physical sizes on
+        # larger sheets; smaller-sheet proportions stay backward compatible.
+        size*=min(1.0,rh/595.488888888)
         rows=_rows(value,cw if width is None else width,size,weight)
         if len(rows)>max_lines: raise ValueError(f'sheet {sheet.id}: title-block text overflows {max_lines}-line cell: {value!r}; shorten text or widen rail')
         for j,row in enumerate(rows):
@@ -394,7 +479,19 @@ def _pdf(sheets, svgs, title):
     return out.getvalue(),{'pages':pages,'CairoSVG':cairo.__version__,'cairo':ffi.cairo_version_string(),'pypdf':pypdf.__version__}
 
 
-def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies=None):
+def _used_font_faces(svgs):
+    """Bind only actual rendered-text faces; never probe unrelated aliases."""
+    used={(node.get('font-family','Liberation Sans'),int(node.get('font-weight','400')))
+          for svg in svgs for node in ET.fromstring(svg).iter(f'{{{SVG}}}text') if node.text}
+    result=[]
+    for family,weight in sorted(used):
+        font,actual,_,postscript=_font(family,weight)
+        result.append({'svg_family':family,'weight':weight,'resolved_family':actual,
+                       'postscript_name':postscript,'sha256':font._oabm_font_sha256})
+    return result
+
+
+def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies=None, images=None):
     """Publish a fresh delivery; never modify profile/job defaults or existing output.
 
     Caller must exclusively own attempt contents throughout generation. Rename
@@ -404,8 +501,11 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
     resolved=resolve_company_sheet_set(profile_path,job_path)
     bodies={} if bodies is None else dict(bodies)
     if set(bodies)-{s.id for s in resolved.sheets}: raise ValueError('body references unknown sheet id')
+    images={} if images is None else {key:tuple(value) for key,value in images.items()}
+    if set(images)-{s.id for s in resolved.sheets}:raise ValueError('image references unknown sheet id')
+    images={s.id:_sheet_images(images.get(s.id,()),s.drawing_bounds_mm) for s in resolved.sheets}
     # Resolve layout/overflow and snapshot assets before reserving an attempt.
-    svgs=[render_company_sheet_svg(s,body_svg=bodies.get(s.id)) for s in resolved.sheets]
+    svgs=[render_company_sheet_svg(s,body_svg=bodies.get(s.id),images=images[s.id]) for s in resolved.sheets]
     attempt=Path(output_directory).absolute();attempt.parent.mkdir(parents=True,exist_ok=True);attempt.mkdir()
     pending=attempt/'.pending';pending.mkdir();stage='snapshot'
     try:
@@ -425,7 +525,12 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
                 path=f'inputs/assets/{_sha(raw)}.png'
                 if not (pending/path).exists():write(path,raw)
                 assets[name]=path
-            rows.append({'id':sheet.id,'title':sheet.title,'fields':dict(sheet.fields),'template':dict(sheet.template),
+            image_rows=[]
+            for image in images[sheet.id]:
+                path=f'inputs/assets/{_sha(image.png_bytes)}.png'
+                if not (pending/path).exists():write(path,image.png_bytes)
+                image_rows.append({'id':image.id,'path':path,'sha256':_sha(image.png_bytes),'bounds_mm':list(image.bounds_mm),'attribution':image.attribution,'provenance':dict(image.provenance)})
+            rows.append({'images':image_rows,'id':sheet.id,'title':sheet.title,'fields':dict(sheet.fields),'template':dict(sheet.template),
                          'drawing_bounds_mm':sheet.drawing_bounds_mm,'logos':assets,'has_body':sheet.id in bodies})
         write('resolved-sheets.json',_json(rows))
         # Portable editable inputs point only at retained assets. Original exact
@@ -446,9 +551,7 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
             stage='PDF';raw,pdf=_pdf(resolved.sheets,svgs,resolved.set_id);write('sheet-set.pdf',raw)
         manifest={'version':'company-sheet-delivery-v1','set_id':resolved.set_id,'sheet_order':[s.id for s in resolved.sheets],
                   'engineering_approval':False,'status':'presentation_only','pdf':pdf,'files':files,'runtime':_runtime(),
-                  'font_faces':[{'requested_family':family,'weight':weight,'resolved_family':_font(family,weight)[1],
-                                 'postscript_name':_font(family,weight)[3],'sha256':_sha(Path(_font(family,weight)[2]).read_bytes())}
-                                for family in ('Liberation Sans','DejaVu Sans','sans-serif') for weight in (400,700)],
+                  'font_faces':_used_font_faces(svgs),
                   'limitations':['Supplied text is not approval evidence.','Conservative text capacity checks require independent visual/font QA.',
                                  'Original inputs and portable editable inputs are both retained; keep private deliveries private.']}
         for row in files:
@@ -464,17 +567,39 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
 
 def rebuild_company_sheet_set(delivery, *, output_directory):
     """Verify retained receipts and rerun the same composition API portably."""
-    root=Path(delivery)
+    root=Path(delivery).resolve()
     manifest=_decode((root/'MANIFEST.json').read_bytes())
+    receipts={}
+    def retained_path(name):
+        if not isinstance(name,str):raise ValueError('invalid retained path')
+        relative=Path(name)
+        if relative.is_absolute() or '..' in relative.parts or relative.as_posix()!=name:raise ValueError('invalid retained path')
+        path=root/relative
+        if any((root/Path(*relative.parts[:n])).is_symlink() for n in range(1,len(relative.parts)+1)) or not path.resolve().is_relative_to(root):raise ValueError('retained path escapes delivery')
+        return path
     for row in manifest['files']:
-        relative=Path(row['path'])
-        if relative.is_absolute() or '..' in relative.parts: raise ValueError('invalid receipt path')
-        raw=(root/relative).read_bytes()
+        if row['path'] in receipts:raise ValueError('duplicate receipt path')
+        receipts[row['path']]=row
+        raw=retained_path(row['path']).read_bytes()
         if len(raw)!=row['bytes'] or _sha(raw)!=row['sha256']: raise ValueError('retained input/output receipt mismatch')
     rows=_decode((root/'resolved-sheets.json').read_bytes())
     bodies={row['id']:(root/'inputs/bodies'/f"{row['id']}.svg").read_text() for row in rows if row['has_body']}
+    images={}
+    for row in rows:
+        assets=[]
+        for image in row.get('images',()):
+            digest=image.get('sha256')
+            if not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest):raise ValueError('invalid image SHA256')
+            name=image.get('path')
+            if name!=f'inputs/assets/{digest}.png' or name not in receipts:raise ValueError('image must reference its receipted retained asset')
+            receipt=receipts[name]
+            if receipt['sha256']!=digest:raise ValueError('image SHA256 differs from receipt')
+            raw=retained_path(name).read_bytes()
+            if _sha(raw)!=digest or len(raw)!=receipt['bytes']:raise ValueError('retained image receipt mismatch')
+            assets.append(SheetImageAsset(image['id'],raw,tuple(image['bounds_mm']),image['attribution'],image['provenance']))
+        images[row['id']]=tuple(assets)
     return create_company_sheet_set(root/'inputs/profile-portable.json',root/'inputs/job-portable.json',
-                                    output_directory=output_directory,bodies=bodies)
+                                    output_directory=output_directory,bodies=bodies,images=images)
 
 
 def update_company_profile(profile_path, changes_path, *, expected_sha256):

@@ -175,7 +175,7 @@ def test_xml_invalid_inputs_refused_before_publication(tmp_path,where,invalid):
 
 def test_unsupported_unicode_text_is_explicit_and_final_svg_parses(tmp_path):
     p,j=inputs(tmp_path);sheet=cs.resolve_company_sheet_set(p,j).sheets[0]
-    with pytest.raises(ValueError,match='printable ASCII'):
+    with pytest.raises(ValueError,match=r'U\+4E2D.*resolved font'):
         cs.render_company_sheet_svg(sheet,body_svg='<g><text x="20" y="20">中</text></g>')
     assert ET.fromstring(cs.render_company_sheet_svg(sheet)).tag.endswith('svg')
 
@@ -205,7 +205,7 @@ def test_pdf_refuses_font_substitution_before_delivery(tmp_path,monkeypatch):
 def test_public_text_helper_matches_real_face_and_rejects_unsupported_input():
     font,_,_,_=cs._font('Liberation Sans',400)
     assert cs.measure_sheet_text('W'*20,10)>=font.getlength('W'*20)*10/1000
-    for bad in ('\uffff','\ud800','中'):
+    for bad in ('\uffff','\ud800','\x7f'):
         with pytest.raises(ValueError):cs.validate_sheet_text(bad)
     with pytest.raises(ValueError):cs.measure_sheet_text('TEXT',float('nan'))
 
@@ -234,3 +234,99 @@ def test_acute_join_emits_round_policy_without_miter_rail_intrusion(tmp_path,tag
     assert node.get('stroke-linejoin')=='round'
     with pytest.raises(ValueError,match='stroke-linejoin=round'):
         cs.render_company_sheet_svg(sheet,body_svg=body.replace('stroke-width="2"','stroke-width="2" stroke-linejoin="miter"'))
+
+
+@pytest.mark.parametrize('family',['Liberation Sans','DejaVu Sans'])
+@pytest.mark.parametrize('weight',[400,700])
+def test_real_font_unicode_coverage_names_symbols_and_missing_glyph(family,weight):
+    value='José Peña — 45° Ø “Éclairage”'
+    assert cs.validate_sheet_text(value,font_family=family,font_weight=weight)==value
+    assert cs.measure_sheet_text(value,3,font_family=family,font_weight=weight)>0
+    font,actual,_,ps=cs._font(family,weight)
+    missing=next(c for c in ('⌀','🧑','𓀀') if ord(c) not in font._oabm_codepoints)
+    with pytest.raises(ValueError) as caught:
+        cs.measure_sheet_text('Sample '+missing,3,font_family=family,font_weight=weight)
+    message=str(caught.value)
+    assert f'U+{ord(missing):04X}' in message and actual in message and ps in message and 'character 7' in message
+
+
+def test_unicode_rail_body_and_pdf_keep_actual_font_and_source_text(tmp_path):
+    try:cs._dependencies()
+    except ImportError as exc:pytest.skip(str(exc))
+    p,j=inputs(tmp_path,('svg','pdf'))
+    profile=json.loads(p.read_bytes());profile['fields']['company']='ÉXAMPLE ÉLECTRIC';p.write_text(json.dumps(profile))
+    job=json.loads(j.read_bytes());job['fields']['client']='José Peña';j.write_text(json.dumps(job))
+    body='<g><text x="20" y="30" font-family="DejaVu Sans" font-size="4">José Peña — 45° Ø “Éclairage”</text></g>'
+    result=cs.create_company_sheet_set(p,j,output_directory=tmp_path/'unicode',bodies={'E0.0':body})
+    svg=(result/'sheets/001-E0.0.svg').read_text()
+    assert 'José Peña' in svg and '45° Ø' in svg and '“Éclairage”' in svg
+    assert ET.fromstring(svg).tag.endswith('svg')
+    pdf=PdfReader(io.BytesIO((result/'sheet-set.pdf').read_bytes()))
+    text=pdf.pages[0].extract_text()
+    for value in ('José Peña','ÉXAMPLE ÉLECTRIC','45° Ø','“Éclairage”'):assert value in text
+    assert (result/'inputs/job.json').read_bytes()==j.read_bytes()
+    assert json.loads((result/'MANIFEST.json').read_bytes())['pdf']['pages'][0]['embedded_fonts']
+
+
+@pytest.mark.parametrize('control',['\x7f','\x85','\u2028','\u202e'])
+def test_unicode_controls_rejected_without_normalizing_source(control):
+    with pytest.raises(ValueError,match='non-printing/control'):
+        cs.validate_sheet_text('A'+control+'B')
+
+
+def test_svg_job_never_probes_unused_sans_serif_face(tmp_path,monkeypatch):
+    p,j=inputs(tmp_path,('svg',));real=cs._font;seen=[]
+    def installed(family='Liberation Sans',weight=400):
+        seen.append((family,weight))
+        if family=='sans-serif':raise ValueError('unused sans-serif resolves unreadable WOFF2')
+        return real(family,weight)
+    monkeypatch.setattr(cs,'_font',installed)
+    result=cs.create_company_sheet_set(p,j,output_directory=tmp_path/'only-used')
+    assert all(family!='sans-serif' for family,weight in seen)
+    manifest=json.loads((result/'MANIFEST.json').read_bytes())
+    actual={(n.get('font-family'),int(n.get('font-weight','400'))) for path in (result/'sheets').glob('*.svg')
+            for n in ET.fromstring(path.read_bytes()).iter(f'{{{cs.SVG}}}text') if n.text}
+    assert {(f['svg_family'],f['weight']) for f in manifest['font_faces']}==actual
+
+
+def test_requested_webfont_is_actionable_without_loading_decoder(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import fontTools.ttLib
+    path=tmp_path/'requested.woff2';path.write_bytes(b'wOF2synthetic-header')
+    monkeypatch.setattr(cs.subprocess,'run',lambda *a,**k:SimpleNamespace(stdout=f'{path}\nUnsupported Sans\nUnsupportedSans\n0\n'))
+    monkeypatch.setattr(fontTools.ttLib,'TTFont',lambda *a,**k:pytest.fail('webfont decoder must not run'))
+    cs._font.cache_clear()
+    with pytest.raises(ValueError,match='sans-serif.*WOFF2.*TrueType/OpenType'):
+        cs.measure_sheet_text('Requested face',3,font_family='sans-serif')
+    cs._font.cache_clear()
+
+
+def test_tall_paper_uses_reference_type_without_widening_fixed_rail(tmp_path):
+    p,j=inputs(tmp_path,('svg',));job=json.loads(j.read_bytes())
+    job['template']={'height_mm':900}
+    job['sheets']=[{'id':'SL101','title':'ELECTRICAL SINGLE-LINE'}]
+    j.write_text(json.dumps(job));sheet=cs.resolve_company_sheet_set(p,j).sheets[0]
+    svg=cs.render_company_sheet_svg(sheet)
+    texts=list(ET.fromstring(svg).iter(f'{{{cs.SVG}}}text'))
+    assert max(float(n.get('font-size')) for n in texts)<=22
+    assert sheet.template['rail_width_mm']==cs.DEFAULT_TEMPLATE['rail_width_mm']
+    result=cs.create_company_sheet_set(p,j,output_directory=tmp_path/'tall')
+    assert 'SL101' in (result/'sheets/001-SL101.svg').read_text()
+    job['template']['rail_width_mm']=20;j.write_text(json.dumps(job))
+    constrained=cs.resolve_company_sheet_set(p,j).sheets[0]
+    assert constrained.template['rail_width_mm']==20
+    with pytest.raises(ValueError,match='capacity|overflows'):
+        cs.create_company_sheet_set(p,j,output_directory=tmp_path/'narrow')
+    assert not (tmp_path/'narrow').exists()
+
+
+def test_tall_paper_real_pdf_keeps_physical_size_and_supplied_rail_text(tmp_path):
+    try:cs._dependencies()
+    except ImportError as exc:pytest.skip(str(exc))
+    p,j=inputs(tmp_path,('svg','pdf'));job=json.loads(j.read_bytes())
+    job['template']={'height_mm':900};job['sheets']=[{'id':'SL101','title':'ELECTRICAL SINGLE-LINE'}]
+    j.write_text(json.dumps(job))
+    result=cs.create_company_sheet_set(p,j,output_directory=tmp_path/'tall-pdf')
+    page=PdfReader(io.BytesIO((result/'sheet-set.pdf').read_bytes())).pages[0]
+    assert float(page.mediabox.height)==pytest.approx(900*72/25.4,abs=.01)
+    assert 'SL101' in page.extract_text() and 'EXAMPLE ELECTRIC' in page.extract_text()

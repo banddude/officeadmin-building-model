@@ -1,0 +1,19 @@
+{
+  "version": "production-sheet-set-v1",
+  "profile": "profile.json",
+  "job": "job.json",
+  "model": "model.json",
+  "cover": "cover.json",
+  "site": {
+    "sheet_id": "E1.0",
+    "request": "site.json"
+  },
+  "schedules": {
+    "sheet_id": "E3.0",
+    "request": "settings.json"
+  },
+  "details": "details.json",
+  "single_line": {
+    "sheet_id": "SL-020"
+  }
+}

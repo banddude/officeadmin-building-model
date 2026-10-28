@@ -25,9 +25,13 @@ adapter checks its embedded PostScript font names against those resolved faces
 and refuses silent converter substitution. This validates the installed fallback,
 not fidelity to a reference font that was unavailable. Matching source/runtime
 and font hashes are required for byte-identical rebuilds across hosts.
-For reliable metrics without implicit fallback glyphs, presentation text supports
-printable ASCII only. Unsupported text fails explicitly; it is never replaced or
-silently truncated. All inputs reject XML-invalid characters and each final SVG
+Presentation text supports XML-valid printable Unicode only when every character
+has a glyph in the actual selected face. FontTools reads that face's Unicode cmap
+from the same byte snapshot used by Pillow; missing glyphs identify the code point,
+character position and resolved font. Names such as José/Peña, curly punctuation,
+degree and Ø are admitted when covered. A diameter symbol absent from the face is
+refused rather than shown as tofu. Controls, formatting controls, invalid XML and
+surrogates remain errors. Text is never normalized, replaced or truncated. All inputs reject XML-invalid characters and each final SVG
 is parsed before publication. No address lookup, external asset fetching or network conversion occurs.
 
 See `fixtures/company_sheets/v1/profile.json` and `job.json` for complete editable
@@ -101,10 +105,46 @@ Consumers should reuse `measure_sheet_text(text, font_size_mm, *,
 font_family="Liberation Sans", font_weight=400) -> float` for wrapping and
 capacity checks. The result is occupied width in millimetres, including ink
 bearings and a one-percent margin. `validate_sheet_text(text) -> str` exposes
-the same XML-safe printable-ASCII contract. Final shared composition still
+the same XML-safe printable-Unicode contract. Its optional `font_family` and
+`font_weight` keywords enforce actual glyph coverage; callers validating source
+before choosing a font may omit the family. Measurement and rendering always
+check the selected face. Final shared composition still
 checks positioned content; measured width alone is not a layout approval.
 
 Joined polyline/polygon strokes use an explicit emitted `stroke-linejoin="round"`
 policy. Non-round requested joins are refused. Round joins keep ink within the
 vertex bounds plus half stroke width; default SVG miters can exceed that bound
 at acute angles and are not admitted. No clipping is used to enforce this.
+
+Glyph coverage uses the maintained [FontTools TTFont cmap API](https://fonttools.readthedocs.io/en/latest/ttLib/ttFont.html#fontTools.ttLib.ttFont.TTFont.getBestCmap); no fonts are bundled or downloaded.
+
+Delivery fingerprints include only faces used by rendered SVG text. Unused font
+aliases are never resolved or decoded. A requested unreadable font identifies the
+requested/resolved family and required runtime/format. Supported local containers
+are TrueType/OpenType sfnt and collections; WOFF/WOFF2 webfonts are explicitly
+refused, without adding optional webfont decoder dependencies. No unrelated font
+can make an otherwise supported SVG-only job fail during manifest generation.
+
+On taller paper, rail zones expand but typography is capped at the reference
+physical size. A 900 mm-high sheet does not enlarge type into an unchanged
+87.136 mm rail. Smaller sheets retain the existing proportional type policy.
+Explicit rail widths are never silently widened; when supplied content cannot
+fit that physical width, the measured capacity diagnostic still requires an
+explicit template/content revision. View geometry and scales are unaffected.
+
+### Explicit retained presentation images
+
+Python composition may supply `images={sheet_id: (SheetImageAsset(...),)}` to
+`create_company_sheet_set`; `render_company_sheet_svg` accepts the same typed
+assets through its `images` argument. Each asset contains an ID, detached PNG
+bytes, paper-mm `(left, top, right, bottom)` bounds, nonempty attribution and
+string provenance. PNGs are limited to 8 MiB/16 megapixels, eight per sheet, with
+nonoverlapping bounds inside the drawing area. The producer reserves the image
+region and prints required attribution visibly in its own body layout.
+
+This channel emits its own embedded image after validating bytes and placement.
+It does not permit image elements, remote URLs or scripts in producer SVG bodies,
+and does not fetch assets. Original PNGs, exact hashes, attribution and provenance
+are retained in the delivery; rebuild uses those retained bytes. Profile/job
+schemas and saved defaults are unchanged. A map producer must separately qualify
+provider, location and scale; an image does not establish surveyed coordinates.

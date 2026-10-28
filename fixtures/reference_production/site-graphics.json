@@ -1,0 +1,187 @@
+{
+  "version": "site-drafting-v1",
+  "overview_bounds_mm": [
+    15,
+    15,
+    570,
+    395
+  ],
+  "notes_bounds_mm": [
+    585,
+    15,
+    805,
+    586
+  ],
+  "label_feature_ids": [
+    "workshop",
+    "annex",
+    "main-panel",
+    "jb-1",
+    "jb-2",
+    "annex-panel",
+    "control",
+    "island-north"
+  ],
+  "work_status": {
+    "workshop": "existing",
+    "annex": "proposed",
+    "curb": "existing",
+    "aisle-south": "existing",
+    "aisle-east": "existing",
+    "stall-s-0": "existing",
+    "stall-s-1": "existing",
+    "stall-s-2": "existing",
+    "stall-s-3": "existing",
+    "stall-s-4": "existing",
+    "stall-s-5": "existing",
+    "stall-s-6": "existing",
+    "stall-s-7": "existing",
+    "stall-s-8": "existing",
+    "stall-s-9": "existing",
+    "stall-s-10": "existing",
+    "stall-s-11": "existing",
+    "stall-s-12": "existing",
+    "stall-s-13": "existing",
+    "stall-s-14": "existing",
+    "stall-s-15": "existing",
+    "stall-s-16": "existing",
+    "stall-s-17": "existing",
+    "stall-s-18": "existing",
+    "stall-s-19": "existing",
+    "stall-s-20": "existing",
+    "stall-s-21": "existing",
+    "stall-s-22": "existing",
+    "stall-s-23": "existing",
+    "stall-s-24": "existing",
+    "stall-s-25": "existing",
+    "stall-s-26": "existing",
+    "stall-s-27": "existing",
+    "stall-s-28": "existing",
+    "stall-s-29": "existing",
+    "stall-s-30": "existing",
+    "stall-s-31": "existing",
+    "stall-e-0": "existing",
+    "stall-e-1": "existing",
+    "stall-e-2": "existing",
+    "stall-e-3": "existing",
+    "stall-e-4": "existing",
+    "stall-e-5": "existing",
+    "stall-e-6": "existing",
+    "stall-e-7": "existing",
+    "stall-e-8": "existing",
+    "stall-e-9": "existing",
+    "stall-e-10": "existing",
+    "stall-e-11": "existing",
+    "stall-e-12": "existing",
+    "stall-e-13": "existing",
+    "stall-e-14": "existing",
+    "stall-e-15": "existing",
+    "stall-e-16": "existing",
+    "stall-e-17": "existing",
+    "stall-e-18": "existing",
+    "stall-e-19": "existing",
+    "stall-e-20": "existing",
+    "stall-w-0": "existing",
+    "stall-w-1": "existing",
+    "stall-w-2": "existing",
+    "stall-w-3": "existing",
+    "stall-w-4": "existing",
+    "stall-w-5": "existing",
+    "stall-w-6": "existing",
+    "stall-w-7": "existing",
+    "stall-w-8": "existing",
+    "stall-w-9": "existing",
+    "stall-w-10": "existing",
+    "stall-w-11": "existing",
+    "stall-w-12": "existing",
+    "island-north": "existing",
+    "island-west": "existing",
+    "main-panel": "existing",
+    "jb-1": "proposed",
+    "jb-2": "proposed",
+    "annex-panel": "proposed",
+    "control": "proposed",
+    "existing-service": "existing",
+    "proposed-feeder": "proposed",
+    "span": "proposed",
+    "annex-drop": "proposed",
+    "future-control": "future",
+    "future-intent": "future"
+  },
+  "route_patterns": {
+    "span": "dash"
+  },
+  "symbols": {
+    "main-panel": "site-panel",
+    "jb-1": "site-junction",
+    "jb-2": "site-junction",
+    "annex-panel": "site-panel",
+    "control": "site-control"
+  },
+  "detail_views": [
+    {
+      "id": "connection",
+      "number": "2",
+      "title": "CONNECTION AREA ENLARGEMENT",
+      "bounds_mm": [
+        15,
+        411,
+        570,
+        586
+      ],
+      "feature_ids": [
+        "jb-1",
+        "jb-2",
+        "annex-panel",
+        "span",
+        "annex-drop"
+      ],
+      "scale": 50,
+      "focus": true
+    }
+  ],
+  "notes": [
+    {
+      "text": "The heavy solid line follows the supplied proposed feeder path from PANEL-S to JB-1.",
+      "source_ids": [
+        "proposed-feeder",
+        "main-panel",
+        "jb-1"
+      ]
+    },
+    {
+      "text": "The heavy dashed segment between JB-1 and JB-2 is the supplied overhead plan projection. No elevation or support design is included.",
+      "source_ids": [
+        "span",
+        "jb-1",
+        "jb-2"
+      ]
+    },
+    {
+      "text": "The thin gray dashed path is existing. The remaining dashed control route is a supplied future intent.",
+      "source_ids": [
+        "existing-service",
+        "future-control"
+      ]
+    },
+    {
+      "text": "View 2 enlarges the supplied connection region. Marks are generic; equipment footprints and physical clearances are not represented.",
+      "source_ids": [
+        "jb-1",
+        "jb-2",
+        "annex-panel"
+      ]
+    }
+  ],
+  "dimensions": [
+    {
+      "id": "connection-distance",
+      "view_id": "connection",
+      "start_feature_id": "jb-1",
+      "start_point_index": 0,
+      "end_feature_id": "jb-2",
+      "end_point_index": 0,
+      "offset_mm": -7
+    }
+  ]
+}

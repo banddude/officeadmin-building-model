@@ -16,7 +16,7 @@ from .blank_set import _decode, _json, _sha
 from .generator import _entities, _source_reference
 from .model import DrawingSet
 from .panel_schedules import panel_report_to_drawing_schedules
-from .schedule_layout import ScheduleLayout, paginate_schedules
+from .schedule_layout import ScheduleLayout, paginate_schedules, draft_panel_schedule_pages
 
 VERSION = 'panel-schedule-sheet-set-v1'
 
@@ -44,7 +44,7 @@ def _verify_shared_output(directory, pages, formats):
         texts = [p.text for p in page.drawing_set.views[0].primitives if p.kind == 'text']
         if len(groups) != 1 or [n.text or '' for n in groups[0].findall('{http://www.w3.org/2000/svg}text')] != texts:
             raise ValueError(f'sheet {page.spec.id}: schedule text missing or changed in shared SVG')
-        expected_text.append([t.replace(' ', '') for t in texts if t.strip(' ')])
+        expected_text.append([''.join(c for c in t if not c.isspace()) for t in texts if not t.isspace() and t])
     pdf_check = {'status': 'not_requested'}
     if 'pdf' in formats:
         import pypdf
@@ -60,15 +60,15 @@ def _verify_shared_output(directory, pages, formats):
                 # bound by SVG/source and covered by actual PDF pixel regressions.
                 value = value.rstrip('\r\n')
                 if value and not value.isspace():
-                    runs.append(value.replace(' ', ''))
+                    runs.append(''.join(c for c in value if not c.isspace()))
             actual.extract_text(visitor_text=collect)
-            if runs[:len(text)] != text:
+            if not ''.join(runs).startswith(''.join(text)):
                 raise ValueError(f'sheet {page.spec.id}: PDF schedule text missing/changed; inspect supported fonts and supplied glyphs')
             if abs(float(actual.mediabox.width) - page.spec.width_mm * 72 / 25.4) > .01 or abs(
                     float(actual.mediabox.height) - page.spec.height_mm * 72 / 25.4) > .01:
                 raise ValueError(f'sheet {page.spec.id}: PDF physical dimensions changed')
-        pdf_check = {'status': 'all_projected_nonspace_glyph_runs_exact',
-                     'spacing': 'exact SVG/source; PDF spaces are positioned gaps, independently pixel-tested', 'page_count': len(pages)}
+        pdf_check = {'status': 'all_projected_nonspace_glyph_sequence_exact',
+                     'spacing': 'exact SVG/source; printable Unicode spaces may become positioned PDF gaps; extraction cannot preserve space code points/counts', 'page_count': len(pages)}
     return {'svg': 'all_projected_text_exact', 'pdf': pdf_check}
 
 
@@ -76,7 +76,8 @@ class ScheduleSheetSetError(ValueError):
     pass
 
 
-def create_panel_schedule_sheet_set(model_path, profile_path, job_path, settings_path, *, output_directory):
+def create_panel_schedule_sheet_set(model_path, profile_path, job_path, settings_path, *, output_directory,
+                                    presentation='drafted', drafted_width_mm=420.0, drafted_region_mm=None):
     """Resolve one shared company sheet as a template, paginate, then publish.
 
     Uses the shared company profile resolver/renderer/exporter. Caller supplies
@@ -101,11 +102,17 @@ def create_panel_schedule_sheet_set(model_path, profile_path, job_path, settings
     if len(resolved.sheets) != 1:
         raise ValueError('job: supply exactly one template sheet; schedule pagination assigns continuation sheet IDs')
     report, drawing = panel_schedule_drawing_set(model)
-    pages = paginate_schedules(drawing, resolved.sheets[0], layout=layout, empty_schedule_sources={
-        stable_id('schedule', f'panel-facts:{p.panel.id}'): p.panel.id for p in report.panels if not p.circuits})
+    if presentation not in {'drafted', 'fact_ledger'}:
+        raise ValueError('presentation: use drafted or fact_ledger')
+    if presentation == 'drafted':
+        pages = draft_panel_schedule_pages(report, drawing, resolved.sheets[0], layout=layout,
+            table_width_mm=drafted_width_mm, region_bounds_mm=drafted_region_mm)
+    else:
+        pages = paginate_schedules(drawing, resolved.sheets[0], layout=layout, empty_schedule_sources={
+            stable_id('schedule', f'panel-facts:{p.panel.id}'): p.panel.id for p in report.panels if not p.circuits})
     rows = [row for page in pages for row in page.row_map]
     expected = [(s.id, n, r.source_id) for s in drawing.schedules for n, r in enumerate(s.rows)]
-    if [(r['schedule_id'], r['row_index'], r['source_id']) for r in rows] != expected:
+    if sorted((r['schedule_id'], r['row_index'], r['source_id']) for r in rows) != sorted(expected):
         raise ValueError('schedule pagination row coverage mismatch')
     output = Path(output_directory).absolute()
     if output.exists():
@@ -161,7 +168,8 @@ def create_panel_schedule_sheet_set(model_path, profile_path, job_path, settings
                 'source_model_fingerprint': report.source_model_fingerprint,
                 'status': 'supplied_facts_only', 'engineering_approval': False,
                 'sheet_order': [p.spec.id for p in pages], 'row_count': len(rows), 'rows': rows,
-                'layout': asdict(layout), 'verification': verification, 'schedule_pages': [
+                'layout': asdict(layout), 'drafting_settings': {'presentation': presentation, 'table_width_mm': drafted_width_mm, 'region_bounds_mm': drafted_region_mm},
+                'drafting_grammar': ('paired-panel-card-v1' if presentation == 'drafted' else 'fact-ledger-v1'), 'verification': verification, 'schedule_pages': [
                     {'sheet_id': p.spec.id, **section} for p in pages for section in (p.sections or (
                         {'schedule_id': p.schedule_id, 'schedule_page': p.schedule_page,
                          'schedule_pages': p.schedule_pages},))],
@@ -189,10 +197,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('model', 'profile', 'job', 'settings', 'output_directory'):
         parser.add_argument(name, type=Path)
+    parser.add_argument('--presentation', choices=('drafted', 'fact_ledger'), default='drafted')
+    parser.add_argument('--drafted-width-mm', type=float, default=420.0)
+    parser.add_argument('--drafted-region-mm', type=float, nargs=4, metavar=('LEFT', 'TOP', 'RIGHT', 'BOTTOM'))
     args = parser.parse_args(argv)
     try:
         path = create_panel_schedule_sheet_set(args.model, args.profile, args.job, args.settings,
-                                               output_directory=args.output_directory)
+                                               output_directory=args.output_directory, presentation=args.presentation,
+                                               drafted_width_mm=args.drafted_width_mm, drafted_region_mm=args.drafted_region_mm)
     except (ValueError, OSError, ImportError) as exc:
         parser.exit(1, str(exc) + '\n')
     print(path)

@@ -22,7 +22,8 @@ from oabm.drawings.company_sheets import resolve_company_sheet_set
 
 resolved = resolve_company_sheet_set("profile.json", "job.json")
 model = BuildingModel.from_json(open("model.json").read())
-plan = plan_pages(project_topology(model), resolved.sheets[0].drawing_bounds_mm)
+plan = plan_pages(project_topology(model), resolved.sheets[0].drawing_bounds_mm,
+                  first_sheet_id=resolved.sheets[0].id)
 # Resolve a job whose ordered sheet IDs match plan['pages'].
 bodies, source_map = build_single_line_bodies(model, resolved.sheets)
 ```
@@ -31,13 +32,23 @@ bodies, source_map = build_single_line_bodies(model, resolved.sheets)
 PYTHONPATH=src python -m oabm.drawings.single_line model.json profile.json job.json fresh-attempt
 # Installed CLI: oabm-single-line
 PYTHONPATH=src python examples/single_line/produce.py fresh-synthetic-output
+PYTHONPATH=src python examples/single_line/produce_variants.py fresh-graph-proofs
 ```
 
 The synthetic producer automatically derives the required job sheet list from one
 shared template. Direct CLI job sheets must match the deterministic ordered IDs;
 a mismatch reports the required list before reserving output. All sheets need
-identical drawing bounds. Fontconfig, installed fonts and the optional CairoSVG/
-native Cairo PDF dependencies are required. Printable ASCII is supported; invalid
+identical drawing bounds. `first_sheet_id` preserves the caller's base and prefix:
+`SL101` continues as `SL102`; `SL009` as `SL010`; a nonnumeric base `POWER`
+continues as `POWER-2`. The default E601 is only a compatibility default, not a
+forced rename. `build_single_line_bodies` derives this base from the first
+requested sheet automatically. Upstream combined-set planners must explicitly
+pass their requested template ID and use `reserved_sheet_ids` for IDs belonging
+to other lanes. Case-insensitive collisions fail before delivery; IDs are never
+silently skipped or replaced. These IDs bind diagrams, home/continuation references,
+registers, source maps, SVG/PDF filenames, manifests and the on-sheet index. The
+combined cover index must use the returned page IDs. Fontconfig, installed fonts and the optional CairoSVG/
+native Cairo PDF dependencies are required. Printable Unicode with actual selected-font coverage is supported; invalid
 XML, unsupported glyphs and unplaceable labels fail explicitly. Text wrapping uses
 actual shared font widths and preserves every supplied character, including spaces.
 
@@ -46,7 +57,18 @@ actual shared font widths and preserves every supplied character, including spac
 Small systems share one sheet between the connected one-line, feeder facts and
 notes. Larger systems place the supply/transfer/transformer backbone beside the
 primary branch groups, then continue the remaining branches at full sheet width.
-Parents are repeated with canonical ID and CONTINUED sheet references. The tool
+The backbone uses a bounded orthogonal visibility grid with distance/bend cost,
+three deterministic edge orders, four increasing column widths and measured
+label obstacles. Routes cannot cross unrelated equipment, earlier feeder paths
+or earlier labels. Exhausting that search continues complete explicit source
+groups instead of rejecting a valid graph or inventing a connection. The finite
+grid is capped at 20,000 points and each path search at 12,000 expansions.
+Single-child runs use connected horizontal strips, and smaller fan/chain groups
+share shelf rows; a deep chain does not require a full fan row per edge.
+
+Parents are repeated with canonical ID and CONTINUED sheet references. Repeated
+transfer equipment retains both STATE UNSPECIFIED and CONTINUED/home reference
+on separately measured footer lines, including repeated cards on the same sheet. The tool
 does not invent external buses between distinct equipment ports. Each drawn edge
 is one complete canonical circuit/load pair, with its own C-tag and voltage.
 Normal/alternate transfer inputs remain separate and switch state is unspecified.
@@ -108,5 +130,14 @@ Focused tests cover both complete synthetic systems, deterministic page counts,
 standard A3 residential fit, transformer and transfer semantics, measured labels,
 space preservation, invalid topology, unknown data, narrow-paper continuation,
 node-label containment, routes clear of unrelated equipment, repeatable SVG/PDF
-bytes, manifest integrity and failure atomicity. Independent cloud pixel/source
+bytes, manifest integrity and failure atomicity. Graph regressions also cover two/three/four transfers, two transformers, shallow
+branches, deep chains, actual two-transfer PDFs on standard D and 1200 x 900 mm
+paper (the latter proof explicitly supplies a 140 mm title rail), routing-exhaustion reflow and pairwise feeder-crossing checks.
+Independent cloud pixel/source
 acceptance remains with the parent; local tests do not claim engineering approval.
+
+The shared renderer now caps rail typography at the reference physical size on
+taller paper, so the default 87 mm rail supports the 1200 x 900 mm case. Earlier
+standalone large-paper proofs explicitly used 140 mm; that historical override
+is not a requirement of the integrated shared renderer. Explicit caller rail
+constraints remain unchanged and impossible text capacity still fails clearly.

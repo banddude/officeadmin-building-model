@@ -44,3 +44,47 @@ if __name__=='__main__':
     folder=Path(__file__).parent
     for label,commercial in [('residential',False),('commercial-27',True)]:
         (folder/(label+'.model.json')).write_text(make_model(commercial).to_json()+'\n')
+
+
+def make_variant_model(shape, *, transfer_count=2):
+    """Synthetic graph-shape mutations preserve explicitly supplied facts."""
+    from dataclasses import replace
+    model=make_model(True)
+    equipment=list(model.electrical_equipment);ports=list(model.ports)
+    circuits=list(model.circuits);wires=list(model.conductors)
+    port_by_id={p.id:p for p in ports}
+    if shape in {'shallow','deep'}:
+        changed={}
+        for circuit in circuits:
+            target=port_by_id[circuit.load_port_ids[0]].owner_id
+            if target.startswith('P'):
+                number=int(target[1:])
+                owner=('ATS' if number<=15 else 'XFMR') if shape=='shallow' or number in {1,16} else f'P{number-1:02d}'
+                changed[circuit.source_port_id]=(owner,'load' if owner=='ATS' else 'feeder')
+        ports=[replace(p,owner_id=changed[p.id][0],role=changed[p.id][1]) if p.id in changed else p for p in ports]
+    else:
+        def connect(identity,source,target,voltage,target_role='incoming'):
+            base=circuits[0]
+            circuits.append(replace(base,id=identity,source_port_id=identity+'-out',load_port_ids=(identity+'-in',),voltage_v=voltage,poles=3,phase='ABC'))
+            ports.extend((replace(port_by_id[base.source_port_id],id=identity+'-out',owner_id=source,role='load' if source.startswith('ATS') else 'feeder'),
+                          replace(port_by_id[base.load_port_ids[0]],id=identity+'-in',owner_id=target,role=target_role)))
+        if shape=='two-transformers':
+            base=next(e for e in equipment if e.id=='XFMR')
+            equipment.append(replace(base,id='TX2',name='Second explicitly synthetic transformer'))
+            connect('TX2-primary','ATS','TX2',480)
+            targets={c.source_port_id for c in circuits if port_by_id.get(c.load_port_ids[0]) and port_by_id[c.load_port_ids[0]].owner_id in {'P20','P21','P22','P23'}}
+            ports=[replace(p,owner_id='TX2') if p.id in targets else p for p in ports]
+        elif shape=='multi-transfer':
+            if transfer_count not in {2,3,4}:raise ValueError('synthetic demo supports 2, 3 or 4 explicit transfers')
+            base=next(e for e in equipment if e.id=='ATS')
+            changes={}
+            for i in range(2,transfer_count+1):
+                identity=f'ATS{i}'
+                equipment.append(replace(base,id=identity,name=f'Synthetic transfer equipment {i}'))
+                connect(identity+'-normal','MAIN',identity,480,'normal')
+                connect(identity+'-alternate','GEN',identity,480,'alternate')
+                circuit=next(c for c in circuits if c.id==f'H{17-i:02d}')
+                changes[circuit.source_port_id]=identity
+            ports=[replace(p,owner_id=changes[p.id],role='load') if p.id in changes else p for p in ports]
+        else:raise ValueError('unknown synthetic graph shape')
+    return replace(model,model_id='synthetic-'+shape,electrical_equipment=tuple(equipment),ports=tuple(ports),circuits=tuple(circuits),conductors=tuple(wires))

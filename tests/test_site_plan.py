@@ -88,8 +88,12 @@ def test_actual_geometry_overflow_no_fit(request_data,spec):
 
 def test_label_overflow_does_not_relocate_equipment(request_data,spec):
     request_data['features'][4]['label']='Long equipment name '*40
-    with pytest.raises(ValueError,match='legend text exceeds'):
-        render_site_plan(request_data,spec)
+    drawings,_,_,_=render_site_plan(request_data,spec)
+    full=request_data['features'][4]['label']+' (gear-a)'
+    lines=[p for view in drawings.views for p in view.primitives if dict(p.metadata).get('full_text')==full]
+    assert len(lines)>1
+    assert ''.join(p.text for p in sorted(lines,key=lambda p:int(dict(p.metadata)['line_index'])))==full
+    assert all(p.source_ids==('gear-a',) for p in lines)
     assert request_data['features'][4]['points']==[[27,15]]
 
 
@@ -265,9 +269,18 @@ def test_uses_shared_font_metrics_for_body_text(request_data,monkeypatch):
     assert mapping['text_measurement_helper']=='oabm.drawings.company_sheets.measure_sheet_text'
 
 
-def test_unsupported_label_spelling_refused_without_substitution(request_data,spec):
-    request_data['features'][4]['label']='Gear \u03a9'
-    with pytest.raises(ValueError,match='ASCII'):
+def test_covered_omega_label_is_preserved_without_substitution(request_data,spec):
+    request_data['features'][4]['label']='Gear Ω';original=copy.deepcopy(request_data)
+    _,_,rendered,_=render_site_plan(request_data,spec)
+    assert 'Gear Ω' in rendered.svg and request_data==original
+
+
+def test_actual_missing_site_glyph_is_refused(request_data,spec):
+    from oabm.drawings.company_sheets import _font
+    coverage=_font('DejaVu Sans',400)[0]._oabm_codepoints
+    glyph=next(c for c in ('⌀','🧑','𓀀') if ord(c) not in coverage)
+    request_data['features'][4]['label']='Gear '+glyph
+    with pytest.raises(ValueError,match=r'glyph U\+'):
         render_site_plan(request_data,spec)
 
 

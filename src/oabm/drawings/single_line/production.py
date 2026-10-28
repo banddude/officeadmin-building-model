@@ -7,14 +7,21 @@ import os
 from pathlib import Path
 from oabm.model import BuildingModel
 from .topology import project_topology, json_bytes
-from .layout import plan_pages
+from .layout import plan_pages, validate_precomputed_layout, _plan_fingerprint
 from .render import render_body
 
 
-def build_single_line_bodies(model, sheets):
-    """Resolve first-sheet body bounds; require exact ordered page identities.
+def build_single_line_bodies(model, sheets, *, layout=None, sheet_index=None):
+    """Render the exact ordered SLD sheets, optionally using a sealed layout.
 
-    Call plan_pages(project_topology(model), template.drawing_bounds_mm) first
+    ``layout`` is consumed without replanning and must bind the same canonical
+    topology and actual shared bounds. ``sheet_index`` contains IDs or mappings
+    with an ``id`` key; it may include external panel-only sheets. Those IDs are
+    printed in the index but receive no body or invented single-line geometry.
+    Explicit regions omitted from the plan are delegated to the composer;
+    delegated feeder IDs are not claimed as rendered register coverage.
+
+    Call plan_pages(project_topology(model), template.drawing_bounds_mm, first_sheet_id=template.id) first
     to obtain the deterministic page list for the shared job request. Every
     generated sheet must use the same body bounds; no fit-to-page scaling.
     """
@@ -22,7 +29,21 @@ def build_single_line_bodies(model, sheets):
     if not sheets:
         raise ValueError('single-line requires at least one resolved shared company sheet')
     topology=project_topology(model)
-    layout=plan_pages(topology,sheets[0].drawing_bounds_mm)
+    layout=(plan_pages(topology,sheets[0].drawing_bounds_mm,first_sheet_id=sheets[0].id)
+            if layout is None else validate_precomputed_layout(layout,topology,sheets[0].drawing_bounds_mm))
+    if sheet_index is not None:
+        rows=[{'id':row} if isinstance(row,str) else dict(row) for row in sheet_index]
+        ids=[row.get('id') for row in rows]
+        import re
+        if any(not isinstance(key,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',key) for key in ids) or len({key.casefold() for key in ids})!=len(ids):
+            raise ValueError('final sheet index requires unique valid sheet IDs')
+        planned=[page['id'] for page in layout['pages']]
+        if [key for key in ids if key in planned]!=planned:
+            raise ValueError('final sheet index must contain every planned single-line sheet in order')
+        layout['source_plan_fingerprint']=layout['plan_fingerprint']
+        layout['sheet_index']=rows
+        layout['external_sheet_ids']=[key for key in ids if key not in planned]
+        layout['plan_fingerprint']=_plan_fingerprint(layout)
     expected=[p['id'] for p in layout['pages']]
     if [s.id for s in sheets]!=expected:
         raise ValueError('single-line shared job sheets must be exactly this ordered deterministic page list: '+', '.join(expected))

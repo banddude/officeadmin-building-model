@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-27",
+  "fields": {
+    "issue": "Explicit facts review",
+    "project": "Synthetic details",
+    "scale": "AS NOTED"
+  },
+  "formats": [
+    "svg",
+    "pdf"
+  ],
+  "revision": "S1",
+  "set_id": "synthetic-drafted-details",
+  "sheets": [
+    {
+      "id": "ED1",
+      "title": "Installation details"
+    }
+  ],
+  "template": {
+    "height_mm": 609.6,
+    "width_mm": 914.4
+  },
+  "version": "company-sheet-job-v1"
+}

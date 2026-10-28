@@ -93,7 +93,7 @@ def test_blank_request_refused():
     with pytest.raises(ValueError): detail_specs_from_dict({'version':'imagined','details':[]})
 
 
-def test_real_shared_pipeline_and_no_partial_package(tmp_path, monkeypatch):
+def test_real_shared_pipeline_and_no_partial_package(tmp_path, monkeypatch, sheet_pdf_runtime):
     import hashlib
     import json
     from pathlib import Path
@@ -204,7 +204,7 @@ def test_slot_refusals_are_actionable(change,match):
         company_detail_bodies(BuildingModel.load(root/'model.json'),specs,sheets,placements=slots)
 
 
-def test_one_page_shared_delivery_and_failed_slots_leave_no_partial_package(tmp_path):
+def test_one_page_shared_delivery_and_failed_slots_leave_no_partial_package(tmp_path, sheet_pdf_runtime):
     import json
     from pypdf import PdfReader
     from oabm.drawings.details import create_detail_sheet_set
@@ -229,3 +229,126 @@ def test_one_page_shared_delivery_and_failed_slots_leave_no_partial_package(tmp_
         create_detail_sheet_set(root/'model.json',request,root/'profile.json',root/'job-one-sheet.json',output_directory=failed)
     assert not failed.exists()
     assert not list(tmp_path.glob('.detail-stage-*'))
+
+
+def drafted_case():
+    import json
+    from pathlib import Path
+    from oabm.drawings.details import detail_specs_from_dict
+    root=Path(__file__).resolve().parents[1]/'fixtures'/'detail_sheets'/'drafted'
+    return root,BuildingModel.load(root/'model.json'),detail_specs_from_dict(json.loads((root/'details.json').read_text()))
+
+
+def test_drafted_recipes_show_supplied_route_ports_supports_and_host():
+    root,m,specs=drafted_case()
+    before=m.to_json()
+    details=generate_details(m,specs)
+    assert {p.source_ids[0] for p in details[1].view.primitives}==set(specs[1].source_ids)
+    route=[p for p in details[1].view.primitives if p.source_ids==('R1',)]
+    assert route and any(len(p.points)==4 for p in route)
+    assert {p.source_ids[0] for p in details[1].view.primitives if p.kind=='symbol'}=={'P-A','P-B'}
+    assert {'S-A','S-B'}<={p.source_ids[0] for p in details[0].view.primitives}
+    assert 'W1' in {p.source_ids[0] for p in details[2].view.primitives}
+    assert m.to_json()==before
+
+
+def test_drafted_missing_facts_and_label_collisions_refused():
+    from oabm.drawings.details import DetailCallout
+    _,m,specs=drafted_case()
+    # A generic cabinet cannot pass the richer mounting recipe without supports.
+    isolated=replace(specs[0],source_ids=('EQ-A',),callouts=(specs[0].callouts[0],))
+    with pytest.raises(ValueError,match='support components'):generate_detail(m,isolated)
+    collision=replace(specs[0],callouts=tuple(replace(c,x_mm=10,y_mm=60) for c in specs[0].callouts))
+    with pytest.raises(ValueError,match='overlap'):
+        detail_body_svg(generate_detail(m,collision),drawing_bounds_mm=(10,20,270,560))
+    with pytest.raises(ValueError,match='callout'):
+        replace(specs[0],callouts=())
+
+
+def test_drafted_single_sheet_svg_and_explicit_unknowns(tmp_path):
+    import json
+    import xml.etree.ElementTree as ET
+    from oabm.drawings.details import create_detail_sheet_set
+    root,_,_=drafted_case()
+    job=json.loads((root/'job.json').read_text());job['formats']=['svg']
+    job_path=tmp_path/'svg-job.json';job_path.write_text(json.dumps(job))
+    result=create_detail_sheet_set(root/'model.json',root/'details.json',root.parent/'profile.json',job_path,output_directory=tmp_path/'drafted')
+    coverage=json.loads((result/'detail-manifest.json').read_text())['sheet_coverage']
+    assert coverage[0]['sheet_id']=='ED1' and coverage[0]['detail_ids']==['D1','D2','D3']
+    assert set(coverage[0]['canonical_source_ids'])=={'EQ-A','EQ-B','S-A','S-B','W1','R1','P-A','P-B'}
+    sheet=ET.parse(next((result/'delivery'/'sheets').glob('*.svg')))
+    ns={'s':'http://www.w3.org/2000/svg'}
+    text=' '.join(node.text or '' for node in sheet.findall('.//s:text',ns))
+    for required in ['CABINET MOUNTING ELEVATION','CONNECTION ROUTE / LOCATIONS','HOST / SUPPORT SECTION','R1: 25 mm EMT CENTERLINE','P-A: SUPPLIED ENTRY','Anchor pattern','NOT TERMINAL HARDWARE']:
+        assert required in text
+    assert len(sheet.findall('.//s:circle',ns))>=5
+    weights={n.get('stroke-width') for n in sheet.iter()}
+    assert {'0.13','0.25','0.4','0.6'}.issubset(weights)
+    assert not (result/'delivery'/'sheet-set.pdf').exists()
+
+
+def test_drafted_single_sheet_pdf_when_optional_runtime_available(tmp_path):
+    from oabm.drawings import company_sheets as cs
+    try:cs._dependencies()
+    except ImportError as exc:pytest.skip(str(exc))
+    from pypdf import PdfReader
+    from oabm.drawings.details import create_detail_sheet_set
+    root,_,_=drafted_case()
+    result=create_detail_sheet_set(root/'model.json',root/'details.json',root.parent/'profile.json',root/'job.json',output_directory=tmp_path/'pdf')
+    pdf=PdfReader(result/'delivery'/'sheet-set.pdf')
+    assert len(pdf.pages)==1
+    assert 'CONNECTION ROUTE / LOCATIONS' in pdf.pages[0].extract_text()
+
+
+def test_reported_leader_and_exterior_dimension_regressions():
+    from oabm.drawings.detail_drafting import render_drafted_detail
+    _,m,specs=drafted_case()
+    details=generate_details(m,specs)
+    audits=[]
+    slots=((10,20,270,560),(280,20,590,560),(600,20,810,560))
+    for detail,slot in zip(details,slots):
+        audit={};render_drafted_detail(detail,drawing_bounds_mm=slot,audit=audit);audits.append(audit)
+    # D2 cabinet label terminates locally below the actual cabinet. P-A's
+    # approach stays on the clear left side rather than crossing its interior.
+    cabinet=audits[1]['source_points']['EQ-A']
+    minx,maxx=min(p[0] for p in cabinet),max(p[0] for p in cabinet)
+    maxy=max(p[1] for p in cabinet)
+    assert all(p[1]>=maxy for p in audits[1]['leaders']['EQ-A'])
+    assert all(p[0]<=minx for p in audits[1]['leaders']['P-A'])
+    # D3 wall label uses its nearest right face. The lower rail uses the
+    # clear gap beside the cabinet. Dimensions stay in local left lanes tied
+    # to their measured object, never across route/cabinet/host geometry.
+    wall=audits[2]['source_points']['W1'];wall_right=max(p[0] for p in wall)
+    assert all(p[0]>=wall_right for p in audits[2]['leaders']['W1'])
+    cabinet_left=min(p[0] for p in audits[2]['source_points']['EQ-A'])
+    assert all(box[2]<cabinet_left for _,box in audits[2]['dimension_text_boxes'])
+    for audit,sid in ((audits[1],'EQ-B'),(audits[2],'EQ-A')):
+        object_left=min(p[0] for p in audit['source_points'][sid])
+        for measured,side,points in audit['dimension_witnesses']:
+            assert measured==sid and side=='left'
+            assert all(object_left-7<=p[0]<=object_left-2 for p in points)
+        assert all(box[2]<object_left for _,box in audit['dimension_text_boxes'])
+    assert [a['note_baseline_mm'] for a in audits]==[370,370,370]
+    # Existing engine-derived geometry and source poses remain unchanged.
+    for detail,original in zip(details,generate_details(m,specs)):
+        assert detail.view.primitives==original.view.primitives
+
+
+def test_svg_checks_remain_active_when_pdf_runtime_is_absent(tmp_path, monkeypatch):
+    from oabm.drawings import company_sheets as cs
+    def absent():raise ImportError('synthetic optional PDF runtime unavailable')
+    monkeypatch.setattr(cs,'_dependencies',absent)
+    test_drafted_single_sheet_svg_and_explicit_unknowns(tmp_path)
+    with pytest.raises(pytest.skip.Exception,match='optional PDF runtime unavailable'):
+        test_drafted_single_sheet_pdf_when_optional_runtime_available(tmp_path)
+
+
+def test_dimension_lanes_require_actual_measured_source_and_valid_side():
+    from oabm.drawings.details import DetailDimensionLane
+    _,_,specs=drafted_case()
+    with pytest.raises(ValueError,match='left or right'):
+        DetailDimensionLane(source_id='EQ-B',vertical_side='across-view')
+    with pytest.raises(ValueError,match='at least 4'):
+        DetailDimensionLane(source_id='EQ-B',vertical_side='left',gap_mm=0)
+    with pytest.raises(ValueError,match='measured source IDs'):
+        replace(specs[1],dimension_lanes=(DetailDimensionLane(source_id='R1',vertical_side='left'),))

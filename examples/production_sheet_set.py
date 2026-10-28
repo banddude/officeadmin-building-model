@@ -8,10 +8,11 @@ from oabm.drawings.production_set import create_production_sheet_set
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('directory',type=Path);mode=parser.add_mutually_exclusive_group();mode.add_argument('--compact',action='store_true');mode.add_argument('--legacy',action='store_true')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('directory',type=Path);mode=parser.add_mutually_exclusive_group();mode.add_argument('--compact',action='store_true');mode.add_argument('--legacy',action='store_true');mode.add_argument('--commercial',action='store_true')
     args=parser.parse_args();args.directory.mkdir()
     inputs=args.directory/'inputs'
-    shutil.copytree(Path(__file__).parents[1]/('fixtures/production_set/compact' if not args.legacy else 'fixtures/production_set/v1'),inputs)
+    variant='commercial' if args.commercial else 'v1' if args.legacy else 'compact'
+    shutil.copytree(Path(__file__).parents[1]/'fixtures/production_set'/variant,inputs)
     blank=create_company_sheet_set(inputs/'profile.json',inputs/'job.json',output_directory=args.directory/'blank')
     output=create_production_sheet_set(inputs/'production.json',output_directory=args.directory/'production')
     manifest=json.loads((output/'PRODUCTION-MANIFEST.json').read_bytes())

@@ -35,7 +35,7 @@ def main(argv=None):
         job_path=args.output/(label+'.job.json')
         job_path.write_text(json.dumps(job,indent=2)+'\n')
         template=resolve_company_sheet_set(profile_path,job_path).sheets[0]
-        layout=plan_pages(project_topology(model),template.drawing_bounds_mm)
+        layout=plan_pages(project_topology(model),template.drawing_bounds_mm,first_sheet_id=template.id)
         job['sheets']=[{'id':p['id'],'title':{'single-line':'SINGLE LINE',
                         'distribution':'DISTRIBUTION','distribution-continuation':'DISTRIBUTION CONT.',
                         'facts-register':'FEEDER REGISTER'}[p['kind']]} for p in layout['pages']]

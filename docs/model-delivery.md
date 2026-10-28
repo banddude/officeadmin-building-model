@@ -140,3 +140,12 @@ all package bytes including the manifest. It produces an SVG and GLB for cloud
 visual inspection without running a local renderer. Tests cover required/report/
 skip policies, real consolidation endpoint elbows, partial-export failures,
 existing destinations, changed input source files and changed pending artifacts.
+
+## Explicit assembly-cut delivery
+
+`model-delivery-v1` remains unchanged and guarded. `model-delivery-v2` uses the
+same option keys plus `"assembly_geometry":"cut"`; it requires at least one
+plan and records physical cut component IDs and qualifications. It sends the
+same retained canonical model to plans and GLB. See
+[physical assembly consumers](physical-assembly-consumers.md) for supported
+cut-only views, refusal boundaries and composed production sheets.

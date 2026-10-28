@@ -256,8 +256,8 @@ def test_from_ifc_still_rejects_unknown_canonical_entity_kinds():
         ifc, ifc_class="IfcBuildingElementProxy", name="Unsupported assembly record",
     )
     item.GlobalId = canonical_id_to_ifc_guid("unknown:assembly-record")
-    _add_canonical_pset(ifc, item, "building_assembly", 0, {
+    _add_canonical_pset(ifc, item, "future_assembly", 0, {
         "id": "assembly:unsupported", "schema_version": "1.6.0", "provenance": [],
     })
-    with pytest.raises(IfcAdapterError, match="unknown OABM canonical kind 'building_assembly'"):
+    with pytest.raises(IfcAdapterError, match="unknown OABM canonical kind 'future_assembly'"):
         from_ifc(ifc)

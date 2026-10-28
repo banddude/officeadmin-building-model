@@ -37,7 +37,7 @@ Geometry clipping, missing supported dimensions, unknown IDs, empty projections,
 text overflow and insufficient drawing area fail without scale changes. Text
 uses the shared installed-font measurement/validation helpers and an explicit
 Liberation Sans face. Fontconfig and a readable supported font are required;
-there is no character-count fallback. XML-invalid and unsupported non-ASCII
+there is no character-count fallback. XML-invalid/control text and missing glyphs
 text fails with the affected input field before package staging. Long notes
 are refused rather than clipped, silently truncated, or resized. The
 package is staged locally and renamed only after shared creation succeeds;
@@ -77,3 +77,56 @@ PYTHONPATH=src python examples/detail_sheet_set.py \
 
 The retained request and detail manifest include the exact slot assignments.
 There is no automatic scale adjustment, note omission or fallback pagination.
+
+## Explicit installation-detail recipes (@2)
+
+The three `@2` recipe versions use the same existing engine projections while
+requiring meaningful supplied geometry. Mounting elevation requires equipment
+and canonical support components. Connection close-up requires an explicit
+canonical route and port locations. Supported section requires canonical host
+wall geometry. Equipment/box/fitting/support envelopes remain envelopes; product
+profiles, terminal internals, conductor paths and anchor patterns are never
+inferred. Original `@1` envelope recipes and all earlier inputs remain supported.
+
+For each selected source, supply one `callouts` row with `source_id`, `text`,
+`x_mm`, `y_mm`, and optional `anchor` (`start` or `end`). Positions are paper
+millimetres relative to the slot's upper-left. Leaders target the nearest point on actual projected source edges; ports
+retain their exact supplied locations. Short orthogonal elbows approach that
+source from the label side, with no geometry changes. Leader crossings fail
+with a request for revised local label positions. Supply `dimension_source_ids`
+explicitly; dimensions measure the projected source extent, never imagined
+product internals. Missing source/callout coverage fails early. Circled detail
+numbers, headings, scales, direct leaders, measured labels and .13/.25/.4/.6 mm
+annotation/object/route/cut lineweights provide a technical drawing hierarchy.
+Label overlaps and insufficient slots fail. Vertical dimensions stay local to their measured object. Optional
+`dimension_lanes` entries select `source_id`, `vertical_side` (`left` or `right`)
+and `gap_mm` (at least 4 mm). Witness lines extend from that object edge only,
+never to the maximum extent of unrelated route or host geometry. The synthetic
+connection enclosure and cabinet section explicitly use left-side lanes.
+An optional explicit `notes_y_mm` paper offset aligns note blocks between
+details; it must leave the entire supplied-scale figure canvas clear. Notes wrap using shared real font
+measurements and preserve their characters; no note or source is dropped.
+
+The new wholly synthetic `fixtures/detail_sheets/drafted` model supplies two
+equipment enclosures, a four-point EMT centerline, two explicit entry ports, two
+support envelopes, their source-bound host interfaces, and a concrete wall.
+The three views show mounting, connections and a supported side section on a
+single shared-profile sheet. Entry markers mean supplied connection locations,
+not manufacturer terminals. Missing internals, attachment design and profiles
+remain visibly identified. No customer geometry or historical engineering facts
+are included in these public-safe inputs.
+
+```sh
+PYTHONPATH=src python examples/detail_sheet_set.py \
+  --profile fixtures/detail_sheets/profile.json \
+  --model fixtures/detail_sheets/drafted/model.json \
+  --details fixtures/detail_sheets/drafted/details.json \
+  --job fixtures/detail_sheets/drafted/job.json \
+  --output drafted-detail-proof
+```
+
+`detail_sheet_coverage` returns final sheet IDs/titles, contained detail IDs and
+canonical source coverage for the production coordinator after body preflight.
+The detail manifest retains this map, explicit callouts, exact original inputs,
+slot assignments and canonical IDs. Source review and independent cloud pixel
+review remain separate acceptance gates.

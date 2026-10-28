@@ -91,13 +91,16 @@ class SchedulePage:
             attrs = ''  # Canonical identity is retained in the row/drawing manifest.
             if primitive.kind == 'text':
                 x, y = points[0]
+                meta = dict(primitive.metadata)
+                size = float(meta.get('font_size_mm', layout.text_height_mm))
+                weight = int(meta.get('font_weight', '400'))
                 fragments.append(f'<text {attrs} x="{x:.9f}" y="{y:.9f}" '
-                    f'font-family="DejaVu Sans" font-size="{layout.text_height_mm:.9f}" '
+                    f'font-family="DejaVu Sans" font-size="{size:.9f}" font-weight="{weight}" '
                     f'fill="#000000" xml:space="preserve">{_xml(primitive.text)}</text>')
             else:
                 vertices = ' '.join(f'{x:.9f},{y:.9f}' for x, y in points)
                 fragments.append(f'<polyline {attrs} points="{vertices}" fill="none" '
-                                 'stroke="#000000" stroke-width="0.13"/>')
+                                 f'stroke="#000000" stroke-width="{dict(thin=.13, normal=.25, heavy=.5)[primitive.style.weight]}"/>')
         fragments.append('</g>')
         return '\n'.join(fragments)
 
@@ -310,3 +313,383 @@ def _pack_sections(pages, first_sheet_id, layout):
             first.placement.x_mm, first.placement.y_mm), tuple(row_map), only.get('schedule_id'),
             only.get('schedule_page'), only.get('schedule_pages'), tuple(sections)))
     return tuple(packed)
+
+
+def draft_panel_schedule_selection(report, *, panel_ids=None, include_empty_panels=True, include_unassigned=True):
+    """Audit a read-only card selection over the complete validated report.
+
+    Panel selection never changes report contents or classifies unsupported
+    owners as panels. Unassigned inclusion is independent of panel_ids, matching
+    the legacy all-groups default. IDs and output order follow the report.
+    """
+    from oabm.model import stable_id
+    report.to_dict()
+    if type(include_empty_panels) is not bool or type(include_unassigned) is not bool:
+        raise ValueError('schedule selection flags must be booleans')
+    available = {group.panel.id for group in report.panels}
+    if panel_ids is None:
+        requested = available
+    else:
+        if not isinstance(panel_ids, (list, tuple, set, frozenset)) or any(not isinstance(v, str) or not v for v in panel_ids):
+            raise ValueError('panel_ids: supply explicit canonical panel IDs, or None for all')
+        requested = set(panel_ids)
+        if len(requested) != len(panel_ids):
+            raise ValueError('panel_ids: duplicate canonical panel ID')
+        if requested - available:
+            raise ValueError('panel_ids: unknown report panel IDs: ' + ', '.join(sorted(requested - available)))
+    groups = []
+    for group in report.panels:
+        reason = ('panel_not_requested' if group.panel.id not in requested else
+                  'empty_panel_excluded' if not group.circuits and not include_empty_panels else 'selected')
+        groups.append({'panel_id': group.panel.id, 'selected': reason == 'selected', 'reason': reason,
+            'schedule_ids': [stable_id('schedule', f'panel-facts:{group.panel.id}'),
+                             stable_id('schedule', f'panel-fact-summary:{group.panel.id}')],
+            'circuit_ids': [fact.circuit.id for fact in group.circuits]})
+    if report.unassigned_circuits:
+        groups.append({'panel_id': None, 'selected': include_unassigned,
+            'reason': 'selected' if include_unassigned else 'unassigned_excluded',
+            'schedule_ids': [stable_id('schedule', f'unassigned-panel-facts:{report.source_model_id}')],
+            'circuit_ids': [fact.circuit.id for fact in report.unassigned_circuits]})
+    return {'source_model_id': report.source_model_id, 'groups': groups,
+        'selected_schedule_ids': [sid for group in groups if group['selected'] for sid in group['schedule_ids']],
+        'excluded_schedule_ids': [sid for group in groups if not group['selected'] for sid in group['schedule_ids']]}
+
+
+def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, region_bounds_mm=None, table_width_mm=420.0,
+                               panel_ids=None, include_empty_panels=True, include_unassigned=True):
+    """Compose plan-style paired panel cards from the retained fact report.
+
+    Optional panel_ids/include_empty_panels/include_unassigned filter cards only;
+    defaults preserve all legacy groups. An empty selection returns (). Use
+    draft_panel_schedule_selection for selected/excluded identity audit.
+    The caller can reserve a paper-mm region beside a one-line. Presentation
+    attributes are read only from canonical owner attributes.panel_schedule:
+    circuit description/ocpd (literal text), side/row (explicit table positions),
+    and phase_va (explicit A/B/C connected values). Equipment may supply literal
+    main/bus/aic/source. Missing facts print TBD; no odd/even pairing, slots,
+    breakers, demand or phase allocation is inferred. Supplied rows are printed
+    under ROW / CKT; omitted ranges are annotated, never filled as spares.
+    Unpositioned circuits stay
+    in a clearly labelled unassigned-position list, one actual circuit per row.
+    """
+    import math
+    from oabm.model import stable_id
+    selection = draft_panel_schedule_selection(report, panel_ids=panel_ids,
+        include_empty_panels=include_empty_panels, include_unassigned=include_unassigned)
+    if not selection['selected_schedule_ids']:
+        return ()
+    selected_panels = {group['panel_id'] for group in selection['groups'] if group['selected']}
+    layout = layout or ScheduleLayout()
+    if hasattr(sheet, 'drawing_bounds_mm'):
+        paper_bounds = tuple(sheet.drawing_bounds_mm)
+        template = SheetSpec(sheet.id, sheet.width_mm, sheet.height_mm, title=sheet.title)
+    else:
+        paper_bounds = (sheet.margin_mm, sheet.margin_mm, sheet.width_mm - sheet.margin_mm,
+                        sheet.height_mm - sheet.margin_mm - sheet.titleblock_height_mm)
+        template = sheet
+    region = region_bounds_mm or paper_bounds
+    if not isinstance(region, (list, tuple)) or len(region) != 4:
+        raise ValueError('region_bounds_mm requires left, top, right, bottom paper mm')
+    l, t, r, b = tuple(_finite(v, 'region_bounds_mm') for v in region)
+    if l >= r or t >= b or l < paper_bounds[0] or t < paper_bounds[1] or r > paper_bounds[2] or b > paper_bounds[3]:
+        raise ValueError('drafted region must fit the shared sheet drawing_bounds_mm')
+    inset, gutter = 3.0, 8.0
+    region_width, region_height = r - l - 2 * inset, b - t - 2 * inset
+    table_width_mm = _finite(table_width_mm, 'table_width_mm')
+    if table_width_mm <= 0:
+        raise ValueError('table_width_mm must be positive')
+    card_width = min(table_width_mm, region_width)
+    if card_width < 240:
+        raise ValueError('drafted panel table needs at least 240 mm width at configured readable text size')
+    columns = max(1, math.floor((region_width + gutter) / (card_width + gutter)))
+    if columns > 1:
+        card_width = (region_width - gutter * (columns - 1)) / columns
+    font, line = layout.text_height_mm, layout.line_height_mm
+    pad = layout.padding_mm
+    heading = max(font * 1.4, font)
+    widths = [card_width * n / 102 for n in (5, 24, 3, 6, 7, 4, 4, 4, 7, 6, 3, 24, 5)]
+    xedges = [0.0]
+    for width in widths:
+        xedges.append(xedges[-1] + width)
+    # Drawing source rows remain the report adapter's full, lossless facts.
+    source_schedules = {s.id: s for s in drawing_set.schedules}
+    row_lookup = {(s.id, row.source_id): (i, row) for s in drawing_set.schedules for i, row in enumerate(s.rows)}
+    cards = []
+
+    def supplied(entity, allowed):
+        value = entity.get('attributes', {}).get('panel_schedule', {})
+        if not isinstance(value, dict) or set(value) - set(allowed):
+            raise ValueError(f"{entity['id']}: panel_schedule accepts only {sorted(allowed)}")
+        for key in ('description', 'ocpd', 'main', 'bus', 'aic', 'source'):
+            if key in value:
+                validate_sheet_text(value[key])
+        return value
+
+    def wrapped(value, width, *, size=None, weight=400):
+        size = font if size is None else size
+        value = str(value)
+        validate_sheet_text(value)
+        available = width - 2 * pad
+        if available <= 0:
+            raise ValueError('drafted column has no text capacity; enlarge table or reduce configured padding')
+        result = []
+        while value:
+            low, high = 0, len(value)
+            while low < high:
+                n = (low + high + 1) // 2
+                if measure_sheet_text(value[:n], size, font_family='DejaVu Sans', font_weight=weight) <= available:
+                    low = n
+                else:
+                    high = n - 1
+            if not low:
+                raise ValueError('drafted column too narrow for a supplied glyph; enlarge table or reduce text size')
+            result.append(value[:low]); value = value[low:]
+        return tuple(result or [''])
+
+    def value(number):
+        return 'TBD' if number is None else str(number)
+
+    groups = [(g.panel, g.circuits, g) for g in report.panels if g.panel.id in selected_panels]
+    if report.unassigned_circuits and include_unassigned:
+        groups.append((None, report.unassigned_circuits, None))
+    for ordinal, (panel, facts, group) in enumerate(groups, 1):
+        panel_id = panel.id if panel is not None else report.source_model_id
+        entity = panel.entity if panel is not None else {}
+        title = f'{ordinal}  PANEL {entity.get("name") or panel_id} - CIRCUIT SCHEDULE' if panel else f'{ordinal}  UNSUPPORTED SOURCE OWNERS - CIRCUIT FACTS'
+        panel_fields = supplied(entity, {'main', 'bus', 'aic', 'source'}) if panel else {}
+        circuit_sid = stable_id('schedule', f'panel-facts:{panel_id}') if panel else stable_id('schedule', f'unassigned-panel-facts:{report.source_model_id}')
+        summary_sid = stable_id('schedule', f'panel-fact-summary:{panel_id}') if panel else None
+        label_conflicts = {cid for conflict in group.label_conflicts for cid in conflict.circuit_ids} if group else set()
+        positions, unassigned = {}, []
+        for fact in facts:
+            circuit = fact.circuit.entity
+            fields = supplied(circuit, {'description', 'ocpd', 'side', 'row', 'phase_va'})
+            if ('side' in fields) != ('row' in fields):
+                raise ValueError(f'{fact.circuit.id}: supply both panel_schedule.side and row, or neither')
+            if 'side' in fields:
+                if not isinstance(fields['side'], str) or fields['side'] not in {'left', 'right'} or type(fields['row']) is not int or fields['row'] < 1:
+                    raise ValueError(f'{fact.circuit.id}: explicit side left/right and positive integer row required')
+                key = (fields['row'], fields['side'])
+                if key in positions:
+                    raise ValueError(f'{fact.circuit.id}: duplicate explicit panel schedule position {key}')
+                positions[key] = (fact, fields)
+            else:
+                unassigned.append((fact, fields))
+            phase = fields.get('phase_va', {})
+            if not isinstance(phase, dict) or set(phase) - {'A', 'B', 'C'}:
+                raise ValueError(f'{fact.circuit.id}: phase_va accepts explicit A/B/C supplied values only')
+            if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in phase.values()):
+                raise ValueError(f'{fact.circuit.id}: phase_va requires finite nonnegative supplied VA')
+        physical_rows = []
+        previous_row = 0
+        for n in sorted({n for n, side in positions}):
+            gap_before = (previous_row + 1, n - 1) if n > previous_row + 1 else None
+            physical_rows.append((positions.get((n, 'left')), positions.get((n, 'right')), n, gap_before))
+            previous_row = n
+        physical_rows.extend((item, None, None, None) for item in unassigned)
+        if not physical_rows:
+            physical_rows = [(None, None, None, None)]
+        intro = [f'SYSTEM: {entity.get("system") or "TBD"}   VOLTAGE: {value(entity.get("rated_voltage_v"))} V',
+                 f'MAIN: {panel_fields.get("main", "TBD")}   BUS: {panel_fields.get("bus", "TBD")}   AIC: {panel_fields.get("aic", "TBD")}',
+                 f'SOURCE: {panel_fields.get("source", "NOT SUPPLIED")}' if panel else 'Source owner classification is unsupported; no panel assignment inferred.']
+        title_lines = wrapped(title, card_width, size=heading, weight=600)
+        intro_lines = tuple(part for text in intro for part in wrapped(text, card_width))
+        head_height = len(title_lines) * heading * 1.4 + len(intro_lines) * line + 4 * pad
+        headers = ('ROW / CKT', 'LOAD / DESCRIPTION', 'P', 'OCPD', 'VA', 'A', 'B', 'C', 'VA', 'OCPD', 'P', 'LOAD / DESCRIPTION', 'ROW / CKT')
+        header_cells = tuple(wrapped(v, w, weight=600) for v, w in zip(headers, widths))
+        header_height = max(map(len, header_cells)) * line + 2 * pad
+        notes = ('TBD = not supplied. Unassigned side is not a spare or an available circuit.',
+                 'A/B/C: supplied per-phase VA only; no phase allocation or demand inferred.')
+        note_lines = tuple(part for text in notes for part in wrapped(text, card_width))
+        tail_height = len(note_lines) * line + 2 * pad + 2 * line
+        summary_height = 8 * line + 4 * pad if panel else 0
+        position_text = 'Positions shown only where explicitly supplied; remaining rows are display order.'
+        position_height = len(wrapped(position_text, card_width)) * line + 3 * pad
+        available = region_height - head_height - header_height - tail_height - summary_height - position_height
+        if available <= 0:
+            raise ValueError('drafted panel heading/summary leave no circuit rows in supplied region')
+        rows = []
+        for left_item, right_item, supplied_row, gap_before in physical_rows:
+            explicit_position = supplied_row is not None
+            cells = []
+            def side(item):
+                if item is None:
+                    return (f'{value(supplied_row)} / TBD', 'UNASSIGNED', 'TBD', 'TBD', 'TBD')
+                fact, fields = item
+                c = fact.circuit.entity
+                description = fields.get('description', c.get('name') or 'DESCRIPTION NOT SUPPLIED')
+                if c.get('voltage_v') is not None:
+                    description += ' | ' + str(c['voltage_v']) + ' V'
+                if c.get('phase') is not None:
+                    description += ' | phase ' + str(c['phase'])
+                if fact.circuit.id in label_conflicts:
+                    description += ' [LABEL CONFLICT]'
+                if 'phase_va' in fields and c.get('load_va') is not None and not math.isclose(math.fsum(fields['phase_va'].values()), c['load_va']):
+                    description += ' [PHASE/LOAD CONFLICT]'
+                return (f'{value(fields.get("row"))} / ' + value(c.get('circuit_number')), description, value(c.get('poles')), fields.get('ocpd', 'TBD'), value(c.get('load_va')))
+            left_values, right_values = side(left_item), side(right_item)
+            assigned = [item for item in (left_item, right_item) if item is not None]
+            phases = []
+            for phase in ('A', 'B', 'C'):
+                if assigned and all(phase in fields.get('phase_va', {}) for fact, fields in assigned):
+                    total = math.fsum(fields['phase_va'][phase] for fact, fields in assigned)
+                    if not math.isfinite(total):
+                        raise ValueError('supplied phase VA total exceeds finite output range')
+                    phases.append(str(total))
+                else:
+                    phases.append('TBD')
+            values = (*left_values, *phases, *reversed(right_values))
+            cells = tuple(wrapped(v, w) for v, w in zip(values, widths))
+            row_height = max(map(len, cells)) * line + 2 * pad
+            gap_lines = wrapped(f'ROWS {gap_before[0]}-{gap_before[1]} NOT SUPPLIED - NO SPARE CAPACITY INFERRED', card_width, weight=600) if gap_before else ()
+            gap_height = len(gap_lines) * line + 2 * pad if gap_lines else 0
+            if row_height + gap_height > available:
+                raise ValueError(f'panel {panel_id}: circuit row and position marker exceed drafted region; enlarge region/table width')
+            rows.append((left_item, right_item, explicit_position, values, cells, row_height, gap_before, gap_lines, row_height + gap_height))
+        chunks, used = [[]], 0
+        for row in rows:
+            if chunks[-1] and used + row[-1] > available:
+                chunks.append([]); used = 0
+            chunks[-1].append(row); used += row[-1]
+        for part, chunk in enumerate(chunks, 1):
+            primitives, maps = [], []
+            y = 0.0
+            def add(kind, points, sources, *, text=None, weight='thin', size=None, bold=False, role=''):
+                identity = f'drafted-card:{len(cards):03d}:item:{len(primitives):06d}'
+                meta = [('role', role)]
+                if kind == 'text':
+                    meta.extend((('font_size_mm', str(font if size is None else size)), ('font_weight', '600' if bold else '400')))
+                primitives.append(DrawingPrimitive(identity, kind, 'schedule', tuple(sources),
+                    tuple(Point2(x / 1000, (region_height - yy) / 1000) for x, yy in points),
+                    text=text, style=LineStyle(weight=weight), metadata=tuple(meta)))
+                return identity
+            anchor_sources = (panel_id,) if panel else (facts[0].circuit.id,)
+            def text_lines(parts, x, yy, sources, *, size=None, bold=False, role=''):
+                size = font if size is None else size
+                step = line if size == font else size * 1.4
+                return [add('text', [(x + pad, yy + pad + size + i * step)], sources,
+                            text=v, size=size, bold=bold, role=role) for i, v in enumerate(parts)]
+            def rule(yy, weight='normal'):
+                add('line', [(0.3, yy), (card_width - .3, yy)], anchor_sources, weight=weight, role='table_rule')
+            text_lines(title_lines, 0, y, anchor_sources, size=heading, bold=True, role='schedule_title')
+            y += len(title_lines) * heading * 1.4 + 2 * pad
+            text_lines(intro_lines, 0, y, anchor_sources, role='panel_metadata')
+            y = head_height
+            rule(y, 'heavy')
+            for i, parts in enumerate(header_cells):
+                text_lines(parts, xedges[i], y, anchor_sources, bold=True, role='repeated_header')
+            header_top = y
+            y += header_height
+            rule(y, 'normal')
+            grid_segments, grid_start, position_gaps = [], header_top, []
+            for left_item, right_item, explicit_position, values, cells, row_height, gap_before, gap_lines, total_height in chunk:
+                if gap_before:
+                    grid_segments.append((grid_start, y))
+                    rule(y, 'normal')
+                    text_lines(gap_lines, 0, y, anchor_sources, bold=True, role='position_gap')
+                    y += len(gap_lines) * line + 2 * pad
+                    rule(y, 'normal')
+                    grid_start = y
+                    position_gaps.append({'first_row': gap_before[0], 'last_row': gap_before[1],
+                                          'status': 'not_supplied_no_spare_capacity_inferred'})
+                row_sources = tuple(item[0].circuit.id for item in (left_item, right_item) if item is not None) or anchor_sources
+                cell_ids = []
+                for i, parts in enumerate(cells):
+                    cell_ids.append(text_lines(parts, xedges[i], y, row_sources, role='schedule_row'))
+                for item, side, indices in ((left_item, 'left', range(0, 8)), (right_item, 'right', range(5, 13))):
+                    if item is None:
+                        continue
+                    fact, fields = item
+                    row_index, original = row_lookup[(circuit_sid, fact.circuit.id)]
+                    maps.append({'schedule_id': circuit_sid, 'row_index': row_index, 'source_id': fact.circuit.id,
+                        'cells': list(original.cells), 'wrapped_cells': [[c] for c in original.cells],
+                        'display_cells': list(values[:5] if side == 'left' else values[8:]),
+                        'phase_cells': list(values[5:8]),
+                        'phase_basis': 'sum of explicitly supplied per-circuit phase_va; missing remains TBD',
+                        'position_status': 'supplied' if explicit_position else 'not_supplied_display_order_only',
+                        'supplied_side': fields.get('side'), 'supplied_row': fields.get('row'), 'display_side': side,
+                        'primitive_ids': [identity for i in indices for identity in cell_ids[i]],
+                        'bounds_mm': [0 if side == 'left' else xedges[5], y,
+                                      xedges[8] if side == 'left' else card_width, y + row_height]})
+                y += row_height
+                rule(y, 'thin')
+            if not facts:
+                text_lines(wrapped('NO LISTED CIRCUITS. No circuit slots or spares inferred.', card_width), 0, y, anchor_sources, role='empty_table')
+                y += line + 2 * pad
+            grid_segments.append((grid_start, y))
+            for start, end in grid_segments:
+                for edge in xedges:
+                    add('line', [(max(.3, min(card_width - .3, edge)), start),
+                                 (max(.3, min(card_width - .3, edge)), end)], anchor_sources,
+                        weight='normal' if edge in (xedges[0], xedges[5], xedges[8], xedges[-1]) else 'thin', role='column_rule')
+            position_text = 'Positions shown only where explicitly supplied; remaining rows are display order.'
+            text_lines(wrapped(position_text, card_width), 0, y + pad, anchor_sources, role='position_status')
+            y += len(wrapped(position_text, card_width)) * line + 3 * pad
+            if panel and part == len(chunks):
+                summary_top = y
+                rule(y, 'heavy')
+                text_lines(('SUPPLIED CONNECTED-LOAD SUMMARY',), 0, y, anchor_sources, bold=True, role='load_summary_title')
+                y += line + 2 * pad
+                summary_rows = [('KNOWN CONNECTED SUBTOTAL', str(group.known_connected_va) + ' VA'),
+                                ('LISTED CIRCUITS / UNKNOWN LOADS', f'{len(group.circuits)} / {len(group.unknown_load_circuit_ids)}'),
+                                ('LISTED LOAD COMPLETENESS', 'ALL LISTED LOADS KNOWN' if group.all_listed_loads_known else 'INCOMPLETE - UNKNOWN LOADS'),
+                                ('DEMAND / SERVICE CAPACITY', 'NOT ESTABLISHED')]
+                summary_ids = []
+                for label, fact_value in summary_rows:
+                    a = wrapped(label, card_width * .48)
+                    c = wrapped(fact_value, card_width * .52)
+                    rh = max(len(a), len(c)) * line + 2 * pad
+                    summary_ids += text_lines(a, 0, y, anchor_sources, role='load_summary')
+                    summary_ids += text_lines(c, card_width * .48, y, anchor_sources, role='load_summary')
+                    y += rh; rule(y, 'thin')
+                source_row = source_schedules[summary_sid].rows[0]
+                maps.append({'schedule_id': summary_sid, 'row_index': 0, 'source_id': panel_id,
+                    'cells': list(source_row.cells), 'wrapped_cells': [[c] for c in source_row.cells],
+                    'primitive_ids': summary_ids, 'bounds_mm': [0, summary_top, card_width, y]})
+                y += pad
+            text_lines(note_lines, 0, y, anchor_sources, role='schedule_note')
+            y += len(note_lines) * line + 2 * pad
+            text_lines((f'PANEL SCHEDULE {part}/{len(chunks)}',), 0, y, anchor_sources, role='page_reference')
+            y += line + 2 * pad
+            if y > region_height:
+                raise ValueError('drafted table exceeds reserved paper region; enlarge region or reduce supplied text length')
+            cards.append({'primitives': primitives, 'rows': maps, 'height': y, 'schedule_id': circuit_sid,
+                          'schedule_page': part, 'schedule_pages': len(chunks), 'panel_id': panel_id,
+                          'included_schedule_ids': [circuit_sid] + ([summary_sid] if panel and part == len(chunks) else []),
+                          'position_gaps': position_gaps})
+    # Column-first placement leaves a genuine region for a caller's one-line.
+    placed, column, cursor = [[]], 0, 0.0
+    for card in cards:
+        if cursor and cursor + card['height'] > region_height:
+            column += 1; cursor = 0.0
+        if column >= columns:
+            placed.append([]); column = 0; cursor = 0.0
+        placed[-1].append((card, column * (card_width + gutter), cursor))
+        cursor += card['height'] + gutter
+    result = []
+    for number, items in enumerate(placed, 1):
+        match = re.fullmatch(r'(.*?)([0-9]+)', sheet.id)
+        sid = (match[1] + str(int(match[2]) + number - 1).zfill(len(match[2]))) if match else f'{sheet.id}{number:03d}'
+        view_id = f'drafted-panel-page:{number:03d}'
+        primitives, row_map, sections = [], [], []
+        for card, xx, yy in items:
+            identities = {}
+            for p in card['primitives']:
+                identity = f'{view_id}:item:{len(primitives):06d}'; identities[p.id] = identity
+                primitives.append(replace(p, id=identity, points=tuple(Point2(pt.x + xx / 1000, pt.y - yy / 1000) for pt in p.points)))
+            for row in card['rows']:
+                box = row['bounds_mm']
+                row_map.append({**row, 'sheet_id': sid, 'page': number,
+                    'primitive_ids': [identities[i] for i in row['primitive_ids']],
+                    'bounds_mm': [l + inset + xx + box[0], t + inset + yy + box[1],
+                                  l + inset + xx + box[2], t + inset + yy + box[3]]})
+            sections.append({k: card[k] for k in ('schedule_id', 'schedule_page', 'schedule_pages', 'panel_id', 'included_schedule_ids', 'position_gaps')})
+            sections[-1]['bounds_mm'] = [l + inset + xx, t + inset + yy, l + inset + xx + card_width, t + inset + yy + card['height']]
+        # Pairing changes printed order only; logical source coverage stays canonical.
+        order = {s.id: i for i, s in enumerate(drawing_set.schedules)}
+        row_map.sort(key=lambda row: (order[row['schedule_id']], row['row_index']))
+        view = DrawingView(view_id, 'plan', template.title, Bounds2(0, 0, region_width / 1000, region_height / 1000),
+                           1, tuple(primitives), metadata=(('presentation', 'drafted paired panel schedule'),))
+        result.append(SchedulePage(replace(template, id=sid), DrawingSet(drawing_set.model_id, (view,), (), drawing_set.source_index),
+            ViewPlacement(view_id, view_id, l + inset, t + inset), tuple(row_map), None, None, None, tuple(sections)))
+    return tuple(result)

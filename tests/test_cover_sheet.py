@@ -18,7 +18,7 @@ def test_layout_is_deterministic_and_bounded(config):
         x, y, right, bottom = panel['bounds_mm']
         assert 10 <= x < right <= 800
         assert 10 <= y < bottom <= 480
-    assert [p['title'] for p in a.layout['panels']] == ['Project', 'Scope', 'Sheet index', 'Contacts', 'Job notes']
+    assert [p['title'] for p in a.layout['panels']] == ['Project', 'Contacts', 'Scope', 'Sheet index', 'Job notes']
     assert 'Location map' not in a.svg_elements
 
 
@@ -51,7 +51,7 @@ def test_required_project_facts(config, field):
 def test_map_is_only_supplied_geometry(config):
     config['location_map'] = {'caption': 'Supplied diagram', 'width': 100, 'height': 60, 'segments': [[0, 0, 100, 60]]}
     body = compose_cover_body(config, (10, 10, 800, 480))
-    assert body.layout['panels'][-1]['title'] == 'Location map'
+    assert body.layout['panels'][-1]['title'] == 'Location map diagram'
     config['location_map']['segments'][0][2] = 101
     with pytest.raises(ValueError, match='outside'):
         validate_cover(config)
@@ -105,20 +105,30 @@ def test_shared_boundary_order_body_and_atomic_receipts(config, tmp_path, monkey
         create_cover_sheet(path, profile_path='profile', job_path='job', output_directory=tmp_path/'o0')
 
 
-@pytest.mark.parametrize('glyph', ['\u2031', '\u6f22', '\U0001f600', '\uff37', '\u0301'])
-def test_unsupported_wide_glyphs_refused_without_source_loss(config, glyph, tmp_path):
-    supplied = glyph * 128
-    config['scope'] = [supplied]
-    path = tmp_path/'wide.json'
-    raw = json.dumps(config, ensure_ascii=False).encode()
-    path.write_bytes(raw)
-    with pytest.raises(ValueError, match='unsupported glyph U\\+'):
-        compose_cover_body(config, (10,10,800,480))
-    with pytest.raises(ValueError, match='unsupported glyph U\\+'):
-        create_cover_sheet(path, profile_path='unused', job_path='unused', output_directory=tmp_path/'output')
-    assert config['scope'] == [supplied]
-    assert path.read_bytes() == raw
-    assert not (tmp_path/'output').exists()
+def missing_glyph():
+    from oabm.drawings.company_sheets import _font
+    coverage=_font('DejaVu Sans',400)[0]._oabm_codepoints
+    return next(c for c in ('⌀','🧑','𓀀') if ord(c) not in coverage)
+
+
+def test_missing_glyph_refused_without_source_loss(config, tmp_path):
+    supplied=missing_glyph()*128
+    config['scope']=[supplied]
+    path=tmp_path/'wide.json';raw=json.dumps(config,ensure_ascii=False).encode();path.write_bytes(raw)
+    with pytest.raises(ValueError,match=r'glyph U\+'):
+        compose_cover_body(config,(10,10,800,480))
+    with pytest.raises(ValueError,match=r'glyph U\+'):
+        create_cover_sheet(path,profile_path='unused',job_path='unused',output_directory=tmp_path/'output')
+    assert config['scope']==[supplied] and path.read_bytes()==raw and not (tmp_path/'output').exists()
+
+
+@pytest.mark.parametrize('value',['José Peña','45° Ø','“Éclairage”'])
+def test_covered_unicode_wraps_without_normalization(config,value):
+    supplied=(value+' ')*40
+    config['scope']=[supplied]
+    body=compose_cover_body(config,(10,10,800,480))
+    panel=next(p for p in body.layout['panels'] if p['title']=='Scope')
+    assert ''.join(panel['lines'])==supplied
 
 
 @pytest.mark.parametrize('glyph', ['W', '@', 'M', '~'])
@@ -135,7 +145,7 @@ def test_supported_wide_ascii_wraps_with_conservative_envelope(config, glyph):
 
 @pytest.mark.parametrize('where', ['project_key', 'project_value', 'sheet', 'contact', 'note', 'caption'])
 def test_glyph_boundary_applies_to_every_body_text_source(config, where):
-    glyph = '\u2031'
+    glyph = missing_glyph()
     if where == 'project_key':
         config['project'][glyph] = 'supplied'
     elif where == 'project_value':
@@ -148,7 +158,7 @@ def test_glyph_boundary_applies_to_every_body_text_source(config, where):
         config['notes'] = [glyph]
     else:
         config['location_map'] = {'caption': glyph, 'width': 1, 'height': 1, 'segments': [[0,0,1,1]]}
-    with pytest.raises(ValueError, match='unsupported glyph'):
+    with pytest.raises(ValueError, match=r'glyph U\+'):
         validate_cover(config)
 
 
@@ -159,7 +169,7 @@ def test_unbounded_font_substitution_and_heading_overflow_are_refused(config):
         compose_cover_body(config, (10,10,55,480))
 
 
-def test_real_shared_profile_cover_svg_pdf_and_replay(config, tmp_path):
+def test_real_shared_profile_cover_svg_pdf_and_replay(config, tmp_path, sheet_pdf_runtime):
     import io
     from pypdf import PdfReader
     from oabm.drawings.company_sheets import rebuild_company_sheet_set, resolve_company_sheet_set
@@ -188,7 +198,8 @@ def test_real_shared_profile_cover_svg_pdf_and_replay(config, tmp_path):
     text = ' '.join(pdf.pages[0].extract_text().split())
     assert 'SCOPE' in text and 'CONTACTS' in text and 'Synthetic Workshop' in text
     for row in config['sheets']:
-        assert f"{row['id']} {row['title']}" in text
+        # PDF text runs in distinct ID/title columns need not gain inferred spaces.
+        assert ''.join((row['id']+row['title']).split()) in ''.join(text.split())
     assert not list(pdf.pages[0].images)
     replay = rebuild_company_sheet_set(first, output_directory=tmp_path/'replay')
     assert (replay/'sheet-set.pdf').read_bytes() == (first/'sheet-set.pdf').read_bytes()

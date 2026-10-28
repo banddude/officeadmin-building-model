@@ -61,7 +61,7 @@ wider columns or smaller text to resolve overflow. No text is ellipsized.
 The shared renderer supports XML `space="preserve"` on group/text elements.
 Leading, trailing and repeated supplied ASCII spaces are retained exactly in
 source, wrapped cells and SVG. The schedule renderer explicitly opts into that
-mode. Unsupported non-ASCII/control glyphs fail through shared
+mode. XML-invalid/control text and missing glyphs fail through shared
 `validate_sheet_text`; an explicit source newline is laid out as separate lines.
 No source value is silently trimmed or canonicalized.
 
@@ -133,3 +133,9 @@ successful packet. Output must be a fresh path. A failure retains a failure
 receipt (or raises before reserving the path for invalid input); there is no
 `delivery` directory until the whole packet succeeds. No canonical mutation,
 network call, external service, or production execution is involved.
+
+PDF text verification compares every projected non-space Unicode glyph in order.
+Printable Unicode spaces such as NBSP may be represented by Cairo as positioned
+gaps or extracted as ordinary spaces. Their exact code points and counts remain
+bound in canonical input, row cells, wrapped lines and SVG; PDF extraction does
+not prove those whitespace identities. Missing visible glyphs still fail.

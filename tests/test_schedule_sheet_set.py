@@ -9,12 +9,17 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from oabm.drawings.schedule_layout import ScheduleLayout, paginate_schedules
-from oabm.drawings.schedule_set import VERSION, create_panel_schedule_sheet_set, panel_schedule_drawing_set
+from oabm.drawings.schedule_set import VERSION, create_panel_schedule_sheet_set as _create_panel_schedule_sheet_set, panel_schedule_drawing_set
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('panel_example', ROOT / 'examples/panel_schedule_sheets.py')
 example = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(example)
+
+
+def create_panel_schedule_sheet_set(*args, **kwargs):
+    # This file exercises the explicitly retained fact-ledger compatibility mode.
+    return _create_panel_schedule_sheet_set(*args, presentation='fact_ledger', **kwargs)
 
 
 def inputs(tmp_path, formats=None, count=90):
@@ -170,17 +175,20 @@ def test_settings_schema_and_actionable_invalid_input(tmp_path):
 
 
 def test_unsupported_label_glyph_fails_without_source_mutation(tmp_path):
-    files = inputs(tmp_path, ['svg', 'pdf'], 12)
+    from oabm.drawings.company_sheets import _font
+    coverage=_font('DejaVu Sans',400)[0]._oabm_codepoints
+    glyph=next(c for c in ('⌀','🧑','𓀀') if ord(c) not in coverage)
+    files = inputs(tmp_path, ['svg'], 12)
     model = example.synthetic_two_panel_model(12)
-    files[0].write_text(replace(model, circuits=(replace(model.circuits[0], circuit_number='A\u00a0B'),
+    files[0].write_text(replace(model, circuits=(replace(model.circuits[0], circuit_number='A'+glyph+'B'),
                                              *model.circuits[1:])).to_json())
     original = files[0].read_bytes()
-    with pytest.raises(ValueError, match='printable ASCII'):
+    with pytest.raises(ValueError, match=r'glyph U\+'):
         create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'unsupported')
     assert files[0].read_bytes() == original and not (tmp_path / 'unsupported').exists()
 
 
-def test_supported_single_internal_label_space_survives_actual_pdf_runs_and_source(tmp_path):
+def test_supported_single_internal_label_space_survives_actual_pdf_runs_and_source(tmp_path, sheet_pdf_runtime):
     import pypdf
     files = inputs(tmp_path, ['svg', 'pdf'], 12)
     model = example.synthetic_two_panel_model(12)
@@ -190,7 +198,7 @@ def test_supported_single_internal_label_space_survives_actual_pdf_runs_and_sour
     out = create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'single-space')
     assert (out / 'schedule-source/model.json').read_bytes() == original
     manifest = json.loads((out / 'SCHEDULE-MANIFEST.json').read_text())
-    assert manifest['verification']['pdf']['status'] == 'all_projected_nonspace_glyph_runs_exact'
+    assert manifest['verification']['pdf']['status'] == 'all_projected_nonspace_glyph_sequence_exact'
     runs = []
     for page in pypdf.PdfReader(out / 'sheet-set.pdf').pages:
         page.extract_text(visitor_text=lambda text, *unused: runs.append(text.rstrip('\r\n')))
@@ -198,7 +206,7 @@ def test_supported_single_internal_label_space_survives_actual_pdf_runs_and_sour
     assert any('>A B</' in p.read_text() for p in (out / 'sheets').glob('*.svg'))
 
 
-def test_supported_space_has_distinct_actual_pdf_pixels_from_no_space(tmp_path):
+def test_supported_space_has_distinct_actual_pdf_pixels_from_no_space(tmp_path, sheet_pdf_runtime):
     pdfium = pytest.importorskip('pypdfium2')
     from PIL import ImageChops
     files = inputs(tmp_path, ['svg', 'pdf'], 12)
@@ -221,7 +229,7 @@ def test_supported_space_has_distinct_actual_pdf_pixels_from_no_space(tmp_path):
     assert ImageChops.difference(*crops).getbbox() is not None
 
 
-def test_distinct_opaque_spaces_preserved_in_source_svg_and_actual_pdf_pixels(tmp_path):
+def test_distinct_opaque_spaces_preserved_in_source_svg_and_actual_pdf_pixels(tmp_path, sheet_pdf_runtime):
     pdfium = pytest.importorskip('pypdfium2')
     from PIL import Image, ImageChops
     labels = ['A B', 'A  B', ' A B ']
@@ -254,7 +262,7 @@ def test_distinct_opaque_spaces_preserved_in_source_svg_and_actual_pdf_pixels(tm
     assert boxes[2][0] > boxes[0][0]  # supplied leading space moves the glyphs
 
 
-def test_narrow_column_wrap_boundary_spaces_remain_distinct_in_actual_pdf(tmp_path):
+def test_narrow_column_wrap_boundary_spaces_remain_distinct_in_actual_pdf(tmp_path, sheet_pdf_runtime):
     pdfium = pytest.importorskip('pypdfium2')
     from PIL import ImageChops
     labels = ['ABC DEF', 'ABC DE F']
@@ -290,7 +298,7 @@ def test_narrow_column_wrap_boundary_spaces_remain_distinct_in_actual_pdf(tmp_pa
     assert ImageChops.difference(*crops).getbbox() is not None
 
 
-def test_compact_two_panel_packet_uses_two_pages_and_keeps_all_facts(tmp_path):
+def test_compact_two_panel_packet_uses_two_pages_and_keeps_all_facts(tmp_path, sheet_pdf_runtime):
     import pypdf
     files = inputs(tmp_path, ['svg', 'pdf'], 90)
     separate = create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'separate')
@@ -342,3 +350,24 @@ def test_compact_empty_panels_and_invalid_packing(tmp_path):
     files[3].write_text(json.dumps({'version': VERSION, 'layout': {'packing': 'shrink'}}))
     with pytest.raises(ValueError, match='packing:'):
         create_panel_schedule_sheet_set(*files, output_directory=tmp_path / 'invalid-packing')
+
+
+def test_covered_nonbreaking_space_label_remains_exact_in_source_and_svg(tmp_path):
+    files=inputs(tmp_path,['svg'],12);model=example.synthetic_two_panel_model(12)
+    files[0].write_text(replace(model,circuits=(replace(model.circuits[0],circuit_number='A\u00a0B'),*model.circuits[1:])).to_json())
+    original=files[0].read_bytes();root=create_panel_schedule_sheet_set(*files,output_directory=tmp_path/'unicode-label')
+    manifest=json.loads((root/'SCHEDULE-MANIFEST.json').read_bytes())
+    assert any('A\u00a0B' in r['cells'] for r in manifest['rows'])
+    visible=''.join(''.join(ET.fromstring(p.read_bytes()).itertext()) for p in (root/'sheets').glob('*.svg'))
+    assert 'A\u00a0B' in visible and files[0].read_bytes()==original
+
+
+def test_covered_nonbreaking_space_label_actual_pdf_keeps_source(tmp_path,sheet_pdf_runtime):
+    files=inputs(tmp_path,['svg','pdf'],12);model=example.synthetic_two_panel_model(12)
+    files[0].write_text(replace(model,circuits=(replace(model.circuits[0],circuit_number='A\u00a0B'),*model.circuits[1:])).to_json())
+    original=files[0].read_bytes()
+    root=create_panel_schedule_sheet_set(*files,output_directory=tmp_path/'nbsp-pdf')
+    manifest=json.loads((root/'SCHEDULE-MANIFEST.json').read_bytes())
+    assert any('A\u00a0B' in row['cells'] for row in manifest['rows'])
+    assert files[0].read_bytes()==original
+    assert (root/'sheet-set.pdf').exists()

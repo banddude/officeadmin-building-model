@@ -396,11 +396,31 @@ def generate_plan(
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     if assembly_geometry == "cut":
         from .assembly_cuts import physical_cut_view
-        return physical_cut_view(model, spec, generate_plan, dict(
+        return physical_cut_view(model, spec, _generate_plan_base, dict(
             symbol_provider=symbol_provider, label_provider=label_provider,
             dimension_decimals=dimension_decimals, label_overlap=label_overlap,
             dimension_overlap=dimension_overlap))
     require_no_populated_building_assemblies(model, "generate_plan")
+    return _generate_plan_base(model, spec, symbol_provider=symbol_provider,
+        label_provider=label_provider, dimension_decimals=dimension_decimals,
+        label_overlap=label_overlap, dimension_overlap=dimension_overlap)
+
+
+def _generate_plan_base(
+    model: BuildingModel,
+    spec: PlanSpec,
+    *,
+    symbol_provider: SymbolProvider,
+    label_provider: LabelProvider,
+    dimension_decimals: int | None,
+    label_overlap: str,
+    dimension_overlap: str,
+) -> DrawingView:
+    """Project ordinary entities from the original model after public admission.
+
+    Physical cut composition reuses this projection without deleting canonical
+    assemblies or invalidating the route receipts that depend on them.
+    """
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -568,11 +588,31 @@ def generate_section(
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     if assembly_geometry == "cut":
         from .assembly_cuts import physical_cut_view
-        return physical_cut_view(model, spec, generate_section, dict(
+        return physical_cut_view(model, spec, _generate_section_base, dict(
             symbol_provider=symbol_provider, label_provider=label_provider,
             dimension_decimals=dimension_decimals, label_overlap=label_overlap,
             dimension_overlap=dimension_overlap))
     require_no_populated_building_assemblies(model, "generate_section")
+    return _generate_section_base(model, spec, symbol_provider=symbol_provider,
+        label_provider=label_provider, dimension_decimals=dimension_decimals,
+        label_overlap=label_overlap, dimension_overlap=dimension_overlap)
+
+
+def _generate_section_base(
+    model: BuildingModel,
+    spec: SectionSpec,
+    *,
+    symbol_provider: SymbolProvider,
+    label_provider: LabelProvider,
+    dimension_decimals: int | None,
+    label_overlap: str,
+    dimension_overlap: str,
+) -> DrawingView:
+    """Project ordinary entities from the original model after public admission.
+
+    Physical cut composition reuses this projection without deleting canonical
+    assemblies or invalidating the route receipts that depend on them.
+    """
     overlap = _validated_label_overlap(label_overlap)
     _validated_dimension_decimals(dimension_decimals)
     _validated_dimension_overlap(dimension_overlap)

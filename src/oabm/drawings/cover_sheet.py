@@ -692,6 +692,8 @@ def create_cover_sheet(config_path, *, profile_path, job_path, output_directory,
     sheet = matches[0]
     if map_mode not in {'supplied','auto','cached'}:
         raise ValueError('map mode must be supplied, auto or cached')
+    if map_mode!='supplied' and 'location_map' in config:
+        raise ValueError('Apple map mode conflicts with supplied location_map; remove the diagram or choose supplied mode')
     snapshot=None
     if map_mode!='supplied' and 'location_map' not in config:
         cache=Path(map_cache) if map_cache is not None else Path.home()/'.cache/oabm/cover-maps'

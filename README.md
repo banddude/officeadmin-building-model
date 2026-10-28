@@ -121,3 +121,5 @@ site geometry to scaled editable sheets using the shared company sheet profile.
 See [Electrical sheet composition](docs/electrical-sheet-composition.md) for shared schematic/feeder/register regions and explicit useful-panel selection. The connected drafting samples are `examples/reference_production_set.py --variant reference|residential|commercial` (supply a fresh output path); their visual review status remains explicit.
 
 See [Shared production chain](docs/production-sheet-set.md) for one ordered cover/site/single-line/schedule/detail SVG/PDF packet using one company profile and canonical model. See the [dated current-state audit](docs/current-state-audit-2026-10-27.md) for implementation boundaries and outstanding professional drafting acceptance.
+
+See [Checked assembly routing](docs/checked-assembly-routing.md) for explicit routing candidates gated by assembly geometry and bend preflight, with a canonical output for downstream delivery.

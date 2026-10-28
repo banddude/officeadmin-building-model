@@ -145,3 +145,21 @@ aggregation and nesting are checked. Styles and caller groups remain presentatio
 metadata outside canonical geometry. Update canonical facts and regenerate for
 unsupported native edits; this remains separate from ordinary legacy IFC edit
 support and the bounded third-party native importer.
+
+### Checked routes and physical cut drawings
+
+Plan and section cuts project ordinary entities from the original validated
+canonical model. The drawing adapter no longer constructs an intermediate model
+with its assemblies removed: doing so invalidated valid assembly-bound route
+receipts and prevented a successfully routed model from reaching plan delivery.
+The source model and route receipts remain byte-for-byte unchanged. Legacy
+requests without explicit cut mode still refuse populated assemblies, and stale
+assembly/route combinations still fail canonical validation.
+
+Run `python examples/routed_assembly_delivery.py FRESH_ROOT` for a connected
+synthetic wall/opening/ceiling proof: generated studs, opening inserts, T-bar,
+tiles, hangers and deck feed the plenum router; the resulting same model feeds
+cut-plan SVGs, quantity counts and a GLB through the existing delivery command.
+The endpoints are explicit synthetic plenum connection points. This does not
+create wall penetrations, select manufacturer fittings or prove a whole building.
+The retained bend report remains a separate check and can require review.

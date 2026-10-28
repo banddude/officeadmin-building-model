@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import replace
 from oabm.assembly_mesh import assembly_component_mesh
-from oabm.model import Point3, Vector3
+from oabm.model import Point3, Vector3, validate_model
 from .model import Bounds2, DrawingPrimitive, LineStyle, Point2
 from .projection import ProjectionFrame, frame_from_view_direction, clip_polyline
 
@@ -57,6 +57,7 @@ def mesh_plane_segments(vertices, indices, frame, cut_depth=0.):
 def physical_cut_view(model,spec,base_generator,kwargs):
     """Combine existing ordinary view content with explicit child cut outlines."""
     from .generator import PlanSpec
+    validate_model(model)
     if isinstance(spec,PlanSpec):
         level=next((x for x in model.levels if x.id==spec.level_id),None)
         if level is None:raise ValueError('unknown plan level')
@@ -66,8 +67,9 @@ def physical_cut_view(model,spec,base_generator,kwargs):
     else:
         frame=frame_from_view_direction(origin=spec.origin,direction=spec.direction)
         cut=0.;levels=set(spec.level_ids)
-    # Detached projection input only; canonical source is retained unchanged.
-    base=base_generator(replace(model,building_assemblies=(),assembly_components=()),spec,**kwargs)
+    # Project the original validated model. Removing assemblies would invalidate
+    # the checked routes whose freshness receipts bind those exact components.
+    base=base_generator(model,spec,**kwargs)
     if not spec.visibility.architecture:return replace(base,metadata=base.metadata+(("assembly_mode","cut-plane-only; architecture hidden"),))
     components=[c for c in sorted(model.assembly_components,key=lambda c:c.id) if not levels or c.level_id in levels]
     outlines=[]

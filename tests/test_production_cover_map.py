@@ -53,3 +53,24 @@ def test_confirmation_is_forwarded_and_cache_cannot_reuse_changed_identity(tmp_p
     receipt=next((path.parent/'map-cache').glob('*.json'));record=json.loads(receipt.read_bytes());record['provenance']['latitude']='34.01';receipt.write_text(json.dumps(record))
     with pytest.raises(MapAmbiguityError):create_production_sheet_set(path,output_directory=tmp_path/'changed',map_client=no_network)
     assert not (tmp_path/'changed').exists() and not no_network.calls
+
+
+def test_explicit_apple_request_cannot_silently_use_supplied_diagram(tmp_path):
+    path=prepare(tmp_path/'inputs',variant='reference',pdf=False,reference_cover=True)
+    request=json.loads(path.read_bytes())
+    request['cover_map']={'mode':'auto','cache_directory':'cache','candidate_index':None}
+    path.write_text(json.dumps(request))
+    client=Client()
+    with pytest.raises(ValueError,match='conflicts with supplied location_map'):
+        create_production_sheet_set(path,output_directory=tmp_path/'run',map_client=client)
+    assert not client.calls and not (tmp_path/'run').exists()
+
+
+def test_standalone_apple_request_refuses_supplied_diagram(tmp_path):
+    from oabm.drawings.cover_sheet import create_cover_sheet
+    path=prepare(tmp_path/'inputs',variant='reference',pdf=False,reference_cover=True)
+    client=Client()
+    with pytest.raises(ValueError,match='conflicts with supplied location_map'):
+        create_cover_sheet(path.parent/'cover.json',profile_path=path.parent/'profile.json',
+            job_path=path.parent/'job.json',output_directory=tmp_path/'run',map_mode='auto',map_client=client)
+    assert not client.calls and not (tmp_path/'run').exists()

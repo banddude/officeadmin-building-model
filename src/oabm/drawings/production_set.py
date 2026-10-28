@@ -146,6 +146,8 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
         else:expanded.append({'id':sheet.id,'title':sheet.title,'source':sheet})
     if len({r['id'].casefold() for r in expanded})!=len(expanded):raise ValueError('continuation IDs collide with another sheet; choose distinct template IDs')
     cover_pagination=None;map_snapshot=None
+    if cover and map_options is not None and 'location_map' in cover:
+        raise ValueError('cover_map conflicts with supplied location_map; remove the diagram or omit cover_map')
     if cover and map_options is not None and 'location_map' not in cover:
         from .cover_maps import acquire_cover_map
         map_snapshot=acquire_cover_map(cover['project']['location'],cache_directory=request_path.parent/map_options['cache_directory'],

@@ -29,3 +29,6 @@ __all__ = [
     "RouteOverlap", "find_overlapping_route_runs",
     "ConsolidationReport", "ConsolidationResult", "consolidate_bundled_routes",
 ]
+
+from .checked_assembly import AssemblyRouteCandidate, CheckedAssemblyRoute, NoCheckedAssemblyRoute, route_checked_assembly
+__all__ += ["AssemblyRouteCandidate", "CheckedAssemblyRoute", "NoCheckedAssemblyRoute", "route_checked_assembly"]

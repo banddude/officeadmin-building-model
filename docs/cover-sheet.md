@@ -120,3 +120,8 @@ A complete public-safe example with all optional sections and an explicitly
 synthetic vicinity diagram is available through
 `python examples/reference_production_set.py OUTPUT --adaptive-layout --reference-cover`.
 The diagram is a layout test, not a replacement for a real job's map.
+
+An explicit `auto`/`cached` Apple-map request cannot also contain a supplied
+`location_map` diagram. That conflict fails with a choice of removing the diagram
+or selecting supplied mode. Likewise a production `cover_map` request refuses a
+supplied diagram instead of silently skipping the requested Apple acquisition.

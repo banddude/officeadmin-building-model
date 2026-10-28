@@ -6,6 +6,7 @@ import heapq
 import json
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Iterable
 
 from oabm.model import (
@@ -2311,6 +2312,16 @@ def _candidate_coordinates(
     )
     for rule in all_rules:
         bounds = rule.bounds
+        if geometry.allowed_domain is not None and not any(
+            bounds.max_x >= volume.min_x and bounds.min_x <= volume.max_x
+            and bounds.max_y >= volume.min_y and bounds.min_y <= volume.max_y
+            and bounds.max_z >= volume.min_z and bounds.min_z <= volume.max_z
+            for volume in geometry.allowed_domain.volumes
+        ):
+            # Already-expanded rule bounds wholly outside the allowed union
+            # cannot influence a contained route. They remain in the geometry
+            # and receipts; only their irrelevant lattice planes are omitted.
+            continue
         xs.update({_canon(bounds.min_x - escape, p), _canon(bounds.max_x + escape, p), _canon(bounds.center.x, p)})
         ys.update({_canon(bounds.min_y - escape, p), _canon(bounds.max_y + escape, p), _canon(bounds.center.y, p)})
         zs.update({_canon(bounds.min_z - escape, p), _canon(bounds.max_z + escape, p), _canon(bounds.center.z, p)})
@@ -2365,6 +2376,22 @@ def _candidate_coordinates(
     xs.update({_canon(min(xs) - options.search_margin_m, p), _canon(max(xs) + options.search_margin_m, p)})
     ys.update({_canon(min(ys) - options.search_margin_m, p), _canon(max(ys) + options.search_margin_m, p)})
     zs.update({_canon(min(zs) - options.search_margin_m, p), _canon(max(zs) + options.search_margin_m, p)})
+    if geometry.allowed_domain is not None:
+        # A contained point cannot have an axis coordinate outside every raw
+        # domain interval. Drop those unreachable lattice planes before taking
+        # the Cartesian product. Keep all blockers and the exact swept-union
+        # checks: this is candidate pruning, not collision or domain relaxation.
+        # Use raw intervals, not individually shrunken boxes, so connected
+        # volume seams remain available to the union-coverage algorithm.
+        epsilon = max(geometry.allowed_domain.containment_epsilon_m, 10 ** -p)
+        def reachable(values, lower, upper):
+            return {value for value in values if any(
+                getattr(bounds, lower)-epsilon <= value <= getattr(bounds, upper)+epsilon
+                for bounds in geometry.allowed_domain.volumes
+            )}
+        xs = reachable(xs, 'min_x', 'max_x')
+        ys = reachable(ys, 'min_y', 'max_y')
+        zs = reachable(zs, 'min_z', 'max_z')
     sorted_xs, sorted_ys, sorted_zs = tuple(sorted(xs)), tuple(sorted(ys)), tuple(sorted(zs))
     if (
         geometry.allowed_domain is not None
@@ -2420,6 +2447,7 @@ def _search(
     start_prev = -2 if start_stub_exists else -1
     start_state = (start_node, start_prev, 0, initial_mask)
     best: dict[tuple[tuple[int, int, int], int, int, int], float] = {start_state: initial_cost}
+    frontiers = {(start_node, start_prev, initial_mask): [(0, initial_cost)]}
     predecessor: dict[
         tuple[tuple[int, int, int], int, int, int],
         tuple[tuple[int, int, int], int, int, int],
@@ -2433,6 +2461,32 @@ def _search(
     best_goal_state = None
     considered_blockers: set[str] = set()
 
+    def point_at(node):
+        return _point_for(node, xs, ys, zs)
+
+    def check_edge(node, next_node):
+        point, next_point = point_at(node), point_at(next_node)
+        if geometry.allowed_domain is not None and not _segment_within_allowed_domain(
+            point, next_point, geometry.allowed_domain
+        ):
+            return False, (), 0.0
+        if _point_blocked(next_point, geometry.hard_blockers):
+            ids = tuple(item.id for item in geometry.hard_blockers
+                        if _rule_contains_point(next_point, item)) if geometry.allowed_domain is not None else ()
+            return False, ids, 0.0
+        if not _segment_clear(point, next_point, geometry.hard_blockers):
+            ids = _segment_blocker_ids(point, next_point, geometry.hard_blockers) if geometry.allowed_domain is not None else ()
+            return False, ids, 0.0
+        return True, (), _edge_base_cost(point, next_point, geometry, options)
+
+    if geometry.allowed_domain is not None:
+        # Direction/bend/required-corridor states revisit the same immutable
+        # geometric edge. Cache only this request's pure geometric result;
+        # never cache across models or suppress freshness checks. Both caches
+        # are bounded and preserve the original directed-edge diagnostics.
+        point_at = lru_cache(maxsize=65536)(point_at)
+        check_edge = lru_cache(maxsize=65536)(check_edge)
+
     while heap:
         cost, _, _, _, _, _, _, state = heapq.heappop(heap)
         if cost > best.get(state, math.inf) + 1e-12:
@@ -2440,6 +2494,10 @@ def _search(
         if cost >= best_goal_cost - 1e-12:
             break
         node, prev_code, bends, mask = state
+        if geometry.allowed_domain is not None and _dominated_route_state(
+            frontiers.get((node, prev_code, mask), ()), bends, cost, strict=True
+        ):
+            continue
         point = _point_for(node, xs, ys, zs)
 
         if node == end_node:
@@ -2469,24 +2527,10 @@ def _search(
                     best_goal_state = state
 
         for next_node, direction_code in _neighbors(node, xs, ys, zs):
-            next_point = _point_for(next_node, xs, ys, zs)
-            if (
-                geometry.allowed_domain is not None
-                and not _segment_within_allowed_domain(point, next_point, geometry.allowed_domain)
-            ):
-                continue
-            if _point_blocked(next_point, geometry.hard_blockers):
-                if geometry.allowed_domain is not None:
-                    considered_blockers.update(
-                        item.id for item in geometry.hard_blockers
-                        if _rule_contains_point(next_point, item)
-                    )
-                continue
-            if not _segment_clear(point, next_point, geometry.hard_blockers):
-                if geometry.allowed_domain is not None:
-                    considered_blockers.update(
-                        _segment_blocker_ids(point, next_point, geometry.hard_blockers)
-                    )
+            next_point = point_at(next_node)
+            clear, blocked_ids, edge_cost = check_edge(node, next_node)
+            if not clear:
+                considered_blockers.update(blocked_ids)
                 continue
             if prev_code == -2:
                 prior_vector = start_vector
@@ -2500,12 +2544,21 @@ def _search(
             if options.max_bends is not None and next_bends > options.max_bends:
                 continue
             next_mask = _required_mask(mask, point, next_point, geometry.required)
-            next_cost = cost + _edge_base_cost(point, next_point, geometry, options)
+            next_cost = cost + edge_cost
             if turn:
                 next_cost += options.bend_penalty_m
             next_state = (next_node, direction_code, next_bends, next_mask)
             old_cost = best.get(next_state)
             if old_cost is None or next_cost < old_cost - 1e-12:
+                frontier_key = (next_node, direction_code, next_mask)
+                if geometry.allowed_domain is not None:
+                    frontier = frontiers.get(frontier_key, ())
+                    if _dominated_route_state(frontier, next_bends, next_cost):
+                        continue
+                    frontiers[frontier_key] = [
+                        (old_bends, old_value) for old_bends, old_value in frontier
+                        if not (next_bends <= old_bends and next_cost <= old_value)
+                    ] + [(next_bends, next_cost)]
                 if (
                     geometry.allowed_domain is not None
                     and pushed_states >= _MAX_ALLOWED_DOMAIN_SEARCH_STATES
@@ -2549,6 +2602,18 @@ def _search(
     points.extend(path)
     points.append(end)
     return _dedupe(points)
+
+
+def _dominated_route_state(frontier, bends, cost, *, strict=False):
+    """Same node/direction/corridor mask: fewer bends and no more cost wins.
+
+    Every continuation has identical geometry and incremental costs from that
+    state. A lower bend count can satisfy every upper bend limit the other can.
+    Exact comparisons avoid turning a near-cost tie into a false dominance.
+    """
+    return any(old_bends <= bends and old_cost <= cost
+               and (not strict or old_bends < bends or old_cost < cost)
+               for old_bends, old_cost in frontier)
 
 
 def _push(heap, cost: float, state) -> None:

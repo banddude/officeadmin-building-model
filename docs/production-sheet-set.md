@@ -148,3 +148,18 @@ provider/qualification metadata. Existing OfficeAdmin access owns authentication
 no credentials, authorization headers or signed provider URLs enter job receipts.
 Map acquisition and exact framing remain separately reviewed capabilities; imagery
 is vicinity context and does not establish surveyed site coordinates.
+
+## Read-only request preflight
+
+Before making a fresh attempt, `oabm-production-sheets --check REQUEST.json`
+validates the existing production request, input files, shared profile/job,
+canonical model, sheet ownership and selected consumer planning, including
+actual detail-body source checks. Python callers can use
+`preflight_production_sheet_set(request_path)`. Both paths reuse the production
+coordinator and its validators; they do not create an attempt or fetch/cache a
+cover map. A successful result is bounded: final composed bodies, PDF conversion,
+map acquisition, visual review and engineering acceptance remain unverified.
+The check does not claim every possible build failure has been ruled out. Input
+path and consumer diagnostics require correction of the supplied facts, not
+invented values. See the [operator guide](operator-start-here.md) for a runnable
+workflow and private-data handling.

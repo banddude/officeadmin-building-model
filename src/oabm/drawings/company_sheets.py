@@ -405,19 +405,20 @@ def render_company_sheet_svg(sheet, *, body_svg=None, images=()):
     _el(root,'line',x1=x,y1=top,x2=x,y2=h-m,stroke='#4a4a4a',stroke_width=.2)
     def yy(frac):return top+rh*frac
     def line(frac): _el(root,'line',x1=left,y1=yy(frac),x2=right,y2=yy(frac),stroke='#4a4a4a',stroke_width=.15)
-    def text(value,frac,size=2.8,weight=400,max_lines=1,xx=None,width=None):
+    def text(value,frac,size=2.8,weight=400,max_lines=1,xx=None,width=None,context='static label'):
         # Paper zones may grow taller, but a fixed-width rail must not
         # inflate its type indefinitely. Retain reference physical sizes on
         # larger sheets; smaller-sheet proportions stay backward compatible.
         size*=min(1.0,rh/595.488888888)
-        rows=_rows(value,cw if width is None else width,size,weight)
-        if len(rows)>max_lines: raise ValueError(f'sheet {sheet.id}: title-block text overflows {max_lines}-line cell: {value!r}; shorten text or widen rail')
+        try:rows=_rows(value,cw if width is None else width,size,weight)
+        except ValueError as exc:raise ValueError(f'sheet {sheet.id}: title-block {context}: {exc}') from exc
+        if len(rows)>max_lines: raise ValueError(f'sheet {sheet.id}: title-block {context} text overflows {max_lines}-line cell: {value!r}; shorten text or widen rail')
         for j,row in enumerate(rows):
             font,_,_,_=_font('Liberation Sans',weight)
             bearing=min(0,font.getbbox(row,anchor='ls')[0])*size/1000
             element=_el(root,'text',x=(left if xx is None else xx)-bearing,y=yy(frac)+j*size*1.35,font_family=_font('Liberation Sans',weight)[1],font_size=size,font_weight=weight,fill='#161616')
             element.set(XML_SPACE,'preserve');element.text=row
-    def field(key,frac,**kwargs):text(f.get(key,''),frac,**kwargs)
+    def field(key,frac,**kwargs):text(f.get(key,''),frac,context='field '+key,**kwargs)
     text('PROJECT / LOCATION',.017,3,500)
     field('project',.040,size=5.5,weight=600,max_lines=2)
     field('client',.082,size=3.6)
@@ -438,17 +439,17 @@ def render_company_sheet_svg(sheet, *, body_svg=None, images=()):
     text('DATE',.697,size=2.8);text('DESCRIPTION',.697,size=2.8,xx=left+cw*.30,width=cw*.50)
     text('REV',.697,size=2.8,xx=left+cw*.88,width=cw*.12)
     for frac in (.702,.724,.746,.768,.790):line(frac)
-    text(f['date'],.716,size=2.3,width=cw*.29)
+    text(f['date'],.716,size=2.3,width=cw*.29,context='field date')
     field('revision_description',.716,size=2.3,xx=left+cw*.30,width=cw*.56)
-    text(f['revision'],.716,size=2.5,xx=left+cw*.88,width=cw*.12)
+    text(f['revision'],.716,size=2.5,xx=left+cw*.88,width=cw*.12,context='field revision')
     for label,key,frac in [('DATE','date',.837),('DRAWN','drawn_by',.847),('CHECKED','checked_by',.857),('PROJECT NO.','project_number',.867),('SCALE','scale',.877)]:
         text(label,frac,size=2.7,width=cw*.35)
         field(key,frac,size=2.5,xx=left+cw*.37,width=cw*.63)
         line(frac+.003)
     text('SHEET TITLE',.904,size=2.8)
-    text(sheet.title,.920,size=3.3,weight=500,max_lines=2)
+    text(sheet.title,.920,size=3.3,weight=500,max_lines=2,context='sheet title')
     text('SHEET NO.',.955,size=2.8)
-    text(sheet.id,.995,size=22,weight=600)
+    text(sheet.id,.995,size=22,weight=600,context='sheet ID')
     result=ET.tostring(root,encoding='unicode')
     ET.fromstring(result)  # Final well-formed XML check before successful output.
     return result

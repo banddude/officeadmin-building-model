@@ -22,7 +22,7 @@ VERSION='production-sheet-set-v1'
 MODEL_VIEW_VERSION='production-sheet-set-v2'
 
 
-def create_production_sheet_set(request_path, *, output_directory, map_client=None):
+def create_production_sheet_set(request_path, *, output_directory, map_client=None, _check_only=False):
     """Compose all requested bodies once, then export one ordered shared packet.
 
     Exact inputs and derived evidence/maps are retained. Schedule pagination
@@ -50,6 +50,8 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
     single_line=request['single_line']
     if single_line is not None and (not isinstance(single_line,dict) or set(single_line) not in ({'sheet_id'}, {'sheet_id','composition'} if v2 else {'sheet_id'})):
         raise ValueError('single_line: supply null or an explicit sheet_id object; v2 may add composition')
+    if single_line is not None and (not isinstance(single_line['sheet_id'],str) or not single_line['sheet_id']):
+        raise ValueError('single_line.sheet_id: nonempty string required')
     electrical_config=single_line.get('composition') if single_line else None
     if electrical_config is not None:
         legacy={'version','single_line_regions','panel_region_mm','panel_width_mm'}
@@ -64,13 +66,26 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
         if v2 and request[key] is None:continue
         allowed=({'sheet_id','request'},{'sheet_id','request','graphics'}) if v2 and key=='site' else ({'sheet_id','request'},)
         if not isinstance(request[key],dict) or set(request[key]) not in allowed:raise ValueError(key+': sheet_id/request required; v2 site may add graphics')
+    # Validate path types before joining, so missing job inputs name their owner.
+    for name in ('profile', 'job', 'model', 'cover', 'details'):
+        value=request[name]
+        if name in ('cover', 'details') and v2 and value is None:continue
+        if not isinstance(value,str) or not value:raise ValueError(f'{name}: nonempty input path required')
+    for name in ('site', 'schedules'):
+        if request[name] is not None:
+            for field in ('sheet_id', 'request'):
+                if not isinstance(request[name][field],str) or not request[name][field]:raise ValueError(f'{name}.{field}: nonempty string required')
+            if 'graphics' in request[name] and (not isinstance(request[name]['graphics'],str) or not request[name]['graphics']):raise ValueError(f'{name}.graphics: nonempty input path required')
     paths={name:request_path.parent/request[name] for name in ('profile','job','model')}
     for name in ('cover','details'):
         if not(v2 and request[name] is None):paths[name]=request_path.parent/request[name]
     if request['site'] is not None:paths['site']=request_path.parent/request['site']['request']
     if request['site'] is not None and 'graphics' in request['site']:paths['site_graphics']=request_path.parent/request['site']['graphics']
     if request['schedules'] is not None:paths['settings']=request_path.parent/request['schedules']['request']
-    inputs={key:path.read_bytes() for key,path in paths.items()}
+    inputs={}
+    for key,path in paths.items():
+        try:inputs[key]=path.read_bytes()
+        except OSError as exc:raise ValueError(f'{key}: cannot read input {path}: {exc.strerror or exc}') from exc
     resolved=resolve_company_sheet_set(paths['profile'],paths['job'])
     if resolved.profile_json!=inputs['profile'] or resolved.job_json!=inputs['job']:raise ValueError('profile/job changed during snapshot')
     model=BuildingModel.from_json(inputs['model'])
@@ -148,11 +163,11 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
     cover_pagination=None;map_snapshot=None
     if cover and map_options is not None and 'location_map' in cover:
         raise ValueError('cover_map conflicts with supplied location_map; remove the diagram or omit cover_map')
-    if cover and map_options is not None and 'location_map' not in cover:
+    if cover and map_options is not None and 'location_map' not in cover and not _check_only:
         from .cover_maps import acquire_cover_map
         map_snapshot=acquire_cover_map(cover['project']['location'],cache_directory=request_path.parent/map_options['cache_directory'],
             client=map_client,candidate_index=map_options['candidate_index'],candidate_confirmation=map_options.get('candidate_confirmation'),offline=map_options['mode']=='cached')
-    if cover:
+    if cover and not (_check_only and map_options is not None):
         cover_pagination=paginate_cover(cover,by_id[cover['id']].drawing_bounds_mm,
             sheet_index=[{'id':r['id'],'title':r['title']} for r in expanded],map_snapshot=map_snapshot)
         expanded_with_cover=[]
@@ -161,6 +176,14 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
                 expanded_with_cover.extend({'id':page.id,'title':page.title,'source':row['source']} for page in cover_pagination.pages)
             else:expanded_with_cover.append(row)
         expanded=expanded_with_cover
+    if _check_only:
+        # Exercise the existing detail consumer against the actual canonical model;
+        # unlike a build this does not reserve an attempt or write assets.
+        if specs:company_detail_bodies(model,specs,tuple(by_id[sid] for sid in detail_sheet_ids),placements=placements)
+        return {'status':'bounded_preflight_passed', 'model_id':model.model_id,
+                'template_sheet_ids':[s.id for s in resolved.sheets],
+                'limitations':['No delivery or attempt was written and no map was fetched.',
+                    'Final body composition, PDF conversion, map acquisition and visual/engineering review remain unverified.']}
     output=Path(output_directory).absolute();output.parent.mkdir(parents=True,exist_ok=True);output.mkdir()
     pending=output/'.pending';pending.mkdir();stage='snapshot'
     try:
@@ -273,11 +296,22 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
         raise ValueError(f'production sheet set failed at {stage}: {exc}; attempt retained at {output}') from exc
 
 
+def preflight_production_sheet_set(request_path):
+    """Read-only bounded validation; no attempt, network map or output is created."""
+    return create_production_sheet_set(request_path, output_directory=None, _check_only=True)
+
+
 def main(argv=None):
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('request');parser.add_argument('output_directory')
+    import json
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check',action='store_true',help='read-only bounded request preflight; no output directory')
+    parser.add_argument('request');parser.add_argument('output_directory',nargs='?')
     args=parser.parse_args(argv)
-    try:result=create_production_sheet_set(args.request,output_directory=args.output_directory)
+    if args.check and args.output_directory is not None:parser.error('--check does not take an output directory')
+    if not args.check and args.output_directory is None:parser.error('output_directory is required unless --check is used')
+    try:
+        result=preflight_production_sheet_set(args.request) if args.check else create_production_sheet_set(args.request,output_directory=args.output_directory)
     except (ValueError,OSError,ImportError) as exc:parser.exit(1,str(exc)+'\n')
-    print(result);return 0
+    print(json.dumps(result,indent=2) if args.check else result);return 0
 
 if __name__=='__main__':raise SystemExit(main())

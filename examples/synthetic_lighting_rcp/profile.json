@@ -1,0 +1,10 @@
+{
+  "version": "company-sheet-profile-v1",
+  "fields": {
+    "company": "EXAMPLE ELECTRIC"
+  },
+  "template": {
+    "width_mm": 609.6,
+    "height_mm": 457.2
+  }
+}

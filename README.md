@@ -2,6 +2,15 @@
 
 Public R&D repo for the semantic 3D building and electrical modeling engine that will eventually integrate with OfficeAdmin.
 
+## Start here
+
+To install the local runtime, run a synthetic complete set, prepare private job
+inputs, check a production request, create populated-titleblock blank sheets,
+and deliver model/GLB previews, follow the **[operator start-here guide](docs/operator-start-here.md)**.
+The combined workflow is on the development PR branch until merged. Keep real
+job inputs and outputs outside this public checkout; these are review tools,
+not a claim of engineering approval or complete permit sets.
+
 ## North star
 
 One canonical semantic 3D model, many inputs and outputs.
@@ -123,3 +132,5 @@ See [Electrical sheet composition](docs/electrical-sheet-composition.md) for sha
 See [Shared production chain](docs/production-sheet-set.md) for one ordered cover/site/single-line/schedule/detail SVG/PDF packet using one company profile and canonical model. See the [dated current-state audit](docs/current-state-audit-2026-10-27.md) for implementation boundaries and outstanding professional drafting acceptance.
 
 See [Checked assembly routing](docs/checked-assembly-routing.md) for explicit routing candidates gated by assembly geometry and bend preflight, with a canonical output for downstream delivery.
+
+See [Supplied 2D lighting/RCP review sheets](docs/supplied-lighting-rcp.md) for source-bound XY presentation with unknown heights and no physical BIM placement.

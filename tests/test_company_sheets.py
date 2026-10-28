@@ -330,3 +330,17 @@ def test_tall_paper_real_pdf_keeps_physical_size_and_supplied_rail_text(tmp_path
     page=PdfReader(io.BytesIO((result/'sheet-set.pdf').read_bytes())).pages[0]
     assert float(page.mediabox.height)==pytest.approx(900*72/25.4,abs=.01)
     assert 'SL101' in page.extract_text() and 'EXAMPLE ELECTRIC' in page.extract_text()
+
+
+@pytest.mark.parametrize('field,value,pattern',[
+    ('revision','R'*30,r'sheet E0\.0: title-block field revision: text token exceeds measured cell capacity'),
+    ('address','W'*200,r'sheet E0\.0: title-block field address: text token exceeds measured cell capacity'),
+])
+def test_titleblock_token_overflow_names_sheet_and_field(tmp_path,field,value,pattern):
+    p,j=inputs(tmp_path,('svg',));job=json.loads(j.read_bytes())
+    if field=='revision':job['revision']=value
+    else:job.setdefault('fields',{})[field]=value
+    j.write_text(json.dumps(job))
+    with pytest.raises(ValueError,match=pattern):
+        cs.create_company_sheet_set(p,j,output_directory=tmp_path/'failed')
+    assert not (tmp_path/'failed').exists()

@@ -125,3 +125,19 @@ An explicit `auto`/`cached` Apple-map request cannot also contain a supplied
 `location_map` diagram. That conflict fails with a choice of removing the diagram
 or selecting supplied mode. Likewise a production `cover_map` request refuses a
 supplied diagram instead of silently skipping the requested Apple acquisition.
+
+Reference-grid bands now use measured content heights instead of fixed empty
+fractions. Their caps preserve room for a readable map and continuation flow;
+sparse inputs no longer reserve giant vacant bands. The layout receipt identifies
+`drafting-cover-reference-grid-v2`. Numbered supplied notes keep their numbering
+without an extra bullet. Contacts may include a separate supplied `license` line.
+
+Optional `linework_samples` accepts ordered objects with required `label` and
+`pattern` (`solid`, `dash`, `dot`, `dash-dot`), optional `tone` (`black`, `gray`),
+and optional finite `weight_mm` from 0.1 through 1.5. Samples use bounded explicit
+paper-space strokes and preserve full label/source coverage. The legend never
+infers the meaning of a route from its shape; the caller supplies the convention.
+
+General notes in the reference layout wrap into two balanced subcolumns, preferring
+paragraph boundaries. Oversized content still continues with exact source spans;
+no note is removed or reduced in type size to fill a region.

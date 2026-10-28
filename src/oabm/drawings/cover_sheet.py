@@ -60,7 +60,7 @@ class CoverCapacityError(ValueError):
 
 def validate_cover(config):
     required = {'version', 'id', 'project', 'scope', 'sheets', 'contacts'}
-    optional = {'layout', 'notes', 'location_map', 'pagination', 'code_basis', 'existing_system', 'linework_conventions', 'key_abbreviations'}
+    optional = {'layout', 'linework_samples', 'notes', 'location_map', 'pagination', 'code_basis', 'existing_system', 'linework_conventions', 'key_abbreviations'}
     if not isinstance(config, dict) or not required <= config.keys() or config.keys() - required - optional:
         raise ValueError('cover: required version, id, project, scope, sheets, contacts; optional notes/location_map/pagination')
     if config['version'] != VERSION:
@@ -91,8 +91,8 @@ def validate_cover(config):
     if config['id'].casefold() not in seen:
         raise ValueError('sheet index must include the cover id')
     for row in config['contacts']:
-        if not isinstance(row, dict) or not {'role', 'name'} <= row.keys() or row.keys() - {'role', 'name', 'phone', 'email', 'address'}:
-            raise ValueError('contacts: role/name required; phone/email/address optional')
+        if not isinstance(row, dict) or not {'role', 'name'} <= row.keys() or row.keys() - {'role', 'name', 'phone', 'email', 'address', 'license'}:
+            raise ValueError('contacts: role/name required; phone/email/address/license optional')
         for key, value in row.items():
             _text(value, 'contact.' + key)
     for section in ('code_basis', 'existing_system', 'linework_conventions', 'key_abbreviations'):
@@ -101,6 +101,18 @@ def validate_cover(config):
                 raise ValueError(section + ': expected ordered list of supplied facts')
             for i, value in enumerate(config[section]):
                 _text(value, f'{section}[{i}]')
+    if 'linework_samples' in config:
+        samples=config['linework_samples']
+        if not isinstance(samples,list):raise ValueError('linework_samples: expected ordered list')
+        for row in samples:
+            if not isinstance(row,dict) or not {'label','pattern'}<=row.keys() or row.keys()-{'label','pattern','weight_mm','tone'}:
+                raise ValueError('linework sample: label/pattern required; weight_mm/tone optional')
+            _text(row['label'],'linework sample label')
+            if row['pattern'] not in ('solid','dash','dot','dash-dot') or row.get('tone','black') not in ('black','gray'):
+                raise ValueError('linework sample: unsupported pattern or tone')
+            weight=row.get('weight_mm',.35)
+            if type(weight) not in (float,int) or not math.isfinite(weight) or not .1<=weight<=1.5:
+                raise ValueError('linework sample: weight_mm must be from 0.1 to 1.5')
     if 'notes' in config:
         if not isinstance(config['notes'], list):
             raise ValueError('notes: expected list')
@@ -275,7 +287,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
         project_label_width=min(text_width*.35,size*9)
         table_index=id_width < text_width*.45
 
-    project_labels = {'name':'Project','location':'Location','number':'Project no.'}
+    project_labels = {'name':'Project','location':'Location','number':'Project no.','client':'Client','discipline':'Discipline'}
     project_keys=[k for k in ('name','location','number') if k in config['project']]+sorted(set(config['project'])-{'name','location','number'})
     sections = [
         ('Project',1,[(f'project.{k}',project_labels.get(k,k)+': '+config['project'][k]) for k in project_keys],0),
@@ -291,6 +303,11 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
         ('key_abbreviations', 'Key abbreviations', 10, 1)):
         if config.get(key):
             sections.append((label, number, [(f'{key}[{i}]', value) for i, value in enumerate(config[key])], column))
+    if config.get('linework_samples'):
+        facts=[(f'linework_samples[{i}].label',row['label']) for i,row in enumerate(config['linework_samples'])]
+        existing=next((row for row in sections if row[0]=='Linework conventions'),None)
+        if existing is None:sections.append(('Linework conventions',9,facts,1))
+        else:existing[2].extend(facts)
     if 'location_map' in config:
         map_facts=[('location_map.caption',config['location_map']['caption'])]
         map_facts.extend((f'location_map.labels[{i}].text',f"L{i+1}  {row['text']}") for i,row in enumerate(config['location_map'].get('labels',[])))
@@ -321,7 +338,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                 entry=config['contacts'][int(source[9:-1])]
                 parts=[(entry['role']+': '+entry['name'],600)]
                 parts.extend(((('Tel: ' if key=='phone' else 'Address: ' if key=='address' else '')+entry[key]),400)
-                             for key in ('phone','email','address') if key in entry)
+                             for key in ('license','phone','email','address') if key in entry)
                 value='\n'.join(part[0] for part in parts)
                 for part_index,(part_value,weight) in enumerate(parts):
                     fragments=_wrap_text(part_value,text_width,size,SUPPORTED_FONT,weight)
@@ -355,13 +372,19 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                                  'index_id':entry['id'] if i==0 else '', 'index_title':fragment})
                     offset+=len(row_text)
             else:
-                indent=bullet_indent if source.startswith(('scope[','notes[')) else 0
-                for fragment in _wrap_text(value,text_width-indent,size,SUPPORTED_FONT):
-                    rows.append({'source':source,'offset':offset,'text':fragment,'indent':indent})
+                sample=config['linework_samples'][int(source.split('[')[1].split(']')[0])] if source.startswith('linework_samples[') else None
+                sample_width=min(36.,max(8.,text_width*.30))
+                indent=sample_width+8 if sample is not None else bullet_indent if source.startswith(('scope[','notes[')) else 0
+                wrap_width=(text_width-max(8.,size*3))/2 if grid and source.startswith('notes[') else text_width
+                for fragment in _wrap_text(value,wrap_width-indent,size,SUPPORTED_FONT):
+                    rows.append({'source':source,'offset':offset,'text':fragment,'indent':indent,
+                                 **({'line_sample':sample,'line_sample_width':sample_width} if sample is not None and offset==0 else {})})
                     offset+=len(fragment)
             source_text[source]=value
         prepared.append((title,number,rows,column))
     def region_heading(title,part,x,y,number):
+        if grid and title=='Key abbreviations':
+            return size*1.6+pad,[text('KEY ABBREVIATIONS'+(' / CONT.' if part else ''),x+pad,y+size,height=size*.85,weight=600)]
         display_title=({'Project':'Project / site','Contacts':'Responsible parties',
                         'Scope':'Scope of work','Job notes':'General notes','Location map':'Vicinity map'}.get(title,title)
                        if grid else title)
@@ -377,6 +400,52 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                         for i,value in enumerate(lines))
         elements.append(rule(x,y+h-size*.7,width,.25))
         return h,elements
+    def row_height(rows):
+        return sum(line_height+row.get('after_gap',0) for row in rows)
+    def balanced_split(rows):
+        if len(rows)<2:return len(rows)
+        choices=[i for i in range(1,len(rows)) if rows[i-1]['source']!=rows[i]['source']]
+        if not choices:choices=list(range(1,len(rows)))
+        total=row_height(rows)
+        return min(choices,key=lambda i:(max(row_height(rows[:i]),total-row_height(rows[:i])),i))
+    if grid:
+        # Size the bands from their actual measured content, capped only to
+        # reserve readable continuation capacity and a useful map region.
+        prepared_by_title={title:(number,rows) for title,number,rows,_ in prepared}
+        def needed(title):
+            if title not in prepared_by_title:return 0.
+            set_width(title)
+            number,rows=prepared_by_title[title]
+            heading,_=region_heading(title,0,left,first_top,number)
+            if title=='Sheet index' and table_index:heading+=line_height*1.3
+            split=balanced_split(rows) if title=='Job notes' else len(rows)
+            measured=heading+max(row_height(rows[:split]),row_height(rows[split:]))+pad
+            return math.ceil(measured*1000)/1000+.001
+        heights={title:needed(title) for title in grid_regions}
+        gap=max(8.,size*3)
+        available=bottom-first_top
+        top_height=min(max(heights['Project'],heights['Contacts'],
+                           heights['Sheet index']+(gap+heights['Key abbreviations'] if heights['Key abbreviations'] else 0)),
+                       available*.30)
+        def slot(title,y,height):
+            x,_,r,_=grid_regions[title]
+            grid_regions[title]=(x,y,r,y+height)
+        slot('Project',first_top,top_height)
+        slot('Contacts',first_top,top_height)
+        abbreviations=min(heights['Key abbreviations'],top_height*.35)
+        index_height=top_height-(abbreviations+gap if abbreviations else 0)
+        slot('Sheet index',first_top,index_height)
+        slot('Key abbreviations',first_top+index_height+gap,abbreviations)
+        middle_top=first_top+top_height+gap
+        middle_height=min(max(heights['Scope'],heights['Code basis'],heights['Existing system']),available*.22)
+        for title in ('Scope','Code basis','Existing system'):slot(title,middle_top,middle_height)
+        lower_top=middle_top+middle_height+gap
+        lower_height=bottom-lower_top-gap
+        linework=min(heights['Linework conventions'],lower_height*.30)
+        notes=min(heights['Job notes'],lower_height-(linework+gap if linework else 0))
+        slot('Job notes',lower_top,notes)
+        slot('Linework conventions',lower_top+(notes+gap if notes else 0),linework)
+        slot('Location map',lower_top,lower_height)
     pages=[]
     def page(index):
         while len(pages)<=index:
@@ -401,6 +470,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
         available=limit-y-h-pad
         # Keep a contact card or paragraph together when it fits a fresh
         # column. Truly oversized facts still flow with exact source offsets.
+        note_columns=grid and title=='Job notes'
         first_source=rows[0]['source']
         first_rows=[]
         for row in rows:
@@ -410,40 +480,70 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
         fresh_h,_=region_heading(title,part,left,continuation_top,number)
         if title=='Sheet index' and table_index:fresh_h+=line_height*1.3
         fresh_available=bottom-continuation_top-fresh_h-pad
-        if required<=fresh_available+1e-9 and required>available+1e-9:
+        if not note_columns and required<=fresh_available+1e-9 and required>available+1e-9:
             return 0
-        used,count=0.,0
-        for row in rows:
-            advance=line_height+row.get('after_gap',0)
-            if used+advance>available:break
-            used+=advance;count+=1
-        if count<1:return 0
-        if count<len(rows):
-            boundary=count
-            while boundary>0 and rows[boundary-1]['source']==rows[count]['source']:
-                boundary-=1
-            if boundary:count=boundary
-        selected=rows[:count]
+        split=0
+        if note_columns:
+            split=balanced_split(rows)
+            if max(row_height(rows[:split]),row_height(rows[split:]))<=available+1e-9:
+                count=len(rows)
+            else:
+                def fitting_count(candidates):
+                    used=count=0
+                    for row in candidates:
+                        advance=line_height+row.get('after_gap',0)
+                        if used+advance>available+1e-9:break
+                        used+=advance;count+=1
+                    return count
+                split=fitting_count(rows)
+                count=split+fitting_count(rows[split:])
+            if count<1:return 0
+            selected=[{**row,'column':0 if i<split else 1} for i,row in enumerate(rows[:count])]
+        else:
+            used,count=0.,0
+            for row in rows:
+                advance=line_height+row.get('after_gap',0)
+                if used+advance>available:break
+                used+=advance;count+=1
+            if count<1:return 0
+            if count<len(rows):
+                boundary=count
+                while boundary>0 and rows[boundary-1]['source']==rows[count]['source']:
+                    boundary-=1
+                if boundary:count=boundary
+            selected=rows[:count]
         p['elements'].extend(decor)
         advance=0.
         for i,row in enumerate(selected):
+            if note_columns and i==split:advance=0.
+            subcolumn=row.get('column',0) if note_columns else 0
+            rx=x+subcolumn*((min(width,standard_width)-2*pad+max(8.,size*3))/2)
             baseline=y+h+size+advance
             if 'index_title' in row:
                 if row['index_id']:
-                    p['elements'].append(text(row['index_id']+'  ',x+pad,baseline,weight=600))
-                p['elements'].append(text(row['index_title'],x+pad+id_width,baseline))
+                    p['elements'].append(text(row['index_id']+'  ',rx+pad,baseline,weight=600))
+                p['elements'].append(text(row['index_title'],rx+pad+id_width,baseline))
                 if i==len(selected)-1 or selected[i+1]['source']!=row['source']:
-                    p['elements'].append(rule(x+pad,baseline+size*.55,width-2*pad,.13))
+                    p['elements'].append(rule(rx+pad,baseline+size*.55,width-2*pad,.13))
             elif 'project_value' in row:
                 if row['project_label']:
-                    p['elements'].append(text(row['project_label'],x+pad,baseline,weight=600))
-                p['elements'].append(text(row['project_value'],x+pad+project_label_width,baseline))
+                    p['elements'].append(text(row['project_label'],rx+pad,baseline,weight=600))
+                p['elements'].append(text(row['project_value'],rx+pad+project_label_width,baseline))
             else:
-                if row['offset']==0 and row['source'].startswith(('scope[','notes[')):
-                    p['elements'].append(f'<circle cx="{_fmt(x+pad+size*.25)}" cy="{_fmt(baseline-size*.35)}" r="0.45" fill="#000000" stroke="#000000" stroke-width="0.1"/>')
-                p['elements'].append(text(row.get('display',row['text']),x+pad+row.get('indent',0),baseline,weight=row.get('weight',400)))
+                if row['offset']==0 and row['source'].startswith(('scope[','notes[')) and not re.match(r'^\s*\d+[.)]\s',row['text']):
+                    p['elements'].append(f'<circle cx="{_fmt(rx+pad+size*.25)}" cy="{_fmt(baseline-size*.35)}" r="0.45" fill="#000000" stroke="#000000" stroke-width="0.1"/>')
+                if 'line_sample' in row:
+                    sample=row['line_sample'];sample_width=row['line_sample_width'];pattern={'solid':(sample_width,),'dash':(4.,2.),'dot':(.5,1.5),'dash-dot':(4.,1.5,.5,1.5)}[sample['pattern']]
+                    cursor=0.;phase=0;yy=baseline-size*.35
+                    while cursor<sample_width-1e-9:
+                        step=min(pattern[phase%len(pattern)],sample_width-cursor)
+                        if phase%2==0:
+                            color='#000000' if sample.get('tone','black')=='black' else '#777777'
+                            p['elements'].append(f'<line x1="{_fmt(rx+pad+cursor)}" y1="{_fmt(yy)}" x2="{_fmt(rx+pad+cursor+step)}" y2="{_fmt(yy)}" stroke="{color}" stroke-width="{_fmt(sample.get("weight_mm",.35))}"/>')
+                        cursor+=step;phase+=1
+                p['elements'].append(text(row.get('display',row['text']),rx+pad+row.get('indent',0),baseline,weight=row.get('weight',400)))
             advance+=line_height+row.get('after_gap',0)
-        total_h=h+advance+pad
+        total_h=h+(max(row_height(selected[:split]),row_height(selected[split:])) if note_columns else advance)+pad
         p['panels'].append({'title':title,'number':number,'part':part+1,
                             'bounds_mm':[x,y,x+width,y+total_h],
                             'lines':[r['text'] for r in selected],'source_spans':selected})
@@ -597,7 +697,7 @@ def _flow_cover(config, bounds, size, map_snapshot=None):
                 raise CoverCapacityError('continuation page heading exceeds body width')
             p['elements'][:0]=[text(label,left+pad,top+size*1.6,height=size*1.4,weight=600),
                                rule(left,top+size*2.7,right-left,.45)]
-        result.append(CoverBody('\n'.join(p['elements']),{'version':VERSION,'design':'drafting-cover-reference-grid-v1' if grid else 'drafting-cover-v3',
+        result.append(CoverBody('\n'.join(p['elements']),{'version':VERSION,'design':'drafting-cover-reference-grid-v2' if grid else 'drafting-cover-v3',
             'bounds_mm':list(bounds),'page_number':i+1,'page_count':len(pages),'font_family':SUPPORTED_FONT,
             'text_height_mm':size,'heading_height_mm':heading_size,'project_heading_height_mm':title_size,
             'gutter_mm':gutter,'panels':p['panels'],'source_text':source_text},tuple(p['images'])))

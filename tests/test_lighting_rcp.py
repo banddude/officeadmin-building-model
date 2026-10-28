@@ -228,3 +228,34 @@ def test_label_backplates_are_measured_source_bound_and_above_linework(tmp_path)
         assert float(node.attrib['x'])==pytest.approx(l) and float(node.attrib['width'])==pytest.approx(r-l)
         assert r>l and b>t
     assert request['fixtures'][0]['xy']==[2,3] and request['context'][0]['points'][0]==[0,0]
+
+
+def test_closed_path_requires_three_distinct_vertices_but_accepts_concavity(tmp_path):
+    request,sheet,sources=setup(tmp_path)
+    request['context'][0]['points']=[[0,0],[1,0],[0,0],[1,0]]
+    with pytest.raises(ValueError,match='three distinct vertices'):
+        render_lighting_rcp_body(request,sheet,source_bytes=sources)
+    request['context'][0]['points']=[[0,0],[4,0],[2,2],[4,4],[0,4]]
+    _,mapping=render_lighting_rcp_body(request,sheet,source_bytes=sources)
+    assert next(row for row in mapping['items'] if row['role']=='context')['input_points']==request['context'][0]['points']
+
+
+@pytest.mark.parametrize('symbol,halfwidth',[('linear',3.125),('generic',2.125),('downlight',2.125),('track_head',2.125)])
+def test_fixture_plate_clears_own_symbol_and_legend_uses_same_mark(tmp_path,symbol,halfwidth):
+    import xml.etree.ElementTree as ET
+    request,sheet,sources=setup(tmp_path)
+    # Use the non-track fixture so track membership remains valid.
+    request['fixtures'][1]['symbol']=symbol
+    body,mapping=render_lighting_rcp_body(request,sheet,source_bytes=sources)
+    rows=mapping['items'];nodes=list(ET.fromstring(body))
+    fixture=next(row for row in rows if row['role']=='fixture' and row['id']=='light2')
+    plate=next(row for row in rows if row['role']=='fixture_label_plate' and row['id']=='light2')
+    x=20+(5-(-1))*(1000/50)
+    assert plate['paper_bounds_mm'][0]>=x+halfwidth+.3-1e-8
+    legend=next(row for row in rows if row['role']=='legend_symbol' and row['kind']=='downlight')
+    marker=nodes[fixture['body_child_index']];legend_marker=nodes[legend['body_child_index']]
+    assert marker.tag==legend_marker.tag
+    if symbol=='linear':assert marker.attrib['width']==legend_marker.attrib['width']=='6' and marker.attrib['height']==legend_marker.attrib['height']=='2'
+    elif symbol=='generic':assert marker.attrib['width']==legend_marker.attrib['width']=='4'
+    elif symbol=='downlight':assert marker.attrib['r']==legend_marker.attrib['r']=='2'
+    else:assert [child.tag for child in marker]==[child.tag for child in legend_marker]

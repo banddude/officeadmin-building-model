@@ -171,6 +171,18 @@ def _utc(value):
     return parsed.astimezone(timezone.utc)
 
 
+def validate_candidate_selection(candidate_index, candidate_confirmation):
+    """Validate caller's static choice shape without network or cache access."""
+    if candidate_index is not None and (type(candidate_index) is not int or candidate_index<0):
+        raise MapAcquisitionError('candidate index must be a nonnegative integer')
+    if candidate_confirmation is not None and (candidate_index is None or not isinstance(candidate_confirmation,str) or not re.fullmatch(r'[0-9a-f]{64}',candidate_confirmation)):
+        raise MapAcquisitionError('candidate confirmation requires an index and SHA256 fingerprint')
+
+
+def _cache_key(query, candidate_index, candidate_confirmation, zoom=16):
+    return hashlib.sha256(json.dumps({'version':VERSION,'address':query,'candidate_index':candidate_index,'candidate_confirmation':candidate_confirmation,'zoom':zoom,'style':'standard','scale':2},sort_keys=True).encode()).hexdigest()
+
+
 def acquire_cover_map(address,*,cache_directory,client=None,candidate_index=None,candidate_confirmation=None,zoom=16,now=None,offline=False):
     """Return uncropped Apple PNG and source receipt, or fail without a map.
 
@@ -181,14 +193,11 @@ def acquire_cover_map(address,*,cache_directory,client=None,candidate_index=None
         raise MapAcquisitionError('map acquisition needs a nonempty single-line address within OA query limits')
     if type(zoom) is not int or not 3<=zoom<=19:
         raise MapAcquisitionError('map zoom must be an integer from 3 through 19')
-    if candidate_index is not None and (type(candidate_index) is not int or candidate_index<0):
-        raise MapAcquisitionError('candidate index must be a nonnegative integer')
-    if candidate_confirmation is not None and (candidate_index is None or not isinstance(candidate_confirmation,str) or not re.fullmatch(r'[0-9a-f]{64}',candidate_confirmation)):
-        raise MapAcquisitionError('candidate confirmation requires an index and SHA256 fingerprint')
+    validate_candidate_selection(candidate_index,candidate_confirmation)
     now=now or datetime.now(timezone.utc)
     if now.tzinfo is None:raise MapAcquisitionError('explicit timezone required')
     query=address.strip();cache=Path(cache_directory)
-    key=hashlib.sha256(json.dumps({'version':VERSION,'address':query,'candidate_index':candidate_index,'candidate_confirmation':candidate_confirmation,'zoom':zoom,'style':'standard','scale':2},sort_keys=True).encode()).hexdigest()
+    key=_cache_key(query,candidate_index,candidate_confirmation,zoom)
     receipt_path=cache/(key+'.json')
     if receipt_path.exists():
         try:

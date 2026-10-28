@@ -163,3 +163,49 @@ The check does not claim every possible build failure has been ruled out. Input
 path and consumer diagnostics require correction of the supplied facts, not
 invented values. See the [operator guide](operator-start-here.md) for a runnable
 workflow and private-data handling.
+
+
+## Portable production rerun and verified rebuild
+
+Every new production delivery retains the exact original request and named raw
+snapshots under `inputs/`; original filenames and paths are provenance, not a
+relocatable command. A separate `inputs/portable/production.json` uses fixed
+local paths to pre-pagination copies of all requested inputs. Profile/job/sheet
+field, template and logo precedence—including explicit null logo clearing—is
+preserved; every referenced or overridden logo is snapshotted by content hash.
+Optional v2 consumers, site graphics, model views and explicit composition stay
+in the request. The manifest receipts cover those copies and assets.
+
+For an **editable** rerun use:
+
+```sh
+oabm-production-sheets --check /private/delivery/inputs/portable/production.json
+oabm-production-sheets /private/delivery/inputs/portable/production.json /private/fresh-attempt
+```
+
+For an **unedited, receipt-verified** rebuild use:
+
+```sh
+oabm-production-sheets --rebuild /private/delivery /private/fresh-rebuild
+```
+
+`rebuild_production_sheet_set(delivery, output_directory=...)` exposes the same
+Python operation. It verifies all outer receipts, refuses symlink/escaping or
+unreceipted portable files and live-map mode, then calls the existing production
+coordinator. It is not a signature, authenticated history, locking protocol or
+a hermetic runtime; preserve exclusive ownership. Rebuild output must be outside
+the source delivery. For intentionally edited portable inputs use the ordinary
+command, not the receipt-verified rebuild. Rebuilt artifacts match with identical
+sources, runtime and fonts; provenance snapshots may differ because the rebuild's
+request is the portable copy rather than the original source JSON. Older deliveries
+without portable receipts do not support this operation.
+
+Automatic/cached cover maps remain subject to the original Apple provider,
+source, candidate and freshness checks. The portable request always uses
+`cached` mode, and only its relevant verified cache receipt/image are retained.
+`portable_map_status` in the production manifest records whether a fresh cache
+was retained or why it could not be retained. A no-store/zero-lifetime response,
+missing receipt or subsequently expired cache cannot rebuild that map offline;
+it fails without fetching. `--check` remains bounded and does not inspect or
+fetch the cache. Make an explicitly authorized new normal request if a new map
+is needed. No cache expiry, provider or identity guard is bypassed.

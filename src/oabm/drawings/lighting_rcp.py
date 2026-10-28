@@ -197,7 +197,13 @@ def render_lighting_rcp_body(request, sheet, *, source_bytes):
             ax,ay=point(row['aim_xy'],row['id']+'.aim_xy')
             add(row['id'],'aim',row['source_ids'],f'<g><line x1="{x:.12g}" y1="{y:.12g}" x2="{ax:.12g}" y2="{ay:.12g}" stroke="#000000" stroke-width="0.18"/><circle cx="{ax:.12g}" cy="{ay:.12g}" r="0.8" fill="none" stroke="#000000" stroke-width="0.18"/></g>',aim_xy=row['aim_xy'])
         value=validate_sheet_text(row['id'],font_family='Liberation Sans')
-        plate,markup,box=_label_markup(x+2.8,y-1,value)
+        # Clear the actual paper mark, including its stroke, with a modest gap.
+        # A linear mark is wider than the circular/square marks; the plate's
+        # font-bearing/padding extends left of its text anchor.
+        mark_right=x+(3.125 if kind=='linear' else 2.125)
+        _,_,origin_box=_label_markup(0,0,value)
+        label_x=mark_right+.3-origin_box[0]
+        plate,markup,box=_label_markup(label_x,y-1,value)
         pending_labels.append((row['id'],'fixture_label',row['source_ids'],plate,markup,box,{}))
     for row in lists['annotations']:
         x,y=point(row['xy'],row['id']+'.xy')
@@ -359,6 +365,8 @@ def _polyline(value, label, closed):
     points=[_point(p,label) for p in value]
     if any(a==b for a,b in zip(points,points[1:])) or closed and points[0]==points[-1]:
         raise ValueError(f'{label}: zero-length edge or repeated closing point')
+    if closed and len(set(points))<3:
+        raise ValueError(f'{label}: closed path requires at least three distinct vertices')
 
 
 def create_lighting_rcp_sheet_set(request_path, profile_path, job_path, *, output_directory):

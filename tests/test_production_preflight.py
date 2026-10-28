@@ -69,3 +69,22 @@ def test_check_rejects_unknown_request_or_invalid_single_line(tmp_path):
     request['extra']=True;path.write_text(json.dumps(request))
     with pytest.raises(ValueError,match='exact production-sheet-set'):
         ps.preflight_production_sheet_set(path)
+
+
+@pytest.mark.parametrize('index,confirmation,match',[
+    ('not-an-integer',None,'candidate index'),
+    (True,None,'candidate index'),
+    (-1,None,'candidate index'),
+    (None,'a'*64,'candidate confirmation'),
+    (0,'not-a-fingerprint','candidate confirmation'),
+])
+def test_check_rejects_static_map_choice_without_fetch_or_cache(tmp_path,index,confirmation,match,monkeypatch):
+    inputs=copy_inputs(tmp_path);path=inputs/'production.json'
+    request=json.loads(path.read_bytes());request.update(version=ps.MODEL_VIEW_VERSION,model_views=[],cover_map={
+        'mode':'auto','cache_directory':'map-cache','candidate_index':index,'candidate_confirmation':confirmation})
+    path.write_text(json.dumps(request));before=snapshot(tmp_path)
+    import oabm.drawings.cover_maps as maps
+    def forbidden(*args,**kwargs):raise AssertionError('map fetch forbidden')
+    monkeypatch.setattr(maps,'acquire_cover_map',forbidden)
+    with pytest.raises(ValueError,match=match):ps.preflight_production_sheet_set(path)
+    assert snapshot(tmp_path)==before and not (inputs/'map-cache').exists()

@@ -6,11 +6,12 @@ multiple-detail slots are optional explicit inputs.
 """
 from __future__ import annotations
 import argparse
+import copy
 from dataclasses import asdict
 import os
 from pathlib import Path
 from .blank_set import _decode,_json,_sha,_runtime
-from .company_sheets import resolve_company_sheet_set,create_company_sheet_set
+from .company_sheets import resolve_company_sheet_set,create_company_sheet_set,_logos
 from .cover_sheet import validate_cover,paginate_cover
 from .site_plan import render_site_body
 from .schedule_set import panel_schedule_drawing_set,VERSION as SCHEDULE_VERSION
@@ -20,6 +21,72 @@ from oabm.model import BuildingModel,stable_id
 
 VERSION='production-sheet-set-v1'
 MODEL_VIEW_VERSION='production-sheet-set-v2'
+
+
+def _write_portable_inputs(root, request_path, request, inputs, resolved, paths, map_snapshot):
+    """Snapshot pre-pagination inputs with relocated, content-addressed logos.
+
+    Original source bytes remain separately retained; these editable copies keep
+    the original profile/job/sheet precedence rather than flattening it.
+    """
+    root.mkdir()
+    portable=copy.deepcopy(request)
+    files={'model':'model.json','cover':'cover.json','details':'details.json',
+           'site':'site.json','site_graphics':'site-graphics.json','settings':'settings.json'}
+    for key,name in files.items():
+        if key in inputs:(root/name).write_bytes(inputs[key])
+    portable['profile']='profile.json';portable['job']='job.json';portable['model']=files['model']
+    for key in ('cover','details'):
+        if portable[key] is not None:portable[key]=files[key]
+    if portable['site'] is not None:
+        portable['site']['request']=files['site']
+        if 'graphics' in portable['site']:portable['site']['graphics']=files['site_graphics']
+    if portable['schedules'] is not None:portable['schedules']['request']=files['settings']
+    profile=_decode(inputs['profile']);job=_decode(inputs['job'])
+    def snapshot_logos(owner,directory):
+        if 'logos' not in owner:return
+        logos=_logos(owner['logos'],directory)
+        for name,data in logos.items():
+            if data is None:owner['logos'][name]=None;continue
+            asset='assets/'+_sha(data)+'.png';path=root/asset;path.parent.mkdir(exist_ok=True)
+            if path.exists() and path.read_bytes()!=data:raise ValueError('portable logo digest collision')
+            if not path.exists():path.write_bytes(data)
+            owner['logos'][name]=asset
+    snapshot_logos(profile,paths['profile'].parent)
+    snapshot_logos(job,paths['job'].parent)
+    for sheet in job['sheets']:snapshot_logos(sheet,paths['job'].parent)
+    (root/'profile.json').write_bytes(_json(profile));(root/'job.json').write_bytes(_json(job))
+    portable_resolved=resolve_company_sheet_set(root/'profile.json',root/'job.json')
+    if (portable_resolved.set_id,portable_resolved.sheets,portable_resolved.formats)!=(resolved.set_id,resolved.sheets,resolved.formats):
+        raise ValueError('profile/job/logo changed during portable snapshot')
+    map_status={'status':'not_requested','reason':'No cover map requested.'}
+    if portable.get('cover_map') is not None:
+        options=portable['cover_map'];source_cache=request_path.parent/options['cache_directory']
+        options['mode']='cached';options['cache_directory']='map-cache'
+        map_status={'status':'offline_cache_unavailable','reason':'No reusable cache receipt was present at snapshot; rebuild will not fetch a map.'}
+        if map_snapshot is not None:
+            from .cover_maps import _cache_key,_utc,acquire_cover_map
+            query=map_snapshot.provenance['query']
+            key=_cache_key(query,options['candidate_index'],options.get('candidate_confirmation'))
+            receipt=source_cache/(key+'.json')
+            cacheable=_utc(map_snapshot.provenance['expires_at'])>_utc(map_snapshot.provenance['fetched_at'])
+            if not cacheable:
+                map_status={'status':'offline_cache_unavailable','reason':'Map response has no reusable cache lifetime; rebuild will not fetch it.'}
+            if cacheable and (receipt.exists() or receipt.is_symlink()):
+                # Existing cache validation handles symlinks, provider, candidate,
+                # freshness and asset hash; never fall back to live acquisition.
+                verified=acquire_cover_map(query,cache_directory=source_cache,candidate_index=options['candidate_index'],
+                    candidate_confirmation=options.get('candidate_confirmation'),offline=True)
+                if verified!=map_snapshot:raise ValueError('cover map cache differs from acquired snapshot')
+                target=root/'map-cache';target.mkdir()
+                (target/(key+'.json')).write_bytes(receipt.read_bytes())
+                (target/(map_snapshot.sha256+'.png')).write_bytes(map_snapshot.png_bytes)
+                copied=acquire_cover_map(query,cache_directory=target,candidate_index=options['candidate_index'],
+                    candidate_confirmation=options.get('candidate_confirmation'),offline=True)
+                if copied!=map_snapshot:raise ValueError('portable cover map differs from acquired snapshot')
+                map_status={'status':'offline_fresh_cache_retained','reason':'Retained cache remains subject to its original expiry and validation.'}
+    (root/'production.json').write_bytes(_json(portable))
+    return map_status
 
 
 def create_production_sheet_set(request_path, *, output_directory, map_client=None, _check_only=False):
@@ -42,6 +109,8 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
         if not isinstance(map_options,dict) or set(map_options) not in ({'mode','cache_directory','candidate_index'},{'mode','cache_directory','candidate_index','candidate_confirmation'}) or map_options['mode'] not in {'auto','cached'} or not isinstance(map_options['cache_directory'],str) or not map_options['cache_directory']:
             raise ValueError('cover_map: explicit auto/cached mode, cache_directory and candidate_index required')
         if request['cover'] is None:raise ValueError('cover_map requires a cover producer')
+        from .cover_maps import validate_candidate_selection
+        validate_candidate_selection(map_options['candidate_index'],map_options.get('candidate_confirmation'))
     model_views=request['model_views'] if v2 else []
     if not isinstance(model_views,list):raise ValueError('model_views: ordered list required')
     for row in model_views:
@@ -190,6 +259,7 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
         retained=pending/'inputs';retained.mkdir()
         (retained/'production-request.json').write_bytes(raw)
         for key,value in inputs.items():(retained/(key+'.json')).write_bytes(value)
+        map_portability=_write_portable_inputs(retained/'portable',request_path,request,inputs,resolved,paths,map_snapshot)
         first=resolved.sheets[0]
         profile={'version':'company-sheet-profile-v1','fields':{},'template':dict(first.template)}
         job={'version':'company-sheet-job-v1','set_id':resolved.set_id,'date':first.fields['date'],
@@ -268,7 +338,8 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
                   'site_presentation':audit['presentation'] if audit else None,
                   'cover_pagination':{'sheet_ids':[p.id for p in cover_pagination.pages],'resolution_passes':cover_pagination.iterations} if cover_pagination else None,
                   'content_owners':{'cover':[p.id for p in cover_pagination.pages] if cover_pagination else [],'site':[site_id] if site_id else [],'schedules':[p.spec.id for p in pages],'details':detail_sheet_ids,'single_line':[p['id'] for p in single_line_pages]},
-                  'schedule_row_count':len(row_map),'shared_delivery':'company/delivery','runtime':_runtime(),
+                  'schedule_row_count':len(row_map),'shared_delivery':'company/delivery',
+                  'portable_request':'inputs/portable/production.json','portable_map_status':map_portability,'runtime':_runtime(),
                   'limitations':['Presentation tools do not certify plan-set completeness or engineering approval.',
                                  'Supplied site drawing evidence is not promoted to survey/model geometry.',
                                  'No demand/service sizing, installation fit or permit approval is inferred.']}
@@ -296,6 +367,78 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
         raise ValueError(f'production sheet set failed at {stage}: {exc}; attempt retained at {output}') from exc
 
 
+def rebuild_production_sheet_set(delivery, *, output_directory):
+    """Verify a portable receipt, then rerun the same coordinator offline.
+
+    This is a reproducibility check, not a signature or concurrent-writer lock.
+    For intentional edits, use the portable request through the normal command.
+    """
+    root=Path(delivery).resolve()
+    if Path(output_directory).resolve().is_relative_to(root):raise ValueError('rebuild output must be outside the source delivery')
+    manifest_path=root/'PRODUCTION-MANIFEST.json'
+    if manifest_path.is_symlink():raise ValueError('production manifest symlink refused')
+    manifest=_decode(manifest_path.read_bytes())
+    if not isinstance(manifest,dict) or manifest.get('portable_request')!='inputs/portable/production.json' or not isinstance(manifest.get('files'),list):
+        raise ValueError('delivery lacks a supported portable production receipt')
+    def retained_path(name):
+        if not isinstance(name,str):raise ValueError('invalid retained path')
+        relative=Path(name)
+        if relative.is_absolute() or '..' in relative.parts or relative.as_posix()!=name:raise ValueError('invalid retained path')
+        if any((root/Path(*relative.parts[:n])).is_symlink() for n in range(1,len(relative.parts)+1)):
+            raise ValueError('retained path symlinks are refused')
+        path=root/relative
+        if not path.resolve().is_relative_to(root):raise ValueError('retained path escapes delivery')
+        return path
+    receipts={}
+    for row in manifest['files']:
+        if not isinstance(row,dict) or set(row)!={'path','bytes','sha256'}:raise ValueError('invalid production receipt row')
+        name=row['path']
+        if not isinstance(name,str) or name in receipts:raise ValueError('invalid or duplicate production receipt path')
+        if type(row['bytes']) is not int or row['bytes']<0 or not isinstance(row['sha256'],str):raise ValueError('invalid production receipt metadata')
+        raw=retained_path(name).read_bytes()
+        if len(raw)!=row['bytes'] or _sha(raw)!=row['sha256']:raise ValueError(f'production receipt mismatch: {name}')
+        receipts[name]=row
+    prefix='inputs/portable/'
+    name=prefix+'production.json'
+    if name not in receipts:raise ValueError('portable production request is not receipted')
+    portable_root=retained_path('inputs/portable')
+    for path in portable_root.rglob('*'):
+        if path.is_symlink():raise ValueError('portable input symlinks are refused')
+        if path.is_file() and path.relative_to(root).as_posix() not in receipts:raise ValueError('unreceipted portable input refused')
+    request=_decode(retained_path(name).read_bytes())
+    if not isinstance(request,dict):raise ValueError('invalid portable production request')
+    expected={'profile':'profile.json','job':'job.json','model':'model.json'}
+    for key in ('cover','details'):
+        if request.get(key) is not None:expected[key]=key+'.json'
+    for key,value in expected.items():
+        if request.get(key)!=value or prefix+value not in receipts:raise ValueError(f'portable {key}: unexpected or unreceipted path')
+    for key,filename in (('site','site.json'),('schedules','settings.json')):
+        row=request.get(key)
+        if row is not None:
+            if not isinstance(row,dict) or row.get('request')!=filename or prefix+filename not in receipts:
+                raise ValueError(f'portable {key}: unexpected or unreceipted path')
+            if key=='site' and 'graphics' in row and (row['graphics']!='site-graphics.json' or prefix+'site-graphics.json' not in receipts):
+                raise ValueError('portable site graphics: unexpected or unreceipted path')
+    map_options=request.get('cover_map')
+    if map_options is not None and (not isinstance(map_options,dict) or map_options.get('mode')!='cached' or map_options.get('cache_directory')!='map-cache'):
+        raise ValueError('portable rebuild requires the retained offline map cache; live acquisition is refused')
+    profile=_decode(retained_path(prefix+'profile.json').read_bytes())
+    job=_decode(retained_path(prefix+'job.json').read_bytes())
+    if not isinstance(profile,dict) or not isinstance(job,dict) or not isinstance(job.get('sheets'),list):
+        raise ValueError('invalid portable profile/job')
+    import re
+    for owner in [profile,job,*job['sheets']]:
+        if not isinstance(owner,dict):raise ValueError('invalid portable logo owner')
+        logos=owner.get('logos',{})
+        if not isinstance(logos,dict):raise ValueError('invalid portable logos')
+        for value in logos.values():
+            if value is None:continue
+            if not isinstance(value,str) or not re.fullmatch(r'assets/[0-9a-f]{64}\.png',value) or prefix+value not in receipts:
+                raise ValueError('portable logo must be a receipted content-addressed asset')
+            if receipts[prefix+value]['sha256']!=Path(value).stem:raise ValueError('portable logo asset hash mismatch')
+    return create_production_sheet_set(retained_path(name),output_directory=output_directory)
+
+
 def preflight_production_sheet_set(request_path):
     """Read-only bounded validation; no attempt, network map or output is created."""
     return create_production_sheet_set(request_path, output_directory=None, _check_only=True)
@@ -305,12 +448,17 @@ def main(argv=None):
     import json
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check',action='store_true',help='read-only bounded request preflight; no output directory')
-    parser.add_argument('request');parser.add_argument('output_directory',nargs='?')
+    parser.add_argument('--rebuild',action='store_true',help='verify delivery receipts and rebuild offline to a fresh output')
+    parser.add_argument('request',help='production request JSON, or delivery directory with --rebuild')
+    parser.add_argument('output_directory',nargs='?',help='fresh attempt directory')
     args=parser.parse_args(argv)
+    if args.check and args.rebuild:parser.error('--check and --rebuild are mutually exclusive')
     if args.check and args.output_directory is not None:parser.error('--check does not take an output directory')
     if not args.check and args.output_directory is None:parser.error('output_directory is required unless --check is used')
     try:
-        result=preflight_production_sheet_set(args.request) if args.check else create_production_sheet_set(args.request,output_directory=args.output_directory)
+        if args.check:result=preflight_production_sheet_set(args.request)
+        elif args.rebuild:result=rebuild_production_sheet_set(args.request,output_directory=args.output_directory)
+        else:result=create_production_sheet_set(args.request,output_directory=args.output_directory)
     except (ValueError,OSError,ImportError) as exc:parser.exit(1,str(exc)+'\n')
     print(json.dumps(result,indent=2) if args.check else result);return 0
 

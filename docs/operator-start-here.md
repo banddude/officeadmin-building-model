@@ -166,9 +166,32 @@ does not verify swept clearance or manufacturer fit. See [model delivery](model-
 Every attempt path must be fresh, including after failure. A failed attempt can
 retain `.pending/` and `failure.json`; inspect those privately, correct the
 inputs, and retry to a different path. Never mix old outputs into a new attempt.
-Production inputs are retained and may be edited and rerun through the same
-coordinator. Shared company deliveries additionally support hash-verified
-rebuild from retained portable inputs:
+Production deliveries retain the **exact original request** as provenance at
+`delivery/inputs/production-request.json`; its original paths are not rewritten
+and may not resolve after moving or deleting the job. For editing or rerunning,
+use the separate pre-pagination portable request and its input files:
+
+```sh
+oabm-production-sheets --check /private/attempt-001/delivery/inputs/portable/production.json
+oabm-production-sheets /private/attempt-001/delivery/inputs/portable/production.json /private/attempt-002
+```
+
+The portable request preserves profile → job → sheet override precedence and
+retains content-addressed logo assets. Check the delivery's
+`portable_map_status`: a requested cover map can be rerun only while its retained
+verified cache remains fresh. The portable request forces offline cache mode;
+it never silently fetches a new map. A no-store/zero-lifetime or missing cache,
+or an expired cache, blocks that rerun. Explicitly create a new normal request
+and authorize any desired map acquisition separately.
+
+For an **unedited** delivery, verify receipts and rebuild offline into a fresh
+path with `oabm-production-sheets --rebuild /private/attempt-001/delivery
+/private/rebuild-002` (on one shell line). Editing the portable inputs invalidates
+the original receipts; use the normal rerun command above, not `--rebuild`.
+Receipts detect changes but are not signatures or protection from concurrent
+writers. Matching engine, dependencies and fonts are needed for matching output
+bytes. Older deliveries without this portable snapshot cannot use this rebuild.
+Shared company deliveries additionally support hash-verified rebuild:
 
 ```sh
 oabm-company-sheets rebuild /private/blank-attempt/delivery /private/blank-rebuild-002

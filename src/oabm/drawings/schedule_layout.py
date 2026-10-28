@@ -452,11 +452,13 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
     for ordinal, (panel, facts, group) in enumerate(groups, 1):
         panel_id = panel.id if panel is not None else report.source_model_id
         entity = panel.entity if panel is not None else {}
-        title = f'{ordinal}  PANEL {entity.get("name") or panel_id} - CIRCUIT SCHEDULE' if panel else f'{ordinal}  UNSUPPORTED SOURCE OWNERS - CIRCUIT FACTS'
+        panel_name = entity.get('name') if panel else None
+        panel_identity = panel_id if not panel_name or panel_name == panel_id else f'{panel_id} | {panel_name}'
+        title = f'{ordinal}  PANEL {panel_identity} - CIRCUIT SCHEDULE' if panel else f'{ordinal}  UNSUPPORTED SOURCE OWNERS - CIRCUIT FACTS'
         panel_fields = supplied(entity, {'main', 'bus', 'aic', 'source'}) if panel else {}
         circuit_sid = stable_id('schedule', f'panel-facts:{panel_id}') if panel else stable_id('schedule', f'unassigned-panel-facts:{report.source_model_id}')
         summary_sid = stable_id('schedule', f'panel-fact-summary:{panel_id}') if panel else None
-        label_conflicts = {cid for conflict in group.label_conflicts for cid in conflict.circuit_ids} if group else set()
+        label_conflicts = {cid: conflict.circuit_ids for conflict in group.label_conflicts for cid in conflict.circuit_ids} if group else {}
         positions, unassigned = {}, []
         for fact in facts:
             circuit = fact.circuit.entity
@@ -528,10 +530,16 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                 if c.get('phase') is not None:
                     description += ' | phase ' + str(c['phase'])
                 if fact.circuit.id in label_conflicts:
-                    description += ' [LABEL CONFLICT]'
+                    description += f' [LABEL CONFLICT; CIRCUIT ID: {fact.circuit.id}]'
+                opaque_label = c.get('circuit_number')
+                if opaque_label is None or not opaque_label.strip():
+                    description += f' [LABEL NOT SUPPLIED; CIRCUIT ID: {fact.circuit.id}]' if panel is not None else ' [LABEL NOT SUPPLIED]'
+                if panel is None:
+                    description += f' | CIRCUIT ID: {fact.circuit.id} | SOURCE PORT: {fact.source_port.id} | SOURCE OWNER: {fact.source_owner.id}'
                 if 'phase_va' in fields and c.get('load_va') is not None and not math.isclose(math.fsum(fields['phase_va'].values()), c['load_va']):
                     description += ' [PHASE/LOAD CONFLICT]'
-                identity = value(c.get('circuit_number')) if unpositioned_card else f'{value(fields.get("row"))} / ' + value(c.get('circuit_number'))
+                label = 'TBD' if opaque_label is None or not opaque_label.strip() else opaque_label
+                identity = label if unpositioned_card else f'{value(fields.get("row"))} / ' + label
                 return (identity, description, value(c.get('poles')), fields.get('ocpd', 'TBD'), value(c.get('load_va')))
             left_values, right_values = side(left_item), side(right_item)
             assigned = [item for item in (left_item, right_item) if item is not None]
@@ -598,10 +606,16 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                     grid_start = y
                     position_gaps.append({'first_row': gap_before[0], 'last_row': gap_before[1],
                                           'status': 'not_supplied_no_spare_capacity_inferred'})
-                row_sources = tuple(item[0].circuit.id for item in (left_item, right_item) if item is not None) or anchor_sources
+                def item_sources(item):
+                    if item is None:return ()
+                    fact=item[0]
+                    return ((fact.circuit.id, fact.source_port.id, fact.source_owner.id) if panel is None else (fact.circuit.id,))
+                left_sources, right_sources = item_sources(left_item), item_sources(right_item)
+                row_sources = tuple(dict.fromkeys((*left_sources,*right_sources))) or anchor_sources
                 cell_ids = []
                 for i, parts in enumerate(cells):
-                    cell_ids.append(text_lines(parts, xedges[i], y, row_sources, role='schedule_row'))
+                    sources = (left_sources or anchor_sources) if unpositioned_card or i < 5 else row_sources if i < 8 else (right_sources or anchor_sources)
+                    cell_ids.append(text_lines(parts, xedges[i], y, sources, role='schedule_row'))
                 for item, side, indices in ((left_item, 'left', range(0, 8)), (right_item, 'right', range(5, 13))):
                     if item is None:
                         continue
@@ -612,6 +626,8 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                         'display_cells': list(values[:5] if side == 'left' else values[8:]),
                         'phase_cells': list(values[5:8]),
                         'phase_basis': 'sum of explicitly supplied per-circuit phase_va; missing remains TBD',
+                        'source_port_id': fact.source_port.id, 'source_owner_id': fact.source_owner.id,
+                        'label_conflict_circuit_ids': list(label_conflicts.get(fact.circuit.id, ())),
                         'position_status': 'supplied' if explicit_position else 'not_supplied_display_order_only',
                         'supplied_side': fields.get('side'), 'supplied_row': fields.get('row'), 'display_side': 'unpositioned' if unpositioned_card else side,
                         'primitive_ids': [identity for i in indices for identity in cell_ids[i]],

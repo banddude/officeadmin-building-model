@@ -21,6 +21,16 @@ Connected VA is only the supplied known subtotal. Missing loads remain unknown.
 No demand factors, service sizing, breaker selection, spare slots or regulatory
 approval are inferred. The result is presentation output requiring review.
 
+In the drafted card presentation, each panel heading prints its stable canonical
+panel ID as well as any distinct supplied name; that identity repeats on every
+continuation. Conflicting opaque labels and missing/blank labels print the
+individual canonical circuit ID in the affected row. An unsupported-source-owner
+row also prints its actual circuit, source-port and owner IDs; none of those
+facts is promoted into a panel assignment. The row map retains the complete
+conflict-group IDs and canonical source bindings. Long text wraps at measured
+paper size and may increase pagination; an individual row that cannot fit is
+refused rather than truncated or scaled down.
+
 ## Synthetic demonstration
 
 After the shared company profile dependency is installed:

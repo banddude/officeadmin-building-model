@@ -242,3 +242,81 @@ def test_selection_defaults_are_identical_to_explicit_legacy_all_groups():
     assert draft_panel_schedule_pages(report, drawing, sheet, panel_ids=[], include_unassigned=False) == ()
     with pytest.raises(ValueError, match='unknown report panel'):
         draft_panel_schedule_pages(report, drawing, sheet, panel_ids=['equipment:not-in-report'])
+
+
+def _flat_pdf_text(path):
+    return ''.join(''.join((page.extract_text() or '').split()) for page in pypdf.PdfReader(path).pages)
+
+
+def test_duplicate_panel_names_and_conflicting_circuits_remain_visible_in_pdf_and_maps(tmp_path):
+    model=source(90,True)
+    model=replace(model,electrical_equipment=tuple(replace(e,name='Distribution panel') for e in model.electrical_equipment))
+    paths=inputs(tmp_path,count=90,positioned=True);paths[0].write_text(model.to_json())
+    out=create_panel_schedule_sheet_set(*paths,output_directory=tmp_path/'identity',drafted_width_mm=300)
+    manifest=json.loads((out/'SCHEDULE-MANIFEST.json').read_bytes())
+    text=_flat_pdf_text(out/'sheet-set.pdf')
+    for panel in model.electrical_equipment:
+        assert panel.id in text
+    assert text.count('Distributionpanel')>=len(model.electrical_equipment)
+    for cid in ('circuit:synthetic-000','circuit:synthetic-001'):
+        assert cid in text
+        row=next(row for row in manifest['rows'] if row['source_id']==cid)
+        assert row['label_conflict_circuit_ids']==['circuit:synthetic-000','circuit:synthetic-001']
+        assert any(cid in cell and 'LABEL CONFLICT' in cell for cell in row['display_cells'])
+    # Every continuation section repeats its own full panel identity and name.
+    page_files=sorted((out/'schedule-source').glob('*.drawing.json'))
+    assert page_files
+    for section in manifest['schedule_pages']:
+        sid=section['sheet_id'];panel_id=section['panel_id']
+        drawing=json.loads(next(p for p in page_files if p.name.startswith(sid+'.')).read_bytes())
+        titles=[primitive['text'] for primitive in drawing['views'][0]['primitives']
+                if primitive['kind']=='text' and ['role','schedule_title'] in primitive['metadata'] and panel_id in primitive['source_ids']]
+        full=''.join(titles)
+        assert panel_id in full and 'Distribution panel' in full
+
+
+def test_unsupported_owners_and_missing_labels_print_actual_ids_and_source_bindings(tmp_path):
+    model=source(6)
+    # This explicitly classifies one supplied source as unsupported; no panel is invented.
+    second=replace(model.electrical_equipment[1],equipment_type='transformer')
+    model=replace(model,electrical_equipment=(model.electrical_equipment[0],second))
+    circuits=list(model.circuits)
+    # Two separate, same-description rows have missing opaque labels.
+    for i in (0,1):circuits[i]=replace(circuits[i],circuit_number=None,attributes={'panel_schedule':{'description':'SAME SUPPLIED LOAD'}})
+    model=replace(model,circuits=tuple(circuits))
+    paths=inputs(tmp_path,count=6);paths[0].write_text(model.to_json())
+    report,_=panel_schedule_drawing_set(model)
+    out=create_panel_schedule_sheet_set(*paths,output_directory=tmp_path/'unassigned-visible')
+    manifest=json.loads((out/'SCHEDULE-MANIFEST.json').read_bytes());text=_flat_pdf_text(out/'sheet-set.pdf')
+    for circuit in circuits[:2]:
+        assert circuit.id in text
+        row=next(row for row in manifest['rows'] if row['source_id']==circuit.id)
+        assert any('LABEL NOT SUPPLIED' in cell and circuit.id in cell for cell in row['display_cells'])
+        assert 'TBD' in row['display_cells'][0]
+    for fact in report.unassigned_circuits:
+        assert fact.circuit.id in text and fact.source_owner.id in text and fact.source_port.id in text
+        row=next(row for row in manifest['rows'] if row['source_id']==fact.circuit.id)
+        assert row['source_owner_id']==fact.source_owner.id and row['source_port_id']==fact.source_port.id
+        assert any(fact.circuit.id in cell and fact.source_owner.id in cell for cell in row['display_cells'])
+        drawing=json.loads((out/'schedule-source'/f"{row['sheet_id']}.drawing.json").read_bytes())
+        by_id={primitive['id']:primitive for primitive in drawing['views'][0]['primitives']}
+        assert any({fact.circuit.id,fact.source_owner.id,fact.source_port.id}<=set(by_id[pid]['source_ids']) for pid in row['primitive_ids'])
+
+
+def test_long_source_ids_wrap_without_loss_in_heading_conflicts_and_pdf(tmp_path):
+    model=source(6)
+    old_id=model.electrical_equipment[0].id;long_panel='equipment:'+'P'*100
+    equipment=tuple(replace(e,id=long_panel,name='Long supplied panel name for visual identification') if e.id==old_id else e for e in model.electrical_equipment)
+    ports=tuple(replace(p,owner_id=long_panel) if p.owner_id==old_id else p for p in model.ports)
+    long_ids=['circuit:'+'A'*98,'circuit:'+'B'*98]
+    circuits=tuple(replace(c,id=long_ids[i]) if i<2 else c for i,c in enumerate(model.circuits))
+    model=replace(model,electrical_equipment=equipment,ports=ports,circuits=circuits)
+    paths=inputs(tmp_path,count=6);paths[0].write_text(model.to_json())
+    out=create_panel_schedule_sheet_set(*paths,output_directory=tmp_path/'long-identities',drafted_width_mm=300)
+    text=_flat_pdf_text(out/'sheet-set.pdf')
+    for identity in (long_panel,*long_ids):assert identity in text
+    manifest=json.loads((out/'SCHEDULE-MANIFEST.json').read_bytes())
+    for cid in long_ids:
+        row=next(row for row in manifest['rows'] if row['source_id']==cid)
+        assert row['label_conflict_circuit_ids']==long_ids
+        assert any(cid in cell for cell in row['display_cells'])

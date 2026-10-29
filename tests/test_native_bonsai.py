@@ -303,6 +303,209 @@ def test_real_runtime_package_cannot_shadow_reviewed_engine(tmp_path):
     assert receipt['canonical_roundtrip']['numerical_differences'] == []
 
 
+def test_space_annotation_guard_and_area(model, request_data):
+    from oabm.native_bonsai.api import polygon_area_centroid
+    spec = {'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'ft2', 'shade': True}
+    request_data['views'][0]['space_annotations'] = [spec]
+    assert validate_request(request_data, model)
+    assert polygon_area_centroid(model.spaces[0]) == (12.0, [2.0, 1.5])
+    for key, value in [('source_id', 'missing'), ('label', '{{x}}'), ('area_unit', 'acres'), ('shade', 'yes')]:
+        broken = copy.deepcopy(request_data)
+        broken['views'][0]['space_annotations'][0][key] = value
+        with pytest.raises(ValueError):
+            validate_request(broken, model)
+    broken = copy.deepcopy(request_data)
+    broken['views'][0]['exclude_ids'].append('space:room')
+    with pytest.raises(ValueError):
+        validate_request(broken, model)
+
+
+def test_real_native_space_annotations(tmp_path):
+    runtime = _configured_runtime()
+    request = json.loads(REQUEST.read_text())
+    request['views'][0]['annotations'] = [copy.deepcopy(request['views'][1]['annotations'][0])]
+    for view in request['views']:
+        view['space_annotations'] = [{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'ft2', 'shade': True}]
+    rp = tmp_path / 'request.json'
+    rp.write_text(json.dumps(request))
+    out = tmp_path / 'native'
+    export_native(MODEL, rp, out, runtime)
+    receipt = json.loads((out / 'receipt.json').read_text())
+    view = receipt['views'][request['views'][0]['id']]
+    entry = view['space_annotations'][0]
+    assert entry['source_polygon_area_m2'] == 12
+    assert entry['net_area_verified'] is False
+    assert entry['fill_guid'] and entry['provenance']
+    svg = (out / view['svg']).read_text()
+    assert 'NET AREA UNVERIFIED' in svg and '129.17 ft2' in svg
+    assert 'oabm-space-area' in svg
+    assert receipt['canonical_roundtrip']['exact_equal']
+    other = receipt['views'][request['views'][1]['id']]
+    assert 'NET AREA UNVERIFIED' in (out / other['svg']).read_text()
+    assert other['space_annotations'][0]['fill_guid']
+    assert other['space_annotations'][0]['anchor_xy_m'] != [2, 1.5]
+    import re
+    rcp_svg = (out / other['svg']).read_text()
+    positions = re.findall(r'<g transform="translate\(([^,]+), ([^)]+)\)[^"]*">\s*(.*?)</g>', rcp_svg, re.S)
+    room_y = next(float(y) for x, y, body in positions if 'ROOM: 129.17' in body)
+    lamp_y = next(float(y) for x, y, body in positions if '>L1</text>' in body)
+    assert abs(room_y-lamp_y) >= 14  # mm, conservative clearance for these fixed styles
+    plan_svg = (out / view['svg']).read_text()
+    positions = re.findall(r'<g transform="translate\(([^,]+), ([^)]+)\)[^"]*">\s*(.*?)</g>', plan_svg, re.S)
+    room_y = next(float(y) for x, y, body in positions if 'ROOM: 129.17' in body)
+    lamp_y = next(float(y) for x, y, body in positions if '>L1</text>' in body)
+    assert abs(room_y-lamp_y) >= 14
+
+
+
+@pytest.mark.parametrize('points', [
+    [(0, 0, 0), (2, 2, 0), (0, 2, 0), (2, 0, 0)],
+    [(0, 0, 0), (1, 0, 0), (2, 0, 0)],
+    [(0, 0, 0), (2, 0, 0), (2, 2, 1), (0, 2, 0)],
+    [(0, 0, 0), (2, 0, 0), (2, 2, 0), (2, 0, 0), (0, 2, 0)],
+])
+def test_space_polygon_invalid_rejected(model, request_data, points):
+    data = model.to_dict()
+    data['spaces'][0]['footprint']['points'] = [dict(x=x, y=y, z=z) for x, y, z in points]
+    request_data['views'][0]['space_annotations'] = [{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'm2', 'shade': False}]
+    with pytest.raises(ValueError):
+        validate_request(request_data, BuildingModel.from_dict(data))
+
+
+def test_offset_space_polygon_uses_stable_area_and_centroid(model):
+    from oabm.native_bonsai.api import polygon_area_centroid
+    data = model.to_dict()
+    points = [(999999, 999999), (999999.125, 999999), (999999.125, 999999.125), (999999, 999999.125)]
+    data['spaces'][0]['footprint']['points'] = [dict(x=x, y=y, z=0) for x, y in points]
+    space = BuildingModel.from_dict(data).spaces[0]
+    area, centroid = polygon_area_centroid(space)
+    assert area == pytest.approx(.015625, rel=1e-8)
+    assert centroid == pytest.approx([999999.0625, 999999.0625], abs=1e-8)
+
+
+def test_off_view_space_qualification_rejected(model, request_data):
+    request_data['views'][0]['space_annotations'] = [{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'm2', 'shade': True}]
+    request_data['views'][0]['center_m'] = [0, 0]
+    request_data['views'][0]['width_m'] = 1
+    with pytest.raises(ValueError, match='qualification must fit'):
+        validate_request(request_data, model)
+
+
+def test_native_float_precision_refuses_distorted_large_offset(model):
+    from oabm.native_bonsai.api import polygon_area_centroid
+    data = model.to_dict()
+    points = [(999999, 999999), (999999.1, 999999), (999999.1, 999999.1), (999999, 999999.1)]
+    data['spaces'][0]['footprint']['points'] = [dict(x=x, y=y, z=0) for x, y in points]
+    with pytest.raises(ValueError, match='precision'):
+        polygon_area_centroid(BuildingModel.from_dict(data).spaces[0])
+
+
+def test_concave_partly_visible_space_cannot_hide_qualification(model, request_data):
+    data = model.to_dict()
+    points = [(0, 0), (8, 0), (8, 1), (1, 1), (1, 7), (8, 7), (8, 8), (0, 8)]
+    data['spaces'][0]['footprint']['points'] = [dict(x=x, y=y, z=0) for x, y in points]
+    request_data['views'][0]['space_annotations'] = [{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'm2', 'shade': True}]
+    request_data['views'][0].update(center_m=[.5, 4], width_m=1, height_m=8)
+    with pytest.raises(ValueError, match='qualification must fit'):
+        validate_request(request_data, BuildingModel.from_dict(data))
+
+
+@pytest.mark.parametrize('unit', ['m2', 'ft2'])
+def test_small_area_that_rounds_to_zero_is_refused(model, request_data, unit):
+    data = model.to_dict()
+    points = [(0, 0), (.01, 0), (.01, .01), (0, .01)]
+    data['spaces'][0]['footprint']['points'] = [dict(x=x, y=y, z=0) for x, y in points]
+    request_data['views'][0]['space_annotations'] = [{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': unit, 'shade': True}]
+    with pytest.raises(ValueError, match='round to zero'):
+        validate_request(request_data, BuildingModel.from_dict(data))
+
+
+def test_large_offset_space_export_is_refused_before_native(tmp_path):
+    data = json.loads(MODEL.read_text())
+    points = [(999999, 999999), (999999.125, 999999), (999999.125, 999999.125), (999999, 999999.125)]
+    data['spaces'][0]['footprint']['points'] = [dict(x=x, y=y, z=0) for x, y in points]
+    request = json.loads(REQUEST.read_text())
+    request['views'][0]['space_annotations'] = [{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'ft2', 'shade': True}]
+    with pytest.raises(ValueError, match='local-coordinate scope'):
+        validate_request(request, BuildingModel.from_dict(data))
+
+
+def test_explicit_space_anchor_must_be_safe_and_interior(model, request_data):
+    spec = {'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'm2', 'shade': True, 'anchor_xy_m': [2, 1.5]}
+    request_data['views'][1]['space_annotations'] = [spec]
+    with pytest.raises(ValueError, match='avoid point'):
+        validate_request(request_data, model)
+    spec['anchor_xy_m'] = [2, .75]
+    assert validate_request(request_data, model)
+    spec['anchor_xy_m'] = [8, 8]
+    with pytest.raises(ValueError, match='interior anchor'):
+        validate_request(request_data, model)
+
+
+def test_real_native_concave_space_uses_interior_anchor(tmp_path):
+    runtime = _configured_runtime()
+    data = json.loads(MODEL.read_text())
+    points = [(0, 0), (8, 0), (8, 1), (1, 1), (1, 7), (8, 7), (8, 8), (0, 8)]
+    data['spaces'][0]['footprint']['points'] = [dict(x=x, y=y, z=0) for x, y in points]
+    source = tmp_path / 'model.json'
+    source.write_text(json.dumps(data))
+    request = json.loads(REQUEST.read_text())
+    request['views'] = [request['views'][0]]
+    request['views'][0].update(center_m=[4, 4], width_m=12, height_m=12, annotations=[], space_annotations=[{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'm2', 'shade': True}])
+    rp = tmp_path / 'request.json'
+    rp.write_text(json.dumps(request))
+    out = tmp_path / 'native'
+    export_native(source, rp, out, runtime)
+    receipt = json.loads((out / 'receipt.json').read_text())
+    view = receipt['views'][request['views'][0]['id']]
+    entry = view['space_annotations'][0]
+    x, y = entry['anchor_xy_m']
+    assert x < 1 or y < 1 or y > 7
+    assert entry['anchor_xy_m'] != entry['centroid_xy_m']
+    assert 'NET AREA UNVERIFIED' in (out / view['svg']).read_text()
+
+
+def test_space_labels_cannot_share_explicit_anchor(model, request_data):
+    data = model.to_dict()
+    second = copy.deepcopy(data['spaces'][0])
+    second['id'] = 'space:other'
+    data['spaces'].append(second)
+    request_data['views'][0]['annotations'] = []
+    request_data['views'][0]['space_annotations'] = [
+        {'source_id': 'space:room', 'label': 'ONE', 'area_unit': 'm2', 'shade': True, 'anchor_xy_m': [2, 1.5]},
+        {'source_id': 'space:other', 'label': 'TWO', 'area_unit': 'm2', 'shade': True, 'anchor_xy_m': [2, 1.5]},
+    ]
+    with pytest.raises(ValueError, match='avoid point annotations'):
+        validate_request(request_data, BuildingModel.from_dict(data))
+
+
+def test_space_polygon_total_complexity_budget(model, request_data, monkeypatch):
+    import math
+    import oabm.native_bonsai.api as api
+    data = model.to_dict()
+    data['spaces'][0]['footprint']['points'] = [dict(x=2+math.cos(i*2*math.pi/800), y=1.5+math.sin(i*2*math.pi/800), z=0) for i in range(800)]
+    spec = {'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'm2', 'shade': True}
+    for view in request_data['views']:
+        view['space_annotations'] = [spec]
+    monkeypatch.setattr(api, 'space_label_placement', lambda *args: (1, [2, 1.5], [2, 1.5], (2, 1.5, 1, 1)))
+    with pytest.raises(ValueError, match='complexity budget'):
+        validate_request(request_data, BuildingModel.from_dict(data))
+
+
+def test_space_label_placement_complexity_budget(model, request_data, monkeypatch):
+    import oabm.native_bonsai.api as api
+    data = model.to_dict()
+    template = data['spaces'][0]
+    specs = [{'source_id': 'space:room', 'label': 'ROOM', 'area_unit': 'm2', 'shade': False}]
+    for i in range(109):
+        space = copy.deepcopy(template)
+        space['id'] = f'space:room{i}'
+        data['spaces'].append(space)
+        specs.append({'source_id': space['id'], 'label': 'ROOM', 'area_unit': 'm2', 'shade': False})
+    request_data['views'][0]['space_annotations'] = specs
+    monkeypatch.setattr(api, 'space_label_placement', lambda *args: (1, [2, 1.5], [2, 1.5], (2, 1.5, 1, 1)))
+    with pytest.raises(ValueError, match='placement complexity budget'):
+        validate_request(request_data, BuildingModel.from_dict(data))
 def _translated_synthetic(delta):
     data = json.loads(MODEL.read_text())
     request = json.loads(REQUEST.read_text())

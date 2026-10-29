@@ -125,8 +125,7 @@ posed device/equipment, including one with an explicit size. The `luminaire`,
 unknown-size devices. Their paper glyph dimensions are not physical Body sizes.
 Labels are limited to 1–80 printable ASCII characters; native template braces
 and backticks are refused. Unsupported text is rejected, never silently rewritten.
-No guessed physical box is added. Grouped banks, room centroid labels,
-automatic dimensions, sections, titleblocks and engineering symbols beyond this
+No guessed physical box is added. Grouped banks, automatic dimensions, sections, titleblocks and engineering symbols beyond this
 bounded vocabulary are not supported by this first public adapter.
 
 Missing canonical dimensions remain missing. Explicit
@@ -181,3 +180,31 @@ A supplied but incompatible or incomplete runtime fails the actual test; it is
 not converted into a skip. Report skipped and executed tests separately. The
 synthetic integration checks native 1:48 SVGs, preserved input bytes and labels;
 it does not establish professional drafting acceptance for a real project.
+
+## Optional source-space area annotations
+
+A view may optionally include `space_annotations`, a list such as:
+
+```json
+{"source_id":"space:room", "label":"ROOM", "area_unit":"ft2", "shade":true}
+```
+
+Each source must be a unique canonical space on the view's specified level and
+must not be excluded. Its finite, horizontal, simple, nonzero polygon is the
+sole geometry source. The native fill and text are linked to the space IFC
+product; the receipt records the canonical source ID, provenance, area in square
+metres and display unit. Units are explicitly `m2` or `ft2`; `shade` is a
+boolean choosing a fixed built-in style, not caller-supplied SVG or CSS. The label uses a deterministic interior anchor selected near the centroid, avoiding conservative bounding envelopes of requested point and earlier space annotations. Optionally supply `anchor_xy_m` for an explicit interior presentation anchor; it is refused if unsafe. If no candidate fits the view and avoids known annotation envelopes, export is refused. Other linework, occlusion and unmodeled collisions still require visual review. The displayed number is the
+source polygon's XY area, not a field-verified or code-accepted net area. The
+qualification **NET AREA UNVERIFIED** remains on the drawing. No height, volume,
+occupancy, or engineering conclusion is inferred. Omitting the option leaves
+the existing drawing behavior unchanged.
+Native float32 polygon XY coordinates and the selected label anchor must reproduce their source values
+within 0.01 mm; areas that round to zero at two decimal places in the selected unit are refused; otherwise the space annotation is refused rather than drawing a
+visibly displaced or distorted polygon. The native text envelope check is
+conservative, but it cannot guarantee against collision or occlusion.
+
+A request-wide polygon validation budget limits the sum of squared selected
+vertex counts to 1,000,000; excessive work is refused before native execution.
+The request also limits conservative candidate placement work to 2,000,000
+vertex, point, or previous-label checks. Explicit anchors count as one candidate.

@@ -102,3 +102,5 @@ See [Native Bonsai review drawings](docs/native-bonsai.md) for explicitly suppli
 local Blender/Bonsai runtimes, immutable canonical input snapshots, native IFC/PLAN/RCP
 SVG output, linked paper annotations and fail-closed omissions. This optional tool
 does not install runtimes, infer geometry or establish engineering acceptance.
+
+See [Source-object coverage](docs/source-object-coverage.md) for an opt-in, source- and model-bound accounting gate.

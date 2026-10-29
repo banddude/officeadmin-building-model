@@ -171,3 +171,69 @@ def test_runtime_guard_rejects_private_branch_recrossing_its_own_bus():
                                   (x,bus_y-5),path[-1]]
     with pytest.raises(ValueError,match='source bus intersects unrelated feeder'):
         render_body(topology,plan,page,SimpleNamespace(id=page['id'],drawing_bounds_mm=bounds))
+
+
+@pytest.mark.parametrize('shape,bounds', [
+    ('compact-1',(5,5,620,460)), ('compact-3',(5,5,500,350)),
+    ('large',(7.055555556,7.055555556,1105.808333333,892.944444444)),
+])
+def test_emitted_transfer_contacts_remain_clear_of_every_source_bus(shape,bounds):
+    from math import hypot
+    from oabm.drawings.single_line.layout import _segments_cross, PAPER_BUS_CLEARANCE_MM
+    if shape=='large':
+        factory=runpy.run_path(str(Path(__file__).parents[1]/'examples/single_line/make_models.py'))
+        model=factory['make_variant_model']('multi-transfer',transfer_count=2)
+    else:model=compact_transfer(int(shape[-1]))
+    original=model.to_json();topology=project_topology(model);plan=plan_pages(topology,bounds)
+    sheets=[SimpleNamespace(id=p['id'],drawing_bounds_mm=bounds) for p in plan['pages']]
+    bodies,doc=build_single_line_bodies(model,sheets,layout=plan)
+    assert model.to_json()==original
+    if shape=='large':assert len(bodies)<=3
+    def distance(a,b,c,d):
+        def point(p,x,y):
+            dx,dy=y[0]-x[0],y[1]-x[1];length=dx*dx+dy*dy
+            t=max(0,min(1,((p[0]-x[0])*dx+(p[1]-x[1])*dy)/length)) if length else 0
+            return hypot(p[0]-x[0]-t*dx,p[1]-x[1]-t*dy)
+        return 0 if _segments_cross(a,b,c,d) else min(point(a,c,d),point(b,c,d),point(c,a,b),point(d,a,b))
+    def segment(node):return ((float(node.get('x1')),float(node.get('y1'))),(float(node.get('x2')),float(node.get('y2'))))
+    def rounded(s):return tuple(tuple(round(v,6) for v in p) for p in s)
+    checked=0;repeat_seen=False
+    for page in doc['sheets']:
+        root=ET.fromstring(bodies[page['sheet_id']]);lines=[n for n in root.iter() if n.tag.endswith('line')]
+        glyphs=[g for g in page['electrical_symbols'] if g['kind']=='transfer_input_contact']
+        actual_lines={rounded(segment(n)) for n in lines if float(n.get('stroke-width','0'))==pytest.approx(.22)}
+        expected=[]
+        for symbol in page['equipment_symbols']:
+            if next(e for e in topology.equipment if e['id']==symbol['equipment_id'])['equipment_type']!='transfer_switch':continue
+            x=symbol['axis_x'];y=symbol['bounds_mm'][1]
+            expected.extend((symbol['equipment_id'],role,((x-8,y+offset),(x-3,y+offset)))
+                            for role,offset in (('normal',21),('alternate',27)))
+        assert sorted((i,r,rounded(s)) for i,r,s in expected)==sorted((g['source_id'],g['role'],rounded(g['segments_mm'][0])) for g in glyphs)
+        assert all(rounded(s) in actual_lines for _,_,s in expected)
+        contacts=expected
+        symbols=[s for s in page['equipment_symbols'] if s['equipment_id']=='ATS']
+        repeat_seen |= len(symbols)>1
+        bus_lines={rounded(segment(n)) for n in lines if float(n.get('stroke-width','0'))==pytest.approx(.65)}
+        for bus in page['source_buses']:
+            segments=[*zip(bus['path_mm'],bus['path_mm'][1:]),(bus['row_mm'][:2],bus['row_mm'][2:])]
+            assert all(rounded(s) in bus_lines for s in segments)
+            for a,b in segments:
+                for _,_,(c,d) in contacts:
+                    assert distance(a,b,c,d)>=PAPER_BUS_CLEARANCE_MM-1e-6
+                    checked+=1
+    assert checked
+    if shape.startswith('compact'):assert repeat_seen
+
+
+def test_runtime_guard_rejects_bus_crossing_repeated_transfer_contact_ink():
+    from oabm.drawings.single_line.render import render_body
+    model=compact_transfer(1);topology=project_topology(model);bounds=(5,5,620,460)
+    plan=plan_pages(topology,bounds);page=deepcopy(plan['pages'][0])
+    fan=next(g for g in page['groups'] if g['equipment_id']=='ATS' and g['kind']=='fan')
+    chain=next(g for g in page['groups'] if g['equipment_id']=='UTILITY' and g['kind']=='chain')
+    width=(chain['width']-34*len(chain['connections']))/(len(chain['connections'])+1)
+    repeated_left=chain['x']+2*(width+34);axis=repeated_left+width/2
+    x=axis-6.5;start=fan['source_bus_path_mm'][0];bus_y=fan['bus_row_mm'][1]
+    fan['source_bus_path_mm']=[start,(x,start[1]),(x,bus_y)]
+    with pytest.raises(ValueError,match='transfer input contact'):
+        render_body(topology,plan,page,SimpleNamespace(id=page['id'],drawing_bounds_mm=bounds))

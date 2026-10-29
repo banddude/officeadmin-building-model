@@ -572,6 +572,14 @@ def _bus_key(edge):
     return (edge['source_id'],edge['drafting']['connection_kind'],edge['source_role'])
 
 
+def transfer_input_contacts(bounds, lane=None):
+    """Exact normal and alternate contact ink for one transfer occurrence."""
+    l,t,r,b=bounds
+    axis=symbol_lane(bounds,wide=lane=='side-wide')['axis_x'] if lane else (l+r)/2
+    return {'normal':((axis-8,t+21),(axis-3,t+21)),
+            'alternate':((axis-8,t+27),(axis-3,t+27))}
+
+
 def chain_feeder_geometry(group, edges, equipment):
     """Return the exact non-side-lane chain conductors used by the renderer."""
     keys=group['connections'];ids=[group['equipment_id']]+[edges[k]['load_id'] for k in keys]
@@ -766,7 +774,12 @@ def _consolidate_buses(result,topology,bounds):
                 start_x=(bar[0][0]+bar[1][0])/2;source_y=bar[0][1]
             start=(start_x,source_y)
             trunk=max([home[2]+3]+[right for _,_,right,_ in items])
-            boxes=[(l-PAPER_BUS_CLEARANCE_MM,t-PAPER_BUS_CLEARANCE_MM,r+PAPER_BUS_CLEARANCE_MM,b+PAPER_BUS_CLEARANCE_MM) for identity,(l,t,r,b) in [*homes.items(),*repeated_chain_boxes] if identity!=owner]
+            # Only the home occurrence may contain the intended source-bar
+            # join. A repeated symbol of the same owner has separate contact
+            # ink and must remain an obstacle like any other occurrence.
+            obstacles=[box for identity,box in homes.items() if identity!=owner]
+            obstacles.extend(box for identity,box in repeated_chain_boxes if box!=home)
+            boxes=[(l-PAPER_BUS_CLEARANCE_MM,t-PAPER_BUS_CLEARANCE_MM,r+PAPER_BUS_CLEARANCE_MM,b+PAPER_BUS_CLEARANCE_MM) for l,t,r,b in obstacles]
             # Unrelated endpoint leads lie wholly in their clearance-padded
             # equipment box; retain the inter-box span and every lead in the
             # current owner's box, where distinct terminals matter.
@@ -774,6 +787,8 @@ def _consolidate_buses(result,topology,bounds):
                      if (index==2 or (index<2 and edges[key]['source_id']==owner) or (index>2 and edges[key]['load_id']==owner))
                      and not (index<2 and _bus_key(edges[key])==terminal_key)]
             foreign.extend([*routed_bus_segments,*routed_private_segments])
+            if kind=='transfer_switch' and network_kind=='power':
+                foreign.extend(transfer_input_contacts(home,lanes[owner]).values())
             for path in core_geometry:
                 if _bus_key(edges[path['connection_id']])!=terminal_key:foreign.extend(zip(path['points'],path['points'][1:]))
             for other,other_rows in rows.items():
@@ -838,7 +853,9 @@ def _consolidate_buses(result,topology,bounds):
                             branch=(branch_x,bus_y)
                             direction=1 if approach[1]>=bus_y else -1
                             escape=(branch_x,bus_y+direction*3)
-                            private_boxes=[(ll-PAPER_BUS_CLEARANCE_MM,tt-PAPER_BUS_CLEARANCE_MM,rr+PAPER_BUS_CLEARANCE_MM,bb+PAPER_BUS_CLEARANCE_MM) for identity,(ll,tt,rr,bb) in [*homes.items(),*repeated_chain_boxes] if identity!=owner]
+                            private_obstacles=[box for identity,box in homes.items() if identity!=owner]
+                            private_obstacles.extend(box for identity,box in repeated_chain_boxes if box!=home)
+                            private_boxes=[(ll-PAPER_BUS_CLEARANCE_MM,tt-PAPER_BUS_CLEARANCE_MM,rr+PAPER_BUS_CLEARANCE_MM,bb+PAPER_BUS_CLEARANCE_MM) for ll,tt,rr,bb in private_obstacles]
                             owner_labels=symbol_lane(home,wide=wide)
                             private_boxes.extend([(owner_labels['text_left'],home[1],owner_labels['text_left']+owner_labels['text_width']+3,home[3]),
                                 (bounds[0],bounds[1],bounds[2],bounds[1]+25),(bounds[0],bounds[3]-16,bounds[2],bounds[3])])

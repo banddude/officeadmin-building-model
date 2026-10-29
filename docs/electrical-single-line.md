@@ -69,6 +69,9 @@ The shared-bus planner treats the entire rendered chain feeder, including
 equipment-terminal leads, as occupied conductor ink. A final render check
 refuses a bus crossing a distinct terminal or a private branch re-crossing its
 own bus; no unchecked straight-line shortcut replaces a routed bus detour.
+Repeated occurrences of the same equipment remain separate drawing obstacles.
+Transfer input contacts are rendered and checked from shared role-specific
+geometry, including the actual stroke rather than only its feeder endpoint.
 
 Parents are repeated with canonical ID and CONTINUED sheet references. Repeated
 transfer equipment retains both STATE UNSPECIFIED and CONTINUED/home reference

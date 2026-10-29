@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
-from .layout import FONT,TEXT_MM,SMALL_TEXT_MM,TEXT_LINE_MM,wrap_mm,backbone_geometry,symbol_lane,fan_geometry,chain_feeder_geometry,_segments_cross,_paper_clear_segment
+from .layout import FONT,TEXT_MM,SMALL_TEXT_MM,TEXT_LINE_MM,wrap_mm,backbone_geometry,symbol_lane,fan_geometry,chain_feeder_geometry,transfer_input_contacts,_segments_cross,_paper_clear_segment
 from .drafting_facts import status_tag,protection_label
 from ..company_sheets import measure_sheet_text
 
@@ -100,7 +100,12 @@ def render_body(topology,layout,page,sheet):
             if len(rating)>2:raise ValueError(f'{identity}: bus rating needs a wider label lane')
             for i,value in enumerate(rating):text(label_x,y+22+i*3.8,value,SMALL_TEXT_MM,label_anchor)
             if kind=='transfer_switch':
-                line(axis-8,y+21,axis-3,y+21);line(axis-8,y+27,axis-3,y+27)
+                contacts=transfer_input_contacts((x,y,x+w,y+h),lane)
+                for contact_role,(a,b) in contacts.items():
+                    line(*a,*b)
+                    glyphs.append({'kind':'transfer_input_contact','source_id':identity,'role':contact_role,
+                                   'occurrence_bounds_mm':(x,y,x+w,y+h),
+                                   'segments_mm':[(a,b)],'source_path':'equipment_type'})
                 line(axis+2,y+24,axis+8,y+24);line(axis+2,y+24,axis-2,y+22)
                 record_glyph('transfer_unspecified',identity,(axis-8,y+20,axis+8,y+28),'equipment_type')
                 if lane=='side-wide':
@@ -272,10 +277,10 @@ def render_body(topology,layout,page,sheet):
                 equipment_symbol(parent,*home[:2],home[2]-home[0],home[3]-home[1],continued=False,lane=group['source_home_lane'])
             if not keys:continue
             bus_path=group['source_bus_path_mm'];bus_y=group['bus_row_mm'][1]
-            bus_points=[*bus_path,(bus_left,bus_y),(bus_right,bus_y)]
             for a,b in zip(bus_path,bus_path[1:]):line(*a,*b,.65)
-            line(bus_left,bus_y,bus_right,bus_y,.65)
-            source_buses.append({'equipment_id':parent,'terminal_key':group['source_terminal_key'],'stroke_width_mm':.65,'connection_ids':keys,'path_mm':bus_path,'row_mm':group['bus_row_mm']})
+            row=group['bus_row_mm'];line(*row[:2],*row[2:],.65)
+            source_buses.append({'equipment_id':parent,'terminal_key':group['source_terminal_key'],'stroke_width_mm':.65,'connection_ids':keys,'path_mm':bus_path,'row_mm':group['bus_row_mm'],
+                                 'source_home_bounds_mm':home})
             text(parent_bounds[0]+2,bus_y-5,group['source_bus_caption'],SMALL_TEXT_MM)
             for i,key in enumerate(keys):
                 child=group['target_home_bounds_mm'][key];cw=child[2]-child[0];target=edges[key]['load_id']
@@ -313,6 +318,9 @@ def render_body(topology,layout,page,sheet):
                 raise ValueError(f'{path["connection_id"]}: drawn {network_kind} conductor intersects {bar["network_kind"]} terminal on {bar["source_id"]}; diagram refused')
     for i,bus in enumerate(source_buses):
         segments=[*zip(bus['path_mm'],bus['path_mm'][1:]),(bus['row_mm'][:2],bus['row_mm'][2:])]
+        contacts=[segment for glyph in glyphs if glyph['kind']=='transfer_input_contact' for segment in glyph['segments_mm']]
+        if not all(_paper_clear_segment(a,b,[],contacts) for a,b in segments):
+            raise ValueError(f'{bus["equipment_id"]}: source bus intersects or approaches a transfer input contact; diagram refused')
         owner,kind,role=bus['terminal_key']
         for path in paths:
             edge=edges[path['connection_id']]
@@ -340,7 +348,8 @@ def render_body(topology,layout,page,sheet):
                         raise ValueError(f'{owner}: source bus intersects unrelated feeder {path["connection_id"]}; diagram refused')
         boxes=[]
         for symbol in symbols:
-            if symbol['equipment_id']==bus['equipment_id'] or not symbol['enclosure_bounds_mm']:continue
+            if not symbol['enclosure_bounds_mm']:continue
+            if symbol['equipment_id']==bus['equipment_id'] and tuple(symbol['bounds_mm'])==tuple(bus['source_home_bounds_mm']):continue
             l,t,r,b=symbol['enclosure_bounds_mm'];pad=(bus['stroke_width_mm']+symbol['enclosure_stroke_width_mm'])/2
             boxes.append((l-pad,t-pad,r+pad,b+pad))
         other_segments=[]

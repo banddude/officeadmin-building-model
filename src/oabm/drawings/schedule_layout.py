@@ -374,12 +374,15 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
     """
     import math
     from oabm.model import stable_id
+    from oabm.drawings.schedule_ratings import panel_ratings, circuit_ratings
+    layout = layout or ScheduleLayout(packing="compact")
+    if layout.column_widths_mm:
+        raise ValueError('drafted panel schedules do not support column_widths_mm; use table_width_mm or ledger mode')
     selection = draft_panel_schedule_selection(report, panel_ids=panel_ids,
         include_empty_panels=include_empty_panels, include_unassigned=include_unassigned)
     if not selection['selected_schedule_ids']:
         return ()
     selected_panels = {group['panel_id'] for group in selection['groups'] if group['selected']}
-    layout = layout or ScheduleLayout()
     if hasattr(sheet, 'drawing_bounds_mm'):
         paper_bounds = tuple(sheet.drawing_bounds_mm)
         template = SheetSpec(sheet.id, sheet.width_mm, sheet.height_mm, title=sheet.title)
@@ -446,23 +449,45 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
     def value(number):
         return 'TBD' if number is None else str(number)
 
-    groups = [(g.panel, g.circuits, g) for g in report.panels if g.panel.id in selected_panels]
+    # Separate unknown positions from actual paired positions, rather than
+    # giving an unknown-position circuit the appearance of a left-hand slot.
+    groups = []
+    for group in report.panels:
+        if group.panel.id not in selected_panels:
+            continue
+        def has_position(fact):
+            fields = fact.circuit.entity.get('attributes', {}).get('panel_schedule', {})
+            return isinstance(fields, dict) and ('side' in fields or 'row' in fields)
+        positioned = tuple(f for f in group.circuits if has_position(f))
+        unpositioned = tuple(f for f in group.circuits if f not in positioned)
+        if positioned and unpositioned:
+            groups.extend(((group.panel, positioned, group, False), (group.panel, unpositioned, group, True)))
+        else:
+            groups.append((group.panel, group.circuits, group, True))
     if report.unassigned_circuits and include_unassigned:
-        groups.append((None, report.unassigned_circuits, None))
-    for ordinal, (panel, facts, group) in enumerate(groups, 1):
+        def unsupported_position(fact):
+            fields = fact.circuit.entity.get('attributes', {}).get('panel_schedule', {})
+            return isinstance(fields, dict) and ('side' in fields or 'row' in fields)
+        positioned = tuple(f for f in report.unassigned_circuits if unsupported_position(f))
+        unpositioned = tuple(f for f in report.unassigned_circuits if not unsupported_position(f))
+        if positioned and unpositioned:
+            groups.extend(((None, positioned, None, False), (None, unpositioned, None, False)))
+        else:
+            groups.append((None, report.unassigned_circuits, None, False))
+    for ordinal, (panel, facts, group, include_summary) in enumerate(groups, 1):
         panel_id = panel.id if panel is not None else report.source_model_id
         entity = panel.entity if panel is not None else {}
         panel_name = entity.get('name') if panel else None
         panel_identity = panel_id if not panel_name or panel_name == panel_id else f'{panel_id} | {panel_name}'
         title = f'{ordinal}  PANEL {panel_identity} - CIRCUIT SCHEDULE' if panel else f'{ordinal}  UNSUPPORTED SOURCE OWNERS - CIRCUIT FACTS'
-        panel_fields = supplied(entity, {'main', 'bus', 'aic', 'source'}) if panel else {}
+        panel_fields = panel_ratings(entity, supplied(entity, {'main', 'bus', 'aic', 'source'})) if panel else {}
         circuit_sid = stable_id('schedule', f'panel-facts:{panel_id}') if panel else stable_id('schedule', f'unassigned-panel-facts:{report.source_model_id}')
         summary_sid = stable_id('schedule', f'panel-fact-summary:{panel_id}') if panel else None
         label_conflicts = {cid: conflict.circuit_ids for conflict in group.label_conflicts for cid in conflict.circuit_ids} if group else {}
         positions, unassigned = {}, []
         for fact in facts:
             circuit = fact.circuit.entity
-            fields = supplied(circuit, {'description', 'ocpd', 'side', 'row', 'phase_va'})
+            fields = circuit_ratings(circuit, supplied(circuit, {'description', 'ocpd', 'side', 'row', 'phase_va'}))
             if ('side' in fields) != ('row' in fields):
                 raise ValueError(f'{fact.circuit.id}: supply both panel_schedule.side and row, or neither')
             if 'side' in fields:
@@ -497,6 +522,8 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
         intro = [f'SYSTEM: {entity.get("system") or "TBD"}   VOLTAGE: {value(entity.get("rated_voltage_v"))} V',
                  f'MAIN: {panel_fields.get("main", "TBD")}   BUS: {panel_fields.get("bus", "TBD")}   AIC: {panel_fields.get("aic", "TBD")}',
                  f'SOURCE: {panel_fields.get("source", "NOT SUPPLIED")}' if panel else 'Source owner classification is unsupported; no panel assignment inferred.']
+        if unpositioned_card:
+            title += ' - UNPOSITIONED CIRCUITS'
         title_lines = wrapped(title, card_width, size=heading, weight=600)
         intro_lines = tuple(part for text in intro for part in wrapped(text, card_width))
         head_height = len(title_lines) * heading * 1.4 + len(intro_lines) * line + 4 * pad
@@ -508,7 +535,7 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                  'A/B/C: supplied per-phase VA only; no phase allocation or demand inferred.')
         note_lines = tuple(part for text in notes for part in wrapped(text, card_width))
         tail_height = len(note_lines) * line + 2 * pad + 2 * line
-        summary_height = 8 * line + 4 * pad if panel else 0
+        summary_height = 8 * line + 4 * pad if panel and include_summary else 0
         position_text = ('CIRCUIT POSITIONS NOT SUPPLIED. Listed rows do not identify panel slots.' if unpositioned_card else
                          'Positions shown only where explicitly supplied; remaining rows are display order.')
         position_height = len(wrapped(position_text, card_width)) * line + 3 * pad
@@ -646,7 +673,7 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                         weight='normal' if edge in (xedges[0], xedges[5], xedges[8], xedges[-1]) else 'thin', role='column_rule')
             text_lines(wrapped(position_text, card_width), 0, y + pad, anchor_sources, role='position_status')
             y += len(wrapped(position_text, card_width)) * line + 3 * pad
-            if panel and part == len(chunks):
+            if panel and include_summary and part == len(chunks):
                 summary_top = y
                 rule(y, 'heavy')
                 text_lines(('SUPPLIED CONNECTED-LOAD SUMMARY',), 0, y, anchor_sources, bold=True, role='load_summary_title')
@@ -676,11 +703,27 @@ def draft_panel_schedule_pages(report, drawing_set, sheet, *, layout=None, regio
                 raise ValueError('drafted table exceeds reserved paper region; enlarge region or reduce supplied text length')
             cards.append({'primitives': primitives, 'rows': maps, 'height': y, 'schedule_id': circuit_sid,
                           'schedule_page': part, 'schedule_pages': len(chunks), 'panel_id': panel_id,
-                          'included_schedule_ids': [circuit_sid] + ([summary_sid] if panel and part == len(chunks) else []),
+                          'included_schedule_ids': [circuit_sid] + ([summary_sid] if panel and include_summary and part == len(chunks) else []),
                           'position_gaps': position_gaps})
+    # A mixed-position schedule may contain two visual sections; retain one
+    # consistent continuation sequence across both, not two independent 1/1s.
+    by_schedule = {}
+    for card in cards:
+        by_schedule.setdefault(card['schedule_id'], []).append(card)
+    for schedule_cards in by_schedule.values():
+        for page_number, card in enumerate(schedule_cards, 1):
+            card['schedule_page'] = page_number
+            card['schedule_pages'] = len(schedule_cards)
+            card['primitives'] = [
+                replace(p, text=f'PANEL SCHEDULE {page_number}/{len(schedule_cards)}')
+                if dict(p.metadata).get('role') == 'page_reference' else p
+                for p in card['primitives']
+            ]
     # Column-first placement leaves a genuine region for a caller's one-line.
     placed, column, cursor = [[]], 0, 0.0
     for card in cards:
+        if layout.packing == 'one_table_per_sheet' and placed[-1]:
+            placed.append([]); column = 0; cursor = 0.0
         if cursor and cursor + card['height'] > region_height:
             column += 1; cursor = 0.0
         if column >= columns:

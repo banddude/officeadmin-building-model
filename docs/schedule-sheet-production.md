@@ -63,9 +63,9 @@ beside the editable canonical model; production callers supply their own files:
 
 `contracts/schedule-sheet-settings-v1.schema.json` describes the settings shape.
 The runtime also enforces line height at least 1.5 times text height. Column
-widths are optional paper-mm overrides keyed by existing schedule column key;
+widths are optional paper-mm overrides keyed by existing schedule column key in ledger mode;
 remaining columns divide remaining body width equally. Unknown keys, nonfinite
-values, impossible widths and oversized rows fail explicitly. Use wider paper,
+values, impossible widths and oversized rows fail explicitly. Drafted panel cards reject nonempty `column_widths_mm`; their fixed paired/single-column proportions are controlled by `drafted_width_mm`. Both modes honor explicit `packing`. When omitted, drafted cards (including electrical composition) retain compact packing, while the fact ledger defaults to one table per sheet. Use wider paper,
 wider columns or smaller text to resolve overflow. No text is ellipsized.
 
 The shared renderer supports XML `space="preserve"` on group/text elements.
@@ -161,3 +161,16 @@ and row receipts mark `display_side: unpositioned` while preserving null supplie
 side/row values. Panels with explicit positions retain the mirrored left/right
 panel-card layout. The packet identifies this presentation as
 `paired-panel-card-v2`; canonical facts, totals and source coverage are unchanged.
+
+### Explicit single-line ratings in drafted schedules
+
+Drafted schedules reuse validated `single_line_drafting.bus_current_a` on the
+same panel and `single_line_drafting.protection` on the same circuit when
+present, displaying the latter with its supplied kind, rating, poles and AIC.
+No upstream protection is promoted to a panel main. Missing values remain
+unknown. If a corresponding free-form `panel_schedule.bus` or `.ocpd` is also
+supplied, it must exactly match the generated display string, except that an OCPD
+string consisting only of the matching numeric amperage (such as `20 A`) is
+accepted as a compatible subset. Other duplicates are rejected rather than
+guessing whether strings agree electrically.
+These are presentation-only derived values; canonical objects are not changed.

@@ -73,7 +73,7 @@ def plan_electrical_sheets(model,sheet,*,single_line_regions,panel_region_mm=Non
         flags={'panel_ids':None,'include_empty_panels':True,'include_unassigned':True}
     audit=draft_panel_schedule_selection(report,**flags)
     selected_ids=set(audit['selected_schedule_ids'])
-    pages=draft_panel_schedule_pages(report,drawing,sheet,layout=layout or ScheduleLayout(),
+    pages=draft_panel_schedule_pages(report,drawing,sheet,layout=layout or ScheduleLayout(packing="compact"),
         region_bounds_mm=panel_region_mm,table_width_mm=panel_width_mm,**flags)
     expected=sorted((schedule.id,n,row.source_id) for schedule in drawing.schedules if schedule.id in selected_ids for n,row in enumerate(schedule.rows))
     actual=sorted((row['schedule_id'],row['row_index'],row['source_id']) for page in pages for row in page.row_map)

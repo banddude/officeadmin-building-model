@@ -7,3 +7,5 @@ from .scope_ledger import ScopePolicy, ScopeLedger, ScopeLedgerRow, ScopeCountGr
 __all__ += ['ScopePolicy', 'ScopeLedger', 'ScopeLedgerRow', 'ScopeCountGroup', 'generate_scope_ledger']
 from .source_coverage import inventory_fingerprint, model_fingerprint, source_coverage
 __all__ += ['inventory_fingerprint', 'model_fingerprint', 'source_coverage']
+from .ifc_surface_fidelity import ifc_surface_fidelity
+__all__ += ['ifc_surface_fidelity']

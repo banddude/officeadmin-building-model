@@ -65,6 +65,13 @@ groups instead of rejecting a valid graph or inventing a connection. The finite
 grid is capped at 20,000 points and each path search at 12,000 expansions.
 Single-child runs use connected horizontal strips, and smaller fan/chain groups
 share shelf rows; a deep chain does not require a full fan row per edge.
+The shared-bus planner treats the entire rendered chain feeder, including
+equipment-terminal leads, as occupied conductor ink. A final render check
+refuses a bus crossing a distinct terminal or a private branch re-crossing its
+own bus; no unchecked straight-line shortcut replaces a routed bus detour.
+Repeated occurrences of the same equipment remain separate drawing obstacles.
+Transfer input contacts are rendered and checked from shared role-specific
+geometry, including the actual stroke rather than only its feeder endpoint.
 
 Parents are repeated with canonical ID and CONTINUED sheet references. Repeated
 transfer equipment retains both STATE UNSPECIFIED and CONTINUED/home reference
@@ -111,6 +118,15 @@ secondary voltages remain explicit connection labels; multiple differing seconda
 voltages are unsupported. Transfer equipment needs exactly two distinct incoming
 ports with canonical roles `normal` and `alternate`; outgoing source ports use
 role `load`. The symbol does not assert closed switch state or source paralleling.
+
+The present symbol grammar has one represented source bar per equipment and
+network kind. Multiple outgoing branches with the same role use that schematic
+bar; distinct source or load roles in the same network are refused across every
+layout mode rather than silently collapsed onto one bar, except that transfer
+normal and alternate power inputs have their own contacts. Supply separate bus
+or winding equipment for that unsupported case. Distinct port IDs alone do not
+prove separate internal buses. Terminal occurrence records retain the canonical
+equipment, port and role and the rendered point for audit against the model.
 
 Rings, ambiguous multiple feeders, duplicate edges, conflicting supplied voltages,
 unsupported equipment/devices and port-only links without directed circuit facts

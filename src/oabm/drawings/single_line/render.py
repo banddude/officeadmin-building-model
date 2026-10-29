@@ -2,7 +2,7 @@
 from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
-from .layout import FONT,TEXT_MM,SMALL_TEXT_MM,TEXT_LINE_MM,wrap_mm,backbone_geometry,symbol_lane,fan_geometry,_segments_cross,_paper_clear_segment
+from .layout import FONT,TEXT_MM,SMALL_TEXT_MM,TEXT_LINE_MM,wrap_mm,backbone_geometry,symbol_lane,fan_geometry,chain_feeder_geometry,transfer_input_contacts,_segments_cross,_paper_clear_segment
 from .drafting_facts import status_tag,protection_label
 from ..company_sheets import measure_sheet_text
 
@@ -100,7 +100,12 @@ def render_body(topology,layout,page,sheet):
             if len(rating)>2:raise ValueError(f'{identity}: bus rating needs a wider label lane')
             for i,value in enumerate(rating):text(label_x,y+22+i*3.8,value,SMALL_TEXT_MM,label_anchor)
             if kind=='transfer_switch':
-                line(axis-8,y+21,axis-3,y+21);line(axis-8,y+27,axis-3,y+27)
+                contacts=transfer_input_contacts((x,y,x+w,y+h),lane)
+                for contact_role,(a,b) in contacts.items():
+                    line(*a,*b)
+                    glyphs.append({'kind':'transfer_input_contact','source_id':identity,'role':contact_role,
+                                   'occurrence_bounds_mm':(x,y,x+w,y+h),
+                                   'segments_mm':[(a,b)],'source_path':'equipment_type'})
                 line(axis+2,y+24,axis+8,y+24);line(axis+2,y+24,axis-2,y+22)
                 record_glyph('transfer_unspecified',identity,(axis-8,y+20,axis+8,y+28),'equipment_type')
                 if lane=='side-wide':
@@ -190,7 +195,7 @@ def render_body(topology,layout,page,sheet):
         if t in {'source','generator','meter'}:return (x+w/2,y+(29 if source else 19))
         if t=='ground_electrode':return (x+w/2,y+18)
         return (min(r-6,max(x+6,boundary[0])),y+23)
-    def feeder(key,points,source_bounds,target_bounds,*,private_start=None):
+    def feeder(key,points,source_bounds,target_bounds,*,private_start=None,chain_points=None):
         edge=edges[key];kind=edge['drafting']['connection_kind'];protection=edge['drafting']['protection']
         start=terminal(edge['source_id'],source_bounds,points[0],kind,True,edge['source_role'])
         end=terminal(edge['load_id'],target_bounds,points[-1],kind,False,edge['load_role'])
@@ -211,6 +216,9 @@ def render_body(topology,layout,page,sheet):
         external_end=external_start+len(points)-1
         leading.extend(points[1:])
         leading.extend(reversed(internal_lead(end,points[-1],target_bounds,edge['load_id'])[:-1]))
+        if chain_points is not None:
+            leading=chain_points
+            external_start,external_end=2,3
         # Insert supplied protection in an external straight feeder run; missing facts
         # produce a plain conductor, never a default breaker.
         placed=False
@@ -225,9 +233,12 @@ def render_body(topology,layout,page,sheet):
                 placed=True
             else:line(*a,*b)
         if protection and not placed:raise ValueError(f'{key}: supplied protection cannot fit its conductor lead')
-        paths.append({'connection_id':key,'points_mm':leading})
+        paths.append({'connection_id':key,'points_mm':leading,
+                      'private_branch_index':None if private_start is None else external_start+private_start})
         for endpoint in ('source','load'):
-            terminals.append({'connection_id':key,'endpoint':endpoint,'sheet_id':page['id'],'counterpart_sheet':page['id'],'tag':refs[key]['tag']})
+            terminals.append({'connection_id':key,'endpoint':endpoint,'sheet_id':page['id'],'counterpart_sheet':page['id'],'tag':refs[key]['tag'],
+                              'equipment_id':edge[endpoint+'_id'],'port_id':edge[endpoint+'_port_id'],
+                              'role':edge[endpoint+'_role'],'point_mm':start if endpoint=='source' else end})
     section(1,'ELECTRICAL REFERENCES' if page['kind']=='reference-index' else 'FEEDER SCHEDULE CONTINUED' if page['kind']=='facts-register' else 'ONE-LINE NOTES CONTINUED' if page['kind']=='notes-continuation' else 'POWER ONE-LINE',left+2,top+1,right-left-4)
     header='NOT TO SCALE / '+page.get('navigation_header','REFERENCES UNRESOLVED')
     header_lines=wrap_mm(header,right-left-26,size=TEXT_MM)
@@ -248,13 +259,12 @@ def render_body(topology,layout,page,sheet):
         if group.get('kind')=='chain':
             ids=[group['equipment_id']]+[edges[key]['load_id'] for key in keys];gap=34
             box_width=(w-gap*(len(ids)-1))/len(ids)
-            boxes=[]
+            boxes,chain_geometry=chain_feeder_geometry(group,edges,equipment)
             for i,identity in enumerate(ids):
                 bx=x+i*(box_width+gap);equipment_symbol(identity,bx,y+13,box_width,40)
-                boxes.append((bx,y+13,bx+box_width,y+53))
             for i,key in enumerate(keys):
                 a=(boxes[i][2],y+36);b=(boxes[i+1][0],y+36)
-                feeder(key,[a,b],boxes[i],boxes[i+1])
+                feeder(key,[a,b],boxes[i],boxes[i+1],chain_points=chain_geometry[i]['points'])
                 text((a[0]+b[0])/2,y+9,refs[key]['tag'],TEXT_MM,'middle')
                 reference='REG '+(refs[key].get('register_sheet') or 'DELEGATED')
                 if measure_sheet_text(reference,SMALL_TEXT_MM,font_family=FONT)>gap-2:reference='REG INDEX'
@@ -267,10 +277,10 @@ def render_body(topology,layout,page,sheet):
                 equipment_symbol(parent,*home[:2],home[2]-home[0],home[3]-home[1],continued=False,lane=group['source_home_lane'])
             if not keys:continue
             bus_path=group['source_bus_path_mm'];bus_y=group['bus_row_mm'][1]
-            bus_points=[*bus_path,(bus_left,bus_y),(bus_right,bus_y)]
             for a,b in zip(bus_path,bus_path[1:]):line(*a,*b,.65)
-            line(bus_left,bus_y,bus_right,bus_y,.65)
-            source_buses.append({'equipment_id':parent,'terminal_key':group['source_terminal_key'],'stroke_width_mm':.65,'connection_ids':keys,'path_mm':bus_path,'row_mm':group['bus_row_mm']})
+            row=group['bus_row_mm'];line(*row[:2],*row[2:],.65)
+            source_buses.append({'equipment_id':parent,'terminal_key':group['source_terminal_key'],'stroke_width_mm':.65,'connection_ids':keys,'path_mm':bus_path,'row_mm':group['bus_row_mm'],
+                                 'source_home_bounds_mm':home})
             text(parent_bounds[0]+2,bus_y-5,group['source_bus_caption'],SMALL_TEXT_MM)
             for i,key in enumerate(keys):
                 child=group['target_home_bounds_mm'][key];cw=child[2]-child[0];target=edges[key]['load_id']
@@ -308,9 +318,38 @@ def render_body(topology,layout,page,sheet):
                 raise ValueError(f'{path["connection_id"]}: drawn {network_kind} conductor intersects {bar["network_kind"]} terminal on {bar["source_id"]}; diagram refused')
     for i,bus in enumerate(source_buses):
         segments=[*zip(bus['path_mm'],bus['path_mm'][1:]),(bus['row_mm'][:2],bus['row_mm'][2:])]
+        contacts=[segment for glyph in glyphs if glyph['kind']=='transfer_input_contact' for segment in glyph['segments_mm']]
+        if not all(_paper_clear_segment(a,b,[],contacts) for a,b in segments):
+            raise ValueError(f'{bus["equipment_id"]}: source bus intersects or approaches a transfer input contact; diagram refused')
+        owner,kind,role=bus['terminal_key']
+        for path in paths:
+            edge=edges[path['connection_id']]
+            same_source=(edge['source_id'],edge['drafting']['connection_kind'],edge['source_role'])==tuple(bus['terminal_key'])
+            for a,b in segments:
+                for index,(c,d) in enumerate(zip(path['points_mm'],path['points_mm'][1:])):
+                    if a==b or c==d or not _segments_cross(a,b,c,d):continue
+                    private=path['private_branch_index']
+                    if same_source and private is not None and index<private:continue
+                    # Ordinary bus equipment can join its incoming feeder at
+                    # its own represented bar, never elsewhere on the paper.
+                    lo=(max(min(a[0],b[0]),min(c[0],d[0])),max(min(a[1],b[1]),min(c[1],d[1])))
+                    hi=(min(max(a[0],b[0]),max(c[0],d[0])),min(max(a[1],b[1]),max(c[1],d[1])))
+                    # A private branch may start on its bus, but must not
+                    # re-enter it or bypass protection later in the path.
+                    if same_source and private is not None and index==private and lo==hi and all(abs(lo[i]-c[i])<1e-7 for i in (0,1)):continue
+                    allowed=(edge['load_id']==owner and edge['drafting']['connection_kind']==kind and
+                             equipment[owner]['equipment_type'] in {'panelboard','switchboard','disconnect','neutral_bus','ground_bus'} and
+                             any(s['equipment_id']==owner and all(l-1e-7<=p[0]<=r+1e-7 and t-1e-7<=p[1]<=z+1e-7 for p in (lo,hi))
+                                 for s in symbols for l,t,r,z in [s['bounds_mm']]))
+                    if same_source and private is None:
+                        allowed=any(s['equipment_id']==owner and all(l-1e-7<=p[0]<=r+1e-7 and t-1e-7<=p[1]<=z+1e-7 for p in (lo,hi))
+                                    for s in symbols for l,t,r,z in [s['bounds_mm']])
+                    if not allowed:
+                        raise ValueError(f'{owner}: source bus intersects unrelated feeder {path["connection_id"]}; diagram refused')
         boxes=[]
         for symbol in symbols:
-            if symbol['equipment_id']==bus['equipment_id'] or not symbol['enclosure_bounds_mm']:continue
+            if not symbol['enclosure_bounds_mm']:continue
+            if symbol['equipment_id']==bus['equipment_id'] and tuple(symbol['bounds_mm'])==tuple(bus['source_home_bounds_mm']):continue
             l,t,r,b=symbol['enclosure_bounds_mm'];pad=(bus['stroke_width_mm']+symbol['enclosure_stroke_width_mm'])/2
             boxes.append((l-pad,t-pad,r+pad,b+pad))
         other_segments=[]

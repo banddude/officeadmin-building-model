@@ -1,0 +1,165 @@
+# Opt-in native Bonsai drawing export
+
+This adapter launches an **explicitly supplied, already installed** Blender/Bonsai
+runtime. It is separate from the ordinary Python SVG drawing adapters and is not
+enabled by existing production commands. It writes model-derived IFC and native
+Bonsai PLAN_VIEW / REFLECTED_PLAN_VIEW SVGs. It does not draw a separate plan from
+hand-maintained geometry, change the canonical contract, or imply engineering or
+permit acceptance.
+
+## Operator prerequisites and trust boundary
+
+Install a compatible official Blender and Bonsai distribution yourself. The
+adapter does not download, install, upgrade, discover or execute a remote runtime.
+Supply the Blender executable and a local Python package directory containing
+Bonsai and its dependencies. These paths are executable-code trust decisions:
+only use installations you trust. Arbitrary scripts, `.blend` inputs, caller SVG
+resources, remote IFC/resources, and custom native expressions are not request
+inputs. The fixed worker uses a factory-startup/offline runtime, not a user's
+existing desktop session or preferences.
+
+The initially supported runtime is exactly Blender 5.2.3 LTS / Bonsai 0.8.5 /
+IfcOpenShell 0.8.5 with the matching bundled Python ABI. Other versions are
+explicitly refused by this bounded first implementation; a successful probe is not proof that a specific model
+can be exported. Keep real job inputs and outputs outside this public checkout.
+No credentials, network permissions, OfficeAdmin services or user laptop access
+are required by this adapter.
+
+```sh
+# Adjust these two paths to your existing trusted installation.
+export BLENDER=/opt/blender/blender
+export BONSAI_PYTHON=/opt/bonsai-python
+
+PYTHONPATH=src python -m oabm.native_bonsai --probe \
+  --blender "$BLENDER" --bonsai-python "$BONSAI_PYTHON" \
+  --output /tmp/native-runtime-probe-new
+
+PYTHONPATH=src python -m oabm.native_bonsai \
+  --model examples/synthetic-native-bonsai-model.json \
+  --request examples/synthetic-native-bonsai-request.json \
+  --blender "$BLENDER" --bonsai-python "$BONSAI_PYTHON" \
+  --output /tmp/native-drawing-proof-new
+```
+
+Output destinations must be fresh. Do not place output over an input or reuse a
+previous result directory. The supplied example is entirely synthetic: a tiny
+room, three unknown-size point devices, and one explicitly sized generic fan.
+It is not a recommended electrical layout or selected product schedule.
+
+## Appearance boundary: canonical geometry only
+
+This tool starts from canonical JSON and the existing `to_ifc` adapter. It does
+**not** consume an existing IFC, reproduce arbitrary IFC Bodies, or reconstruct
+external appearance meshes. Canonical obstacle boxes remain conservative
+canonical envelopes; they do not become detailed furniture or manufacturer CAD.
+A separate, already verified IFC may contain richer derived appearance geometry
+that this canonical-only command cannot reproduce. Do not advertise equivalent
+appearance fidelity merely because canonical roundtrip succeeds.
+
+If canonical metadata contains `visual_asset_reference`, this bounded consumer
+refuses the export rather than ignoring that recognized appearance request or
+fetching its resource. This is a consumer guard, not a new canonical field or
+parallel semantic model. Raw IFC/resource/script request keys also remain
+unsupported. Other descriptive metadata is preserved but is never an instruction
+to fetch or materialize visual assets. The receipt explicitly states the
+canonical-only appearance boundary. Keep richer-IFC workflows separately
+validated; do not remove appearance metadata simply to imply equivalent output.
+
+## Request boundary
+
+The version is `native-bonsai-v1`. Each requested view explicitly supplies its
+safe file ID, native target view, canonical level ID, XY center in metres,
+absolute cut elevation in metres, width/height in metres, integer scale
+denominator, excluded canonical IDs, and annotation list. The example is the
+complete executable request. Unknown keys and unsupported view types fail;
+there is no automatic fitting, clipping repair or inferred drawing scale. The
+bounded native camera depth is 10 m with a 0.002 m near clip; these are recorded
+presentation settings, not surveyed building extents. `level_id` identifies the
+native camera reference, **not an exclusive storey filter**. Objects from other
+levels within the camera volume can be selected; supply explicit canonical
+`exclude_ids` when the required view needs that exclusion. The receipt records
+native selections instead of claiming pixel visibility.
+
+```json
+{
+  "id": "plan",
+  "target_view": "PLAN_VIEW",
+  "level_id": "level:ground",
+  "center_m": [2, 1.5],
+  "cut_height_m": 1.5,
+  "width_m": 6,
+  "height_m": 5,
+  "scale_denominator": 48,
+  "exclude_ids": [],
+  "annotations": [
+    {"source_id": "device:R1", "kind": "receptacle", "text": "R1",
+     "label_offset_mm": [3, 1]}
+  ]
+}
+```
+
+Canonical coordinates remain authoritative. Annotation anchors come from the
+referenced device/equipment pose; the request cannot supply a competing XY
+position. `label_offset_mm` is paper presentation only, not a moved product or
+physical installation dimension. `text` provides a linked text label for a
+posed device/equipment, including one with an explicit size. The `luminaire`,
+`receptacle`, and `switch` schematic glyph kinds are restricted to matching
+unknown-size devices. Their paper glyph dimensions are not physical Body sizes.
+Labels are limited to 1–80 printable ASCII characters; native template braces
+and backticks are refused. Unsupported text is rejected, never silently rewritten.
+No guessed physical box is added. Grouped banks, room centroid labels,
+automatic dimensions, sections, titleblocks and engineering symbols beyond this
+bounded vocabulary are not supported by this first public adapter.
+
+Missing canonical dimensions remain missing. Explicit
+`acknowledged_body_omissions` names the exact canonical IDs whose adapter Body
+omissions the operator accepts for this review export. An unexpected omission
+must fail instead of disappearing silently; acknowledgment is not fabrication
+of geometry or engineering approval. Existing IFC adapter restrictions still
+apply. This command does not repurpose electrical objects as pipe, duct or gas
+systems and does not bypass missing typed MEP semantics.
+
+## Evidence, scale and failure handling
+
+Model and request bytes are captured once into immutable input snapshots; all
+subsequent work and hashes refer to those bytes, not a later edit to the original
+file. A completed export has a receipt identifying the consumed hashes, native
+runtime, units, view scale/dimensions, canonical-to-IFC identity and round-trip
+checks, annotations and omission/visibility information. Review the receipt and
+native SVGs together. A runtime or unsupported-content failure is not a successful
+drawing; diagnostics remain explicit and no success receipt is issued.
+
+Scale is configured on the native Bonsai drawing before linework and annotations
+are generated, including the camera/render aspect synchronization. It is not
+achieved by enlarging the completed SVG: paper symbols retain their proper size.
+Native pixel-aspect quantization can cause a small difference between requested
+and actual SVG paper extents; preserve the actual recorded dimensions. RCP uses
+the native reflected view, not a flipped PLAN SVG.
+
+Unknown elevations, geometry or design intent are not resolved by drawing them.
+An annotation's camera-plane Z is a presentation plane, not an equipment mounting
+height. Objects outside a requested view or explicitly excluded remain in the
+model; visibility reporting must not be interpreted as deletion or a quantity
+change. Do not infer circuits, homeruns, panel sizing, connectivity, photometry,
+code compliance, survey accuracy or construction readiness from a native export.
+
+Native IFC annotations and presentation resources are derived deliverables.
+Canonical source facts, including IDs and provenance, remain the source of truth.
+Bonsai can introduce runtime-dependent ordering or timestamps; no byte-identical
+IFC/SVG promise is made across versions. Use the semantic round-trip and receipt
+checks rather than inferring equivalence from a picture alone.
+
+## Tests: skipped is not executed
+
+Normal request/guard tests do not need Blender. The real native integration test
+is explicitly skipped unless **both** runtime environment variables are supplied:
+
+```sh
+OABM_TEST_BLENDER="$BLENDER" OABM_TEST_BONSAI_PYTHON="$BONSAI_PYTHON" \
+  PYTHONPATH=src pytest -q tests/test_native_bonsai.py
+```
+
+A supplied but incompatible or incomplete runtime fails the actual test; it is
+not converted into a skip. Report skipped and executed tests separately. The
+synthetic integration checks native 1:48 SVGs, preserved input bytes and labels;
+it does not establish professional drafting acceptance for a real project.

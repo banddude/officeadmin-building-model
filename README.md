@@ -134,3 +134,8 @@ See [Shared production chain](docs/production-sheet-set.md) for one ordered cove
 See [Checked assembly routing](docs/checked-assembly-routing.md) for explicit routing candidates gated by assembly geometry and bend preflight, with a canonical output for downstream delivery.
 
 See [Supplied 2D lighting/RCP review sheets](docs/supplied-lighting-rcp.md) for source-bound XY presentation with unknown heights and no physical BIM placement.
+
+See [Native Bonsai review drawings](docs/native-bonsai.md) for explicitly supplied
+local Blender/Bonsai runtimes, immutable canonical input snapshots, native IFC/PLAN/RCP
+SVG output, linked paper annotations and fail-closed omissions. This optional tool
+does not install runtimes, infer geometry or establish engineering acceptance.

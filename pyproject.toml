@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+oabm-native-bonsai = "oabm.native_bonsai.__main__:main"
 oabm-route-checked = "oabm.routing.checked_delivery:main"
 oabm-production-sheets = "oabm.drawings.production_set:main"
 oabm-lighting-rcp = "oabm.drawings.lighting_rcp:main"

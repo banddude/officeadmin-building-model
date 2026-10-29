@@ -58,9 +58,12 @@ def test_input_winding_preserves_fitted_geometry():
     first = detect(0.01, 0.3)[0]
     second = detect(0.01, 0.3, reverse=True)[0]
     assert len(first) == len(second) == 1
-    assert sorted((first[0].start_pt, first[0].end_pt)) == pytest.approx(
-        sorted((second[0].start_pt, second[0].end_pt))
-    )
+    first_endpoints = sorted((first[0].start_pt, first[0].end_pt))
+    second_endpoints = sorted((second[0].start_pt, second[0].end_pt))
+    assert len(first_endpoints) == len(second_endpoints) == 2
+    for actual, expected in zip(first_endpoints, second_endpoints):
+        assert len(actual) == len(expected) == 2
+        assert actual == pytest.approx(expected)
 
 
 def test_model_records_fit_as_inferred_and_keeps_original_source_ids():

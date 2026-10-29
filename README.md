@@ -97,3 +97,8 @@ The two upstream files in `spikes/graph_studio/upstream/` retain their separate
 Apache-2.0 license and NOTICE; see the spike README for attribution and hashes.
 
 Native IFC4 wall/opening intake has a separate explicit [bounded reader](docs/native-ifc-import.md); strict OABM IFC round-trip behavior remains unchanged.
+
+See [Native Bonsai review drawings](docs/native-bonsai.md) for explicitly supplied
+local Blender/Bonsai runtimes, immutable canonical input snapshots, native IFC/PLAN/RCP
+SVG output, linked paper annotations and fail-closed omissions. This optional tool
+does not install runtimes, infer geometry or establish engineering acceptance.

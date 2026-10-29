@@ -1,0 +1,87 @@
+{
+  "version": "native-bonsai-v1",
+  "acknowledged_body_omissions": [
+    "device:L1",
+    "device:R1",
+    "device:S1"
+  ],
+  "views": [
+    {
+      "id": "plan",
+      "target_view": "PLAN_VIEW",
+      "level_id": "level:ground",
+      "center_m": [
+        2,
+        1.5
+      ],
+      "cut_height_m": 1.5,
+      "width_m": 6,
+      "height_m": 5,
+      "scale_denominator": 48,
+      "exclude_ids": [],
+      "annotations": [
+        {
+          "source_id": "device:R1",
+          "kind": "receptacle",
+          "text": "R1",
+          "label_offset_mm": [
+            3,
+            -3
+          ]
+        },
+        {
+          "source_id": "device:S1",
+          "kind": "switch",
+          "text": "S1",
+          "label_offset_mm": [
+            3,
+            1
+          ]
+        },
+        {
+          "source_id": "device:F1",
+          "kind": "text",
+          "text": "F1",
+          "label_offset_mm": [
+            3,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rcp",
+      "target_view": "REFLECTED_PLAN_VIEW",
+      "level_id": "level:ground",
+      "center_m": [
+        2,
+        1.5
+      ],
+      "cut_height_m": 1.5,
+      "width_m": 6,
+      "height_m": 5,
+      "scale_denominator": 48,
+      "exclude_ids": [],
+      "annotations": [
+        {
+          "source_id": "device:L1",
+          "kind": "luminaire",
+          "text": "L1",
+          "label_offset_mm": [
+            3,
+            1
+          ]
+        },
+        {
+          "source_id": "device:F1",
+          "kind": "text",
+          "text": "F1",
+          "label_offset_mm": [
+            3,
+            1
+          ]
+        }
+      ]
+    }
+  ]
+}

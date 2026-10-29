@@ -1,0 +1,231 @@
+"""Fixed trusted Blender entrypoint. Only strict JSON presentation data is consumed."""
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import sys
+import tomllib
+import xml.etree.ElementTree as ET
+
+# Executed by Blender as a script, not imported by ordinary Python tests.
+
+def main() -> None:
+    mode, installed, destination = sys.argv[sys.argv.index('--') + 1:]
+    if mode not in ('probe', 'export'):
+        raise ValueError('unsupported worker mode')
+    package, out = Path(installed), Path(destination)
+    # The reviewed engine must win over unrelated copies in a runtime site-packages.
+    sys.path[:0] = [str(Path(__file__).resolve().parents[2]), str(package)]
+    import bpy
+    import addon_utils
+    import ifcopenshell
+    manifest = tomllib.loads((package / 'bonsai/blender_manifest.toml').read_text())
+    runtime = {'blender': bpy.app.version_string, 'blender_tuple': list(bpy.app.version),
+               'bonsai': manifest['version'], 'ifcopenshell': ifcopenshell.version,
+               'python': sys.version, 'probe_executed': True}
+    if tuple(bpy.app.version) != (5, 2, 3) or manifest['version'] != '0.8.5' or ifcopenshell.version != '0.8.5':
+        raise RuntimeError('unsupported runtime; initial native adapter requires Blender 5.2.3 / Bonsai 0.8.5 / IfcOpenShell 0.8.5')
+    addon_utils.enable('bonsai', default_set=True, persistent=True)
+    import bonsai.tool as tool
+    import bonsai.core.drawing as core
+    if 'bonsai' not in bpy.context.preferences.addons or not hasattr(bpy.ops.bim, 'load_project'):
+        raise RuntimeError('Bonsai did not register its native IFC operators')
+    (out / 'runtime-probe.json').write_text(json.dumps(runtime, indent=2) + '\n')
+    if mode == 'probe':
+        return
+    from oabm.model import BuildingModel
+    from oabm.ifc import to_ifc, from_ifc, canonical_id_to_ifc_guid, round_trip_differences
+    from oabm.native_bonsai.api import validate_request, _json, canonical_index
+    import ifcopenshell.api
+    import ifcopenshell.util.element as element
+    import ifcopenshell.util.unit
+    from mathutils import Vector
+
+    inputs = {name: (out / 'inputs' / name).read_bytes() for name in ('model.json', 'request.json')}
+    hashes = {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
+    if hashes != json.loads((out / 'input-hashes.json').read_text()):
+        raise RuntimeError('snapshot hashes changed before worker read')
+    model = BuildingModel.from_dict(_json(inputs['model.json']))
+    request = validate_request(_json(inputs['request.json']), model)
+    native = to_ifc(model)  # Existing guards remain active: no inferred or unsupported assembly geometry.
+    differences = round_trip_differences(model, from_ifc(native))
+    if differences:
+        raise ValueError(f'IFC adapter roundtrip mismatch: {differences}')
+    canonical = {}
+    omissions = []
+    for item in native.by_type('IfcRoot'):
+        ps = element.get_pset(item, 'OABM_Canonical')
+        if not ps:
+            continue
+        payload = json.loads(ps['CanonicalJson'])
+        if 'id' not in payload:
+            continue
+        cid = payload['id']
+        if cid in canonical:
+            raise ValueError('multiple IFC root mappings for canonical ID unsupported')
+        canonical[cid] = {'ifc_guid': item.GlobalId, 'ifc_class': item.is_a(), 'canonical_kind': ps['CanonicalKind']}
+        body = element.get_pset(item, 'OABM_Adapter') or {}
+        if body.get('Body') == 'no':
+            omissions.append({'canonical_id': cid, 'ifc_guid': item.GlobalId, 'reason': body.get('BodyReason')})
+    unmapped = sorted(set(canonical_index(model)) - set(canonical))
+    if unmapped:
+        raise ValueError(f'canonical entities without native IFC roots unsupported: {unmapped}')
+    if {o['canonical_id'] for o in omissions} != set(request['acknowledged_body_omissions']):
+        (out / 'body-omissions.json').write_text(json.dumps(omissions, indent=2) + '\n')
+        raise ValueError('acknowledged_body_omissions must exactly match actual IFC Body omissions; see body-omissions.json')
+    for view in request['views']:
+        for cid in view['exclude_ids']:
+            if cid not in canonical or not native.by_guid(canonical[cid]['ifc_guid']).is_a('IfcProduct'):
+                raise ValueError(f'view exclusion has no single native product: {cid}')
+    path = out / 'model.ifc'
+    native.write(str(path))
+    if bpy.ops.bim.load_project(filepath=str(path), should_start_fresh_session=True) != {'FINISHED'}:
+        raise RuntimeError('native IFC load failed')
+    f = tool.Ifc.get()
+    if ifcopenshell.util.unit.calculate_unit_scale(f) != 1.0:
+        raise RuntimeError('native IFC must remain in canonical metres')
+    resources = out / 'resources'
+    resources.mkdir()
+    devices = {d.id: d for d in (*model.electrical_devices, *model.electrical_equipment)}
+    views = {}
+    ns = '{http://www.w3.org/2000/svg}'
+
+    for spec in request['views']:
+        bpy.context.scene.cursor.location = (*spec['center_m'], 0)
+        # Avoid creating file paths from untrusted canonical storey names.
+        original_name_generator = tool.Drawing.__dict__['generate_drawing_name']
+        tool.Drawing.generate_drawing_name = classmethod(lambda cls, *args, **kwargs: spec['id'])
+        try:
+            core.add_drawing(tool.Ifc, tool.Collector, tool.Drawing, target_view=spec['target_view'],
+                             location_hint=f.by_guid(canonical_id_to_ifc_guid(spec['level_id'])).id())
+        finally:
+            tool.Drawing.generate_drawing_name = original_name_generator
+        drawing = [e for e in f.by_type('IfcAnnotation') if e.ObjectType == 'DRAWING'][-1]
+        bpy.ops.bim.activate_drawing(drawing=drawing.id(), should_view_from_camera=False)
+        camera = bpy.context.scene.camera
+        camera.location = (*spec['center_m'], spec['cut_height_m'])
+        camera.data.clip_start = .002
+        camera.data.clip_end = 10.0
+        cp = tool.Drawing.get_camera_props(camera)
+        cp.diagram_scale = 'CUSTOM'
+        cp.custom_scale_numerator = '1'
+        cp.custom_scale_denominator = str(spec['scale_denominator'])
+        cp.width, cp.height = spec['width_m'], spec['height_m']
+        rx, ry = cp.update_camera_resolution()
+        if max(rx, ry) > 30000 or min(rx, ry) < 1:
+            raise ValueError('requested native paper extent exceeds bounded raster/aspect resolution')
+        bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y = rx, ry
+        bpy.context.view_layer.update()
+        query = ','.join(canonical[cid]['ifc_guid'] for cid in spec['exclude_ids'])
+        ps = element.get_pset(drawing, 'EPset_Drawing')
+        library = resources / ('symbols-' + spec['id'] + '.svg')
+        ifcopenshell.api.run('pset.edit_pset', f, pset=f.by_id(ps['id']),
+                            properties={'Exclude': query, 'Symbols': library.relative_to(out).as_posix()})
+        svg_library = ET.Element(ns + 'svg')
+        for index, annotation in enumerate(spec['annotations']):
+            group = ET.SubElement(svg_library, ns + 'g', {'id': 'annotation-' + str(index)})
+            kind = annotation['kind']
+            if kind in ('luminaire', 'receptacle'):
+                ET.SubElement(group, ns + 'circle', {'r': '2', 'style': 'fill:white;stroke:black;stroke-width:0.22'})
+            if kind == 'switch':
+                ET.SubElement(group, ns + 'circle', {'r': '2', 'style': 'fill:white;stroke:none'})
+            paths = {'luminaire': 'M-1.4,-1.4 L1.4,1.4 M-1.4,1.4 L1.4,-1.4',
+                     'receptacle': 'M-0.6,-2.7 L-0.6,2.7 M0.6,-2.7 L0.6,2.7',
+                     'switch': 'M1.2,-1.5 C-2,-2.5 -2,0 0,0 C2,0 2,2.5 -1.2,1.5'}
+            if kind in paths:
+                ET.SubElement(group, ns + 'path', {'d': paths[kind], 'style': 'fill:none;stroke:black;stroke-width:0.22'})
+            dx, dy = annotation['label_offset_mm']
+            ET.SubElement(group, ns + 'text', {'x': str(dx), 'y': str(dy), 'data-type': 'text-template',
+                                               'style': 'font-size:3px;text-anchor:' + ('end' if dx < 0 else 'start')}).text = 'LABEL'
+        ET.ElementTree(svg_library).write(library, encoding='utf-8', xml_declaration=True)
+        annotations = []
+        for index, annotation in enumerate(spec['annotations']):
+            device = devices[annotation['source_id']]
+            product = f.by_guid(canonical_id_to_ifc_guid(device.id))
+            obj = core.add_annotation(tool.Ifc, tool.Collector, tool.Drawing, drawing=drawing,
+                                      object_type='TEXT', relating_type=None, enable_editing=False)
+            ann = tool.Ifc.get_entity(obj)
+            ann.Name = annotation['text']
+            obj.location.x, obj.location.y = device.pose.position.x, device.pose.position.y
+            tool.Drawing.ensure_annotation_in_drawing_plane(obj)
+            tool.Drawing.sync_object_placement(obj)
+            for literal in tool.Drawing.get_text_literal(obj, return_list=True):
+                literal.Literal = annotation['text']
+            ps = ifcopenshell.api.run('pset.add_pset', f, product=ann, name='EPset_Annotation')
+            ifcopenshell.api.run('pset.edit_pset', f, pset=ps, properties={'Symbol': 'annotation-' + str(index)})
+            ps = ifcopenshell.api.run('pset.add_pset', f, product=ann, name='OABM_Presentation')
+            ifcopenshell.api.run('pset.edit_pset', f, pset=ps, properties={'CanonicalId': device.id,
+                                'PresentationOnly': True, 'Kind': annotation['kind'], 'PhysicalSizeInferred': False})
+            ifcopenshell.api.run('drawing.assign_product', f, relating_product=product, related_object=ann)
+            local = camera.matrix_world.inverted() @ Vector(obj.location)
+            inside = abs(local.x) <= cp.width / 2 and abs(local.y) <= cp.height / 2
+            annotations.append({'source_id': device.id, 'product_guid': product.GlobalId, 'annotation_guid': ann.GlobalId,
+                                'kind': annotation['kind'], 'text': annotation['text'], 'canonical_xy_m': [device.pose.position.x, device.pose.position.y],
+                                'native_annotation_xy_m': [obj.location.x, obj.location.y],
+                                'presentation_plane_z_m': obj.location.z, 'anchor_inside_view_xy': inside,
+                                'label_offset_mm': annotation['label_offset_mm'], 'physical_size_inferred': False})
+        selected = {e.GlobalId for e in tool.Drawing.get_drawing_elements(drawing) if hasattr(e, 'GlobalId')}
+        coverage = [{'canonical_id': cid, **mapping,
+                     'selection': ('explicitly_excluded' if cid in spec['exclude_ids'] else
+                                   'native_selected' if mapping['ifc_guid'] in selected else 'not_native_selected')}
+                    for cid, mapping in sorted(canonical.items())]
+        props = tool.Drawing.get_document_props()
+        props.should_use_annotation_cache = props.should_use_linework_cache = False
+        if bpy.ops.bim.create_drawing(open_viewer=False) != {'FINISHED'}:
+            raise RuntimeError('native drawing generation failed')
+        # The operator rebuilds RNA camera data; never reuse stale camera props.
+        camera = bpy.context.scene.camera
+        cp = tool.Drawing.get_camera_props(camera)
+        uri = Path(tool.Drawing.get_document_uri(tool.Drawing.get_drawing_document(drawing))).resolve()
+        if not uri.is_relative_to(out.resolve()):
+            raise ValueError('drawing output escaped delivery directory')
+        svg = ET.parse(uri).getroot()
+        width, height = float(svg.attrib['width'].removesuffix('mm')), float(svg.attrib['height'].removesuffix('mm'))
+        if svg.attrib['data-scale'] != '1:' + str(spec['scale_denominator']):
+            raise ValueError('native SVG scale mismatch')
+        # Native camera integer pixel-aspect quantization is disclosed, never hidden by SVG scaling.
+        expected = [spec['width_m'] * 1000 / spec['scale_denominator'], spec['height_m'] * 1000 / spec['scale_denominator']]
+        if max(abs(width - expected[0]), abs(height - expected[1])) > .5:
+            raise ValueError('native camera/SVG paper aspect mismatch beyond 0.5 mm')
+        views[spec['id']] = {'svg': uri.relative_to(out).as_posix(), 'target_view': spec['target_view'],
+                             'drawing_guid': drawing.GlobalId, 'scale': '1/' + str(spec['scale_denominator']),
+                             'native_svg_mm': [width, height], 'requested_paper_mm': expected,
+                             'render_resolution': [rx, ry], 'clip_depth_m': [.002, 10.0],
+                             'annotations': annotations, 'coverage': coverage,
+                             'exclude_ids': spec['exclude_ids'], 'symbol_resource': library.relative_to(out).as_posix()}
+    if bpy.ops.bim.save_project(filepath=str(path)) != {'FINISHED'}:
+        raise RuntimeError('native save failed')
+    saved = ifcopenshell.open(str(path))
+    restored = from_ifc(saved)
+    differences = round_trip_differences(model, restored)
+    if differences:
+        raise ValueError(f'native saved roundtrip mismatch: {differences}')
+    # Resource values must be portable local descendants, not URLs or external file paths.
+    for drawing in saved.by_type('IfcAnnotation'):
+        if drawing.ObjectType != 'DRAWING':
+            continue
+        ps = element.get_pset(drawing, 'EPset_Drawing')
+        for key in ('Stylesheet', 'Markers', 'Patterns', 'Symbols', 'ShadingStyles'):
+            resource = Path(ps[key])
+            if resource.is_absolute() or not (out / resource).resolve().is_relative_to(out.resolve()) or not (out / resource).is_file():
+                raise ValueError('non-portable native resource: ' + key)
+    receipt = {'status': 'review_only_success', 'input_sha256': hashes, 'runtime': runtime,
+               'canonical_roundtrip': {'exact_equal': model.to_dict() == restored.to_dict(), 'numerical_differences': list(differences)},
+               'units': {'canonical_length': 'm', 'ifc_length_scale_to_m': ifcopenshell.util.unit.calculate_unit_scale(saved), 'svg_length': 'mm'},
+               'appearance_boundary': 'Canonical adapter geometry only; no external appearance meshes or existing IFC intake.',
+               'canonical_identity': canonical, 'body_omissions': omissions, 'views': views,
+               'limitations': ['Native selection is not a pixel visibility/occlusion guarantee.',
+                               'Fixed 10 m viewing depth; objects beyond it may not appear. level_id selects camera orientation/storey reference, not an exclusive storey filter.',
+                               'Annotation collision/label clipping and professional sheet composition require visual review.',
+                               'No dimensions, circuits, engineering, photometry or physical sizes are inferred.',
+                               'Native annotation/drawing GUIDs and file ordering may vary; canonical product identity is stable.',
+                               'No PDF, external IFC intake, custom symbol resources, grouped callouts or physical assembly opt-in in v1.']}
+    receipt['files'] = {p.relative_to(out).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted(out.rglob('*')) if p.is_file() and '.runtime' not in p.parts
+                        and p.suffix not in ('.log', '.h5') and p.name != 'receipt.json'}
+    (out / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+
+
+if __name__ == '__main__':
+    main()

@@ -572,6 +572,55 @@ def _bus_key(edge):
     return (edge['source_id'],edge['drafting']['connection_kind'],edge['source_role'])
 
 
+def chain_feeder_geometry(group, edges, equipment):
+    """Return the exact non-side-lane chain conductors used by the renderer."""
+    keys=group['connections'];ids=[group['equipment_id']]+[edges[k]['load_id'] for k in keys]
+    gap=34;width=(group['width']-gap*(len(ids)-1))/len(ids)
+    boxes=[]
+    for i,identity in enumerate(ids):
+        x=group['x']+i*(width+gap);y=group['y']+13
+        boxes.append((x,y,x+width,y+40))
+    def terminal(identity,box,boundary,kind,source,role):
+        x,y,r,b=box;axis=(x+r)/2;t=equipment[identity]['equipment_type']
+        if kind=='neutral' and t in _BUS_EQUIPMENT:return (x+11.5,y+28)
+        if kind=='grounding' and t in _BUS_EQUIPMENT:return (r-11.5,y+32)
+        if t=='transfer_switch':return (axis+(8 if source else -8),y+(24 if source else 21 if role=='normal' else 27))
+        if t=='transformer':return (axis,y+(30 if source else 16))
+        if t in {'source','generator','meter'}:return (axis,y+(29 if source else 19))
+        if t=='ground_electrode':return (axis,y+18)
+        return (min(r-6,max(x+6,boundary[0])),y+23)
+    result=[]
+    for i,key in enumerate(keys):
+        edge=edges[key];a=(boxes[i][2],group['y']+36);b=(boxes[i+1][0],group['y']+36)
+        kind=edge['drafting']['connection_kind']
+        start=terminal(ids[i],boxes[i],a,kind,True,edge['source_role'])
+        end=terminal(ids[i+1],boxes[i+1],b,kind,False,edge['load_role'])
+        points=[start,(a[0],start[1]),a,b,(b[0],end[1]),end]
+        result.append({'connection_id':key,'points':points,'source_bounds':boxes[i],
+                       'target_bounds':boxes[i+1]})
+    return boxes,result
+
+
+def _validate_terminal_roles(topology):
+    """Refuse roles this grammar cannot represent separately on one bar.
+
+    Different roles do not themselves establish internal connectivity. Apply
+    the existing fan guard equally to core, chain and precomputed layouts.
+    """
+    roles={}
+    equipment={e['id']:e for e in topology.equipment}
+    for edge in topology.connections:
+        for endpoint in ('source','load'):
+            owner=edge[endpoint+'_id'];kind=edge['drafting']['connection_kind']
+            # Transfer normal/alternate are deliberately separate contacts.
+            if endpoint=='load' and kind=='power' and equipment[owner]['equipment_type']=='transfer_switch':continue
+            key=(owner,kind,endpoint)
+            roles.setdefault(key,set()).add(edge[endpoint+'_role'])
+    for (owner,kind,endpoint),values in sorted(roles.items()):
+        if len(values)>1:
+            raise ValueError(f'{owner}: distinct {kind} {endpoint} roles cannot share the single represented terminal bar; supply explicit separate bus/winding equipment')
+
+
 def _bus_caption(key,home):
     owner,kind,role=key
     return owner+' '+{'power':'LOAD','neutral':'NEUTRAL','grounding':'GROUND'}[kind]+' BUS / '+home
@@ -670,16 +719,16 @@ def _consolidate_buses(result,topology,bounds):
         homes={n['equipment_id']:(n['x']-n['width']/2,n['y'],n['x']+n['width']/2,n['y']+n['height']) for n in page['nodes']}
         lanes={n['equipment_id']:n.get('drafting_lane') for n in page['nodes']}
         rows={}
-        repeated_chain_boxes=[]
+        repeated_chain_boxes=[];chain_segments=[]
         for index,group in enumerate(page['groups']):
             if group.get('kind')=='chain':
                 ids=[group['equipment_id']]+[edges[key]['load_id'] for key in group['connections']]
-                gap=34;width=(group['width']-gap*(len(ids)-1))/len(ids)
-                for i,identity in enumerate(ids):
-                    l=group['x']+i*(width+gap);t=group['y']+13
-                    box=(l,t,l+width,t+40)
+                boxes,geometry=chain_feeder_geometry(group,edges,equipment)
+                for identity,box in zip(ids,boxes):
                     if identity in homes and homes[identity]!=box:repeated_chain_boxes.append((identity,box))
                     homes.setdefault(identity,box);lanes.setdefault(identity,None)
+                for row in geometry:
+                    chain_segments.extend((row['connection_id'],i,a,b) for i,(a,b) in enumerate(zip(row['points'],row['points'][1:])) if a!=b)
                 continue
             parent,children,left,right=fan_geometry(group)
             owner=group['equipment_id']
@@ -717,8 +766,14 @@ def _consolidate_buses(result,topology,bounds):
                 start_x=(bar[0][0]+bar[1][0])/2;source_y=bar[0][1]
             start=(start_x,source_y)
             trunk=max([home[2]+3]+[right for _,_,right,_ in items])
-            boxes=[(l-.6,t-.6,r+.6,b+.6) for identity,(l,t,r,b) in [*homes.items(),*repeated_chain_boxes] if identity!=owner]
-            foreign=[*routed_bus_segments,*routed_private_segments]
+            boxes=[(l-PAPER_BUS_CLEARANCE_MM,t-PAPER_BUS_CLEARANCE_MM,r+PAPER_BUS_CLEARANCE_MM,b+PAPER_BUS_CLEARANCE_MM) for identity,(l,t,r,b) in [*homes.items(),*repeated_chain_boxes] if identity!=owner]
+            # Unrelated endpoint leads lie wholly in their clearance-padded
+            # equipment box; retain the inter-box span and every lead in the
+            # current owner's box, where distinct terminals matter.
+            foreign=[(a,b) for key,index,a,b in chain_segments
+                     if (index==2 or (index<2 and edges[key]['source_id']==owner) or (index>2 and edges[key]['load_id']==owner))
+                     and not (index<2 and _bus_key(edges[key])==terminal_key)]
+            foreign.extend([*routed_bus_segments,*routed_private_segments])
             for path in core_geometry:
                 if _bus_key(edges[path['connection_id']])!=terminal_key:foreign.extend(zip(path['points'],path['points'][1:]))
             for other,other_rows in rows.items():
@@ -783,11 +838,13 @@ def _consolidate_buses(result,topology,bounds):
                             branch=(branch_x,bus_y)
                             direction=1 if approach[1]>=bus_y else -1
                             escape=(branch_x,bus_y+direction*3)
-                            private_boxes=[(ll-.6,tt-.6,rr+.6,bb+.6) for identity,(ll,tt,rr,bb) in homes.items() if identity!=owner]
+                            private_boxes=[(ll-PAPER_BUS_CLEARANCE_MM,tt-PAPER_BUS_CLEARANCE_MM,rr+PAPER_BUS_CLEARANCE_MM,bb+PAPER_BUS_CLEARANCE_MM) for identity,(ll,tt,rr,bb) in [*homes.items(),*repeated_chain_boxes] if identity!=owner]
                             owner_labels=symbol_lane(home,wide=wide)
                             private_boxes.extend([(owner_labels['text_left'],home[1],owner_labels['text_left']+owner_labels['text_width']+3,home[3]),
                                 (bounds[0],bounds[1],bounds[2],bounds[1]+25),(bounds[0],bounds[3]-16,bounds[2],bounds[3])])
-                            avoid=[*foreign,*private_for_owner]
+                            # The final approach may enter its target box, so
+                            # retain every exact chain lead for private routes.
+                            avoid=[*foreign,*private_for_owner,*[(a,b) for other,index,a,b in chain_segments if not (index<2 and _bus_key(edges[other])==terminal_key)]]
                             if not _paper_clear_segment(branch,escape,private_boxes,avoid):continue
                             body=_paper_route(escape,approach,bounds,private_boxes,[*avoid,*own_bus])
                             if body is None:continue
@@ -800,7 +857,10 @@ def _consolidate_buses(result,topology,bounds):
                     if found is None:raise _BusLayoutError(owner,f'{key}: no clear route to the actual {target} {edge["load_role"]} terminal; continue this source')
                     branch,private=found
                     group['bus_row_mm']=(min(group['bus_row_mm'][0],branch[0]),bus_y,trunk,bus_y)
-                    prefix=[group['source_bus_path_mm'][0],branch] if abs(group['source_bus_path_mm'][0][1]-bus_y)<PAPER_EPS_MM else [*group['source_bus_path_mm'],branch]
+                    # Preserve the obstacle-checked route even when its ends
+                    # happen to share a Y coordinate; a straight shortcut can
+                    # pass through the very obstacle the route avoided.
+                    prefix=[*group['source_bus_path_mm'],branch]
                     group['private_branch_index'][key]=len(prefix)-1
                     group['feeder_paths_mm'][key]=[*prefix,*private[1:]]
                     group['target_home_bounds_mm'][key]=target_home;group['target_home_lanes'][key]=lanes[target]
@@ -941,6 +1001,7 @@ def plan_pages(topology: Topology,drawing_bounds_mm, *, first_sheet_id='E601',re
     Omitted notes/register in an explicit region request are delegated, not
     silently invented or placed over the coordinator's panel tables.
     """
+    _validate_terminal_roles(topology)
     from .drafting_facts import protection_label
     left,top,right,bottom=drawing_bounds_mm
     width,height=right-left,bottom-top
@@ -1034,6 +1095,7 @@ def plan_pages(topology: Topology,drawing_bounds_mm, *, first_sheet_id='E601',re
 
 def validate_precomputed_layout(layout,topology,drawing_bounds_mm):
     """Validate exact source/content binding and complete drawn topology."""
+    _validate_terminal_roles(topology)
     if not isinstance(layout,dict) or layout.get('topology_fingerprint')!=_topology_fingerprint(topology):
         raise ValueError('precomputed layout topology fingerprint differs from the supplied model')
     if layout.get('plan_fingerprint')!=_plan_fingerprint(layout):

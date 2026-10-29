@@ -3,7 +3,7 @@
 This adapter launches an **explicitly supplied, already installed** Blender/Bonsai
 runtime. It is separate from the ordinary Python SVG drawing adapters and is not
 enabled by existing production commands. It writes model-derived IFC and native
-Bonsai PLAN_VIEW / REFLECTED_PLAN_VIEW SVGs. It does not draw a separate plan from
+Bonsai PLAN_VIEW / REFLECTED_PLAN_VIEW / ELEVATION_VIEW SVGs. It does not draw a separate plan from
 hand-maintained geometry, change the canonical contract, or imply engineering or
 permit acceptance.
 
@@ -208,3 +208,54 @@ A request-wide polygon validation budget limits the sum of squared selected
 vertex counts to 1,000,000; excessive work is refused before native execution.
 The request also limits conservative candidate placement work to 2,000,000
 vertex, point, or previous-label checks. Explicit anchors count as one candidate.
+
+
+## Optional isolated cardinal elevations
+
+The same exporter accepts explicit `ELEVATION_VIEW` requests. These are native
+orthographic views of the existing canonical adapter geometry, not a separate
+renderer or an existing-IFC import path. See
+[`synthetic-native-elevations-request.json`](../examples/synthetic-native-elevations-request.json)
+for a request using the same synthetic model as the plan example.
+
+```json
+{"id":"EAST_LOOK", "target_view":"ELEVATION_VIEW",
+ "camera_xyz_m":[-1,2,1.5], "direction":"+X",
+ "near_m":0.002, "far_m":6, "width_m":6, "height_m":4,
+ "scale_denominator":24, "exclude_ids":[], "annotations":[]}
+```
+
+`direction` is the direction **from the camera into the scene**, exactly `+X`,
+`-X`, `+Y`, or `-Y`; world +Z is up. It is not the facade's name or outward
+normal. The shared drawing projection frame supplies the axes; Blender's camera
+uses negative projection-right and negative projection-normal to maintain its
+right-handed local frame (+Z backwards). For example, when looking +X, world
++Y is screen-left; looking -X reverses that relationship. `near_m` must be explicitly **0.002**, Bonsai's pinned nominal viewport near
+setting. Other values are refused before export: Bonsai 0.8.5 does not preserve
+them in its IFC camera. The native SVG drawing cut is the camera plane itself
+(depth zero), not a promised 2 mm inset. Choose the cut plane through
+`camera_xyz_m`; the adapter never silently shifts it. `far_m` is positive metres
+along the look direction; require `0.002 < far_m <= 200`. Receipts distinguish
+nominal camera clipping from actual native drawing depth `[0, far_m]`.
+All eight native drawing volume corners and the camera
+must fit the existing +/-100 m local boundary. The quantized native camera is
+checked again before rendering. Width/height, native scale and exclusion-ID
+validation follow the existing exporter. Clipping is presentation only: excluded
+and out-of-view source products remain in IFC and in the canonical roundtrip.
+
+Elevation requests cannot contain plan-only `level_id`, `center_m`,
+`cut_height_m`, or `space_annotations`. `annotations` must be an empty list:
+this slice adds no elevation labels, dimension inference, assembly extent or
+clear-opening interpretation. Ordinary `drawings.ElevationSpec` / dimensions
+remain their existing separate derived-output API, not native annotations.
+Unknown source heights remain unknown; camera height does not establish a ceiling.
+
+Isolated elevations disable global referencing and exclude generated drawing /
+storey reference markers from the detail. They do not delete model products.
+Mixed plan/RCP/elevation requests use the existing eight-view total limit.
+Receipts retain explicit camera, look direction, nominal clipping and native drawing depth intervals, native paper
+scale and filter IDs; selected objects are not a pixel visibility guarantee.
+Operator visual review remains required. Existing appearance, assembly,
+privacy, installed-runtime and immutable-input boundaries are unchanged.
+
+The fixed worker limits Blender and supported numerical thread pools to two threads.

@@ -36,7 +36,7 @@ def main() -> None:
         return
     from oabm.model import BuildingModel
     from oabm.ifc import to_ifc, from_ifc, canonical_id_to_ifc_guid, round_trip_differences
-    from oabm.native_bonsai.api import validate_request, _json, canonical_index, space_label_placement, _local_coordinate, LOCAL_COORDINATE_LIMIT_M
+    from oabm.native_bonsai.api import validate_request, _json, canonical_index, space_label_placement, _local_coordinate, LOCAL_COORDINATE_LIMIT_M, elevation_frame
     import ifcopenshell.api
     import ifcopenshell.util.element as element
     import ifcopenshell.util.unit
@@ -117,21 +117,35 @@ def main() -> None:
     ns = '{http://www.w3.org/2000/svg}'
 
     for spec in request['views']:
-        bpy.context.scene.cursor.location = (*spec['center_m'], 0)
+        elevation = spec['target_view'] == 'ELEVATION_VIEW'
+        position = spec['camera_xyz_m'] if elevation else (*spec['center_m'], spec['cut_height_m'])
+        bpy.context.scene.cursor.location = position
+        hint = ({'+X': 'WEST', '-X': 'EAST', '+Y': 'SOUTH', '-Y': 'NORTH'}[spec['direction']]
+                if elevation else f.by_guid(canonical_id_to_ifc_guid(spec['level_id'])).id())
         # Avoid creating file paths from untrusted canonical storey names.
         original_name_generator = tool.Drawing.__dict__['generate_drawing_name']
         tool.Drawing.generate_drawing_name = classmethod(lambda cls, *args, **kwargs: spec['id'])
         try:
             core.add_drawing(tool.Ifc, tool.Collector, tool.Drawing, target_view=spec['target_view'],
-                             location_hint=f.by_guid(canonical_id_to_ifc_guid(spec['level_id'])).id())
+                             location_hint=hint)
         finally:
             tool.Drawing.generate_drawing_name = original_name_generator
         drawing = [e for e in f.by_type('IfcAnnotation') if e.ObjectType == 'DRAWING'][-1]
         bpy.ops.bim.activate_drawing(drawing=drawing.id(), should_view_from_camera=False)
         camera = bpy.context.scene.camera
-        camera.location = (*spec['center_m'], spec['cut_height_m'])
-        camera.data.clip_start = .002
-        camera.data.clip_end = 10.0
+        camera.location = position
+        camera.data.clip_start = spec['near_m'] if elevation else .002
+        camera.data.clip_end = spec['far_m'] if elevation else 10.0
+        if elevation:
+            frame = elevation_frame(spec)
+            expected_axes = [tuple(-getattr(frame.right, a) for a in 'xyz'),
+                             tuple(getattr(frame.up, a) for a in 'xyz'),
+                             tuple(-getattr(frame.normal, a) for a in 'xyz')]
+            for index, expected_axis in enumerate(expected_axes):
+                if max(abs(camera.matrix_world.col[index][j] - expected_axis[j]) for j in range(3)) > 1e-6:
+                    raise ValueError('native elevation orientation disagrees with projection frame')
+            if max(abs(camera.location[j] - position[j]) for j in range(3)) > 1e-5:
+                raise ValueError('native elevation camera precision exceeds 0.01 mm')
         cp = tool.Drawing.get_camera_props(camera)
         cp.diagram_scale = 'CUSTOM'
         cp.custom_scale_numerator = '1'
@@ -142,11 +156,27 @@ def main() -> None:
             raise ValueError('requested native paper extent exceeds bounded raster/aspect resolution')
         bpy.context.scene.render.resolution_x, bpy.context.scene.render.resolution_y = rx, ry
         bpy.context.view_layer.update()
+        if elevation:
+            # Validate the actual quantized native camera, not only its request.
+            native_width = camera.data.ortho_scale * min(1.0, rx / ry)
+            native_height = camera.data.ortho_scale * min(1.0, ry / rx)
+            for depth in (0.0, camera.data.clip_end):
+                for x in (-native_width / 2, native_width / 2):
+                    for y in (-native_height / 2, native_height / 2):
+                        for coordinate in camera.matrix_world @ Vector((x, y, -depth)):
+                            _local_coordinate(float(coordinate), 'native elevation complete camera frustum')
         query = ','.join(canonical[cid]['ifc_guid'] for cid in spec['exclude_ids'])
         ps = element.get_pset(drawing, 'EPset_Drawing')
         library = resources / ('symbols-' + spec['id'] + '.svg')
         ifcopenshell.api.run('pset.edit_pset', f, pset=f.by_id(ps['id']),
-                            properties={'Exclude': query, 'Symbols': library.relative_to(out).as_posix()})
+                            properties={'Exclude': query, 'Symbols': library.relative_to(out).as_posix(),
+                                        **({'GlobalReferencing': False} if elevation else {})})
+        if elevation:
+            # Isolated details have no automatic cross-elevation/storey callouts.
+            references = [e.GlobalId for e in f.by_type('IfcAnnotation') if e.ObjectType == 'DRAWING' and e != drawing]
+            references += [e.GlobalId for e in f.by_type('IfcBuildingStorey')]
+            ifcopenshell.api.run('pset.edit_pset', f, pset=f.by_id(ps['id']),
+                                properties={'Exclude': ','.join(filter(None, [query, *references]))})
         svg_library = ET.Element(ns + 'svg')
         for index, annotation in enumerate(spec['annotations']):
             group = ET.SubElement(svg_library, ns + 'g', {'id': 'annotation-' + str(index)})
@@ -266,6 +296,9 @@ def main() -> None:
         # The operator rebuilds RNA camera data; never reuse stale camera props.
         camera = bpy.context.scene.camera
         cp = tool.Drawing.get_camera_props(camera)
+        if elevation:
+            if abs(camera.data.clip_start - .002) > 1e-8 or abs(camera.data.clip_end - spec['far_m']) > 1e-5:
+                raise ValueError('native elevation camera clipping did not survive drawing regeneration')
         uri = Path(tool.Drawing.get_document_uri(tool.Drawing.get_drawing_document(drawing))).resolve()
         if not uri.is_relative_to(out.resolve()):
             raise ValueError('drawing output escaped delivery directory')
@@ -280,7 +313,9 @@ def main() -> None:
         views[spec['id']] = {'svg': uri.relative_to(out).as_posix(), 'target_view': spec['target_view'],
                              'drawing_guid': drawing.GlobalId, 'scale': '1/' + str(spec['scale_denominator']),
                              'native_svg_mm': [width, height], 'requested_paper_mm': expected,
-                             'render_resolution': [rx, ry], 'clip_depth_m': [.002, 10.0],
+                             'render_resolution': [rx, ry], 'clip_depth_m': [spec['near_m'], spec['far_m']] if elevation else [.002, 10.0],
+                             **({'camera_xyz_m': list(position), 'direction': spec['direction'],
+                                 'automatic_reference_markers': False, 'native_drawing_depth_m': [0.0, spec['far_m']]} if elevation else {}),
                              'annotations': annotations, 'coverage': coverage, **({'space_annotations': space_results} if 'space_annotations' in spec else {}),
                              'exclude_ids': spec['exclude_ids'], 'symbol_resource': library.relative_to(out).as_posix()}
     if bpy.ops.bim.save_project(filepath=str(path)) != {'FINISHED'}:
@@ -306,11 +341,11 @@ def main() -> None:
                'appearance_boundary': 'Canonical adapter geometry only; no external appearance meshes or existing IFC intake.',
                'canonical_identity': canonical, 'body_omissions': omissions, 'views': views,
                'limitations': ['Native selection is not a pixel visibility/occlusion guarantee.',
-                               'Fixed 10 m viewing depth; objects beyond it may not appear. level_id selects camera orientation/storey reference, not an exclusive storey filter.',
+                               'PLAN/RCP use fixed 10 m depth. Elevation native drawing depth is camera plane zero to explicit far_m; near_m=0.002 is the pinned nominal viewport clip only. level_id is not an exclusive storey filter.',
                                'Annotation collision/label clipping and professional sheet composition require visual review.',
                                'No dimensions, circuits, engineering, photometry or physical sizes are inferred.',
                                'Native annotation/drawing GUIDs and file ordering may vary; canonical product identity is stable.',
-                               'No PDF, external IFC intake, custom symbol resources, grouped callouts or physical assembly opt-in in v1.']}
+                               'No elevation annotations/dimensions, PDF, external IFC intake, custom symbol resources, grouped callouts or physical assembly opt-in in v1.']}
     receipt['files'] = {p.relative_to(out).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                         for p in sorted(out.rglob('*')) if p.is_file() and '.runtime' not in p.parts
                         and p.suffix not in ('.log', '.h5') and p.name != 'receipt.json'}

@@ -72,6 +72,45 @@ def _pair(value: Any, name: str, lo: float, hi: float) -> None:
         _number(item, name, lo, hi)
 
 
+
+def elevation_frame(view):
+    """Reuse the drawing projection convention; camera right is its negative.
+
+    ProjectionFrame.normal points into the scene. Blender's local +Z points
+    backwards, so a proper right-handed camera uses (-right, up, -normal).
+    """
+    from oabm.drawings.projection import frame_from_view_direction
+    from oabm.model import Point3, Vector3
+    directions = {'+X': (1, 0, 0), '-X': (-1, 0, 0), '+Y': (0, 1, 0), '-Y': (0, -1, 0)}
+    return frame_from_view_direction(
+        origin=Point3(**dict(zip('xyz', view['camera_xyz_m']))),
+        direction=Vector3(**dict(zip('xyz', directions[view['direction']]))))
+
+
+def _elevation_volume(view):
+    position = view['camera_xyz_m']
+    if not isinstance(position, list) or len(position) != 3:
+        raise ValueError('camera_xyz_m: three finite numbers required')
+    for coordinate in position:
+        _number(coordinate, 'camera_xyz_m', -100, 100)
+    if not isinstance(view['direction'], str) or view['direction'] not in ('+X', '-X', '+Y', '-Y'):
+        raise ValueError('direction: explicit +X/-X/+Y/-Y look direction required')
+    near = _number(view['near_m'], 'near_m', .002, 200)
+    if near != .002:
+        raise ValueError('near_m must equal 0.002 for pinned native camera persistence; move camera_xyz_m to choose the drawing cut plane')
+    far = _number(view['far_m'], 'far_m', .002, 200)
+    if near >= far:
+        raise ValueError('elevation near_m must be strictly less than far_m')
+    frame = elevation_frame(view)
+    for depth in (0.0, far):
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                for axis, origin in zip('xyz', position):
+                    coordinate = (origin + getattr(frame.normal, axis) * depth
+                                  + getattr(frame.right, axis) * sx * view['width_m'] / 2
+                                  + getattr(frame.up, axis) * sy * view['height_m'] / 2)
+                    _local_coordinate(coordinate, 'elevation complete camera frustum')
+
 def canonical_index(model: BuildingModel) -> dict[str, dict]:
     return {row['id']: row for rows in model.to_dict().values() if isinstance(rows, list)
             for row in rows if isinstance(row, dict) and 'id' in row}
@@ -207,25 +246,33 @@ def validate_request(request: dict, model: BuildingModel) -> dict:
     placement_work = 0
     devices = {d.id: d for d in (*model.electrical_devices, *model.electrical_equipment)}
     for view in views:
-        required = {'id', 'target_view', 'level_id', 'center_m', 'cut_height_m', 'width_m', 'height_m',
-                    'scale_denominator', 'exclude_ids', 'annotations'}
-        if not isinstance(view, dict) or set(view) not in (required, required | {'space_annotations'}):
+        elevation = isinstance(view, dict) and view.get('target_view') == 'ELEVATION_VIEW'
+        common = {'id', 'target_view', 'width_m', 'height_m', 'scale_denominator', 'exclude_ids', 'annotations'}
+        required = common | ({'camera_xyz_m', 'direction', 'near_m', 'far_m'} if elevation else
+                             {'level_id', 'center_m', 'cut_height_m'})
+        allowed = (required,) if elevation else (required, required | {'space_annotations'})
+        if not isinstance(view, dict) or set(view) not in allowed:
             raise ValueError('view: invalid keys')
         name = view['id']
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,47}', name) or name.casefold() in seen:
             raise ValueError('view id: unique case-insensitive safe filename required')
         seen.add(name.casefold())
-        if view['target_view'] not in ('PLAN_VIEW', 'REFLECTED_PLAN_VIEW'):
-            raise ValueError('unsupported target_view; only PLAN_VIEW/REFLECTED_PLAN_VIEW')
-        if not isinstance(view['level_id'], str) or view['level_id'] not in {level.id for level in model.levels}:
-            raise ValueError('unknown level_id')
-        _pair(view['center_m'], 'center_m', -1e6, 1e6)
-        _number(view['cut_height_m'], 'cut_height_m', -1e4, 1e4)
+        if view['target_view'] not in ('PLAN_VIEW', 'REFLECTED_PLAN_VIEW', 'ELEVATION_VIEW'):
+            raise ValueError('unsupported target_view; only PLAN_VIEW/REFLECTED_PLAN_VIEW/ELEVATION_VIEW')
         for key in ('width_m', 'height_m'):
             _number(view[key], key, .1, 1000)
-        for axis, extent in zip(view['center_m'], (view['width_m'], view['height_m'])):
-            _local_coordinate(abs(axis) + extent / 2, 'camera volume XY')
-        _local_coordinate(abs(view['cut_height_m']) + 10.0, 'camera depth Z')
+        if elevation:
+            _elevation_volume(view)
+            if view['annotations'] != []:
+                raise ValueError('elevation annotations are unsupported; require an empty list')
+        else:
+            if not isinstance(view['level_id'], str) or view['level_id'] not in {level.id for level in model.levels}:
+                raise ValueError('unknown level_id')
+            _pair(view['center_m'], 'center_m', -1e6, 1e6)
+            _number(view['cut_height_m'], 'cut_height_m', -1e4, 1e4)
+            for axis, extent in zip(view['center_m'], (view['width_m'], view['height_m'])):
+                _local_coordinate(abs(axis) + extent / 2, 'camera volume XY')
+            _local_coordinate(abs(view['cut_height_m']) + 10.0, 'camera depth Z')
         scale = view['scale_denominator']
         if type(scale) is not int or not 1 <= scale <= 10000:
             raise ValueError('scale_denominator: integer 1..10000 required')
@@ -328,7 +375,8 @@ def _invoke(runtime: NativeRuntime, out: Path, mode: str, timeout_seconds: float
         path.mkdir(exist_ok=True)
         path.chmod(0o700)
         env[key] = str(path)
-    cmd = [str(blender), '-b', '--factory-startup', '--disable-autoexec', '--offline-mode', '-noaudio',
+    env.update(OMP_NUM_THREADS='2', OPENBLAS_NUM_THREADS='2')
+    cmd = [str(blender), '-b', '-t', '2', '--factory-startup', '--disable-autoexec', '--offline-mode', '-noaudio',
            '--python-exit-code', '1', '--python', str(Path(__file__).with_name('worker.py').resolve()),
            '--', mode, str(package), str(out)]
     with (out / f'{mode}.log').open('wb') as log:

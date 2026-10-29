@@ -1231,6 +1231,34 @@ def _reference_key(
     return repr(value), resolvable
 
 
+_UNSUPPORTED_PLUMBING_CLASSES = frozenset({
+    "IfcPipeSegment", "IfcPipeFitting", "IfcSanitaryTerminal", "IfcWasteTerminal",
+    "IfcPipeSegmentType", "IfcPipeFittingType", "IfcSanitaryTerminalType", "IfcWasteTerminalType",
+})
+_UNSUPPORTED_PLUMBING_SYSTEMS = frozenset({
+    "DOMESTICCOLDWATER", "DOMESTICHOTWATER", "DRAINAGE", "SEWAGE",
+    "WASTEWATER", "WATERSUPPLY", "RAINWATER", "STORMWATER",
+})
+
+
+def _unsupported_plumbing_inventory(ifc: ifcopenshell.file) -> tuple[tuple[str, str], ...]:
+    """Identify native plumbing that the canonical contract cannot represent.
+
+    Class and typed system semantics are authoritative here, not editable OABM
+    property sets. Attaching an electrical payload cannot make a sink electrical.
+    This is deliberately not a claim to detect every possible native extension.
+    """
+    return tuple(sorted(
+        (item.is_a(), item.GlobalId or "<missing GlobalId>")
+        for item in ifc.by_type("IfcRoot")
+        if item.is_a() in _UNSUPPORTED_PLUMBING_CLASSES
+        or (item.is_a("IfcDistributionSystem")
+            and item.PredefinedType in _UNSUPPORTED_PLUMBING_SYSTEMS)
+        or (item.is_a("IfcDistributionPort")
+            and getattr(item, "SystemType", None) in _UNSUPPORTED_PLUMBING_SYSTEMS)
+    ))
+
+
 def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
     """Read an OABM-authored IFC4 file back into the canonical v1 model.
 
@@ -1247,8 +1275,35 @@ def from_ifc(source: str | Path | ifcopenshell.file) -> BuildingModel:
     version 1.1 additionally validate the native exterior Body against their
     catalog envelope; incompatible Body edits are refused rather than retaining
     catalog sizing claims. Their native placements remain editable.
-    """
 
+    Native pipe, sanitary and waste objects and explicitly typed water/waste
+    systems have no canonical representation and are refused, regardless of
+    attached metadata. Preserve their original IFC: a canonical-only re-export
+    cannot be lossless. No public opt-out permits that lossy conversion.
+    """
+    ifc = ifcopenshell.open(str(source)) if isinstance(source, (str, Path)) else source
+    unsupported = _unsupported_plumbing_inventory(ifc)
+    if unsupported:
+        details = ", ".join(f"{kind} {guid}" for kind, guid in unsupported[:20])
+        remainder = f"; {len(unsupported) - 20} additional objects" if len(unsupported) > 20 else ""
+        raise IfcAdapterError(
+            "canonical IFC import would discard unsupported native plumbing: "
+            f"{details}{remainder}. Preserve the original IFC; canonical re-export is not lossless."
+        )
+    return _from_ifc_canonical_subset(ifc)
+
+
+def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> BuildingModel:
+    """Internal canonical projection, never evidence of native IFC preservation.
+
+    Only an independently guarded extension-preserving consumer may use this
+    projection: it must retain the source IFC and verify all native extensions.
+    Public canonical conversion must go through ``from_ifc`` above.
+
+    Axis shapes remain authoritative for supported editable geometry. Bodies
+    derived from canonical dimensions do not override that contract; physical
+    boxes additionally validate their native exterior against catalog envelopes.
+    """
     ifc = ifcopenshell.open(str(source)) if isinstance(source, (str, Path)) else source
     projects = ifc.by_type("IfcProject")
     if len(projects) != 1:

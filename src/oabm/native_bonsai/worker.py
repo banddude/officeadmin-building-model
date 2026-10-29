@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 
 def main() -> None:
     mode, installed, destination = sys.argv[sys.argv.index('--') + 1:]
-    if mode not in ('probe', 'export'):
+    if mode not in ('probe', 'export', 'export-ifc'):
         raise ValueError('unsupported worker mode')
     package, out = Path(installed), Path(destination)
     # The reviewed engine must win over unrelated copies in a runtime site-packages.
@@ -42,14 +42,28 @@ def main() -> None:
     import ifcopenshell.util.unit
     from mathutils import Vector, Matrix
 
-    inputs = {name: (out / 'inputs' / name).read_bytes() for name in ('model.json', 'request.json')}
+    input_names = ('model.json', 'request.json', 'source.ifc') if mode == 'export-ifc' else ('model.json', 'request.json')
+    inputs = {name: (out / 'inputs' / name).read_bytes() for name in input_names}
     hashes = {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
     if hashes != json.loads((out / 'input-hashes.json').read_text()):
         raise RuntimeError('snapshot hashes changed before worker read')
     model = BuildingModel.from_dict(_json(inputs['model.json']))
-    request = validate_request(_json(inputs['request.json']), model)
-    native = to_ifc(model)  # Existing guards remain active: no inferred or unsupported assembly geometry.
-    differences = round_trip_differences(model, from_ifc(native))
+    source_proof = None
+    native_diagnostics = []
+    read_canonical = from_ifc
+    if mode == 'export-ifc':
+        from oabm.native_bonsai.api import validate_ifc_request
+        from oabm.native_bonsai.extensions import source_snapshot, verify_source_snapshot, prepare_render_source, merge_render_additions
+        from oabm.ifc.adapter import _from_ifc_canonical_subset
+        original_native = ifcopenshell.file.from_string(inputs['source.ifc'].decode('utf-8'))
+        request = validate_ifc_request(_json(inputs['request.json']), model, original_native)
+        source_proof = source_snapshot(original_native)
+        native, render_baseline, native_diagnostics = prepare_render_source(original_native, model)
+        read_canonical = _from_ifc_canonical_subset
+    else:
+        request = validate_request(_json(inputs['request.json']), model)
+        native = to_ifc(model)  # Existing guards remain active.
+    differences = round_trip_differences(model, read_canonical(native))
     if differences:
         raise ValueError(f'IFC adapter roundtrip mismatch: {differences}')
     canonical = {}
@@ -94,6 +108,22 @@ def main() -> None:
                 _local_coordinate(float(coordinate), 'native world placement')
         representation = getattr(product, 'Representation', None)
         if not representation or not any(r.RepresentationIdentifier == 'Body' for r in representation.Representations):
+            if source_proof is not None and product.is_a() in ('IfcPipeSegment', 'IfcPipeFitting', 'IfcSanitaryTerminal', 'IfcWasteTerminal'):
+                # Bounded Curve3D-only plumbing is explicitly acknowledged, not
+                # a fabricated physical diameter. Inspect composed world extents.
+                import numpy as np
+                placement = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)
+                for rep in representation.Representations if representation else ():
+                    if rep.RepresentationType != 'Curve3D' or not rep.Items:
+                        raise ValueError('unsupported native plumbing geometry without Body')
+                    for item in rep.Items:
+                        if not item.is_a('IfcPolyline') or len(item.Points) < 2:
+                            raise ValueError('curve-only plumbing requires explicit polyline')
+                        for point in item.Points:
+                            if len(point.Coordinates) != 3:
+                                raise ValueError('curve-only plumbing requires 3D points')
+                            for coordinate in (placement @ np.array((*point.Coordinates, 1.0)))[:3]:
+                                _local_coordinate(float(coordinate), 'native world curve extent')
             continue
         # Failure to inspect a Body is not permission to omit its bounds.
         shape = ifcopenshell.geom.create_shape(settings, product)
@@ -117,6 +147,13 @@ def main() -> None:
     ns = '{http://www.w3.org/2000/svg}'
 
     for spec in request['views']:
+        point_annotations = list(spec['annotations'])
+        annotation_sources = {('canonical', cid): (canonical_id_to_ifc_guid(cid), (d.pose.position.x, d.pose.position.y)) for cid, d in devices.items()}
+        for annotation in spec.get('native_annotations', []):
+            product = f.by_guid(annotation['source_guid'])
+            xyz = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)[:3, 3]
+            annotation_sources[('native', product.GlobalId)] = (product.GlobalId, (float(xyz[0]), float(xyz[1])))
+            point_annotations.append({'source_id': product.GlobalId, 'kind': 'text', 'text': annotation['text'], 'label_offset_mm': annotation['label_offset_mm'], 'native_source': True})
         elevation = spec['target_view'] == 'ELEVATION_VIEW'
         position = spec['camera_xyz_m'] if elevation else (*spec['center_m'], spec['cut_height_m'])
         bpy.context.scene.cursor.location = position
@@ -178,7 +215,7 @@ def main() -> None:
             ifcopenshell.api.run('pset.edit_pset', f, pset=f.by_id(ps['id']),
                                 properties={'Exclude': ','.join(filter(None, [query, *references]))})
         svg_library = ET.Element(ns + 'svg')
-        for index, annotation in enumerate(spec['annotations']):
+        for index, annotation in enumerate(point_annotations):
             group = ET.SubElement(svg_library, ns + 'g', {'id': 'annotation-' + str(index)})
             kind = annotation['kind']
             if kind in ('luminaire', 'receptacle'):
@@ -201,15 +238,16 @@ def main() -> None:
                                                'style': 'font-size:2.4px;text-anchor:middle'}).text = 'SOURCE POLYGON; NET AREA UNVERIFIED'
         ET.ElementTree(svg_library).write(library, encoding='utf-8', xml_declaration=True)
         annotations = []
-        for index, annotation in enumerate(spec['annotations']):
-            device = devices[annotation['source_id']]
-            product = f.by_guid(canonical_id_to_ifc_guid(device.id))
+        for index, annotation in enumerate(point_annotations):
+            source_id = annotation['source_id']
+            source_guid, source_xy = annotation_sources[('native' if annotation.get('native_source') else 'canonical', source_id)]
+            product = f.by_guid(source_guid)
             obj = core.add_annotation(tool.Ifc, tool.Collector, tool.Drawing, drawing=drawing,
                                       object_type='TEXT', relating_type=None, enable_editing=False)
             ann = tool.Ifc.get_entity(obj)
             ann.Name = annotation['text']
-            obj.location.x, obj.location.y = device.pose.position.x, device.pose.position.y
-            if max(abs(obj.location.x - device.pose.position.x), abs(obj.location.y - device.pose.position.y)) > 1e-5:
+            obj.location.x, obj.location.y = source_xy
+            if max(abs(obj.location.x - source_xy[0]), abs(obj.location.y - source_xy[1])) > 1e-5:
                 raise ValueError('native annotation placement precision exceeds 0.01 mm')
             tool.Drawing.ensure_annotation_in_drawing_plane(obj)
             tool.Drawing.sync_object_placement(obj)
@@ -218,13 +256,13 @@ def main() -> None:
             ps = ifcopenshell.api.run('pset.add_pset', f, product=ann, name='EPset_Annotation')
             ifcopenshell.api.run('pset.edit_pset', f, pset=ps, properties={'Symbol': 'annotation-' + str(index)})
             ps = ifcopenshell.api.run('pset.add_pset', f, product=ann, name='OABM_Presentation')
-            ifcopenshell.api.run('pset.edit_pset', f, pset=ps, properties={'CanonicalId': device.id,
+            ifcopenshell.api.run('pset.edit_pset', f, pset=ps, properties={('NativeSourceGuid' if annotation.get('native_source') else 'CanonicalId'): source_id,
                                 'PresentationOnly': True, 'Kind': annotation['kind'], 'PhysicalSizeInferred': False})
             ifcopenshell.api.run('drawing.assign_product', f, relating_product=product, related_object=ann)
             local = camera.matrix_world.inverted() @ Vector(obj.location)
             inside = abs(local.x) <= cp.width / 2 and abs(local.y) <= cp.height / 2
-            annotations.append({'source_id': device.id, 'product_guid': product.GlobalId, 'annotation_guid': ann.GlobalId,
-                                'kind': annotation['kind'], 'text': annotation['text'], 'canonical_xy_m': [device.pose.position.x, device.pose.position.y],
+            annotations.append({'source_id': source_id, 'product_guid': product.GlobalId, 'annotation_guid': ann.GlobalId,
+                                'kind': annotation['kind'], 'text': annotation['text'], ('native_source_xy_m' if annotation.get('native_source') else 'canonical_xy_m'): list(source_xy),
                                 'native_annotation_xy_m': [obj.location.x, obj.location.y],
                                 'presentation_plane_z_m': obj.location.z, 'anchor_inside_view_xy': inside,
                                 'label_offset_mm': annotation['label_offset_mm'], 'physical_size_inferred': False})
@@ -316,18 +354,24 @@ def main() -> None:
                              'render_resolution': [rx, ry], 'clip_depth_m': [spec['near_m'], spec['far_m']] if elevation else [.002, 10.0],
                              **({'camera_xyz_m': list(position), 'direction': spec['direction'],
                                  'automatic_reference_markers': False, 'native_drawing_depth_m': [0.0, spec['far_m']]} if elevation else {}),
-                             'annotations': annotations, 'coverage': coverage, **({'space_annotations': space_results} if 'space_annotations' in spec else {}),
+                             'annotations': annotations, 'coverage': coverage,
+                             **({'native_extension_coverage': [{'ifc_guid': row['ifc_guid'], 'ifc_class': row['ifc_class'], 'selection': 'native_selected' if row['ifc_guid'] in selected else 'not_native_selected'} for row in native_diagnostics if row.get('status') == 'preserved_native_only']} if source_proof is not None else {}), **({'space_annotations': space_results} if 'space_annotations' in spec else {}),
                              'exclude_ids': spec['exclude_ids'], 'symbol_resource': library.relative_to(out).as_posix()}
     if bpy.ops.bim.save_project(filepath=str(path)) != {'FINISHED'}:
         raise RuntimeError('native save failed')
     saved = ifcopenshell.open(str(path))
-    restored = from_ifc(saved)
+    if source_proof is not None:
+        saved = merge_render_additions(original_native, render_baseline, saved)
+        saved.write(str(path))
+        saved = ifcopenshell.open(str(path))
+        verify_source_snapshot(source_proof, saved, allow_drawing_context_additions=True)
+    restored = read_canonical(saved)
     differences = round_trip_differences(model, restored)
     if differences:
         raise ValueError(f'native saved roundtrip mismatch: {differences}')
     # Resource values must be portable local descendants, not URLs or external file paths.
     for drawing in saved.by_type('IfcAnnotation'):
-        if drawing.ObjectType != 'DRAWING':
+        if drawing.ObjectType != 'DRAWING' or drawing.GlobalId not in {view['drawing_guid'] for view in views.values()}:
             continue
         ps = element.get_pset(drawing, 'EPset_Drawing')
         for key in ('Stylesheet', 'Markers', 'Patterns', 'Symbols', 'ShadingStyles'):
@@ -338,14 +382,15 @@ def main() -> None:
                'canonical_roundtrip': {'exact_equal': model.to_dict() == restored.to_dict(), 'numerical_differences': list(differences)},
                'units': {'canonical_length': 'm', 'ifc_length_scale_to_m': ifcopenshell.util.unit.calculate_unit_scale(saved), 'svg_length': 'mm'},
                'local_coordinate_scope': {'limit_m': LOCAL_COORDINATE_LIMIT_M, 'native_false_origin': False, 'all_body_extents_checked': True},
-               'appearance_boundary': 'Canonical adapter geometry only; no external appearance meshes or existing IFC intake.',
+               'appearance_boundary': ('Bounded original IFC retained; no external resources or canonical plumbing conversion.' if source_proof is not None else 'Canonical adapter geometry only; no external appearance meshes or existing IFC intake.'),
+               **({'native_source_preservation': {'verified': True, 'invariant': 'All original entities unchanged except append-only verified project Plan contexts; original context references and order retained.', 'existing_presentation_resources': 'Opaque references retained, never loaded; existing resource bytes are not copied or validated.', 'diagnostics': native_diagnostics, 'acknowledged_native_body_omissions': request.get('acknowledged_native_body_omissions', [])}} if source_proof is not None else {}),
                'canonical_identity': canonical, 'body_omissions': omissions, 'views': views,
                'limitations': ['Native selection is not a pixel visibility/occlusion guarantee.',
                                'PLAN/RCP use fixed 10 m depth. Elevation native drawing depth is camera plane zero to explicit far_m; near_m=0.002 is the pinned nominal viewport clip only. level_id is not an exclusive storey filter.',
                                'Annotation collision/label clipping and professional sheet composition require visual review.',
                                'No dimensions, circuits, engineering, photometry or physical sizes are inferred.',
                                'Native annotation/drawing GUIDs and file ordering may vary; canonical product identity is stable.',
-                               'No elevation annotations/dimensions, PDF, external IFC intake, custom symbol resources, grouped callouts or physical assembly opt-in in v1.']}
+                               'No elevation annotations/dimensions, PDF, arbitrary IFC intake, custom symbol resources, grouped callouts or physical assembly opt-in in v1.']}
     receipt['files'] = {p.relative_to(out).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                         for p in sorted(out.rglob('*')) if p.is_file() and '.runtime' not in p.parts
                         and p.suffix not in ('.log', '.h5') and p.name != 'receipt.json'}

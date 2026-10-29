@@ -36,7 +36,7 @@ def main() -> None:
         return
     from oabm.model import BuildingModel
     from oabm.ifc import to_ifc, from_ifc, canonical_id_to_ifc_guid, round_trip_differences
-    from oabm.native_bonsai.api import validate_request, _json, canonical_index
+    from oabm.native_bonsai.api import validate_request, _json, canonical_index, _local_coordinate, LOCAL_COORDINATE_LIMIT_M
     import ifcopenshell.api
     import ifcopenshell.util.element as element
     import ifcopenshell.util.unit
@@ -78,10 +78,35 @@ def main() -> None:
         for cid in view['exclude_ids']:
             if cid not in canonical or not native.by_guid(canonical[cid]['ifc_guid']).is_a('IfcProduct'):
                 raise ValueError(f'view exclusion has no single native product: {cid}')
+    # Validate every native product, including excluded/off-view products, before
+    # loading: any distant object can trigger Bonsai's automatic false origin.
+    import ifcopenshell.geom
+    import ifcopenshell.util.placement
+    for point in native.by_type('IfcCartesianPoint'):
+        for coordinate in point.Coordinates:
+            _local_coordinate(coordinate, 'native Cartesian point')
+    settings = ifcopenshell.geom.settings()
+    settings.set('use-world-coords', True)
+    for product in native.by_type('IfcProduct'):
+        if product.ObjectPlacement:
+            placement = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)
+            for coordinate in placement[:3, 3]:
+                _local_coordinate(float(coordinate), 'native world placement')
+        representation = getattr(product, 'Representation', None)
+        if not representation or not any(r.RepresentationIdentifier == 'Body' for r in representation.Representations):
+            continue
+        # Failure to inspect a Body is not permission to omit its bounds.
+        shape = ifcopenshell.geom.create_shape(settings, product)
+        if not shape.geometry.verts:
+            raise ValueError('local-coordinate scope: native Body has no inspectable vertices')
+        for coordinate in shape.geometry.verts:
+            _local_coordinate(coordinate, 'native world Body extent')
     path = out / 'model.ifc'
     native.write(str(path))
     if bpy.ops.bim.load_project(filepath=str(path), should_start_fresh_session=True) != {'FINISHED'}:
         raise RuntimeError('native IFC load failed')
+    if tool.Georeference.get_georeference_props().has_blender_offset:
+        raise ValueError('local-coordinate scope: unexpected native false origin; export refused')
     f = tool.Ifc.get()
     if ifcopenshell.util.unit.calculate_unit_scale(f) != 1.0:
         raise RuntimeError('native IFC must remain in canonical metres')
@@ -148,6 +173,8 @@ def main() -> None:
             ann = tool.Ifc.get_entity(obj)
             ann.Name = annotation['text']
             obj.location.x, obj.location.y = device.pose.position.x, device.pose.position.y
+            if max(abs(obj.location.x - device.pose.position.x), abs(obj.location.y - device.pose.position.y)) > 1e-5:
+                raise ValueError('native annotation placement precision exceeds 0.01 mm')
             tool.Drawing.ensure_annotation_in_drawing_plane(obj)
             tool.Drawing.sync_object_placement(obj)
             for literal in tool.Drawing.get_text_literal(obj, return_list=True):
@@ -213,6 +240,7 @@ def main() -> None:
     receipt = {'status': 'review_only_success', 'input_sha256': hashes, 'runtime': runtime,
                'canonical_roundtrip': {'exact_equal': model.to_dict() == restored.to_dict(), 'numerical_differences': list(differences)},
                'units': {'canonical_length': 'm', 'ifc_length_scale_to_m': ifcopenshell.util.unit.calculate_unit_scale(saved), 'svg_length': 'mm'},
+               'local_coordinate_scope': {'limit_m': LOCAL_COORDINATE_LIMIT_M, 'native_false_origin': False, 'all_body_extents_checked': True},
                'appearance_boundary': 'Canonical adapter geometry only; no external appearance meshes or existing IFC intake.',
                'canonical_identity': canonical, 'body_omissions': omissions, 'views': views,
                'limitations': ['Native selection is not a pixel visibility/occlusion guarantee.',

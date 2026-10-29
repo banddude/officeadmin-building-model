@@ -14,6 +14,37 @@ from typing import Any
 from oabm.model import BuildingModel
 
 
+# Bonsai 0.8.5 auto-offsets points beyond 1000 m on any axis. Stay an
+# order of magnitude inside that threshold and bound float32 placement error.
+LOCAL_COORDINATE_LIMIT_M = 100.0
+
+
+def _local_coordinate(value, context):
+    if not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > LOCAL_COORDINATE_LIMIT_M:
+        raise ValueError(f'local-coordinate scope: {context} must remain within +/-100 m; georeferenced/large-coordinate export unsupported')
+
+
+def _local_model(model):
+    document = model.to_dict()
+    coordinates = document['coordinate_system']
+    if coordinates.get('crs') is not None or coordinates.get('origin_in_crs') is not None:
+        raise ValueError('local-coordinate scope: CRS/origin_in_crs unsupported; do not strip georeferencing to imply equivalent output')
+    def visit(value, context):
+        if isinstance(value, dict):
+            if set(value) == {'x', 'y', 'z'}:
+                for axis in ('x', 'y', 'z'):
+                    _local_coordinate(value[axis], context + '.' + axis)
+            for key, child in value.items():
+                if key not in ('attributes', 'provenance'):
+                    if key == 'elevation_m':
+                        _local_coordinate(child, context + '.' + key)
+                    visit(child, context + '.' + key)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f'{context}[{index}]')
+    visit(document, 'model')
+
+
 @dataclass(frozen=True)
 class NativeRuntime:
     """Explicit operator-trusted installed executables/packages, not downloaded assets."""
@@ -69,6 +100,7 @@ def validate_request(request: dict, model: BuildingModel) -> dict:
             for child in value:
                 reject_external_appearance(child)
     reject_external_appearance(model.to_dict())
+    _local_model(model)
     known = canonical_index(model)
     _ids(request['acknowledged_body_omissions'], known, 'acknowledged_body_omissions')
     views = request['views']
@@ -91,6 +123,9 @@ def validate_request(request: dict, model: BuildingModel) -> dict:
         _number(view['cut_height_m'], 'cut_height_m', -1e4, 1e4)
         for key in ('width_m', 'height_m'):
             _number(view[key], key, .1, 1000)
+        for axis, extent in zip(view['center_m'], (view['width_m'], view['height_m'])):
+            _local_coordinate(abs(axis) + extent / 2, 'camera volume XY')
+        _local_coordinate(abs(view['cut_height_m']) + 10.0, 'camera depth Z')
         scale = view['scale_denominator']
         if type(scale) is not int or not 1 <= scale <= 10000:
             raise ValueError('scale_denominator: integer 1..10000 required')

@@ -46,6 +46,24 @@ previous result directory. The supplied example is entirely synthetic: a tiny
 room, three unknown-size point devices, and one explicitly sized generic fan.
 It is not a recommended electrical layout or selected product schedule.
 
+## Local-coordinate scope (fail closed)
+
+Native v1 supports only local models within **+/-100 m on every axis**.
+Canonical spatial vectors/elevations, native Cartesian points, accumulated
+placements and all generated world-space Body vertices are checked, including
+excluded/off-view objects. Camera XY extents and the full conservative 10 m
+viewing-depth envelope must also fit. CRS/origin_in_crs metadata is unsupported;
+do not erase georeferencing to imply equivalent output. Geometry that cannot be
+inspected fails rather than being skipped. Annotation XY precision is checked
+within 0.01 mm; the receipt records the local-coordinate boundary.
+
+The pinned Bonsai 0.8.5 importer automatically rebases geometry when a coordinate
+exceeds its default 1000 m distance limit on any axis. This adapter does not yet
+transform cameras/annotations through a false origin. The conservative 100 m
+bound keeps all geometry tenfold inside that trigger and bounds Blender float32
+placement quantization; any unexpected native offset also fails explicitly.
+This is a bounded correctness restriction, not georeferenced export support.
+
 ## Appearance boundary: canonical geometry only
 
 This tool starts from canonical JSON and the existing `to_ifc` adapter. It does

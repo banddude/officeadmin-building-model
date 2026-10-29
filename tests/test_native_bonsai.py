@@ -301,3 +301,76 @@ def test_real_runtime_package_cannot_shadow_reviewed_engine(tmp_path):
     receipt = json.loads((output / 'receipt.json').read_text())
     assert receipt['status'] == 'review_only_success'
     assert receipt['canonical_roundtrip']['numerical_differences'] == []
+
+
+def _translated_synthetic(delta):
+    data = json.loads(MODEL.read_text())
+    request = json.loads(REQUEST.read_text())
+    for collection in ('walls', 'ceilings', 'slabs', 'spaces'):
+        for item in data[collection]:
+            for key in ('footprint', 'centerline'):
+                if key in item:
+                    for point in item[key]['points']:
+                        point['x'] += delta
+                        point['y'] += delta
+    for item in data['electrical_devices']:
+        item['pose']['position']['x'] += delta
+        item['pose']['position']['y'] += delta
+    for view in request['views']:
+        view['center_m'] = [x + delta for x in view['center_m']]
+    return data, request
+
+
+def test_large_coordinate_model_and_camera_refused_before_runtime(tmp_path, monkeypatch):
+    import oabm.native_bonsai.api as api
+    data, request = _translated_synthetic(999000.013)
+    source, spec = tmp_path / 'model.json', tmp_path / 'request.json'
+    source.write_text(json.dumps(data))
+    spec.write_text(json.dumps(request))
+    monkeypatch.setattr(api, '_invoke', lambda *a: pytest.fail('unsafe model reached runtime'))
+    with pytest.raises(ValueError, match='local-coordinate scope'):
+        export_native(source, spec, tmp_path / 'out', NativeRuntime(Path('/unused'), Path('/unused')))
+    assert not (tmp_path / 'out').exists()
+
+
+@pytest.mark.parametrize('mutation', [
+    lambda d, r: d['electrical_devices'][0]['pose']['position'].update(x=1001),
+    lambda d, r: r['views'][0].update(center_m=[99, 0]),
+    lambda d, r: r['views'][0].update(cut_height_m=95),
+    lambda d, r: d['coordinate_system'].update(crs='EPSG:32610'),
+    lambda d, r: d['coordinate_system'].update(origin_in_crs={'x': 1, 'y': 2, 'z': 3}),
+])
+def test_local_scope_checks_off_view_geometry_camera_and_crs(mutation):
+    data, request = _translated_synthetic(0)
+    mutation(data, request)
+    with pytest.raises(ValueError, match='local-coordinate scope'):
+        validate_request(request, BuildingModel.from_dict(data))
+
+
+def test_real_runtime_local_boundary_and_derived_body_extent(tmp_path):
+    import subprocess
+    runtime = _configured_runtime()
+    data, request = _translated_synthetic(95)
+    source, spec = tmp_path / 'model.json', tmp_path / 'request.json'
+    source.write_text(json.dumps(data)); spec.write_text(json.dumps(request))
+    out = export_native(source, spec, tmp_path / 'boundary', runtime)
+    receipt = json.loads((out / 'receipt.json').read_text())
+    assert receipt['local_coordinate_scope']['native_false_origin'] is False
+    for view in receipt['views'].values():
+        for annotation in view['annotations']:
+            assert max(abs(a-b) for a,b in zip(annotation['canonical_xy_m'], annotation['native_annotation_xy_m'])) <= 1e-5
+    assert 'IfcWall' in (out / 'drawings/plan.svg').read_text()
+    # Local wall axis, distant extrusion endpoint: scalar/anchor checks alone
+    # would miss this Body, even when its ID is excluded from every view.
+    data, request = _translated_synthetic(0)
+    data['walls'][0]['height_m'] = 1001
+    for view in request['views']:
+        view['exclude_ids'].append(data['walls'][0]['id'])
+    source.write_text(json.dumps(data)); spec.write_text(json.dumps(request))
+    with pytest.raises(subprocess.CalledProcessError):
+        export_native(source, spec, tmp_path / 'distant-body', runtime)
+    failed = tmp_path / 'distant-body'
+    assert 'native world Body extent' in (failed / 'export.log').read_text()
+    assert not (failed / 'model.ifc').exists()
+    assert not (failed / 'receipt.json').exists()
+    assert (failed / 'failure.json').exists()

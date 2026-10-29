@@ -36,11 +36,11 @@ def main() -> None:
         return
     from oabm.model import BuildingModel
     from oabm.ifc import to_ifc, from_ifc, canonical_id_to_ifc_guid, round_trip_differences
-    from oabm.native_bonsai.api import validate_request, _json, canonical_index, _local_coordinate, LOCAL_COORDINATE_LIMIT_M
+    from oabm.native_bonsai.api import validate_request, _json, canonical_index, space_label_placement, _local_coordinate, LOCAL_COORDINATE_LIMIT_M
     import ifcopenshell.api
     import ifcopenshell.util.element as element
     import ifcopenshell.util.unit
-    from mathutils import Vector
+    from mathutils import Vector, Matrix
 
     inputs = {name: (out / 'inputs' / name).read_bytes() for name in ('model.json', 'request.json')}
     hashes = {name: hashlib.sha256(data).hexdigest() for name, data in inputs.items()}
@@ -163,6 +163,12 @@ def main() -> None:
             dx, dy = annotation['label_offset_mm']
             ET.SubElement(group, ns + 'text', {'x': str(dx), 'y': str(dy), 'data-type': 'text-template',
                                                'style': 'font-size:3px;text-anchor:' + ('end' if dx < 0 else 'start')}).text = 'LABEL'
+        for index, annotation in enumerate(spec.get('space_annotations', [])):
+            group = ET.SubElement(svg_library, ns + 'g', {'id': 'space-' + str(index)})
+            ET.SubElement(group, ns + 'text', {'x': '0', 'y': '0', 'data-type': 'text-template',
+                                               'style': 'font-size:3px;text-anchor:middle'}).text = 'LABEL'
+            ET.SubElement(group, ns + 'text', {'x': '0', 'y': '4',
+                                               'style': 'font-size:2.4px;text-anchor:middle'}).text = 'SOURCE POLYGON; NET AREA UNVERIFIED'
         ET.ElementTree(svg_library).write(library, encoding='utf-8', xml_declaration=True)
         annotations = []
         for index, annotation in enumerate(spec['annotations']):
@@ -192,6 +198,62 @@ def main() -> None:
                                 'native_annotation_xy_m': [obj.location.x, obj.location.y],
                                 'presentation_plane_z_m': obj.location.z, 'anchor_inside_view_xy': inside,
                                 'label_offset_mm': annotation['label_offset_mm'], 'physical_size_inferred': False})
+        space_results = []
+        space_rects = []
+        spaces = {space.id: space for space in model.spaces}
+        if any(a['shade'] for a in spec.get('space_annotations', [])):
+            css = out / 'drawings/assets/default.css'
+            with css.open('a') as stream:
+                stream.write('\n.oabm-space-area { fill:#e6f1f7; fill-opacity:0.45; stroke:#426b83; stroke-width:0.18; }\n')
+        for index, annotation in enumerate(spec.get('space_annotations', [])):
+            space = spaces[annotation['source_id']]
+            area, centroid, anchor, rect = space_label_placement(space, annotation, spec, devices, space_rects)
+            space_rects.append(rect)
+            product = f.by_guid(canonical_id_to_ifc_guid(space.id))
+            displayed = area if annotation['area_unit'] == 'm2' else area / .09290304
+            label = f"{annotation['label']}: {displayed:.2f} {annotation['area_unit']}"
+            fill_guid = None
+            if annotation['shade']:
+                fill = core.add_annotation(tool.Ifc, tool.Collector, tool.Drawing, drawing=drawing,
+                                           object_type='FILL_AREA', relating_type=None, enable_editing=False)
+                fill_ann = tool.Ifc.get_entity(fill)
+                fill_ann.Name = 'Source polygon area'
+                tool.Drawing.ensure_annotation_in_drawing_plane(fill)
+                plane_z = fill.location.z
+                fill.matrix_world = Matrix.Identity(4)
+                fill.data.clear_geometry()
+                fill.data.from_pydata([(p.x, p.y, plane_z) for p in space.footprint.points], [],
+                                      [list(range(len(space.footprint.points)))])
+                fill.data.update()
+                for vertex, point in zip(fill.data.vertices, space.footprint.points):
+                    if max(abs(vertex.co.x - point.x), abs(vertex.co.y - point.y)) > 1e-5:
+                        raise ValueError('native space fill precision exceeds 0.01 mm')
+                tool.Drawing.sync_object_placement(fill)
+                if bpy.ops.bim.update_representation(obj=fill.name) != {'FINISHED'}:
+                    raise RuntimeError('native space fill representation failed')
+                ifcopenshell.api.run('drawing.assign_product', f, relating_product=product, related_object=fill_ann)
+                ps = ifcopenshell.api.run('pset.add_pset', f, product=fill_ann, name='EPset_Annotation')
+                ifcopenshell.api.run('pset.edit_pset', f, pset=ps, properties={'Classes': 'oabm-space-area'})
+                fill_guid = fill_ann.GlobalId
+            obj = core.add_annotation(tool.Ifc, tool.Collector, tool.Drawing, drawing=drawing,
+                                      object_type='TEXT', relating_type=None, enable_editing=False)
+            ann = tool.Ifc.get_entity(obj)
+            ann.Name = label
+            obj.location.x, obj.location.y = anchor
+            if max(abs(obj.location.x - anchor[0]), abs(obj.location.y - anchor[1])) > 1e-5:
+                raise ValueError('native space annotation precision exceeds 0.01 mm')
+            tool.Drawing.ensure_annotation_in_drawing_plane(obj)
+            tool.Drawing.sync_object_placement(obj)
+            for literal in tool.Drawing.get_text_literal(obj, return_list=True):
+                literal.Literal = label
+            ps = ifcopenshell.api.run('pset.add_pset', f, product=ann, name='EPset_Annotation')
+            ifcopenshell.api.run('pset.edit_pset', f, pset=ps, properties={'Symbol': 'space-' + str(index)})
+            ifcopenshell.api.run('drawing.assign_product', f, relating_product=product, related_object=ann)
+            space_results.append({'source_id': space.id, 'product_guid': product.GlobalId,
+                                  'annotation_guid': ann.GlobalId, 'fill_guid': fill_guid,
+                                  'source_polygon_area_m2': area, 'display_area_unit': annotation['area_unit'],
+                                  'label': label, 'centroid_xy_m': centroid, 'anchor_xy_m': anchor, 'net_area_verified': False,
+                                  'provenance': model.to_dict()['spaces'][next(i for i, s in enumerate(model.spaces) if s.id == space.id)]['provenance']})
         selected = {e.GlobalId for e in tool.Drawing.get_drawing_elements(drawing) if hasattr(e, 'GlobalId')}
         coverage = [{'canonical_id': cid, **mapping,
                      'selection': ('explicitly_excluded' if cid in spec['exclude_ids'] else
@@ -219,7 +281,7 @@ def main() -> None:
                              'drawing_guid': drawing.GlobalId, 'scale': '1/' + str(spec['scale_denominator']),
                              'native_svg_mm': [width, height], 'requested_paper_mm': expected,
                              'render_resolution': [rx, ry], 'clip_depth_m': [.002, 10.0],
-                             'annotations': annotations, 'coverage': coverage,
+                             'annotations': annotations, 'coverage': coverage, **({'space_annotations': space_results} if 'space_annotations' in spec else {}),
                              'exclude_ids': spec['exclude_ids'], 'symbol_resource': library.relative_to(out).as_posix()}
     if bpy.ops.bim.save_project(filepath=str(path)) != {'FINISHED'}:
         raise RuntimeError('native save failed')

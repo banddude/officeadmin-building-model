@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import struct
 from typing import Any
 
 from oabm.model import BuildingModel
@@ -83,6 +84,101 @@ def _ids(value: Any, known: dict, name: str) -> None:
         raise ValueError(f'{name}: unknown or duplicate canonical IDs')
 
 
+def polygon_area_centroid(space):
+    """Validate a simple, horizontal canonical polygon and derive its XY area/centroid."""
+    pts = [(p.x, p.y, p.z) for p in space.footprint.points]
+    if any(not all(math.isfinite(v) and abs(v) <= 1e6 for v in p) for p in pts):
+        raise ValueError('space polygon coordinates must be finite and bounded')
+    # Blender mesh coordinates are float32; refuse lossy source geometry rather
+    # than presenting a distorted footprint as canonical.
+    if any(abs(struct.unpack('f', struct.pack('f', v))[0] - v) > .00001 for p in pts for v in p[:2]):
+        raise ValueError('space polygon exceeds native 0.01 mm coordinate precision')
+    if any(abs(p[2] - pts[0][2]) > 1e-6 for p in pts):
+        raise ValueError('space polygon must be horizontal')
+    xy = [(p[0], p[1]) for p in pts]
+    n = len(xy)
+    if len(set(xy)) != n or n > 1000:
+        raise ValueError('space polygon has duplicate or too many points')
+    def orient(a, b, c):
+        return (b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])
+    def intersects(a, b, c, d):
+        def on(a, b, p):
+            return min(a[0],b[0]) <= p[0] <= max(a[0],b[0]) and min(a[1],b[1]) <= p[1] <= max(a[1],b[1])
+        o = (orient(a,b,c), orient(a,b,d), orient(c,d,a), orient(c,d,b))
+        return ((o[0]*o[1] < 0 and o[2]*o[3] < 0) or
+                (o[0] == 0 and on(a,b,c)) or (o[1] == 0 and on(a,b,d)) or
+                (o[2] == 0 and on(c,d,a)) or (o[3] == 0 and on(c,d,b)))
+    for i in range(n):
+        for j in range(i+1, n):
+            if j == i+1 or (i == 0 and j == n-1):
+                continue
+            if intersects(xy[i], xy[(i+1)%n], xy[j], xy[(j+1)%n]):
+                raise ValueError('space polygon must be simple')
+    # Work near the origin to avoid catastrophic cancellation for small
+    # polygons located far from the canonical origin.
+    origin = xy[0]
+    local = [(x-origin[0], y-origin[1]) for x, y in xy]
+    cross = [local[i][0]*local[(i+1)%n][1]-local[(i+1)%n][0]*local[i][1] for i in range(n)]
+    twice = math.fsum(cross)
+    if not math.isfinite(twice) or abs(twice) < 1e-9:
+        raise ValueError('space polygon must have nonzero finite area')
+    centroid = [origin[k] + math.fsum((local[i][k]+local[(i+1)%n][k])*cross[i] for i in range(n))/(3*twice) for k in (0,1)]
+    return abs(twice)/2, centroid
+
+
+def space_label_placement(space, annotation, view, devices, placed=()):
+    """Choose a deterministic interior presentation anchor, or refuse collisions."""
+    area, centroid = polygon_area_centroid(space)
+    displayed = area if annotation['area_unit'] == 'm2' else area / .09290304
+    if float(f'{displayed:.2f}') == 0:
+        raise ValueError('space area would round to zero in chosen unit')
+    text = f"{annotation['label']}: {displayed:.2f} {annotation['area_unit']}"
+    scale = view['scale_denominator']
+    half_width = (max(3 * len(text), 2.4 * len('SOURCE POLYGON; NET AREA UNVERIFIED')) / 2 + 2) * scale / 1000
+    half_height = 8 * scale / 1000
+    xy = [(p.x,p.y) for p in space.footprint.points]
+    def inside(x,y):
+        hit = False
+        for i, (x1,y1) in enumerate(xy):
+            x2,y2 = xy[(i+1)%len(xy)]
+            cross = (x-x1)*(y2-y1)-(y-y1)*(x2-x1)
+            if abs(cross) < 1e-9 and min(x1,x2) <= x <= max(x1,x2) and min(y1,y2) <= y <= max(y1,y2):
+                return False
+            if (y1 > y) != (y2 > y) and x < (x2-x1)*(y-y1)/(y2-y1)+x1:
+                hit = not hit
+        return hit
+    minx,maxx = min(x for x,y in xy),max(x for x,y in xy)
+    miny,maxy = min(y for x,y in xy),max(y for x,y in xy)
+    candidates = [tuple(annotation['anchor_xy_m'])] if 'anchor_xy_m' in annotation else [tuple(centroid)] + sorted(
+        [(minx+(maxx-minx)*i/20, miny+(maxy-miny)*j/20) for i in range(1,20) for j in range(1,20)],
+        key=lambda p: ((p[0]-centroid[0])**2+(p[1]-centroid[1])**2,p))
+    for x,y in candidates:
+        if not inside(x,y):
+            continue
+        if any(abs(struct.unpack('f', struct.pack('f', v))[0] - v) > .00001 for v in (x,y)):
+            continue
+        if (abs(x-view['center_m'][0])+half_width > view['width_m']/2 or
+                abs(y-view['center_m'][1])+half_height > view['height_m']/2):
+            continue
+        collision = False
+        for point in view['annotations']:
+            if point['source_id'] not in devices:
+                continue  # normal annotation validation reports it
+            p = devices[point['source_id']].pose.position
+            # Conservative paper rectangle encloses glyph and offset label.
+            dx,dy = point['label_offset_mm']
+            radius_x = (abs(dx)+3*len(point['text'])+3)*scale/1000
+            radius_y = (abs(dy)+6)*scale/1000
+            if abs(x-p.x) < half_width+radius_x and abs(y-p.y) < half_height+radius_y:
+                collision = True
+                break
+        if any(abs(x-px) < half_width+pw and abs(y-py) < half_height+ph for px,py,pw,ph in placed):
+            collision = True
+        if not collision:
+            return area, centroid, [x,y], (x,y,half_width,half_height)
+    raise ValueError('space label and net-area qualification must fit inside view and avoid point annotations; supply a safe interior anchor')
+
+
 def validate_request(request: dict, model: BuildingModel) -> dict:
     """Validate a presentation request, without mutating it or the canonical model."""
     _object(request, {'version', 'acknowledged_body_omissions', 'views'}, 'request')
@@ -107,10 +203,14 @@ def validate_request(request: dict, model: BuildingModel) -> dict:
     if not isinstance(views, list) or not 1 <= len(views) <= 8:
         raise ValueError('views: one to eight explicit views required')
     seen = set()
+    polygon_work = 0
+    placement_work = 0
     devices = {d.id: d for d in (*model.electrical_devices, *model.electrical_equipment)}
     for view in views:
-        _object(view, {'id', 'target_view', 'level_id', 'center_m', 'cut_height_m', 'width_m', 'height_m',
-                       'scale_denominator', 'exclude_ids', 'annotations'}, 'view')
+        required = {'id', 'target_view', 'level_id', 'center_m', 'cut_height_m', 'width_m', 'height_m',
+                    'scale_denominator', 'exclude_ids', 'annotations'}
+        if not isinstance(view, dict) or set(view) not in (required, required | {'space_annotations'}):
+            raise ValueError('view: invalid keys')
         name = view['id']
         if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_-]{0,47}', name) or name.casefold() in seen:
             raise ValueError('view id: unique case-insensitive safe filename required')
@@ -151,6 +251,39 @@ def validate_request(request: dict, model: BuildingModel) -> dict:
             if any(c in text for c in '{}`'):
                 raise ValueError('annotation text: template/formatter syntax is unsupported')
             _pair(annotation['label_offset_mm'], 'label_offset_mm', -30, 30)
+        spaces = {s.id: s for s in model.spaces}
+        space_annotations = view.get('space_annotations', [])
+        if not isinstance(space_annotations, list) or len(space_annotations) > 1000:
+            raise ValueError('space_annotations: list of at most 1000 required')
+        space_ids = set()
+        placed = []
+        for annotation in space_annotations:
+            keys = {'source_id', 'label', 'area_unit', 'shade'}
+            if not isinstance(annotation, dict) or set(annotation) not in (keys, keys | {'anchor_xy_m'}):
+                raise ValueError('space annotation: invalid keys')
+            if 'anchor_xy_m' in annotation:
+                _pair(annotation['anchor_xy_m'], 'anchor_xy_m', -1e6, 1e6)
+            cid = annotation['source_id']
+            if not isinstance(cid, str) or cid not in spaces or cid in space_ids:
+                raise ValueError('space annotation: unique known space ID required')
+            space_ids.add(cid)
+            space = spaces[cid]
+            if space.level_id != view['level_id'] or cid in view['exclude_ids']:
+                raise ValueError('space annotation must belong to view level and not be excluded')
+            label = annotation['label']
+            if not isinstance(label, str) or not 1 <= len(label) <= 80 or any(not 32 <= ord(c) <= 126 or c in '{}`' for c in label):
+                raise ValueError('space label: 1..80 safe printable ASCII characters required')
+            if annotation['area_unit'] not in ('m2', 'ft2') or type(annotation['shade']) is not bool:
+                raise ValueError('space annotation requires m2 or ft2 and boolean shade')
+            polygon_work += len(space.footprint.points) ** 2
+            if polygon_work > 1_000_000:
+                raise ValueError('space polygon validation complexity budget exceeded')
+            candidates = 1 if 'anchor_xy_m' in annotation else 362
+            placement_work += candidates * (len(space.footprint.points) + len(annotations) + len(placed))
+            if placement_work > 2_000_000:
+                raise ValueError('space label placement complexity budget exceeded')
+            _, _, _, rect = space_label_placement(space, annotation, view, devices, placed)
+            placed.append(rect)
     return request
 
 

@@ -49,6 +49,19 @@ Presentation values cannot contain CSS comment boundaries or consume following
 declarations through malformed strings/functions. Ordinary parsed stylesheet
 rule/declaration comments remain supported.
 
+Every admitted property has an explicit inheritance classification, using the
+native SVG 1.1 property definitions, plus SVG 2 `paint-order` and Filter Effects
+1 flood properties. No new property inherits by default. The following stay
+on the original owner: `opacity`, `display`, `filter`, `clip-path`,
+`text-decoration`, `dominant-baseline`, `alignment-baseline`, `flood-color`,
+`flood-opacity`. The original element hierarchy preserves compositing and text
+decoration/baseline propagation rather than duplicating them on descendants.
+Fill/stroke families, fonts, text anchor/spacing, visibility, markers,
+paint order and cursor use their defined inherited policy. References:
+[SVG 1.1 property index](https://www.w3.org/TR/SVG11/propidx.html),
+[SVG 2 paint-order](https://www.w3.org/TR/SVG2/painting.html#PaintOrder),
+[Filter Effects 1 section9.13](https://www.w3.org/TR/filter-effects-1/#feFloodElement).
+
 Static source CSS is resolved against the original tree before IDs/classes are
 changed. Per-node styles preserve the cascade and inheritance; IDs and local
 resource references are namespaced per component. Native path/curve/transform
@@ -84,3 +97,10 @@ PDF and portable rebuilds, and reject receipt, scale, input-coherence, resource
 and presentation failures. Actual pinned native runtime tests remain separate
 from skipped optional tests. None of these checks establishes professional
 drafting acceptance, engineering completeness or agency approval.
+
+Filter-default pixel regressions additionally use `rsvg-convert` when already
+installed, as an independent SVG reference renderer; they never install it.
+They compare original and shared-view pixels for ancestor flood values and
+explicit local overrides. Structural cascade tests run without that optional
+binary, and inherited fill/stroke/font controls retain the existing converter
+pixel checks.

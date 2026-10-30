@@ -21,16 +21,22 @@ import io
 SVG='http://www.w3.org/2000/svg'
 _TAGS={'svg','g','defs','path','line','polyline','polygon','circle','ellipse','rect','text','tspan',
        'marker','pattern','filter','feFlood','feMerge','feMergeNode','style','title','desc'}
-_STYLE={'fill','fill-rule','fill-opacity','stroke','stroke-width','stroke-opacity','stroke-linecap',
-        'stroke-linejoin','stroke-miterlimit','stroke-dasharray','stroke-dashoffset','opacity','font-family',
-        'font-size','font-weight','font-style','text-anchor','text-decoration','dominant-baseline',
-        'alignment-baseline','letter-spacing','word-spacing','display','visibility','filter','clip-path',
-        'marker-start','marker-mid','marker-end','paint-order','cursor','flood-color','flood-opacity'}
+# Explicit native SVG 1.1 inheritance policy (plus SVG 2 paint-order).
+# See SVG 1.1 property definitions/index and Filter Effects 1 section 9.13.
+# Local effects/decoration/baseline properties stay on their original owner:
+# tree-level compositing, text propagation and renderer semantics are retained,
+# rather than pretending these properties are inherited computed values.
+_INHERIT={'fill','fill-rule','fill-opacity','stroke','stroke-width','stroke-opacity','stroke-linecap',
+          'stroke-linejoin','stroke-miterlimit','stroke-dasharray','stroke-dashoffset','font-family',
+          'font-size','font-weight','font-style','text-anchor','letter-spacing','word-spacing',
+          'visibility','marker-start','marker-mid','marker-end','paint-order','cursor'}
+_LOCAL={'opacity','display','filter','clip-path','text-decoration','dominant-baseline',
+        'alignment-baseline','flood-color','flood-opacity'}
+_STYLE=_INHERIT|_LOCAL
 _ATTR={'id','class','style','x','y','x1','y1','x2','y2','cx','cy','r','rx','ry','width','height','d','points',
        'transform','viewBox','preserveAspectRatio','version','baseProfile','markerWidth','markerHeight',
        'markerUnits','orient','refX','refY','patternUnits','patternContentUnits','patternTransform',
        'filterUnits','primitiveUnits','in','result','dx','dy','rotate','textLength','lengthAdjust','type'}|_STYLE
-_INHERIT=_STYLE-{'opacity','display','filter','clip-path'}
 _URL=re.compile(r'url\(\s*[\"\']?#([A-Za-z0-9_.:$-]+)[\"\']?\s*\)',re.I)
 
 

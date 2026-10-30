@@ -2,6 +2,8 @@ import copy
 import hashlib
 import io
 import json
+import shutil
+import subprocess
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -207,3 +209,53 @@ def test_explicit_inherited_or_child_only_native_fonts_work(tmp_path,child_only)
     component,receipt=render_native_vector(asset,(5,5,150,95))
     assert receipt['font_faces']
     assert receipt['source_guids']==['0CdQj1T1r4oAcDn5L0mPqU']
+
+
+@pytest.mark.parametrize('key,value',[
+    ('opacity','0.5'),('display','inline'),('filter','url(#f)'),('clip-path','none'),
+    ('flood-color','red'),('flood-opacity','0.2'),('text-decoration','underline'),
+    ('dominant-baseline','central'),('alignment-baseline','middle'),
+])
+def test_noninherited_presentation_values_stay_on_the_original_owner(tmp_path,key,value):
+    svg=f'<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" viewBox="0 0 100 50" data-scale="1:48" {key}="{value}"><defs><filter id="f"><feFlood/></filter></defs><g id="child"><rect width="20" height="20"/></g></svg>'.encode()
+    asset=native_view_asset(native(tmp_path,svg),'plan',origin_mm=(10,20))
+    component,_=render_native_vector(asset,(5,5,150,95))
+    assert key+':' in component.get('style','')
+    assert all(key+':' not in node.get('style','') for node in component.iter() if node is not component)
+
+
+@pytest.mark.parametrize('local_values',[False,True])
+def test_flood_defaults_and_local_values_match_original_standard_renderer_pixels(tmp_path,local_values):
+    renderer=shutil.which('rsvg-convert')
+    if renderer is None:pytest.skip('installed librsvg converter required for filter-reference pixels; no install')
+    local=' flood-color="blue" flood-opacity="0.5"' if local_values else ''
+    svg=f'<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" viewBox="0 0 100 50" data-scale="1:48" flood-color="red" flood-opacity="0.2"><defs><filter id="f"><feFlood{local}/></filter></defs><rect x="5" y="5" width="20" height="20" filter="url(#f)"/></svg>'.encode()
+    request=prepared(tmp_path,svg)
+    delivery=create_native_sheet_set(request,output_directory=tmp_path/'attempt')
+    shared=next((delivery/'company/delivery/sheets').glob('*.svg'))
+    def raster(path,width,height):
+        raw=subprocess.run([renderer,'--width',str(width),'--height',str(height),str(path)],check=True,capture_output=True,timeout=30).stdout
+        image=Image.open(io.BytesIO(raw)).convert('RGBA');bg=Image.new('RGBA',image.size,'white');bg.alpha_composite(image);return bg.convert('RGB')
+    original=raster(tmp_path/'native/view.svg',400,200)
+    actual=raster(shared,800,400).crop((40,80,440,280))
+    if not local_values:assert original.getpixel((50,50))==(0,0,0)
+    assert ImageChops.difference(original,actual).getbbox() is None
+
+
+def test_inherited_fill_stroke_and_font_preserve_original_pixels(tmp_path):
+    cairosvg=pytest.importorskip('cairosvg')
+    svg=b'<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" viewBox="0 0 100 50" data-scale="1:48" fill="blue" stroke="red" stroke-width="0.3" font-family="DejaVu Sans" font-size="3px"><g><rect x="5" y="5" width="20" height="20"/><text x="5" y="40">INHERITED <tspan>TEXT</tspan></text></g></svg>'
+    request=prepared(tmp_path,svg)
+    asset=native_view_asset(tmp_path/'native','plan',origin_mm=(10,20))
+    component,_=render_native_vector(asset,(5,5,150,95))
+    rect=next(component.iter('{http://www.w3.org/2000/svg}rect'))
+    assert 'fill:blue' in rect.get('style') and 'stroke:red' in rect.get('style')
+    delivery=create_native_sheet_set(request,output_directory=tmp_path/'attempt')
+    shared=next((delivery/'company/delivery/sheets').glob('*.svg')).read_bytes()
+    def raster(raw,width,height):
+        image=Image.open(io.BytesIO(cairosvg.svg2png(bytestring=raw,output_width=width,output_height=height))).convert('RGBA')
+        bg=Image.new('RGBA',image.size,'white');bg.alpha_composite(image);return bg.convert('RGB')
+    difference=ImageChops.difference(raster(svg,400,200),raster(shared,800,400).crop((40,80,440,280)))
+    # Stroked glyphs can incur one 8-bit channel level of nested-viewport
+    # antialias rounding. Geometry, inherited colors and source face stay fixed.
+    assert max(high for low,high in difference.getextrema())<=1

@@ -37,9 +37,18 @@ registered canonical position to resolve architectural attachment:
 3. only when the electrical source carries a physical host hint, resolve that
    host against architectural geometry.
 
-A single architectural level is sufficient level evidence. With multiple
-levels, registered Z and plan containment are reconciled. Conflicting or
-multiple candidates remain ambiguity rather than being selected by ordering.
+A source-bound sheet-registration target can resolve the level even when an
+unrelated level shares its elevation. Convergence checks that the target level
+exists, its unique drawing region is still resolved on the recorded target
+page, and the region, page transform and canonical level agree on frame and
+elevation. Missing, stale or contradictory claimed target evidence stays
+unresolved (`registration_target_level_invalid`); it never falls back to Z.
+Conflicting source Z or unique plan containment also remains a conflict.
+
+Without a claimed registration target, a single architectural level is
+sufficient level evidence. With multiple levels, registered Z and plan
+containment are reconciled. Conflicting or multiple candidates remain
+ambiguity rather than being selected by ordering.
 
 Space containment uses the canonical space footprint.
 

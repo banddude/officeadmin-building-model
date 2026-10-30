@@ -135,6 +135,64 @@ def _ambiguity(
     rows.append(row)
 
 
+def _registered_target_level(
+    entity: ElectricalEntity,
+    architecture: BuildingModel,
+    levels_by_id: Mapping[str, Level],
+    ambiguities: list[dict[str, Any]],
+) -> tuple[Level | None, bool]:
+    """Consume the existing producer handoff only when bound to this target."""
+    lane = entity.attributes.get("pdf_electrical", {})
+    transform = lane.get("page_transform") if isinstance(lane, Mapping) else None
+    registration = transform.get("registration") if isinstance(transform, Mapping) else None
+    if not isinstance(registration, Mapping) or "level_id" not in registration:
+        return None, False  # Explicit caller transforms keep the legacy resolver.
+
+    def refuse(reason: str) -> tuple[None, bool]:
+        _ambiguity(
+            ambiguities, entity=entity, code="registration_target_level_invalid",
+            detail=reason,
+            target_level_id=registration.get("level_id"),
+            target_region_id=registration.get("target_region_id"),
+        )
+        return None, True
+
+    level_id = registration.get("level_id")
+    if not isinstance(level_id, str) or level_id not in levels_by_id:
+        return refuse("registered target level does not exist in this architecture")
+    regions = architecture.attributes.get("pdf_architecture", {})
+    regions = regions.get("drawing_regions", ()) if isinstance(regions, Mapping) else ()
+    if not isinstance(regions, (list, tuple)):
+        return refuse("architecture drawing regions are not a collection")
+    region_id = registration.get("target_region_id")
+    matches = [region for region in regions if isinstance(region, Mapping)
+               and isinstance(region_id, str) and region.get("region_id") == region_id]
+    if len(matches) != 1:
+        return refuse("registration does not identify one current architectural region")
+    region = matches[0]
+    region_level, region_frame = region.get("level"), region.get("frame")
+    target_page = registration.get("target_page")
+    if (region.get("status") != "resolved"
+            or not isinstance(target_page, int) or isinstance(target_page, bool)
+            or target_page < 1 or region.get("page") != target_page
+            or not isinstance(region_level, Mapping)
+            or region_level.get("level_id") != level_id):
+        return refuse("registered region is unresolved or disagrees with its level/page")
+    frame_id = architecture.coordinate_system.frame_id
+    if (transform.get("frame_id") != frame_id
+            or not isinstance(region_frame, Mapping)
+            or region_frame.get("frame_id") != frame_id):
+        return refuse("registered region and page transform disagree with the canonical frame")
+    level = levels_by_id[level_id]
+    for value in (transform.get("z_m"), registration.get("level_elevation_m"),
+                  region_level.get("elevation_m")):
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value)
+                or not math.isclose(value, level.elevation_m, rel_tol=0.0, abs_tol=1e-6)):
+            return refuse("registered target elevation disagrees with the current level")
+    return level, True
+
+
 def _resolve_level(
     entity: ElectricalEntity,
     architecture: BuildingModel,
@@ -152,7 +210,14 @@ def _resolve_level(
         )
         return None, None
 
+    registered_level, claimed = _registered_target_level(
+        entity, architecture, levels_by_id, ambiguities,
+    )
+    if claimed and registered_level is None:
+        return None, None
     if len(levels_by_id) == 1:
+        if registered_level is not None:
+            return registered_level, "accepted_sheet_registration_target"
         return next(iter(levels_by_id.values())), "single_architectural_level"
 
     point = entity.pose.position
@@ -175,6 +240,20 @@ def _resolve_level(
             )
         }
     )
+
+    if registered_level is not None:
+        conflicting_z = len(z_matches) == 1 and z_matches[0].id != registered_level.id
+        conflicting_xy = len(xy_level_ids) == 1 and xy_level_ids[0] != registered_level.id
+        if conflicting_z or conflicting_xy:
+            _ambiguity(
+                ambiguities, entity=entity, code="level_evidence_conflict",
+                detail="accepted registration target conflicts with registered Z or plan containment",
+                registered_target_level_id=registered_level.id,
+                z_level_ids=[level.id for level in z_matches],
+                plan_level_ids=xy_level_ids,
+            )
+            return None, None
+        return registered_level, "accepted_sheet_registration_target"
 
     if len(z_matches) == 1 and len(xy_level_ids) == 1 and z_matches[0].id != xy_level_ids[0]:
         _ambiguity(

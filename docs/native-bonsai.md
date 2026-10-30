@@ -323,6 +323,82 @@ canonical model that would silently lose it during `to_ifc`. There is no public
 lossy-import switch. The drawing worker uses a private canonical projection
 only alongside its independent native preservation proof.
 
+## Explicit source-bound native identities (v2)
+
+`native-bonsai-ifc-v2` is a separately selected review-presentation route for
+source products whose existing GUIDs differ from canonical export GUIDs. V1 and
+canonical-only export retain their previous refusals and round-trip behavior.
+V2 adds exactly one `source_contract` object:
+
+```json
+{"source_sha256":"<SHA256 of exact original IFC bytes>",
+ "bindings":[{"canonical_id":"device:light", "source_guid":"<existing IFC GUID>",
+   "canonical_sha256":"<source_bindings.fingerprint(canonical entity dict)>",
+   "qualification":"Original native geometry is authoritative; source interpretation requires review."}],
+ "preserve_products":[{"source_guid":"<existing IFC GUID>","ifc_class":"IfcBoiler",
+   "qualification":"Native mechanical product; no canonical electrical conversion."}]}
+```
+
+Every canonical entity needs exactly one unique binding and explicit provenance
+whose `source_element_id` matches that source GUID. The fact fingerprint is
+stable across equivalent typed JSON numbers, without rounding large attribute
+integers or conflating booleans. Native class compatibility is checked; a
+binding cannot contradict an existing canonical ID shadow. This bounded version
+supports levels/spaces/walls/slabs/ceilings/openings/devices/equipment/obstacles,
+not populated physical assemblies, routing, circuits or support contracts.
+It does not import source geometry into a different semantic model.
+
+The source IFC remains the geometry authority for these views. Canonical boxes
+are never substituted for native meshes, symbols or richer equipment Bodies.
+Inspectable finite Bodies are required, or the exact mapped product IDs must
+appear in `acknowledged_body_omissions`; storeys naturally need no Body. Posed
+canonical annotation anchors must lie inside native Body bounds, or equal the
+native placement within 0.01 mm when bodyless. This is a bounded anchor test,
+not proof that a canonical box equals a manufacturer Body. Canonical space
+fill/area annotations are refused here because native polygon equivalence has
+not been established. Unknown-size source-symbol envelopes remain qualified
+source geometry, not newly asserted fixture dimensions.
+
+Beyond the existing bounded plumbing lane, `preserve_products` admits only
+explicit native `IfcBoiler`, `IfcDoor` and `IfcWall` products with inspectable
+Bodies. They are not relabeled as electrical entities or simplified boxes.
+Each declaration needs its actual class, unique GUID and review qualification.
+Unlisted noncanonical products still refuse. Native port ownership retains the
+bounded plumbing rule; an explicitly preserved boiler may own native ports,
+while spatial entities, walls, door fills and arbitrary mapped devices may not.
+
+V2 views may add `native_exclude_guids` for explicitly named original products.
+The model/source graph remains intact. Both annotation forms respect the union
+of canonical and native exclusions. V2 native text labels may also name mapped
+source products or the bounded preserved classes. V2 native text anchors use
+the world-space source Body bounds center, or the explicit native placement
+when geometry is unknown. This handles meshes with baked world coordinates
+and a zero object placement. Receipts qualify that presentation basis; it does
+not infer clear openings, mounting, physical dimensions or engineering sizes.
+Automatic global drawing/storey reference markers are disabled for this explicit
+review route. Receipts distinguish native selection from physical visibility.
+
+The worker still isolates old presentation data and proves every original STEP
+entity/attribute unchanged after save/reopen and drawing graft, with only the
+existing append-only verified project Plan-context exception. Resource, runtime,
+local-coordinate and appearance-reference refusals remain. V2 receipts explicitly
+say `canonical_roundtrip.performed: false`: source graph preservation and bound
+canonical interpretation are separate proofs. Do not advertise them as a
+canonical geometry round trip, complete design, surveyed model or approval.
+
+For a complete public-safe native-to-shared-sheet proof, using an already
+installed trusted runtime:
+
+```sh
+PYTHONPATH=src:examples python examples/native_source_review_sheets.py /fresh/proof \
+  --blender /trusted/Blender --bonsai-python /trusted/installed/site-packages
+```
+
+This authors only synthetic identities, native mesh wall/door/boiler and plumbing,
+then runs the real native exporter and shared company SVG/PDF renderer. Inspect
+`sheets/delivery/company/delivery/sheet-set.pdf`, native IFC/SVGs and all receipts.
+See [native vector sheets](native-vector-sheets.md) for the shared interface.
+
 Generate the public synthetic sink/receptor source and request with:
 
 ```sh

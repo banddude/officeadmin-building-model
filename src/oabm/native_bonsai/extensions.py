@@ -107,7 +107,7 @@ are not granted access merely because the caller supplied a local IFC file.
                 raise ValueError('native source contains an unsupported URI reference')
 
 
-def validate_extension_source(native: ifcopenshell.file, model) -> list[dict]:
+def validate_extension_source(native: ifcopenshell.file, model, source_request=None) -> list[dict]:
     """Validate a self-contained OABM IFC with a bounded native plumbing lane.
 
 No native addition is converted to an electrical entity or canonical route.
@@ -133,6 +133,16 @@ unsupported canonical semantics. The caller must retain the source and verify
 
     expected = to_ifc(model)
     expected_objects = {entity.GlobalId: entity.is_a() for entity in expected.by_type('IfcObjectDefinition')}
+    bindings = None
+    preserved = {}
+    if source_request is not None:
+        from .source_bindings import binding_contract
+        from oabm.ifc import canonical_id_to_ifc_guid
+        bindings = binding_contract(source_request, model, native)
+        canonical_guids = {canonical_id_to_ifc_guid(cid) for cid in bindings}
+        expected_objects = {guid: kind for guid, kind in expected_objects.items() if guid not in canonical_guids}
+        expected_objects.update({row['source_guid']: row['ifc_class'] for row in bindings.values()})
+        preserved = {row['source_guid']: row for row in source_request['source_contract']['preserve_products']}
     diagnostics = []
     added_products = set()
     for entity in native.by_type('IfcObjectDefinition'):
@@ -141,6 +151,14 @@ unsupported canonical semantics. The caller must retain the source and verify
         if expected_kind is not None:
             if kind != expected_kind:
                 raise ValueError('native source changes a canonical/adapter IFC class')
+            continue
+        if entity.GlobalId in preserved:
+            if kind != preserved[entity.GlobalId]['ifc_class']:
+                raise ValueError('preserved source product changes IFC class')
+            if kind == 'IfcBoiler': added_products.add(entity.id())
+            diagnostics.append({'ifc_guid': entity.GlobalId, 'ifc_class': kind,
+                                'status': 'preserved_native_only',
+                                'reason': preserved[entity.GlobalId]['qualification']})
             continue
         if kind in PLUMBING_CLASSES or kind in _PLUMBING_TYPES or kind == 'IfcDistributionSystem':
             if ifcopenshell.util.element.get_pset(entity, CANONICAL_PSET) is not None:
@@ -188,13 +206,20 @@ unsupported canonical semantics. The caller must retain the source and verify
         if ifcopenshell.util.element.get_pset(port, CANONICAL_PSET) is not None:
             raise ValueError('native plumbing port must not masquerade as canonical metadata')
 
-    projected = _from_ifc_canonical_subset(native)
-    if round_trip_differences(model, projected):
-        raise ValueError('native source canonical subset does not match the supplied model')
+    if bindings is None:
+        projected = _from_ifc_canonical_subset(native)
+        if round_trip_differences(model, projected):
+            raise ValueError('native source canonical subset does not match the supplied model')
+    else:
+        diagnostics.extend({'ifc_guid': row['source_guid'], 'ifc_class': row['ifc_class'],
+                            'canonical_id': cid, 'status': 'bound_native_source',
+                            'canonical_sha256': row['canonical_sha256'],
+                            'geometry_authority': row['geometry_authority'],
+                            'reason': row['qualification']} for cid, row in bindings.items())
     return sorted(diagnostics, key=lambda item: (item['ifc_class'], item['ifc_guid']))
 
 
-def prepare_render_source(native: ifcopenshell.file, model):
+def prepare_render_source(native: ifcopenshell.file, model, source_request=None):
     """Isolate old drawing/document trees without ever loading their resources.
 
     The returned renderer copy is disposable. The original source remains opaque
@@ -252,7 +277,7 @@ def prepare_render_source(native: ifcopenshell.file, model):
     for relation in tuple(render.by_type('IfcRelContainedInSpatialStructure')):
         if not relation.RelatedElements:
             render.remove(relation)
-    diagnostics = validate_extension_source(render, model)
+    diagnostics = validate_extension_source(render, model, source_request)
     if doomed:
         diagnostics.append({'status': 'opaque_presentation_preserved_not_rendered',
                             'entity_count': len(doomed), 'ifc_classes': removed,

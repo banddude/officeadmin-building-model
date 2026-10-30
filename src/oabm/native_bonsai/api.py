@@ -443,11 +443,14 @@ def validate_ifc_request(request: dict, model: BuildingModel, native) -> dict:
     import copy
     import ifcopenshell.util.placement
     from .extensions import prepare_render_source
-    prepare_render_source(native, model)
-    if not isinstance(request, dict) or request.get('version') != 'native-bonsai-ifc-v1':
+    from .source_bindings import VERSION as BOUND_VERSION
+    bound = isinstance(request, dict) and request.get('version') == BOUND_VERSION
+    prepare_render_source(native, model, request if bound else None)
+    if not isinstance(request, dict) or request.get('version') not in ('native-bonsai-ifc-v1', BOUND_VERSION):
         raise ValueError('unsupported extension-preserving request version')
     base = copy.deepcopy(request)
     base['version'] = 'native-bonsai-v1'
+    if bound: base.pop('source_contract', None)
     acknowledged = base.pop('acknowledged_native_body_omissions', [])
     omissions = sorted(product.GlobalId for product in native.by_type('IfcProduct')
                        if product.is_a() in ('IfcPipeSegment', 'IfcPipeFitting', 'IfcSanitaryTerminal', 'IfcWasteTerminal')
@@ -460,6 +463,19 @@ def validate_ifc_request(request: dict, model: BuildingModel, native) -> dict:
         if not isinstance(view, dict):
             raise ValueError('view must be an object')
         annotations = view.pop('native_annotations', [])
+        exclusions = view.pop('native_exclude_guids', []) if bound else []
+        if bound:
+            if not isinstance(exclusions,list) or len(exclusions)>2000 or any(not isinstance(g,str) for g in exclusions) or len(set(exclusions))!=len(exclusions):raise ValueError('unique bounded native exclusion GUIDs required')
+            for guid in exclusions:
+                try: product = native.by_guid(guid)
+                except RuntimeError as exc:raise ValueError('unknown native exclusion GUID') from exc
+                if not product.is_a('IfcProduct') or product.is_a('IfcAnnotation'):raise ValueError('native exclusions require original physical/spatial products')
+        excluded_sources=set(exclusions)
+        if bound:
+            identity={row['canonical_id']:row['source_guid'] for row in request['source_contract']['bindings']}
+            excluded_sources.update(identity[cid] for cid in view.get('exclude_ids',[]) if cid in identity)
+            if any(identity.get(a.get('source_id')) in excluded_sources for a in view.get('annotations',[]) if isinstance(a,dict)):
+                raise ValueError('canonical annotation source cannot be excluded by either identity form')
         if not isinstance(annotations, list) or len(annotations) > 100:
             raise ValueError('native_annotations: at most 100 required')
         if annotations and view.get('target_view') != 'PLAN_VIEW':
@@ -475,11 +491,18 @@ def validate_ifc_request(request: dict, model: BuildingModel, native) -> dict:
                 product = native.by_guid(guid)
             except RuntimeError as exc:
                 raise ValueError('unknown native annotation source GUID') from exc
-            if product.is_a() not in ('IfcPipeSegment', 'IfcPipeFitting', 'IfcSanitaryTerminal', 'IfcWasteTerminal'):
+            allowed_native = {'IfcPipeSegment', 'IfcPipeFitting', 'IfcSanitaryTerminal', 'IfcWasteTerminal'}
+            if bound: allowed_native |= {'IfcBoiler', 'IfcDoor', 'IfcWall'}
+            mapped = {r['source_guid'] for r in request['source_contract']['bindings']} if bound else set()
+            if product.is_a() not in allowed_native and guid not in mapped:
                 raise ValueError('native annotation source must be a supported plumbing product')
+            if guid in excluded_sources:raise ValueError('native annotation source cannot be excluded by either identity form')
             if not product.ObjectPlacement:
                 raise ValueError('native annotation source requires explicit placement')
             xyz = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)[:3, 3]
+            if bound:
+                from .source_bindings import native_label_anchor
+                xyz,_=native_label_anchor(product)
             for coordinate in xyz:
                 _local_coordinate(float(coordinate), 'native annotation anchor')
             text = annotation['text']
@@ -503,6 +526,8 @@ def export_native_ifc(model_path: Path, source_ifc_path: Path, request_path: Pat
                  'source.ifc': _read(source_ifc_path, 32 * 1024**2)}
     model = BuildingModel.from_dict(_json(snapshots['model.json']))
     native = ifcopenshell.file.from_string(snapshots['source.ifc'].decode('utf-8'))
+    from .source_bindings import verify_source_hash
+    verify_source_hash(_json(snapshots['request.json']), snapshots['source.ifc'])
     validate_ifc_request(_json(snapshots['request.json']), model, native)
     _runtime_paths(runtime)
     out = Path(output_directory).absolute()

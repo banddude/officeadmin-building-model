@@ -201,3 +201,9 @@ Model delivery can be rerun from its retained `inputs/model.json` and
 `inputs/options.json` to a fresh path. Identical output bytes require matching
 engine sources, runtime and fonts as recorded in the manifests; this is not a
 hermetic runtime. Keep exclusive ownership of attempt contents during the build.
+
+Completed native Bonsai views can also feed the existing company renderer at
+unchanged scale through the [native vector sheet adapter](native-vector-sheets.md).
+Its explicit preflight, self-contained vector boundary and portable request are
+separate from the canonical cut-only `model_views` coordinator. Existing-IFC
+source identity binding is documented in [native Bonsai](native-bonsai.md).

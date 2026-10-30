@@ -137,3 +137,55 @@ def test_large_notes_long_fact_and_supplied_map_preserve_all_sources():
         render_company_sheet_svg(replace(sheet,id=page.id,title=page.title),body_svg=page.body_svg)
     assert any(panel['title'] == 'Location map diagram' for p in plan.pages for panel in p.layout['panels'])
     assert json.dumps(config,sort_keys=True) == raw
+
+
+@pytest.mark.parametrize('kind', ['small','contacts'])
+@pytest.mark.parametrize('change', ['job_title','profile_field','template','logo'])
+def test_cover_rejects_transient_shared_input_changes(kind,change,tmp_path,monkeypatch):
+    from PIL import Image
+    from oabm.drawings import company_sheets as cs
+    config=request(kind)
+    source=tmp_path/'cover.json';source.write_text(json.dumps(config))
+    profile=json.loads(PROFILE.read_bytes());job=json.loads(JOB.read_bytes());job['formats']=['svg']
+    logo=tmp_path/'logo.png'
+    def png(color):
+        stream=io.BytesIO();Image.new('RGB',(8,8),color).save(stream,format='PNG');return stream.getvalue()
+    logo.write_bytes(png('red'));profile['logos']={'icon':logo.name}
+    profile_path=tmp_path/'profile.json';profile_path.write_text(json.dumps(profile))
+    job_path=tmp_path/'job.json';job_path.write_text(json.dumps(job))
+    original=cs.create_company_sheet_set
+    def mutate_then_restore(profile_arg,job_arg,**kwargs):
+        path=logo if change=='logo' else Path(job_arg) if change=='job_title' else profile_path
+        before=path.read_bytes()
+        if change=='logo':path.write_bytes(png('blue'))
+        else:
+            value=json.loads(before)
+            if change=='job_title':value['sheets'][-1]['title']='Changed synthetic title'
+            elif change=='profile_field':value['fields']['company']='Changed synthetic company'
+            else:value['template']['width_mm']+=10
+            path.write_text(json.dumps(value))
+        try:return original(profile_arg,job_arg,**kwargs)
+        finally:path.write_bytes(before)
+    monkeypatch.setattr(cs,'create_company_sheet_set',mutate_then_restore)
+    output=tmp_path/'out'
+    with pytest.raises(ValueError,match='company inputs changed'):
+        create_cover_sheet(source,profile_path=profile_path,job_path=job_path,output_directory=output)
+    assert not (output/'delivery').exists()
+
+
+def test_expanded_cover_uses_original_job_snapshot_before_shared_producer(tmp_path,monkeypatch):
+    from oabm.drawings import cover_sheet as cover
+    config=request('contacts');source=tmp_path/'cover.json';source.write_text(json.dumps(config))
+    job=json.loads(JOB.read_bytes());job['formats']=['svg']
+    job_path=tmp_path/'job.json';original=json.dumps(job).encode();job_path.write_bytes(original)
+    paginate=cover.paginate_cover
+    def mutate_after_pagination(*args,**kwargs):
+        result=paginate(*args,**kwargs)
+        job['sheets'][-1]['title']='Changed synthetic title'
+        job_path.write_text(json.dumps(job))
+        return result
+    monkeypatch.setattr(cover,'paginate_cover',mutate_after_pagination)
+    output=create_cover_sheet(source,profile_path=PROFILE,job_path=job_path,output_directory=tmp_path/'out')
+    assert (output/'cover-source-job.json').read_bytes()==original
+    rows=json.loads((output/'company/delivery/resolved-sheets.json').read_bytes())
+    assert rows[-1]['title']==config['sheets'][-1]['title']

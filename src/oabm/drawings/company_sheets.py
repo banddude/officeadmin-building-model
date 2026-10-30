@@ -566,6 +566,24 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
         raise BlankSheetSetError(attempt,stage,exc) from exc
 
 
+def assert_company_delivery_matches(delivery, resolved, *, job_json=None):
+    """Bind shared output to the caller's detached preflight inputs and assets."""
+    root=Path(delivery)
+    if ((root/'inputs/profile.json').read_bytes()!=resolved.profile_json or
+        (root/'inputs/job.json').read_bytes()!=(resolved.job_json if job_json is None else job_json)):
+        raise ValueError('company inputs changed during sheet production')
+    rows=_decode((root/'resolved-sheets.json').read_bytes())
+    if len(rows)!=len(resolved.sheets):raise ValueError('company inputs changed during sheet production')
+    for sheet,row in zip(resolved.sheets,rows,strict=True):
+        assets={name:f'inputs/assets/{_sha(raw)}.png' for name,raw in sheet.logos}
+        expected={'id':sheet.id,'title':sheet.title,'fields':dict(sheet.fields),
+                  'template':dict(sheet.template),'drawing_bounds_mm':list(sheet.drawing_bounds_mm),'logos':assets}
+        if any(row.get(key)!=value for key,value in expected.items()):
+            raise ValueError('company inputs changed during sheet production')
+        for name,raw in sheet.logos:
+            if (root/assets[name]).read_bytes()!=raw:raise ValueError('company inputs changed during sheet production')
+
+
 def rebuild_company_sheet_set(delivery, *, output_directory):
     """Verify retained receipts and rerun the same composition API portably."""
     root=Path(delivery).resolve()

@@ -67,7 +67,7 @@ def test_dependency_failure_publishes_nothing(config, tmp_path, monkeypatch):
     def fail(*args, **kwargs):
         raise ValueError('PDF dependency unavailable')
     monkeypatch.setitem(sys.modules, 'oabm.drawings.company_sheets', SimpleNamespace(
-        resolve_company_sheet_set=resolve, create_company_sheet_set=fail))
+        resolve_company_sheet_set=resolve, create_company_sheet_set=fail, assert_company_delivery_matches=lambda *a,**k: None))
     with pytest.raises(ValueError, match='PDF dependency'):
         create_cover_sheet(path, profile_path='private-profile', job_path='job', output_directory=tmp_path/'output')
     assert not (tmp_path/'output'/'delivery').exists()
@@ -93,7 +93,7 @@ def test_shared_boundary_order_body_and_atomic_receipts(config, tmp_path, monkey
         (delivery/'shared-sentinel.txt').write_text('Shared layer owns stationery and output ordering')
         return delivery
     monkeypatch.setitem(sys.modules, 'oabm.drawings.company_sheets', SimpleNamespace(
-        resolve_company_sheet_set=resolve, create_company_sheet_set=create))
+        resolve_company_sheet_set=resolve, create_company_sheet_set=create, assert_company_delivery_matches=lambda *a,**k: None))
     outputs = [create_cover_sheet(path, profile_path='profile', job_path='job', output_directory=tmp_path/f'o{i}') for i in range(2)]
     assert calls == [('resolve', 'profile', 'job')] * 2
     assert (outputs[0]/'COVER-MANIFEST.json').read_bytes() == (outputs[1]/'COVER-MANIFEST.json').read_bytes()

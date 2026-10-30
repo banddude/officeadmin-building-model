@@ -150,7 +150,7 @@ def render_native_vector(asset, drawing_bounds_mm):
             if not re.fullmatch(r'[A-Za-z0-9_.:$-]{1,160}',ident) or ident in ids:raise ValueError('unique bounded native IDs required')
             ids[ident]=prefix+ident
     def safe_value(value):
-        if any(c in value for c in ['<','>','\\']):raise ValueError('unsupported native CSS escape/markup')
+        if any(c in value for c in ['<','>','\\',';','{','}','!']):raise ValueError('unsupported native CSS escape/markup/declaration boundary')
         remaining=_URL.sub('',value)
         if re.search(r'url\s*\(|expression\s*\(|var\s*\(',remaining,re.I):raise ValueError('external/active native CSS refused')
         for match in _URL.finditer(value):

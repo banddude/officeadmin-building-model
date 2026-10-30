@@ -92,6 +92,8 @@ def test_native_receipts_bounds_and_scale_fail_before_attempt(tmp_path):
     (b'font-size:3px',b'font-size:2em'),
     (b'<text x="5"',b'<text font-size="2em" x="5"'),
     (b'font-family: DejaVu Sans',b'font-family: inherit'),
+    (b'<g class="geometry"',b'<g fill="red;opacity:0" class="geometry"'),
+    (b'<g class="geometry"',b'<g fill="red!important" class="geometry"'),
 ])
 def test_transformed_viewports_and_relative_font_cascades_refuse(tmp_path,old,new):
     source=native(tmp_path,SVG.replace(old,new))

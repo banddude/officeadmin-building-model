@@ -386,7 +386,25 @@ def create_detail_sheet_set(model_path, details_path, profile_path, job_path, *,
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".detail-stage-", dir=destination.parent) as staging:
         package = Path(staging) / "package"
-        create_company_sheet_set(profile_path, job_path, output_directory=package, bodies=bodies)
+        shared = create_company_sheet_set(profile_path, job_path, output_directory=package, bodies=bodies)
+        # Compare the producer's actual snapshots, not a later reread of mutable
+        # paths: inputs can change and then be restored while rendering runs.
+        rows = json.loads((shared / 'resolved-sheets.json').read_bytes())
+        expected_rows = []
+        for sheet in resolved.sheets:
+            assets = {name: f'inputs/assets/{hashlib.sha256(raw).hexdigest()}.png'
+                      for name, raw in sheet.logos}
+            expected_rows.append({'images': [], 'id': sheet.id, 'title': sheet.title,
+                                  'fields': dict(sheet.fields), 'template': dict(sheet.template),
+                                  'drawing_bounds_mm': list(sheet.drawing_bounds_mm),
+                                  'logos': assets, 'has_body': True})
+        if ((shared / 'inputs/profile.json').read_bytes() != resolved.profile_json or
+            (shared / 'inputs/job.json').read_bytes() != resolved.job_json or rows != expected_rows):
+            raise ValueError('company inputs changed during detail sheet production')
+        for sheet, row in zip(resolved.sheets, rows, strict=True):
+            for name, raw in sheet.logos:
+                if (shared / row['logos'][name]).read_bytes() != raw:
+                    raise ValueError('company inputs changed during detail sheet production')
         retained = {"detail-model.json": model_bytes,
                     "detail-request.json": request_bytes}
         for name, data in retained.items():

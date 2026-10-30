@@ -124,6 +124,52 @@ def test_real_shared_pipeline_and_no_partial_package(tmp_path, monkeypatch, shee
     assert not list(tmp_path.glob('.detail-stage-*'))
 
 
+@pytest.mark.parametrize('change', ['job_title', 'profile_field', 'template', 'logo'])
+def test_detail_rejects_transient_shared_input_changes(tmp_path, monkeypatch, change):
+    import io
+    import json
+    from pathlib import Path
+    from PIL import Image
+    from oabm.drawings import company_sheets as shared
+    from oabm.drawings.details import create_detail_sheet_set
+
+    root=Path(__file__).resolve().parents[1]/'fixtures'/'detail_sheets'
+    profile=json.loads((root/'profile.json').read_text())
+    job=json.loads((root/'job.json').read_text())
+    job['formats']=['svg']
+    logo=tmp_path/'synthetic-logo.png'
+    def png(color):
+        stream=io.BytesIO()
+        Image.new('RGB',(8,8),color).save(stream,format='PNG')
+        return stream.getvalue()
+    logo.write_bytes(png('red'))
+    profile['logos']={'icon':logo.name}
+    profile_path=tmp_path/'profile.json';profile_path.write_text(json.dumps(profile))
+    job_path=tmp_path/'job.json';job_path.write_text(json.dumps(job))
+    original=shared.create_company_sheet_set
+    def mutate_then_restore(*args, **kwargs):
+        path=logo if change=='logo' else job_path if change=='job_title' else profile_path
+        before=path.read_bytes()
+        if change=='logo':
+            path.write_bytes(png('blue'))
+        else:
+            data=json.loads(before)
+            if change=='job_title':data['sheets'][0]['title']='Changed synthetic title'
+            elif change=='profile_field':data['fields']['company']='Changed synthetic company'
+            else:data['template']['width_mm']+=10
+            path.write_text(json.dumps(data))
+        try:
+            return original(*args, **kwargs)
+        finally:
+            path.write_bytes(before)
+    monkeypatch.setattr(shared,'create_company_sheet_set',mutate_then_restore)
+    output=tmp_path/'result'
+    with pytest.raises(ValueError,match='company inputs changed'):
+        create_detail_sheet_set(root/'model.json',root/'details.json',profile_path,job_path,output_directory=output)
+    assert not output.exists()
+    assert not list(tmp_path.glob('.detail-stage-*'))
+
+
 def test_wide_ascii_note_refused_by_measured_width():
     from oabm.drawings.company_sheets import measure_sheet_text
     note='W'*230

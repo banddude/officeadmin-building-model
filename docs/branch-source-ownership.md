@@ -39,6 +39,11 @@ semantics if the content uses nonzero text rendering modes, extended graphics
 states, clipping or unsupported non-black text paint. It does not assume that
 extracted text was visibly painted, nor try to infer visibility after clipping
 or transparency. Delayed text callbacks cannot reset a hidden run into evidence.
+Nontrivial CropBox visibility, optional-content catalogs, marked-content groups
+and XObjects with optional-content membership also refuse the initial producer.
+An explicit CropBox equal to MediaBox remains supported. This is conservative
+evidence refusal, not a PDF rendering implementation; the legacy displayed frame
+and unrelated recognition behavior are unchanged.
 
 These bounded dimensions locate a legend row; they do not classify branch runs
 by their shape, length, junction degree or vector count. The electrical meaning
@@ -64,6 +69,11 @@ or architectural strokes reject the whole component; unknown strokes are never
 trimmed out. Candidate/device/annotation IDs propagate this refusal through
 homerun, direct-tag, named-text and topology paths, including unarrowed runs.
 The existing positive architecture-conflict and enclosure guards still apply.
+Cycle/enclosure and wall vetoes run in component preflight before every
+materializer. A loop assembled from separate source-owned open strokes is still
+rejected; electrical style ownership does not override geometry safety. Strict
+rejection propagates vector, affected-load and nearby annotation identities so
+a later direct tag cannot rescue a rejected homerun or unarrowed component.
 
 `branch_ownership_checks` retains full candidate/source IDs and per-stroke
 claims. `branch_ownership_unresolved` explains ownership misses. The geometry

@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, FloatObject, NameObject
+from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, RectangleObject, TextStringObject
 
 from test_pdf_branch_geometry import sheet, inputs
 from oabm.importers.pdf_electrical import ElectricalPdfImporter
@@ -251,3 +251,59 @@ def test_ownership_coverage_uses_selected_original_pages(tmp_path):
         excluded_page_reasons={2: 'independent duplicate excluded by caller'})
     assert len(model.circuits) == 1
     assert {row['page'] for row in model.attributes['pdf_electrical']['branch_ownership_checks']} == {1}
+
+
+@pytest.mark.parametrize('pathway', ['homerun', 'direct_tag', 'named_text', 'unarrowed'])
+def test_enclosure_of_separate_owned_strokes_cannot_be_rescued(tmp_path, pathway):
+    path = sheet(tmp_path/'open-stroke-enclosure.pdf', length=80, extra=(*LEGEND,
+        '460 350 m 540 350 l S', '540 350 m 500 440 l S', '500 440 m 460 350 l S'))
+    if pathway == 'direct_tag':
+        rewrite(path, b'510 352 Td (LP-1)', b'425 358 Td (LP-1)')
+    elif pathway == 'named_text':
+        rewrite(path, b'(LP-1)', b'(PANEL LP CIRCUIT 1 EVSE-1)')
+    elif pathway == 'unarrowed':
+        rewrite(path, b'494 346 m 500 350 l 494 354 l S', b'')
+        rewrite(path, b'510 352 Td (LP-1)', b'425 358 Td (LP-1)')
+    doc, arch, walls, _, _ = inputs(path)
+    assert not walls.chains, 'the triangle must not rely on wall classification'
+    model = ElectricalPdfImporter().import_document(doc, wall_evidence=walls, architecture_document=arch)
+    assert not model.circuits and not model.ports
+    assert any(row.get('reason_code') == 'branch_run_not_isolated'
+               for row in model.attributes['pdf_electrical']['unresolved_circuits'])
+
+
+@pytest.mark.parametrize('visibility', ['cropped', 'optional_off', 'equal_crop'])
+def test_crop_and_optional_content_visibility_boundaries(tmp_path, visibility):
+    path = sheet(tmp_path/'visibility.pdf', length=80, extra=LEGEND)
+    reader = PdfReader(path)
+    writer = PdfWriter()
+    page = writer.add_page(reader.pages[0])
+    if visibility in ('cropped', 'equal_crop'):
+        page[NameObject('/CropBox')] = RectangleObject([0, 0, 800,
+            630 if visibility == 'cropped' else 700])
+    else:
+        group = writer._add_object(DictionaryObject({NameObject('/Type'): NameObject('/OCG'),
+            NameObject('/Name'): TextStringObject('Synthetic hidden legend')}))
+        page['/Resources'][NameObject('/Properties')] = DictionaryObject({NameObject('/HiddenLegend'): group})
+        writer._root_object[NameObject('/OCProperties')] = DictionaryObject({
+            NameObject('/OCGs'): ArrayObject([group]),
+            NameObject('/D'): DictionaryObject({NameObject('/OFF'): ArrayObject([group])})})
+        stream = DecodedStreamObject()
+        content = page.get_contents().get_data()
+        start = b'BT /F1 8 Tf 20 675 Td (LINE LEGEND) Tj ET'
+        end = b'BT /F1 8 Tf 90 650 Td (ELECTRICAL BRANCH WIRING) Tj ET'
+        assert start in content and end in content
+        stream.set_data(content.replace(start, b'/OC /HiddenLegend BDC ' + start)
+                        .replace(end, end + b' EMC'))
+        page[NameObject('/Contents')] = writer._add_object(stream)
+    writer.write(path)
+    doc, arch, walls, _, _ = inputs(path)
+    legacy = ElectricalPdfImporter().import_document(doc)
+    assert legacy.circuits and legacy.ports  # Evidence policy is strict-path only.
+    model = ElectricalPdfImporter().import_document(doc, wall_evidence=walls, architecture_document=arch)
+    if visibility == 'equal_crop':
+        assert len(model.circuits) == 1 and len(model.ports) == 2
+    else:
+        assert not model.circuits and not model.ports
+        assert any(row.get('reason_code') == 'branch_ownership_unresolved'
+                   for row in model.attributes['pdf_electrical']['unresolved_circuits'])

@@ -1105,7 +1105,8 @@ def _make_page_visitors(
         # pypdf's delayed text callbacks attributing a hidden run to a later Tr.
         if branch_text_visibility is not None and (
             (operator == b"Tr" and (not operands or operands[0] != 0))
-            or operator in {b"gs", b"W", b"W*", b"cs", b"sc", b"scn", b"rg", b"k"}
+            or operator in {b"gs", b"W", b"W*", b"cs", b"sc", b"scn", b"rg", b"k",
+                            b"BDC", b"BMC", b"EMC"}
             or (operator == b"g" and (not operands or operands[0] != 0))
         ):
             branch_text_visibility["branch_legend_text_visibility"] = "unsupported"
@@ -1193,6 +1194,12 @@ def _make_page_visitors(
             return
 
         if operator == b"Do":
+            if branch_text_visibility is not None and operands:
+                resources = _resolved_pdf_object(resource_stack[-1])
+                objects = _resolved_pdf_object(resources.get("/XObject")) if isinstance(resources, Mapping) else None
+                obj = _resolved_pdf_object(objects.get(str(operands[0]))) if isinstance(objects, Mapping) else None
+                if isinstance(obj, Mapping) and obj.get("/OC") is not None:
+                    branch_text_visibility["optional_content"] = "unsupported"
             form_resources = (
                 _form_xobject_resources(resource_stack[-1], str(operands[0]))
                 if operands
@@ -1432,6 +1439,16 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
 
         page_text_start = len(texts)
         branch_text_visibility = {}
+        # Display normalization remains MediaBox-based for legacy recognition.
+        # The strict evidence producer cannot certify cropped/optional-content
+        # text without a renderer, so retain an explicit unsupported source fact.
+        try:
+            if tuple(float(v) for v in page.cropbox) != tuple(float(v) for v in page.mediabox):
+                branch_text_visibility["crop_visibility"] = "unsupported"
+        except (TypeError, ValueError, KeyError):
+            branch_text_visibility["crop_visibility"] = "unsupported"
+        if reader.trailer["/Root"].get("/OCProperties") is not None:
+            branch_text_visibility["optional_content"] = "unsupported"
         visitor_text, visitor_operand_before, visitor_operand_after = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),
@@ -12328,6 +12345,21 @@ class ElectricalPdfImporter:
         branch_claims = {}
         branch_evidence_by_page = {}
         owned_branch_vectors_by_load: dict[str, set[str]] = {}
+        def reject_strict_branch(component):
+            if architecture_document is None or not component:
+                return
+            page = component[0].page
+            rejected_branch_vector_ids.update(v.element_id for v in component)
+            for entity in devices:
+                if entity_source_positions[entity.id][0] == page and min(
+                    _point_path_distance_pt(entity_source_positions[entity.id][1:], v)
+                    for v in component) <= self.topology_endpoint_radius_pt:
+                        rejected_branch_load_ids.add(entity.id)
+            for text in texts:
+                if text.page == page and min(_point_path_distance_pt(
+                    (text.x_pt, text.y_pt), v) for v in component
+                ) <= self.topology_annotation_radius_pt:
+                    rejected_branch_annotation_ids.add(text.element_id)
         if architecture_document is not None:
             from .branch_ownership import source_branch_evidence
             for page in selected_page_numbers:
@@ -12380,24 +12412,43 @@ class ElectricalPdfImporter:
                         "support_ids": list(branch_claims[v.element_id].support_ids),
                         "confidence": branch_claims[v.element_id].confidence}
                         for v in sorted(component, key=lambda v: v.element_id)]}
+                # Ownership is necessary, not sufficient. Run every strict
+                # geometry veto before ANY materializer, including direct tags
+                # on unarrowed components. A later homerun-only continue cannot
+                # revoke memberships already admitted by another path.
+                geometry_reason = None
+                geometry_component = [v for v in component
+                    if v.element_id not in homerun_arrowhead_ids]
+                if not unknown and geometry_component:
+                    enclosing = (touching_unclaimed_closed(geometry_component)
+                        or component_encloses_area(geometry_component))
+                    if enclosing is not None:
+                        geometry_reason = "branch_run_not_isolated"
+                        row["cycle_element_id"] = enclosing.element_id
+                    else:
+                        conflict = _wall_chain_conflict(geometry_component,
+                            wall_chains_by_page.get(page, ()),
+                            own_symbol_outlines=component_own_symbol_outlines(geometry_component),
+                            tolerance_pt=snap_tolerance_pt)
+                        if conflict is not None:
+                            geometry_reason = "enters_classified_wall_chain"
+                            row["wall_chain_id"] = conflict.chain_id
+                    if geometry_reason:
+                        row["status"] = "unresolved"
+                        row["reason_code"] = geometry_reason
                 branch_ownership_diagnostics.append(row)
-                if not unknown:
+                if not unknown and not geometry_reason:
                     for owner_id in attached:
                         owned_branch_vectors_by_load.setdefault(owner_id, set()).update(
                             v.element_id for v in component)
                     continue
-                rejected_branch_vector_ids.update(v.element_id for v in component)
-                rejected_branch_load_ids.update(attached)
-                for text in texts:
-                    if text.page == page and min(_point_path_distance_pt(
-                            (text.x_pt, text.y_pt), v) for v in component
-                    ) <= self.topology_annotation_radius_pt:
-                        rejected_branch_annotation_ids.add(text.element_id)
+                reject_strict_branch(component)
                 if attached:
                     unresolved_circuits.append({**row, "kind": "branch_ownership",
                         "source_element_id": row["source_element_ids"][0],
-                        "reason_code": "branch_ownership_unresolved",
-                        "reason": "whole-component electrical ownership is not established"})
+                        "reason_code": geometry_reason or "branch_ownership_unresolved",
+                        "reason": ("whole-component geometry rejected before materialization"
+                            if geometry_reason else "whole-component electrical ownership is not established")})
         if architecture_document is not None:
             from .branch_geometry import discriminate_branch_geometry
             source_vectors = {vector.element_id: vector for vector in vectors}
@@ -12507,6 +12558,7 @@ class ElectricalPdfImporter:
                 ) <= self.topology_endpoint_radius_pt
             ]
             if not load_entities:
+                reject_strict_branch(component)
                 # An arrowed leader touching no recognized device is a
                 # dimension or annotation leader, not a homerun. #72 names this
                 # case directly, and it is the accurate code for it.
@@ -12527,6 +12579,7 @@ class ElectricalPdfImporter:
                 continue
             enclosing = touching_unclaimed_closed(component) or component_encloses_area(component)
             if enclosing is not None:
+                reject_strict_branch(component)
                 unresolved_circuits.append(
                     {
                         "kind": "homerun",
@@ -12552,6 +12605,7 @@ class ElectricalPdfImporter:
                 tolerance_pt=snap_tolerance_pt,
             )
             if wall_conflict is not None:
+                reject_strict_branch(component)
                 unresolved_circuits.append(
                     {
                         "kind": "homerun",

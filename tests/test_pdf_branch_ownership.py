@@ -6,7 +6,8 @@ from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, BooleanObject, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, NumberObject, RectangleObject, TextStringObject
 
 from test_pdf_branch_geometry import sheet, inputs
-from oabm.importers.pdf_electrical import ElectricalPdfImporter
+from oabm.importers.pdf_electrical import ElectricalPdfImporter, extract_pdf
+from oabm.importers.pdf_wall_evidence import WallEvidenceHandoffError
 from oabm.importers.pdf_electrical.branch_ownership import source_branch_evidence
 from oabm.model import BuildingModel, provenance_applies_to
 
@@ -434,3 +435,30 @@ def test_default_miter_join_bound_cannot_hide_legend_overpaint(tmp_path, overlap
                    for row in model.attributes['pdf_electrical']['unresolved_circuits'])
     else:
         assert len(model.circuits) == 1 and len(model.ports) == 2
+
+
+@pytest.mark.parametrize('path_commands', [
+    '0 670 m 400 670 l h S',
+    '0 670 m 400 670 l s',
+    '0 640 400 0 re S',
+    '20 675 m 20 675 l S',
+    '0 0 10 10 re 300 675 l S',
+])
+def test_painted_subpaths_dropped_by_normalization_refuse_evidence(tmp_path, path_commands):
+    path = sheet(tmp_path/'paint-coverage.pdf', length=80,
+        extra=(*LEGEND, f'q 60 w {path_commands} Q'))
+    document = extract_pdf(path)
+    assert all(claim.classification == 'unresolved'
+               for claim in source_branch_evidence(document, page=1).claims)
+    if path_commands == '0 640 400 0 re S':
+        # Preserve the actual other-lane refusal rather than forge its frame.
+        with pytest.raises(WallEvidenceHandoffError, match='frame_pt'):
+            inputs(path)
+        return
+    assert all(text.branch_legend_paint_supported is False for text in document.texts)
+    doc, arch, walls, _, _ = inputs(path)
+    assert ElectricalPdfImporter().import_document(doc).circuits
+    model = ElectricalPdfImporter().import_document(doc, wall_evidence=walls, architecture_document=arch)
+    assert not model.circuits and not model.ports
+    assert any(row.get('reason_code') == 'branch_ownership_unresolved'
+               for row in model.attributes['pdf_electrical']['unresolved_circuits'])

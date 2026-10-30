@@ -40,6 +40,11 @@ after visiting the complete page. True requires every actual operation to belong
 to the explicit plain page-level stroke/text grammar in `_make_page_visitors`;
 an unknown operator or state leaves the page's evidence unsupported. False and
 missing values mean unproven, not a claim that all page text is invisible.
+Every path paint is accounted for before normalization can drop geometry.
+Unsupported or degenerate painted subpaths without retained conservative bounds
+taint evidence availability for the page. Geometry-only normalization and legacy
+observation IDs remain unchanged; a dropped vector cannot disappear from the
+strict ownership gate.
 
 The admitted text uses standard nonembedded Type1 Helvetica without custom
 encoding, ToUnicode, widths, descriptor or glyph program. Each text object has

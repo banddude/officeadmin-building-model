@@ -1065,7 +1065,9 @@ def _make_page_visitors(
 
     def finish_current() -> None:
         nonlocal current_points, current_curve_commands, current_closed, current_supported
-        if len(current_points) >= 2:
+        # Retain incomplete subpaths until the paint operator. Discarding them
+        # here would hide actual paint coverage from the strict evidence gate.
+        if current_points or not current_supported:
             pending_subpaths.append(
                 (
                     tuple(current_points),
@@ -1093,8 +1095,12 @@ def _make_page_visitors(
         nonlocal pending_subpaths, vector_counter
         finish_current()
         paint_operator = operator.decode("ascii", errors="replace")
+        if not pending_subpaths and branch_text_visibility is not None:
+            branch_text_visibility["unaccounted_path_paint"] = "unsupported"
         for points, closed, supported, curve_commands in pending_subpaths:
             if not supported:
+                if branch_text_visibility is not None:
+                    branch_text_visibility["unaccounted_path_paint"] = "unsupported"
                 continue
             normalized_points: list[tuple[float, float]] = []
             for point in points:
@@ -1109,6 +1115,8 @@ def _make_page_visitors(
                     continue
                 normalized_points.append(point)
             if len(normalized_points) < 2 or (closed and len(normalized_points) < 3):
+                if branch_text_visibility is not None:
+                    branch_text_visibility["unaccounted_path_paint"] = "unsupported"
                 continue
             vector_counter += 1
             metadata: dict[str, Any] = {"paint_operator": paint_operator}
@@ -1343,6 +1351,11 @@ def _make_page_visitors(
                         float(operands[1]),
                     )
                 )
+            elif branch_text_visibility is not None:
+                # For example, PDF permits continuing from a rectangle's
+                # current point, but this observation lane does not retain
+                # that continuation. Do not certify its missing paint bound.
+                branch_text_visibility["unaccounted_path_construction"] = "unsupported"
             return
 
         if operator == b"re" and len(operands) >= 4:

@@ -464,6 +464,15 @@ def render_company_sheet_svg(sheet, *, body_svg=None, images=(), vectors=()):
     return result
 
 
+def _owned_svg_text(node):
+    """Text and direct child tails use this element's effective font.
+
+    A tspan's own text has its own cascade; its tail returns to its parent's
+    cascade, including when that parent has no leading node.text at all.
+    """
+    return (node.text or '')+''.join(child.tail or '' for child in node)
+
+
 def _pdf(sheets, svgs, title):
     cairo,ffi,pypdf=_dependencies()
     writer=pypdf.PdfWriter();writer.add_metadata({'/Title':title,'/Producer':'oabm company sheets'})
@@ -478,7 +487,7 @@ def _pdf(sheets, svgs, title):
         expected_fonts=set()
         for element in ET.fromstring(svg).iter():
             if element.tag not in {f'{{{SVG}}}text',f'{{{SVG}}}tspan'}:continue
-            if (element.text or '').strip():
+            if _owned_svg_text(element).strip():
                 expected_fonts.add(_font(element.get('font-family','Liberation Sans'),int(element.get('font-weight','400')))[3])
         actual_fonts={re.sub(r'^[A-Z]{6}\+','',str(font.get_object()['/BaseFont']).removeprefix('/'))
                       for font in page['/Resources'].get('/Font',{}).values()}
@@ -493,7 +502,7 @@ def _pdf(sheets, svgs, title):
 def _used_font_faces(svgs):
     """Bind only actual rendered-text faces; never probe unrelated aliases."""
     used={(node.get('font-family','Liberation Sans'),int(node.get('font-weight','400')))
-          for svg in svgs for node in ET.fromstring(svg).iter() if node.tag in {f'{{{SVG}}}text',f'{{{SVG}}}tspan'} and node.text}
+          for svg in svgs for node in ET.fromstring(svg).iter() if node.tag in {f'{{{SVG}}}text',f'{{{SVG}}}tspan'} and _owned_svg_text(node).strip()}
     result=[]
     for family,weight in sorted(used):
         font,actual,_,postscript=_font(family,weight)

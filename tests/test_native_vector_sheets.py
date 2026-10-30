@@ -109,3 +109,101 @@ def test_changed_shared_inputs_never_publish_a_completed_native_set(tmp_path,mon
     monkeypatch.setattr(module,'create_company_sheet_set',changed)
     with pytest.raises(ValueError,match='company inputs changed'):module.create_native_sheet_set(request,output_directory=tmp_path/'attempt')
     assert not(tmp_path/'attempt/delivery').exists()
+
+
+@pytest.mark.parametrize('value',['red/*','red*/','red/**/',"'red",'rgb(1,2,3','red[','rgb(1,2,3))'])
+def test_presentation_values_cannot_cross_css_value_boundaries(tmp_path,value):
+    svg=SVG.replace(b'<g class="geometry"',f'<g fill="{value}" class="geometry"'.encode())
+    source=native(tmp_path,svg)
+    with pytest.raises(ValueError,match='CSS'):
+        native_view_asset(source,'plan',origin_mm=(10,20))
+
+
+def test_stylesheet_rule_and_declaration_comments_remain_supported(tmp_path):
+    svg=SVG.replace(b'text {font-family',b'/* synthetic rule comment */ text {/* declaration comment */ font-family')
+    svg=svg.replace(b'font-family: DejaVu Sans',b'font-family: "DejaVu Sans", sans-serif')
+    svg=svg.replace(b'fill:#222222',b'fill:rgb(34,34,34)')
+    source=native(tmp_path,svg)
+    asset=native_view_asset(source,'plan',origin_mm=(10,20))
+    component,_=render_native_vector(asset,(5,5,150,95))
+    assert not list(component.iter('{http://www.w3.org/2000/svg}style'))
+    assert any('NATIVE' in (node.text or '') for node in component.iter())
+
+
+@pytest.mark.parametrize('tail,error',[('&#x202E;HIDDEN','control'),('&#x10FFFD;','glyph')])
+@pytest.mark.parametrize('nested',[False,True])
+def test_mixed_text_tails_use_the_parent_font_and_text_validation(tmp_path,tail,error,nested):
+    content=f'<tspan>OK</tspan>{tail}'
+    if nested:content=f'<tspan>{content}</tspan>'
+    svg=SVG.replace(b'NATIVE <tspan font-weight="700">VIEW</tspan>',content.encode())
+    with pytest.raises(ValueError,match=error):
+        native_view_asset(native(tmp_path,svg),'plan',origin_mm=(10,20))
+
+
+def test_nested_mixed_text_preserves_pixels_and_accounts_for_tail_only_fonts(tmp_path):
+    cairosvg=pytest.importorskip('cairosvg')
+    from oabm.drawings.company_sheets import _used_font_faces
+    content=b'<tspan font-weight="700">OUT<tspan>INNER</tspan>SPAN</tspan>TAIL'
+    svg=SVG.replace(b'NATIVE <tspan font-weight="700">VIEW</tspan>',content)
+    request=prepared(tmp_path,svg)
+    asset=native_view_asset(tmp_path/'native','plan',origin_mm=(10,20))
+    component,receipt=render_native_vector(asset,(5,5,150,95))
+    assert sum(face['owned_text_characters'] for face in receipt['font_faces'])==16
+    assert {face['source_weight'] for face in receipt['font_faces']}=={400,700}
+    assert {(face['svg_family'],face['weight']) for face in _used_font_faces([ET.tostring(component)])}=={
+        (face['resolved_family'],face['resolved_weight']) for face in receipt['font_faces']}
+    delivery=create_native_sheet_set(request,output_directory=tmp_path/'attempt')
+    shared=delivery/'company/delivery'
+    actual_svg=next((shared/'sheets').glob('*.svg')).read_bytes()
+    def rgb(raw):
+        image=Image.open(io.BytesIO(raw)).convert('RGBA');bg=Image.new('RGBA',image.size,'white');bg.alpha_composite(image);return bg.convert('RGB')
+    expected=rgb(cairosvg.svg2png(bytestring=svg,output_width=400,output_height=200))
+    actual=rgb(cairosvg.svg2png(bytestring=actual_svg,output_width=800,output_height=400)).crop((40,80,440,280))
+    assert ImageChops.difference(expected,actual).getbbox() is None
+    manifest=json.loads((shared/'MANIFEST.json').read_text())
+    assert {face['postscript_name'] for face in receipt['font_faces']}<={face['postscript_name'] for face in manifest['font_faces']}
+    assert {face['postscript_name'] for face in receipt['font_faces']}<=set(manifest['pdf']['pages'][0]['embedded_fonts'])
+
+
+def test_shared_font_inventory_includes_tail_only_parent_face():
+    from oabm.drawings.company_sheets import _used_font_faces
+    svg='<svg xmlns="http://www.w3.org/2000/svg"><text font-family="Liberation Sans" font-weight="400"><tspan font-family="DejaVu Sans" font-weight="700">SPAN</tspan>TAIL</text></svg>'
+    assert {(face['svg_family'],face['weight']) for face in _used_font_faces([svg])}=={('Liberation Sans',400),('DejaVu Sans',700)}
+
+
+@pytest.mark.parametrize('tail_in_parent',[False,True])
+def test_tail_coverage_uses_parent_face_instead_of_child_face(tmp_path,monkeypatch,tail_in_parent):
+    from types import SimpleNamespace
+    from oabm.drawings import native_vectors,company_sheets
+    monkeypatch.setattr(native_vectors,'_native_face',lambda family,weight:(family,weight,family))
+    def face(family,weight):
+        characters='OK'+('X' if (family=='Liberation Sans')==tail_in_parent else '')
+        return SimpleNamespace(_oabm_codepoints=set(map(ord,characters))),family,None,family
+    monkeypatch.setattr(company_sheets,'_font',face)
+    content=b'<tspan style="font-family:DejaVu Sans">OK</tspan>X'
+    svg=SVG.replace(b'<text x="5"',b'<text style="font-family:Liberation Sans" x="5"')
+    svg=svg.replace(b'NATIVE <tspan font-weight="700">VIEW</tspan>',content)
+    if tail_in_parent:
+        native_view_asset(native(tmp_path,svg),'plan',origin_mm=(10,20))
+    else:
+        with pytest.raises(ValueError,match='glyph'):
+            native_view_asset(native(tmp_path,svg),'plan',origin_mm=(10,20))
+
+
+def test_implicit_native_text_font_refuses_instead_of_substituting(tmp_path):
+    svg=SVG.replace(b'font-family: DejaVu Sans;',b'')
+    with pytest.raises(ValueError,match='explicit inherited font-family'):
+        native_view_asset(native(tmp_path,svg),'plan',origin_mm=(10,20))
+
+
+@pytest.mark.parametrize('child_only',[False,True])
+def test_explicit_inherited_or_child_only_native_fonts_work(tmp_path,child_only):
+    svg=SVG.replace(b'font-family: DejaVu Sans;',b'')
+    if child_only:
+        svg=svg.replace(b'NATIVE <tspan font-weight="700">VIEW</tspan>',b'<tspan font-family="DejaVu Sans">CHILD</tspan>')
+    else:
+        svg=svg.replace(b'<svg xmlns=',b'<svg font-family="DejaVu Sans" xmlns=')
+    asset=native_view_asset(native(tmp_path,svg),'plan',origin_mm=(10,20))
+    component,receipt=render_native_vector(asset,(5,5,150,95))
+    assert receipt['font_faces']
+    assert receipt['source_guids']==['0CdQj1T1r4oAcDn5L0mPqU']

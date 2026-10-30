@@ -45,6 +45,9 @@ markers/patterns, simple static filters, text and transforms. Scripts, images,
 links, external resources, CSS imports, animation, unknown elements/declarations,
 root viewport transforms and relative/CSS-wide length/font forms refuse. This
 does not relax ordinary shared body validation or enable arbitrary web content.
+Presentation values cannot contain CSS comment boundaries or consume following
+declarations through malformed strings/functions. Ordinary parsed stylesheet
+rule/declaration comments remain supported.
 
 Static source CSS is resolved against the original tree before IDs/classes are
 changed. Per-node styles preserve the cascade and inheritance; IDs and local
@@ -61,6 +64,10 @@ The actual family/weight, glyph coverage and final embedded PDF fonts are
 verified, without downloading or silently replacing fonts. Existing shared
 text-body family limits remain unchanged. Native source styling beyond the
 supported computed-value boundary requires an explicit adapter, not omission.
+Rendered native text requires an explicit inherited source font family; the
+converter's implicit default is not replaced by a company font. Validation and
+font/PDF accounting include nested-span tails in their parent element's face,
+including parents that have no leading text.
 
 The delivery retains native IFC/SVG/resources and immutable inputs under
 `native/`, the shared packet under `company/delivery/`, body inputs, a portable

@@ -102,7 +102,7 @@ def native_view_asset(delivery, view_id, *, origin_mm, asset_id=None):
 
 def render_native_vector(asset, drawing_bounds_mm):
     """Return an isolated vector subtree plus exact source/placement receipts."""
-    from .company_sheets import _font,validate_sheet_text
+    from .company_sheets import _font,validate_sheet_text,_owned_svg_text
     import tinycss2
     import cssselect2
     if not isinstance(asset,NativeViewAsset):raise ValueError('typed NativeViewAsset required')
@@ -150,7 +150,17 @@ def render_native_vector(asset, drawing_bounds_mm):
             if not re.fullmatch(r'[A-Za-z0-9_.:$-]{1,160}',ident) or ident in ids:raise ValueError('unique bounded native IDs required')
             ids[ident]=prefix+ident
     def safe_value(value):
-        if any(c in value for c in ['<','>','\\',';','{','}','!']):raise ValueError('unsupported native CSS escape/markup/declaration boundary')
+        if any(c in value for c in ['<','>','\\',';','{','}','!','/*','*/']):raise ValueError('unsupported native CSS escape/markup/declaration boundary/comment')
+        # Standalone CSS parsing can auto-close a function/string that would
+        # swallow later declarations when embedded. Check the actual boundary
+        # and nested lexical errors before interpolating any source value.
+        parsed=tinycss2.parse_declaration_list('oabm-value:'+value+';oabm-boundary:ok',skip_comments=False,skip_whitespace=True)
+        def errors(tokens):
+            return any(token.type=='error' or errors(getattr(token,'content',())) or errors(getattr(token,'arguments',())) for token in tokens)
+        if (len(parsed)!=2 or any(token.type!='declaration' for token in parsed)
+                or parsed[0].lower_name!='oabm-value' or parsed[1].lower_name!='oabm-boundary'
+                or tinycss2.serialize(parsed[1].value)!='ok' or errors(parsed[0].value)):
+            raise ValueError('unsupported native CSS value/declaration boundary')
         remaining=_URL.sub('',value)
         if re.search(r'url\s*\(|expression\s*\(|var\s*\(',remaining,re.I):raise ValueError('external/active native CSS refused')
         for match in _URL.finditer(value):
@@ -210,18 +220,22 @@ def render_native_vector(asset, drawing_bounds_mm):
         for key in list(node.attrib):
             if key in _STYLE or key in {'style','class'}:node.attrib.pop(key)
         if tag in {'text','tspan'}:
-            families=final.get('font-family','Liberation Sans')
-            # Fontconfig resolves the supplied fallback list on this host; record
-            # the actual readable face just as the shared title rail does.
-            weight=final.get('font-weight','400');weight={'normal':'400','bold':'700'}.get(weight,weight)
-            if not weight.isdigit() or int(weight) not in {300,400,500,600,700}:raise ValueError('unsupported native text weight')
-            if final.get('font-style','normal')!='normal':raise ValueError('native italic font needs an explicit face adapter')
-            actual,actual_weight,postscript=_native_face(families,int(weight))
-            font,actual,_,_=_font(actual,actual_weight);value=validate_sheet_text(node.text or '')
-            if any(ord(char) not in font._oabm_codepoints for char in value):raise ValueError('native text glyph absent from resolved source face')
-            font_faces.append({'source_family':families,'source_weight':int(weight),'resolved_family':actual,'resolved_weight':actual_weight,'postscript_name':postscript})
-            final['font-family']=actual;final['font-weight']=str(actual_weight)
-            node.set('font-family',actual);node.set('font-weight',str(actual_weight))
+            value=validate_sheet_text(_owned_svg_text(node))
+            families=final.get('font-family')
+            if not families and value.strip():
+                raise ValueError('native rendered text requires explicit inherited font-family')
+            if families:
+                # Bind the original converter's face, including all text owned
+                # by this element after any child span's closing tag.
+                weight=final.get('font-weight','400');weight={'normal':'400','bold':'700'}.get(weight,weight)
+                if not weight.isdigit() or int(weight) not in {300,400,500,600,700}:raise ValueError('unsupported native text weight')
+                if final.get('font-style','normal')!='normal':raise ValueError('native italic font needs an explicit face adapter')
+                actual,actual_weight,postscript=_native_face(families,int(weight))
+                font,actual,_,_=_font(actual,actual_weight)
+                if any(ord(char) not in font._oabm_codepoints for char in value):raise ValueError('native text glyph absent from resolved source face')
+                if value.strip():font_faces.append({'source_family':families,'source_weight':int(weight),'resolved_family':actual,'resolved_weight':actual_weight,'postscript_name':postscript,'owned_text_sha256':_digest(value.encode()),'owned_text_characters':len(value)})
+                final['font-family']=actual;final['font-weight']=str(actual_weight)
+                node.set('font-family',actual);node.set('font-weight',str(actual_weight))
         if final:node.set('style',';'.join(k+':'+safe_value(v) for k,v in sorted(final.items())))
         if 'id' in node.attrib:node.set('id',ids[node.get('id')])
         guid=node.get('{http://www.ifcopenshell.org/ns}guid')

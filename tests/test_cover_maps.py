@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 from PIL import Image
 import pytest
@@ -23,6 +24,23 @@ class Client:
 
 NOW=datetime(2026,1,1,tzinfo=timezone.utc)
 ADDRESS='123 Example Street, Test City 99999'
+
+def test_cache_returns_the_same_bytes_that_were_verified(tmp_path, monkeypatch):
+    original=acquire_cover_map(ADDRESS,cache_directory=tmp_path,client=Client(),now=NOW)
+    read_bytes=Path.read_bytes
+    reads=[]
+    def changing_read(path):
+        if path.suffix == '.png':
+            reads.append(path)
+            if len(reads)>1:
+                return b'changed after validation'
+        return read_bytes(path)
+    monkeypatch.setattr(Path, 'read_bytes', changing_read)
+    cached=acquire_cover_map(ADDRESS,cache_directory=tmp_path,now=NOW,offline=True)
+    assert len(reads)==1
+    assert cached.png_bytes==original.png_bytes
+    assert hashlib.sha256(cached.png_bytes).hexdigest()==cached.sha256
+
 def test_verified_cache_roundtrip_and_traversal_refusal(tmp_path):
     client=Client(); a=acquire_cover_map(ADDRESS,cache_directory=tmp_path,client=client,now=NOW)
     assert a.sha256==hashlib.sha256(a.png_bytes).hexdigest()

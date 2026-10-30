@@ -222,9 +222,10 @@ def acquire_cover_map(address,*,cache_directory,client=None,candidate_index=None
                 raise MapAmbiguityError(_choices(query,[cached_candidate]))
             if _utc(provenance['fetched_at'])>now or _utc(record['expires_at'])-_utc(provenance['fetched_at'])>timedelta(days=1):
                 raise MapAcquisitionError('invalid cached map validity interval')
-            digest,w,h=validate_png(png.read_bytes(),record['sha256'])
+            data=png.read_bytes()
+            digest,w,h=validate_png(data,record['sha256'])
             if _utc(record['expires_at'])>now:
-                return CoverMapSnapshot(png.read_bytes(),digest,w,h,ATTRIBUTION,dict(record['provenance']))
+                return CoverMapSnapshot(data,digest,w,h,ATTRIBUTION,dict(record['provenance']))
         except (OSError,KeyError,TypeError,json.JSONDecodeError) as exc:
             raise MapAcquisitionError('cached map is incomplete or malformed') from exc
     if offline:raise MapAcquisitionError('no fresh verified Apple map in the supplied private cache')

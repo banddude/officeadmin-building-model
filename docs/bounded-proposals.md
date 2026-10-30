@@ -4,8 +4,8 @@
 `rank_equipment_placement_candidates`. It ranks supplied references to candidates
 from the existing `propose_equipment_placement` producer. It does not recognize
 new objects, change producer behavior, apply equipment, design circuits, call
-providers or mutate a canonical model. This implements the bounded child #286;
-#98 remains open for production adapters, integration and end-to-end acceptance.
+providers or mutate a canonical model. This implements the bounded child #286
+and the narrow proposal boundary described in #98.
 The preserved `spike/98-bounded-image-registration` experiment remains separate.
 
 ## Source and proposal contracts
@@ -129,6 +129,22 @@ assert result.accepted is False
 
 A deterministic semantic scorer can replace a fake or future model adapter by
 returning the identical ranking schema. No canonical rewrite is needed.
+The portable handoff retains source-observed and user-supplied provenance on
+their original source owners, separately from the ranking's inferred
+`ai-proposed` provenance. The synthetic handoff test exercises this separation
+after serialization and validates the result against the current model.
 Registered geometry and known producer checks remain authoritative. This child
 provides no physical placement application, service/capacity verification,
 engineering approval, live OA operation or delivered customer document.
+
+## Issue #98 acceptance evidence
+
+The bounded placement task supplies the architecture and adapter boundary above.
+`tests/test_bounded_proposals.py` exercises the actual candidate producer,
+structured text baseline and availability fallback, physical clearance rejection,
+measured synthetic vision gate, explicit diagnostic isolation, portable source
+and proposal provenance, and an interchangeable deterministic scorer. It also
+checks that adapter mutation cannot change the request and that default consumers
+remain unchanged. These tests use synthetic data and fake adapters; they do not
+measure remote model capability. The broader electrical design, real-project and
+OfficeAdmin integration gates remain separate from this architecture acceptance.

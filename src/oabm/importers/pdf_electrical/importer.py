@@ -66,6 +66,7 @@ class PdfTextObservation:
     x_pt: float
     y_pt: float
     font_size_pt: float | None = None
+    branch_legend_paint_supported: bool | None = None
 
     def __post_init__(self) -> None:
         _validate_source_observation(self.element_id, self.page, self.x_pt, self.y_pt)
@@ -166,6 +167,7 @@ class PdfElectricalDocument:
                 font_size_pt=(
                     None if item.get("font_size_pt") is None else float(item["font_size_pt"])
                 ),
+                branch_legend_paint_supported=item.get("branch_legend_paint_supported"),
             )
             for item in data.get("texts", ())
         )
@@ -918,6 +920,7 @@ def _make_page_visitors(
     symbols: list[PdfSymbolObservation],
     vectors: list[PdfVectorPathObservation],
     resources: Any = None,
+    branch_text_visibility: dict | None = None,
 ):
     text_counter = 0
     operator_counter = 0
@@ -1095,6 +1098,17 @@ def _make_page_visitors(
         nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
         nonlocal paint_state
         operator_counter += 1
+
+        # Text extraction is not paint visibility. The bounded legend producer
+        # refuses this entire page's text semantics if any unsupported paint or
+        # clipping convention occurs. This conservative page-level taint avoids
+        # pypdf's delayed text callbacks attributing a hidden run to a later Tr.
+        if branch_text_visibility is not None and (
+            (operator == b"Tr" and (not operands or operands[0] != 0))
+            or operator in {b"gs", b"W", b"W*", b"cs", b"sc", b"scn", b"rg", b"k"}
+            or (operator == b"g" and (not operands or operands[0] != 0))
+        ):
+            branch_text_visibility["branch_legend_text_visibility"] = "unsupported"
 
         if operator == b"q":
             state_stack.append(paint_state)
@@ -1416,6 +1430,8 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                         if str(xobject.get("/Subtype")) == "/Form":
                             form_names.add(str(raw_name))
 
+        page_text_start = len(texts)
+        branch_text_visibility = {}
         visitor_text, visitor_operand_before, visitor_operand_after = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),
@@ -1424,6 +1440,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             symbols=symbols,
             vectors=vectors,
             resources=resources,
+            branch_text_visibility=branch_text_visibility,
         )
 
         temporary_font_resource = False
@@ -1450,6 +1467,10 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
         finally:
             if temporary_font_resource:
                 resources.pop(NameObject("/Font"), None)
+
+        texts[page_text_start:] = [replace(text,
+            branch_legend_paint_supported=not bool(branch_text_visibility))
+            for text in texts[page_text_start:]]
 
         annotations = page.get("/Annots") or ()
         for annotation_index, annotation_ref in enumerate(annotations, start=1):
@@ -12306,6 +12327,7 @@ class ElectricalPdfImporter:
         branch_ownership_diagnostics: list[dict[str, Any]] = []
         branch_claims = {}
         branch_evidence_by_page = {}
+        owned_branch_vectors_by_load: dict[str, set[str]] = {}
         if architecture_document is not None:
             from .branch_ownership import source_branch_evidence
             for page in selected_page_numbers:
@@ -12314,19 +12336,26 @@ class ElectricalPdfImporter:
                 branch_claims.update((claim.vector_id, claim) for claim in evidence.claims)
             # Evaluate complete components before ANY membership sink. This
             # includes unarrowed paths used by direct-tag and topology passes.
-            roots = list(range(len(circuit_vectors)))
+            # Coverage is broader than the paths a materializer understands.
+            # Curves and unclaimed closed paths must not vanish from the
+            # ownership boundary while the residual straight run is certified.
+            ownership_vectors = [v for v in vectors
+                if v.page in selected_page_set
+                and v.element_id not in vector_symbol_ids
+                and v.element_id not in glyph_vector_ids]
+            roots = list(range(len(ownership_vectors)))
             def branch_root(index):
                 while roots[index] != index:
                     roots[index] = roots[roots[index]]
                     index = roots[index]
                 return index
-            for left, right in _topology_candidate_pairs(circuit_vectors, snap_tolerance_pt):
-                if _paths_cross_or_touch(circuit_vectors[left], circuit_vectors[right],
+            for left, right in _topology_candidate_pairs(ownership_vectors, snap_tolerance_pt):
+                if _paths_cross_or_touch(ownership_vectors[left], ownership_vectors[right],
                                          tolerance_pt=snap_tolerance_pt):
                     a, b = branch_root(left), branch_root(right)
                     roots[max(a, b)] = min(a, b)
             ownership_components = {}
-            for index, vector in enumerate(circuit_vectors):
+            for index, vector in enumerate(ownership_vectors):
                 ownership_components.setdefault(branch_root(index), []).append(vector)
             for component in ownership_components.values():
                 page = component[0].page
@@ -12353,6 +12382,9 @@ class ElectricalPdfImporter:
                         for v in sorted(component, key=lambda v: v.element_id)]}
                 branch_ownership_diagnostics.append(row)
                 if not unknown:
+                    for owner_id in attached:
+                        owned_branch_vectors_by_load.setdefault(owner_id, set()).update(
+                            v.element_id for v in component)
                     continue
                 rejected_branch_vector_ids.update(v.element_id for v in component)
                 rejected_branch_load_ids.update(attached)
@@ -13604,19 +13636,38 @@ class ElectricalPdfImporter:
                     # An observed printed number does not observe synthesized
                     # ports or the geometrically associated membership set.
                     if record.method != "pdf-vector-topology-link":
-                        scoped.append(replace(record, scope_paths=("circuit_number",)))
+                        facts = ["circuit_number"] if bucket["circuit_number"] is not None else []
+                        text = str(record.attributes.get("source_text", ""))
+                        observed_voltage, _ = _extract_voltage((text,))
+                        observed_poles = _POLES_RE.search(text)
+                        observed_phase = _PHASE_RE.search(text)
+                        if voltage_v is not None and observed_voltage == voltage_v:
+                            facts.append("voltage_v")
+                        if poles is not None and observed_poles and int(observed_poles.group("poles")) == poles:
+                            facts.append("poles")
+                        if phase is not None and observed_phase and f"{observed_phase.group('phase')}ph" == phase:
+                            facts.append("phase")
+                        if facts:
+                            scoped.append(replace(record, scope_paths=tuple(facts)))
                     scoped.append(replace(record, derivation=DERIVATION_INFERRED,
                         scope_paths=("source_port_id", "load_port_ids")))
-                    for key in record.attributes.get("branch_vector_element_ids", ()):
-                        claim = branch_claims.get(key)
-                        if claim is not None and claim.classification == "electrical":
-                            scoped.append(replace(record, source_element_id=key,
-                                method="pdf-source-legend-branch-membership",
-                                derivation=DERIVATION_INFERRED,
-                                scope_paths=("load_port_ids",),
-                                confidence=min(record.confidence, claim.confidence),
-                                attributes={"support_element_ids": list(claim.support_ids),
-                                    "producer": "pdf_electrical.source_branch_evidence", "version": "1"}))
+                # All admission paths consume the same actual ownership map.
+                # Do not rely on homerun-only attributes to retain that evidence.
+                owners = {port.id: port.owner_id for port in ports_by_owner_role.values()}
+                support_vectors = {key for port_id in bucket["load_port_ids"]
+                    for key in owned_branch_vectors_by_load.get(owners[port_id], ())}
+                source_vectors = {v.element_id: v for v in vectors}
+                for key in sorted(support_vectors):
+                    claim = branch_claims[key]
+                    vector = source_vectors[key]
+                    scoped.append(replace(_provenance(document, element_id=key,
+                        page=vector.page, source_kind=vector.source_kind,
+                        method="pdf-source-legend-branch-membership",
+                        derivation=DERIVATION_INFERRED,
+                        confidence=min(claim.confidence, *(r.confidence for r in circuit_provenance)),
+                        attributes={"support_element_ids": list(claim.support_ids),
+                            "producer": "pdf_electrical.source_branch_evidence", "version": "1"}),
+                        scope_paths=("load_port_ids",)))
                 circuit_provenance = _merge_provenance(scoped)
             circuits.append(
                 Circuit(

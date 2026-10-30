@@ -4,6 +4,7 @@ Only explicit legend-row labels and their unique sample can establish semantics.
 Unsupported paint, ambiguous rows and missing source signals remain unresolved.
 """
 import re
+import math
 
 from ..pdf_branch_evidence import BranchStrokeClaim, SourceBranchEvidence
 from .schedule_review import schedule_source_fingerprint
@@ -16,7 +17,7 @@ _LABELS = {
 
 def _style(vector):
     metadata = vector.metadata
-    if (vector.closed or len(vector.points_pt) != 2
+    if (vector.closed or vector.metadata.get("curve_commands")
             or metadata.get("paint_operator") != "S"
             or metadata.get("branch_style_supported") is not True):
         return None
@@ -40,8 +41,18 @@ def source_branch_evidence(document, *, page):
         raise ValueError("branch ownership requires actual displayed page frame")
     frame = (0., 0., float(display["displayed_page_width_pt"]),
              float(display["displayed_page_height_pt"]))
-    if not 1 <= page <= document.page_count or frame[2] <= 0 or frame[3] <= 0:
+    if (type(page) is not int or not 1 <= page <= document.page_count
+            or any(not math.isfinite(value) for value in frame)
+            or frame[2] <= 0 or frame[3] <= 0):
         raise ValueError("branch ownership requires a valid displayed page")
+    def in_frame(points):
+        return all(0 <= x <= frame[2] and 0 <= y <= frame[3] for x, y in points)
+    def supported_text(text):
+        size = text.font_size_pt
+        return (text.branch_legend_paint_supported is True
+            and size is not None and math.isfinite(size) and size > 0
+            and in_frame(((text.x_pt, text.y_pt),
+                (text.x_pt + len(text.text) * size, text.y_pt + size))))
     vectors = tuple(v for v in document.vectors if v.page == page)
     if len({v.element_id for v in vectors}) != len(vectors):
         raise ValueError("duplicate branch source observations")
@@ -50,17 +61,19 @@ def source_branch_evidence(document, *, page):
     rows = []
     for text in document.texts:
         classification = _LABELS.get(text.text.upper())
-        if text.page != page or classification is None:
+        if text.page != page or classification is None or not supported_text(text):
             continue
         headings = [item for item in document.texts if item.page == page
             and item.text.upper() == "LINE LEGEND"
+            and supported_text(item)
             and 0 < item.y_pt - text.y_pt <= 120
             and abs(item.x_pt - text.x_pt) <= 80]
         if len(headings) != 1:
             continue
         candidates = []
         for vector in vectors:
-            if _style(vector) is None:
+            if (_style(vector) is None or len(vector.points_pt) != 2
+                    or not in_frame(vector.points_pt)):
                 continue
             (x0, y0), (x1, y1) = sorted(vector.points_pt)
             # A bounded legend row, not a clearance over the page. The line is
@@ -74,7 +87,8 @@ def source_branch_evidence(document, *, page):
                          (headings[0].element_id, text.element_id, sample.element_id)))
     claims = []
     for vector in sorted(vectors, key=lambda v: v.element_id):
-        matching = [row for row in rows if row[0] == _style(vector)]
+        matching = [row for row in rows if row[0] == _style(vector)
+                    and in_frame(vector.points_pt)]
         meanings = {row[1] for row in matching}
         classification = (next(iter(meanings)) if len(meanings) == 1 else
                           "conflicting" if meanings else "unresolved")

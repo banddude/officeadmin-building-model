@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DecodedStreamObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, FloatObject, NameObject
 
 from test_pdf_branch_geometry import sheet, inputs
 from oabm.importers.pdf_electrical import ElectricalPdfImporter
@@ -151,3 +151,103 @@ def test_evidence_requires_actual_source_replay(tmp_path, change):
         evidence = replace(evidence, claims=(replace(evidence.claims[0], classification='electrical'),))
     with pytest.raises(ValueError):
         evidence.validate(doc)
+
+
+@pytest.mark.parametrize('mark', [
+    '460 350 m 470 330 480 300 490 250 c S',
+    '460 350 80 90 re S',
+    'q 2 w 460 350 m 466 354 l 460 358 l S Q',
+])
+@pytest.mark.parametrize('direct_tag', [False, True])
+def test_unknown_curve_or_closed_path_refuses_complete_run(tmp_path, mark, direct_tag):
+    path = sheet(tmp_path/'unknown-mark.pdf', length=80, extra=(*LEGEND, mark))
+    if direct_tag:
+        rewrite(path, b'510 352 Td (LP-1)', b'425 358 Td (LP-1)')
+    doc, model = run(path)
+    assert any(v.closed or v.metadata.get('curve_commands') for v in doc.vectors)
+    assert not model.circuits and not model.ports
+    assert any(r.get('reason_code') == 'branch_ownership_unresolved'
+               for r in model.attributes['pdf_electrical']['unresolved_circuits'])
+
+
+@pytest.mark.parametrize('mode', ['hidden', 'hidden_reset_before_ET', 'off_page', 'white', 'alpha', 'clip'])
+def test_unpainted_or_out_of_frame_legend_cannot_supply_ownership(tmp_path, mode):
+    path = sheet(tmp_path/'invisible-legend.pdf', length=80, extra=LEGEND)
+    if mode in ('hidden', 'hidden_reset_before_ET', 'white'):
+        for text in (b'(LINE LEGEND)', b'(ELECTRICAL BRANCH WIRING)'):
+            if mode == 'hidden_reset_before_ET':
+                rewrite(path, text + b' Tj ET', b'3 Tr ' + text + b' Tj 0 Tr ET')
+            else:
+                prefix, suffix = (b'3 Tr ', b' 0 Tr') if mode == 'hidden' else (b'1 g ', b' 0 g')
+                rewrite(path, text + b' Tj ET', prefix + text + b' Tj ET' + suffix)
+    elif mode == 'off_page':
+        rewrite(path, b'675 Td (LINE LEGEND)', b'750 Td (LINE LEGEND)')
+        rewrite(path, b'650 Td (ELECTRICAL', b'725 Td (ELECTRICAL')
+        rewrite(path, b'20 650 m 80 650 l S', b'20 725 m 80 725 l S')
+    elif mode == 'clip':
+        rewrite(path, b'(LINE LEGEND) Tj ET', b'0 0 1 1 re W n (LINE LEGEND) Tj ET')
+    else:
+        reader = PdfReader(path)
+        writer = PdfWriter()
+        page = writer.add_page(reader.pages[0])
+        state = DictionaryObject({NameObject('/Type'): NameObject('/ExtGState'),
+                                  NameObject('/ca'): FloatObject(0)})
+        page['/Resources'][NameObject('/ExtGState')] = DictionaryObject({
+            NameObject('/Hidden'): writer._add_object(state)})
+        stream = DecodedStreamObject()
+        stream.set_data(page.get_contents().get_data().replace(
+            b'(LINE LEGEND) Tj ET', b'/Hidden gs (LINE LEGEND) Tj ET'))
+        page[NameObject('/Contents')] = writer._add_object(stream)
+        writer.write(path)
+    _, model = run(path)
+    assert not model.circuits and not model.ports
+
+
+def test_named_text_scalar_facts_keep_observed_scopes_and_ownership_support(tmp_path):
+    path = sheet(tmp_path/'scalar-facts.pdf', length=80, extra=LEGEND)
+    rewrite(path, b'(LP-1)', b'(PANEL LP CIRCUIT 1 EVSE-1 240V 2P 1PH)')
+    rewrite(path, b'494 346 m 500 350 l 494 354 l S', b'')
+    _, model = run(path)
+    circuit, = model.circuits
+    assert circuit.voltage_v == 240 and circuit.poles == 2 and circuit.phase == '1ph'
+    for field in ('circuit_number', 'voltage_v', 'poles', 'phase'):
+        assert any(record.derivation == 'observed' and provenance_applies_to(record, (field,))
+                   for record in circuit.provenance), field
+    assert any(record.method == 'pdf-source-legend-branch-membership'
+               for record in circuit.provenance)
+
+
+def test_direct_tag_keeps_actual_ownership_support(tmp_path):
+    path = sheet(tmp_path/'direct-support.pdf', length=80, extra=LEGEND)
+    rewrite(path, b'510 352 Td (LP-1)', b'425 358 Td (LP-1)')
+    rewrite(path, b'494 346 m 500 350 l 494 354 l S', b'')
+    _, model = run(path)
+    assert model.circuits
+    assert any(record.method == 'pdf-source-legend-branch-membership'
+               for circuit in model.circuits for record in circuit.provenance)
+
+
+def test_topology_keeps_actual_ownership_support(tmp_path):
+    path = sheet(tmp_path/'topology-support.pdf', length=80, extra=LEGEND)
+    rewrite(path, b'494 346 m 500 350 l 494 354 l S', b'')
+    rewrite(path, b'70 600 Td (PANEL LP', b'500 350 Td (PANEL LP')
+    _, model = run(path)
+    assert model.circuits
+    assert any(r.method == 'pdf-vector-topology-link' for c in model.circuits for r in c.provenance)
+    assert all(any(r.method == 'pdf-source-legend-branch-membership' for r in c.provenance)
+               for c in model.circuits)
+
+
+def test_ownership_coverage_uses_selected_original_pages(tmp_path):
+    path = sheet(tmp_path/'selected.pdf', length=80, extra=LEGEND)
+    reader = PdfReader(path)
+    writer = PdfWriter()
+    writer.add_page(reader.pages[0])
+    writer.add_page(reader.pages[0])
+    writer.write(path)
+    doc, arch, walls, _, _ = inputs(path)
+    model = ElectricalPdfImporter().import_document(doc, wall_evidence=walls,
+        architecture_document=arch, selected_pages=[1],
+        excluded_page_reasons={2: 'independent duplicate excluded by caller'})
+    assert len(model.circuits) == 1
+    assert {row['page'] for row in model.attributes['pdf_electrical']['branch_ownership_checks']} == {1}

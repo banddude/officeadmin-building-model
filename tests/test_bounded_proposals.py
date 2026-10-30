@@ -83,6 +83,31 @@ def test_actual_producer_ranking_roundtrip_and_no_application(bound):
     assert model.electrical_equipment==model.ports==()
 
 
+def test_portable_handoff_distinguishes_source_user_and_proposal_evidence():
+    from oabm.model import is_observed
+
+    model=_model(door=True)
+    observed=Provenance(source_kind='synthetic-plan',source_id='fixture:plan',
+        derivation='observed',scope_paths=('centerline',))
+    user=Provenance(source_kind='user',source_id='fixture:reviewer',
+        derivation='user',scope_paths=('height_m',))
+    wall=replace(model.walls[0],provenance=(observed,user))
+    model=replace(model,walls=(wall,*model.walls[1:]))
+    before=model.to_json(); req=request(model=model); policy=config()
+    # A deterministic scorer uses the same adapter contract as a model.
+    def scorer(data,**kwargs):return response(data)
+    result=dispatch_ranking(req,policy,adapters=adapters(text_glm=scorer))
+    decoded=ProposalResult.from_json(result.to_json())
+    decoded.validate_against(model,options(),policy,current_request=req)
+    source=next(item for item in decoded.request.context.sources if item.id==wall.id)
+    assert [(p['derivation'],p['scope_paths']) for p in source.entity['provenance']]==[
+        ('observed',['centerline']),('user',['height_m'])]
+    assert decoded.provenance[0].source_kind=='ai-proposed'
+    assert decoded.provenance[0].derivation=='inferred'
+    assert not is_observed(decoded.provenance)
+    assert not decoded.accepted and model.to_json()==before
+
+
 @pytest.mark.parametrize('reason',['rate_limited','unavailable'])
 def test_availability_only_text_fallback_with_mutation(bound,reason):
     before=bound.to_json();log=[]

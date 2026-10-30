@@ -259,3 +259,78 @@ Operator visual review remains required. Existing appearance, assembly,
 privacy, installed-runtime and immutable-input boundaries are unchanged.
 
 The fixed worker limits Blender and supported numerical thread pools to two threads.
+
+## Bounded existing-IFC plumbing preservation (#374)
+
+The separate `export_native_ifc` API / `--source-ifc` CLI option retains an
+existing OABM IFC graph rather than regenerating it from canonical JSON. Supply
+both the matching canonical `--model` and an explicit local `--source-ifc`.
+The request version is `native-bonsai-ifc-v1`; ordinary canonical requests and
+`export_native` retain their existing boundary. The input IFC is snapshotted,
+hashed and never overwritten. This is **not** a plumbing-to-canonical importer.
+
+Supported native additions are `IfcPipeSegment`, `IfcPipeFitting`,
+`IfcSanitaryTerminal`, `IfcWasteTerminal`, their types, explicitly owned ports,
+and bounded distribution systems. Their classes, identity, geometry,
+properties and connectivity remain native facts, never repurposed electrical
+entities. After native save/reopen, every original IFC entity/attribute must
+remain unchanged, with one narrowly verified exception: the existing project's
+representation-context list may append new drawing Plan contexts, retaining all
+original references and their order. Removal, replacement, reordering, changed
+physical data or new inverse physical relationships fail the export. The
+receipt records this invariant; it is not a byte-identical output-file claim.
+Canonical IDs/provenance are separately checked against the supplied model.
+
+### Existing drawings remain opaque
+
+The source is never handed directly to Bonsai. A disposable rendering copy
+isolates pre-existing annotations, drawing groups, document references and
+presentation property sets. Stored resource paths and text templates are not
+loaded or evaluated. Unsupported external geometry/texture/runtime resources
+remain refusals. Only newly generated, verified drawing entities are grafted
+onto an original-source clone, with references mapped back to stable source
+STEP identities. Existing drawing data remains in the final IFC but is not
+used in the new drawing. Diagnostics identify this presentation omission.
+
+Existing referenced resource **bytes are not copied or validated**. Their opaque
+references are retained, not certified portable or safe to open elsewhere.
+New drawing resources are generated locally by the fixed trusted worker and
+checked as delivery descendants. This is a bounded preservation route, not a
+general existing-document/resource renderer. Do not delete source metadata to
+imply equivalent acceptance.
+
+### Explicit unknown geometry and linked review labels
+
+PLAN_VIEW requests may add `native_annotations` with `source_guid`, safe `text`
+and `label_offset_mm`. Labels attach to the named plumbing product at its
+explicit world-placement XY, on the presentation plane. This is a linked review
+label, not inferred mounting, pipe size, connection or air-gap engineering.
+Retained geometric separations and explicit source labels can communicate an
+air-gap **intent**; they do not establish a required or compliant air-gap size.
+
+The request's `acknowledged_native_body_omissions` must exactly list native
+plumbing GUIDs without a Body (the field defaults to an empty list). Bounded
+Curve3D/IfcPolyline pipe geometry is retained as linework, not a fabricated
+pipe diameter. Placement-only sanitary/waste terminals retain their explicit
+unknown geometry, with linked text where requested; no physical envelope is
+invented. Empty or unsupported representations fail rather than silently vanish.
+The receipt reports native selections and omissions, not pixel visibility or
+professional drawing acceptance. IFC4 metre units and the existing local bounds
+remain required, including composed world-space curve and solid extents.
+
+Strict `oabm.ifc.from_ifc` refuses typed native plumbing rather than returning a
+canonical model that would silently lose it during `to_ifc`. There is no public
+lossy-import switch. The drawing worker uses a private canonical projection
+only alongside its independent native preservation proof.
+
+Generate the public synthetic sink/receptor source and request with:
+
+```sh
+PYTHONPATH=src python examples/synthetic_native_plumbing.py /tmp/plumbing-input
+```
+
+This example's supplied geometry and intentionally open receiving connection
+are synthetic test facts, not engineering recommendations. Use its emitted
+model, IFC and request paths with the explicit runtime CLI above plus
+`--source-ifc`. Actual native integration tests require the two runtime
+environment variables described above; skipped tests are not runtime proof.

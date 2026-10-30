@@ -436,3 +436,98 @@ def export_native(model_path: Path, request_path: Path, output_directory: Path,
         _failure(out, exc)
         raise
     return out
+
+
+def validate_ifc_request(request: dict, model: BuildingModel, native) -> dict:
+    """Bounded native additions remain IFC, never repurposed electrical entities."""
+    import copy
+    import ifcopenshell.util.placement
+    from .extensions import prepare_render_source
+    prepare_render_source(native, model)
+    if not isinstance(request, dict) or request.get('version') != 'native-bonsai-ifc-v1':
+        raise ValueError('unsupported extension-preserving request version')
+    base = copy.deepcopy(request)
+    base['version'] = 'native-bonsai-v1'
+    acknowledged = base.pop('acknowledged_native_body_omissions', [])
+    omissions = sorted(product.GlobalId for product in native.by_type('IfcProduct')
+                       if product.is_a() in ('IfcPipeSegment', 'IfcPipeFitting', 'IfcSanitaryTerminal', 'IfcWasteTerminal')
+                       and (not product.Representation or not any(r.RepresentationIdentifier == 'Body' for r in product.Representation.Representations)))
+    if not isinstance(acknowledged, list) or any(not isinstance(guid, str) for guid in acknowledged) or sorted(acknowledged) != omissions:
+        raise ValueError('acknowledged_native_body_omissions must exactly match native plumbing without Body geometry')
+    if not isinstance(base.get('views'), list):
+        raise ValueError('views must be a list')
+    for view in base['views']:
+        if not isinstance(view, dict):
+            raise ValueError('view must be an object')
+        annotations = view.pop('native_annotations', [])
+        if not isinstance(annotations, list) or len(annotations) > 100:
+            raise ValueError('native_annotations: at most 100 required')
+        if annotations and view.get('target_view') != 'PLAN_VIEW':
+            raise ValueError('native annotations currently require PLAN_VIEW')
+        seen = set()
+        for annotation in annotations:
+            _object(annotation, {'source_guid', 'text', 'label_offset_mm'}, 'native annotation')
+            guid = annotation['source_guid']
+            if not isinstance(guid, str) or guid in seen:
+                raise ValueError('unique native annotation source GUID required')
+            seen.add(guid)
+            try:
+                product = native.by_guid(guid)
+            except RuntimeError as exc:
+                raise ValueError('unknown native annotation source GUID') from exc
+            if product.is_a() not in ('IfcPipeSegment', 'IfcPipeFitting', 'IfcSanitaryTerminal', 'IfcWasteTerminal'):
+                raise ValueError('native annotation source must be a supported plumbing product')
+            if not product.ObjectPlacement:
+                raise ValueError('native annotation source requires explicit placement')
+            xyz = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)[:3, 3]
+            for coordinate in xyz:
+                _local_coordinate(float(coordinate), 'native annotation anchor')
+            text = annotation['text']
+            if not isinstance(text, str) or not 1 <= len(text) <= 80 or any(not 32 <= ord(c) <= 126 or c in '{}`' for c in text):
+                raise ValueError('native annotation text: safe printable ASCII required')
+            _pair(annotation['label_offset_mm'], 'label_offset_mm', -30, 30)
+    validate_request(base, model)
+    return request
+
+
+def export_native_ifc(model_path: Path, source_ifc_path: Path, request_path: Path,
+                      output_directory: Path, runtime: NativeRuntime,
+                      timeout_seconds: float = 600) -> Path:
+    """Preserve a bounded IFC graph while adding native review drawings.
+
+    Does not convert plumbing to canonical JSON or overwrite the source IFC.
+    """
+    import ifcopenshell
+    snapshots = {'model.json': _read(model_path, 32 * 1024**2),
+                 'request.json': _read(request_path, 1024**2),
+                 'source.ifc': _read(source_ifc_path, 32 * 1024**2)}
+    model = BuildingModel.from_dict(_json(snapshots['model.json']))
+    native = ifcopenshell.file.from_string(snapshots['source.ifc'].decode('utf-8'))
+    validate_ifc_request(_json(snapshots['request.json']), model, native)
+    _runtime_paths(runtime)
+    out = Path(output_directory).absolute()
+    out.mkdir(parents=True, exist_ok=False)
+    inputs = out / 'inputs'
+    inputs.mkdir()
+    hashes = {}
+    for name, data in snapshots.items():
+        path = inputs / name
+        with path.open('xb') as stream:
+            stream.write(data)
+        path.chmod(0o444)
+        hashes[name] = hashlib.sha256(data).hexdigest()
+    (out / 'input-hashes.json').write_text(json.dumps(hashes, indent=2) + '\n')
+    try:
+        _invoke(runtime, out, 'export-ifc', timeout_seconds)
+        receipt = json.loads((out / 'receipt.json').read_text())
+        if receipt.get('status') != 'review_only_success' or receipt.get('input_sha256') != hashes:
+            raise RuntimeError('native worker receipt/source hash mismatch')
+        if receipt.get('native_source_preservation', {}).get('verified') is not True:
+            raise RuntimeError('native source preservation proof missing')
+        for name, digest in hashes.items():
+            if hashlib.sha256((inputs / name).read_bytes()).hexdigest() != digest:
+                raise RuntimeError('input snapshot changed during export')
+    except Exception as exc:
+        _failure(out, exc)
+        raise
+    return out

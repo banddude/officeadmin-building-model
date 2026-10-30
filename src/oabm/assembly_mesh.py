@@ -191,4 +191,3 @@ def _local_box_vertices(
         corners[3], corners[0], top[0],
         corners[3], top[0], top[3],
     ]
-

@@ -43,6 +43,22 @@ jobs:
         run: >-
           pytest -v -n auto --durations=30 --durations-min=1
           --junitxml=test-results/pytest.xml
+      - name: Generate synthetic production review packet
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          export PYTHONPATH=src:examples
+          python examples/reference_production_set.py "$RUNNER_TEMP/oabm-synthetic-review" --variant reference --adaptive-layout --reference-cover
+          cd "$RUNNER_TEMP/oabm-synthetic-review"
+          printf 'checkout_commit=%s\npr_head=%s\ncommand=PYTHONPATH=src:examples python examples/reference_production_set.py FRESH_OUTPUT --variant reference --adaptive-layout --reference-cover\n' "$GITHUB_SHA" "$PR_HEAD_SHA" > REVIEW-PROVENANCE.txt
+          find inputs attempt -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+      - name: Retain synthetic production review packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-production-review-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oabm-synthetic-review
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain per-test timings
         if: always()
         uses: actions/upload-artifact@v4

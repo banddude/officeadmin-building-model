@@ -319,3 +319,34 @@ def test_per_drawing_producer_records_keep_the_exact_bound_transforms(tmp_path):
         assert binding["architecture_model_id"] == architecture.model_id
         assert binding["page_transform"] == {key: value for key, value in
             drawing.transform.to_attributes().items() if key != "registration"}
+
+
+@pytest.mark.parametrize("foreign_source", [False, True])
+def test_observed_form_xobject_provenance_uses_exact_source_binding(tmp_path, foreign_source):
+    from oabm.importers.pdf_electrical import PdfElectricalDocument, PdfSymbolObservation
+
+    architecture, _, target, registration = _case(tmp_path)
+    x, y = _local(ELECTRICAL, EVSE_AT)
+    document = PdfElectricalDocument(
+        source_id="fixture:foreign" if foreign_source else registration.electrical_source_id,
+        page_count=1,
+        symbols=(PdfSymbolObservation(
+            element_id="synthetic:catalog-symbol", page=1,
+            name="DUPLEX RECEPTACLE OUTLET", x_pt=x, y_pt=y,
+            metadata={"native_id": "synthetic:catalog-symbol"},
+        ),),
+    )
+    electrical = ElectricalPdfImporter().import_document(
+        document, page_transforms=registration.page_transforms(),
+    )
+    [source] = electrical.electrical_devices
+    assert source.provenance[0].source_kind == "form-xobject"
+    if foreign_source:
+        _assert_invalid_target(architecture, electrical, registration)
+    else:
+        [placed] = converge_pdf_models(
+            architecture, electrical, registration=registration,
+        ).electrical_devices
+        assert placed.level_id == target.id
+        assert placed.id == source.id
+        assert placed.attributes["pdf_electrical"] == source.attributes["pdf_electrical"]

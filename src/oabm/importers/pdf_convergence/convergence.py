@@ -10,6 +10,7 @@ from .sheet_registration import ElectricalSheetRegistration
 
 from oabm.model import (
     DERIVATION_INFERRED,
+    DERIVATION_OBSERVED,
     BuildingModel,
     Ceiling,
     ElectricalDevice,
@@ -170,8 +171,12 @@ def _registered_target_level(
     binding = registration.get("source_binding")
     source_page = lane.get("source_page")
     coefficients = {key: value for key, value in transform.items() if key != "registration"}
+    # The electrical importer preserves observed source kinds such as
+    # "form-xobject" and "annotation" as well as "pdf-vector-path". The
+    # accepted result and exact source/page binding establish identity;
+    # a spelling prefix on the observation kind does not.
     source_ids = {item.source_id for item in entity.provenance
-                  if item.page == source_page and item.source_kind.startswith("pdf")}
+                  if item.page == source_page and item.derivation == DERIVATION_OBSERVED}
     if (not isinstance(binding, Mapping)
             or binding.get("producer") != "oabm.pdf_sheet_registration.v1"
             or binding.get("architecture_model_id") != architecture.model_id

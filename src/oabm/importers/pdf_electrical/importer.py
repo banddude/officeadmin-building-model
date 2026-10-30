@@ -767,6 +767,7 @@ class _VectorPaintState(NamedTuple):
     stroke_color: tuple[float, ...] | None
     fill_color: tuple[float, ...] | None
     line_width: float | None
+    branch_style_supported: bool
 
 
 # PDF default graphics state: DeviceGray black in both colour slots and a
@@ -777,6 +778,7 @@ _INITIAL_PAINT_STATE = _VectorPaintState(
     stroke_color=(0.0,),
     fill_color=(0.0,),
     line_width=1.0,
+    branch_style_supported=True,
 )
 
 
@@ -833,7 +835,7 @@ def _displayed_line_width_pt(
 # Style keys recorded on observations for the shape-class groundwork. They are
 # recognition input only: provenance mirrors of source metadata must not carry
 # them, so every model output stays byte-identical to before.
-_VECTOR_STYLE_METADATA_KEYS = frozenset({"stroke_gray", "fill_gray", "line_width_pt"})
+_VECTOR_STYLE_METADATA_KEYS = frozenset({"stroke_gray", "fill_gray", "line_width_pt", "branch_style_supported"})
 
 
 def _provenance_vector_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -1031,6 +1033,19 @@ def _make_page_visitors(
                 continue
             vector_counter += 1
             metadata: dict[str, Any] = {"paint_operator": paint_operator}
+            # The bounded branch legend producer supports only default solid,
+            # opaque DeviceGray strokes. Never alias an unrecorded dash, colour
+            # space, graphics-state override or line-end convention to that style.
+            metadata["branch_style_supported"] = (
+                paint_state.branch_style_supported
+                and paint_state.stroke_color is not None
+                and len(paint_state.stroke_color) == 1
+                and paint_state.stroke_alpha == 1.0
+                and len(cm) == 6
+                and math.isclose(cm[0]**2 + cm[1]**2, cm[2]**2 + cm[3]**2,
+                                 rel_tol=1e-9, abs_tol=1e-12)
+                and math.isclose(cm[0]*cm[2] + cm[1]*cm[3], 0., abs_tol=1e-12)
+            )
             # Colour and width are recorded at the paint operator from the
             # current graphics state; a pattern or unknown colour omits the
             # key instead of guessing.
@@ -1093,12 +1108,16 @@ def _make_page_visitors(
                 resource_stack[-1], str(operands[0])
             )
             paint_state = paint_state._replace(
+                branch_style_supported=False,
                 stroke_alpha=(
                     paint_state.stroke_alpha if new_stroke is None else new_stroke
                 ),
                 fill_alpha=paint_state.fill_alpha if new_fill is None else new_fill,
             )
             return
+
+        if operator in {b"d", b"J", b"j", b"M", b"CS", b"SC", b"SCN", b"RG", b"K"}:
+            paint_state = paint_state._replace(branch_style_supported=False)
 
         if operator == b"G" and operands:
             paint_state = paint_state._replace(
@@ -11760,6 +11779,8 @@ class ElectricalPdfImporter:
                     or any(entity.id in rejected_branch_load_ids for entity in load_entities)):
                 unresolved_circuits.append({"kind": "device_circuit_tag", "page": observation.page,
                     "source_element_id": observation.element_id, "status": "unresolved",
+                    "method": method, "source_text": observation.text,
+                    "load_ids": [entity.id for entity in load_entities],
                     "reason_code": "branch_geometry_rejected",
                     "reason": "circuit evidence touches a source-bound rejected branch"})
                 return
@@ -12282,6 +12303,69 @@ class ElectricalPdfImporter:
         rejected_branch_annotation_ids: set[str] = set()
         unresolved_branch_vector_ids: set[str] = set()
         unresolved_branch_load_ids: set[str] = set()
+        branch_ownership_diagnostics: list[dict[str, Any]] = []
+        branch_claims = {}
+        branch_evidence_by_page = {}
+        if architecture_document is not None:
+            from .branch_ownership import source_branch_evidence
+            for page in selected_page_numbers:
+                evidence = source_branch_evidence(document, page=page)
+                branch_evidence_by_page[page] = evidence
+                branch_claims.update((claim.vector_id, claim) for claim in evidence.claims)
+            # Evaluate complete components before ANY membership sink. This
+            # includes unarrowed paths used by direct-tag and topology passes.
+            roots = list(range(len(circuit_vectors)))
+            def branch_root(index):
+                while roots[index] != index:
+                    roots[index] = roots[roots[index]]
+                    index = roots[index]
+                return index
+            for left, right in _topology_candidate_pairs(circuit_vectors, snap_tolerance_pt):
+                if _paths_cross_or_touch(circuit_vectors[left], circuit_vectors[right],
+                                         tolerance_pt=snap_tolerance_pt):
+                    a, b = branch_root(left), branch_root(right)
+                    roots[max(a, b)] = min(a, b)
+            ownership_components = {}
+            for index, vector in enumerate(circuit_vectors):
+                ownership_components.setdefault(branch_root(index), []).append(vector)
+            for component in ownership_components.values():
+                page = component[0].page
+                unknown = sorted(v.element_id for v in component
+                    if branch_claims[v.element_id].classification != "electrical")
+                attached = {entity.id for entity in devices
+                    if entity_source_positions[entity.id][0] == page
+                    and min(_point_path_distance_pt(entity_source_positions[entity.id][1:], v)
+                            for v in component) <= self.topology_endpoint_radius_pt}
+                # Keep source candidates visible even when no recognized load
+                # can be attached. No trimming and no unknown-as-wiring fallback.
+                source_evidence = branch_evidence_by_page[page]
+                row = {"page": page, "source_element_ids": sorted(v.element_id for v in component),
+                    "content_sha256": source_evidence.content_sha256,
+                    "observation_sha256": source_evidence.observation_sha256,
+                    "frame_pt": list(source_evidence.frame_pt),
+                    "producer": source_evidence.producer, "producer_version": source_evidence.version,
+                    "status": "unresolved" if unknown else "electrical",
+                    "unresolved_element_ids": unknown,
+                    "claims": [{"vector_id": v.element_id,
+                        "classification": branch_claims[v.element_id].classification,
+                        "support_ids": list(branch_claims[v.element_id].support_ids),
+                        "confidence": branch_claims[v.element_id].confidence}
+                        for v in sorted(component, key=lambda v: v.element_id)]}
+                branch_ownership_diagnostics.append(row)
+                if not unknown:
+                    continue
+                rejected_branch_vector_ids.update(v.element_id for v in component)
+                rejected_branch_load_ids.update(attached)
+                for text in texts:
+                    if text.page == page and min(_point_path_distance_pt(
+                            (text.x_pt, text.y_pt), v) for v in component
+                    ) <= self.topology_annotation_radius_pt:
+                        rejected_branch_annotation_ids.add(text.element_id)
+                if attached:
+                    unresolved_circuits.append({**row, "kind": "branch_ownership",
+                        "source_element_id": row["source_element_ids"][0],
+                        "reason_code": "branch_ownership_unresolved",
+                        "reason": "whole-component electrical ownership is not established"})
         if architecture_document is not None:
             from .branch_geometry import discriminate_branch_geometry
             source_vectors = {vector.element_id: vector for vector in vectors}
@@ -12373,6 +12457,8 @@ class ElectricalPdfImporter:
 
         for component in homerun_components:
             page = component[0].page
+            if rejected_branch_vector_ids.intersection(v.element_id for v in component):
+                continue
             load_entities = [
                 entity
                 for entity in devices
@@ -13511,6 +13597,27 @@ class ElectricalPdfImporter:
             }
             if conflicts:
                 lane_attributes["conflicting_electrical_evidence"] = conflicts
+            circuit_provenance = _merge_provenance(bucket["provenance"])
+            if architecture_document is not None:
+                scoped = []
+                for record in circuit_provenance:
+                    # An observed printed number does not observe synthesized
+                    # ports or the geometrically associated membership set.
+                    if record.method != "pdf-vector-topology-link":
+                        scoped.append(replace(record, scope_paths=("circuit_number",)))
+                    scoped.append(replace(record, derivation=DERIVATION_INFERRED,
+                        scope_paths=("source_port_id", "load_port_ids")))
+                    for key in record.attributes.get("branch_vector_element_ids", ()):
+                        claim = branch_claims.get(key)
+                        if claim is not None and claim.classification == "electrical":
+                            scoped.append(replace(record, source_element_id=key,
+                                method="pdf-source-legend-branch-membership",
+                                derivation=DERIVATION_INFERRED,
+                                scope_paths=("load_port_ids",),
+                                confidence=min(record.confidence, claim.confidence),
+                                attributes={"support_element_ids": list(claim.support_ids),
+                                    "producer": "pdf_electrical.source_branch_evidence", "version": "1"}))
+                circuit_provenance = _merge_provenance(scoped)
             circuits.append(
                 Circuit(
                     id=circuit_id,
@@ -13521,11 +13628,25 @@ class ElectricalPdfImporter:
                     voltage_v=voltage_v,
                     poles=poles,
                     phase=phase,
-                    confidence=max(bucket["confidence"], default=0.0),
-                    provenance=_merge_provenance(bucket["provenance"]),
+                    confidence=(min(item.confidence for item in circuit_provenance)
+                                if architecture_document is not None else
+                                max(bucket["confidence"], default=0.0)),
+                    provenance=circuit_provenance,
                     attributes={"pdf_electrical": lane_attributes},
                 )
             )
+
+        if architecture_document is not None:
+            for key, port in tuple(ports_by_owner_role.items()):
+                supporting = [replace(record, derivation=DERIVATION_INFERRED, scope_paths=None)
+                    for circuit in circuits
+                    if port.id in (circuit.source_port_id, *circuit.load_port_ids)
+                    for record in circuit.provenance
+                    if record.derivation == DERIVATION_INFERRED]
+                if supporting:
+                    merged = _merge_provenance((*port.provenance, *supporting))
+                    ports_by_owner_role[key] = replace(port, provenance=merged,
+                        confidence=min(record.confidence for record in merged))
 
         global_notes = [
             {
@@ -13823,6 +13944,8 @@ class ElectricalPdfImporter:
                         ),
                     ),
                     **({"branch_geometry_checks": branch_geometry_diagnostics}
+                       if architecture_document is not None else {}),
+                    **({"branch_ownership_checks": branch_ownership_diagnostics}
                        if architecture_document is not None else {}),
                     "branch_wall_evidence": (
                         {

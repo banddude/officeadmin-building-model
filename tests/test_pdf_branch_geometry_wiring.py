@@ -12,7 +12,10 @@ from oabm.importers.pdf_wall_evidence import WallEvidenceHandoffError
 
 @pytest.mark.parametrize('segments,length', [(6,350), (65,80), (350,350)])
 def test_bound_long_segmented_runs_keep_existing_circuit_guards(tmp_path,segments,length):
-    path=sheet(tmp_path/'run.pdf',segments=segments,length=length)
+    path=sheet(tmp_path/'run.pdf',segments=segments,length=length,extra=(
+        'BT /F1 8 Tf 20 675 Td (LINE LEGEND) Tj ET',
+        '20 650 m 80 650 l S',
+        'BT /F1 8 Tf 90 650 Td (ELECTRICAL BRANCH WIRING) Tj ET'))
     doc,arch,evidence,_,_=inputs(path)
     model=ElectricalPdfImporter().import_document(doc,wall_evidence=evidence,architecture_document=arch)
     assert [c.circuit_number for c in model.circuits]==['1']

@@ -13,6 +13,13 @@ define another model. Those responsibilities remain in
 `converge_pdf_models(architecture, electrical)` accepts the canonical outputs
 of the two merged PDF lanes.
 
+When level assignment relies on sheet-registration evidence, also pass the
+actual result returned by `register_electrical_sheets` or
+`register_electrical_pdf` as `registration=result`. Use that same result's
+`page_transforms()` for electrical import. A mapping embedded in an entity's
+attributes or copied into model provenance does not by itself authorize a
+target-level assignment.
+
 Before convergence:
 
 - the electrical lane must have explicit page registration;
@@ -38,12 +45,18 @@ registered canonical position to resolve architectural attachment:
    host against architectural geometry.
 
 A source-bound sheet-registration target can resolve the level even when an
-unrelated level shares its elevation. Convergence checks that the target level
+unrelated level shares its elevation. The producer binds accepted transforms
+to the electrical source/page, architectural model and affine coefficients.
+Convergence reconciles the supplied accepted result with each entity's source
+provenance, page transform and matching model registration provenance. These
+are consistency checks on explicit inputs, not cryptographic authentication.
+Convergence also checks that the target level
 exists, its unique drawing region is still resolved on the recorded target
 page, and the region, page transform and canonical level agree on frame and
 elevation. Missing, stale or contradictory claimed target evidence stays
 unresolved (`registration_target_level_invalid`); it never falls back to Z.
-Conflicting source Z or unique plan containment also remains a conflict.
+Source Z or plan containment candidates that exclude the target remain a
+conflict, including multiple candidates on other levels.
 
 Without a claimed registration target, a single architectural level is
 sufficient level evidence. With multiple levels, registered Z and plan
@@ -87,7 +100,9 @@ A spatially resolved electrical entity receives an additional
 `pdf-convergence` provenance record identifying the architectural
 level/space/host used. Its confidence is never increased by convergence: the
 result is bounded by the electrical recognition confidence and the confidence
-of the architectural entities used for attachment.
+of the architectural entities used for attachment. When a registration target
+supplies the level, its accepted confidence also caps the owner, translated
+ports and new placement provenance. Original observed provenance is retained.
 
 Unresolved evidence is stored deterministically under
 `BuildingModel.attributes.pdf_convergence.ambiguities` and summarized per

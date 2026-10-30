@@ -139,7 +139,8 @@ choice. Confirmation binds the original query, Apple provider, exact candidate
 label and coordinates; an index alone cannot authorize a changed result. `cached`
 requires a valid retained cache entry; it does not acquire a fresh map. Omitting
 this object preserves the existing supplied-map behavior and makes no network
-request. Supplied location maps take precedence over automatic acquisition.
+request. A `cover_map` request and a supplied `location_map` conflict and are
+refused; choose one source explicitly.
 
 The resulting `CoverPage.images` pass through the shared typed PNG channel, and
 visible Apple attribution remains part of the cover layout. The nested delivery

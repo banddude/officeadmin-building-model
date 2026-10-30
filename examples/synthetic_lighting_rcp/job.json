@@ -1,0 +1,19 @@
+{
+  "version": "company-sheet-job-v1",
+  "set_id": "SYNTHETIC",
+  "date": "2026-01-01",
+  "revision": "A",
+  "formats": [
+    "svg",
+    "pdf"
+  ],
+  "sheets": [
+    {
+      "id": "E2",
+      "title": "LIGHTING PLAN",
+      "fields": {
+        "scale": "1:20"
+      }
+    }
+  ]
+}

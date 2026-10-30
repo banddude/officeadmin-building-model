@@ -26,7 +26,7 @@ from oabm.exports.model_delivery import deliver_model
 path = deliver_model("model.json", "options.json", output_directory="fresh-attempt")
 ```
 
-The versioned options JSON has exactly these fields:
+The versioned options JSON requires these fields (with the opt-in curved-preview field described below):
 
 ```json
 {
@@ -64,8 +64,8 @@ layout `needs_review`. This does not block review publication even when bend
 policy is `require`; that policy only gates bends. SVGs are inspection views,
 not composed physical sheets, checked note layouts or permit documents. They
 are not stamped with the package bend-check status; keep the notice, report and
-manifest with the artifacts. The GLB uses existing default geometry, including
-sharp route vertices, without a new rendering engine or invented bend geometry.
+manifest with the artifacts. By default the GLB retains sharp route vertices. The optional caller-radius
+preview below changes only the derived GLB geometry.
 
 ## Honest bend-check policy
 
@@ -140,3 +140,30 @@ all package bytes including the manifest. It produces an SVG and GLB for cloud
 visual inspection without running a local renderer. Tests cover required/report/
 skip policies, real consolidation endpoint elbows, partial-export failures,
 existing destinations, changed input source files and changed pending artifacts.
+
+## Explicit assembly-cut delivery
+
+`model-delivery-v1` remains unchanged and guarded. `model-delivery-v2` uses the
+same option keys plus `"assembly_geometry":"cut"`; it requires at least one
+plan and records physical cut component IDs and qualifications. It sends the
+same retained canonical model to plans and GLB. See
+[physical assembly consumers](physical-assembly-consumers.md) for supported
+cut-only views, refusal boundaries and composed production sheets.
+
+## Explicit-radius curved preview
+
+Add `"preview_bends": "caller_radius"` to either supported options version to
+render tangent circular bends in the GLB. This requires `preview_glb: true`,
+`bend_policy: "require"`, and a nonempty explicit `radii_m` mapping. Selected
+routes need a known nominal diameter smaller than twice the centerline radius.
+Impossible tangent lengths, unknown routes and selected physical fitting
+envelopes refuse rather than moving fittings or inventing dimensions.
+
+The original exporter is reused; tube rings and conductor wires follow the
+same sampled curve frames. Arc steps are at most five degrees. The canonical
+model, route IDs, fitting IDs, plans and quantity lengths still use the original
+sharp centerline. GLB extras separately disclose sampled preview length, radius,
+and unverified swept clearance/manufacturer fit. This is a more useful visual
+review, not an engineering or installation approval. Omit the option to retain
+byte-compatible default GLB output. The routed-assembly example supplies this
+option with its existing explicit 0.08 m radius.

@@ -1,0 +1,51 @@
+{
+  "version": "company-sheet-job-v1",
+  "set_id": "synthetic-production-set",
+  "date": "2026-10-27",
+  "revision": "A",
+  "formats": [
+    "svg",
+    "pdf"
+  ],
+  "fields": {
+    "project": "SYNTHETIC WORKSHOP",
+    "address": "SYNTHETIC SITE",
+    "client": "EXAMPLE OWNER",
+    "city": "EXAMPLE CITY",
+    "project_number": "DEMO-001",
+    "drawn_by": "DEMO",
+    "checked_by": "NOT REVIEWED",
+    "scale": "AS NOTED",
+    "issue": "DRAFT - NOT FOR CONSTRUCTION",
+    "revision_description": "INITIAL"
+  },
+  "sheets": [
+    {
+      "id": "G0.0",
+      "title": "COVER SHEET"
+    },
+    {
+      "id": "E1.0",
+      "title": "SITE PLAN",
+      "fields": {
+        "scale": "1:200"
+      }
+    },
+    {
+      "id": "E3.0",
+      "title": "PANEL SCHEDULES"
+    },
+    {
+      "id": "D1",
+      "title": "Equipment mounting elevation"
+    },
+    {
+      "id": "D2",
+      "title": "Connection envelope close-up"
+    },
+    {
+      "id": "D3",
+      "title": "Supported cabinet section"
+    }
+  ]
+}

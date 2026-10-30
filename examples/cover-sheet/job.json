@@ -1,0 +1,36 @@
+{
+  "version": "company-sheet-job-v1",
+  "set_id": "synthetic-cover-demo",
+  "date": "2026-01-20",
+  "revision": "A",
+  "fields": {
+    "project": "Synthetic Workshop",
+    "client": "EXAMPLE CLIENT",
+    "address": "Synthetic Site A",
+    "city": "EXAMPLE CITY",
+    "project_number": "DEMO-001",
+    "drawn_by": "AB",
+    "checked_by": "UNREVIEWED",
+    "scale": "AS NOTED",
+    "issue": "DRAFT - NOT FOR CONSTRUCTION",
+    "revision_description": "INITIAL"
+  },
+  "formats": [
+    "svg",
+    "pdf"
+  ],
+  "sheets": [
+    {
+      "id": "G001",
+      "title": "Cover Sheet"
+    },
+    {
+      "id": "E101",
+      "title": "Lighting Plan"
+    },
+    {
+      "id": "E201",
+      "title": "Power Plan"
+    }
+  ]
+}

@@ -1,0 +1,261 @@
+{
+  "details": [
+    {
+      "bounds": {
+        "max_x": 1,
+        "max_y": 2,
+        "min_x": -1,
+        "min_y": 0
+      },
+      "callouts": [
+        {
+          "anchor": "start",
+          "source_id": "EQ-A",
+          "text": "CABINET ENVELOPE",
+          "x_mm": 10,
+          "y_mm": 60
+        },
+        {
+          "anchor": "start",
+          "source_id": "S-A",
+          "text": "LOWER RAIL CL Z=0.900 m",
+          "x_mm": 145,
+          "y_mm": 160
+        },
+        {
+          "anchor": "start",
+          "source_id": "S-B",
+          "text": "UPPER RAIL CL Z=1.500 m",
+          "x_mm": 145,
+          "y_mm": 60
+        }
+      ],
+      "connection_spec": "Supplied R1 route and P-A/P-B entry locations only. Terminals, fittings and wiring not supplied.",
+      "dimension_source_ids": [
+        "EQ-A"
+      ],
+      "direction": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "far_m": 1,
+      "id": "D1",
+      "mounting_spec": "Supplied rail envelopes and host interface locations only. Anchor pattern and capacity not supplied.",
+      "near_m": -1,
+      "notes": [
+        "SYNTHETIC FACTS. Confirm missing product profiles and attachment design before installation."
+      ],
+      "notes_y_mm": 350,
+      "number": "1",
+      "origin": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "recipe": "equipment-mounting-elevation@2",
+      "scale": 10,
+      "source_ids": [
+        "EQ-A",
+        "S-A",
+        "S-B"
+      ],
+      "title": "CABINET MOUNTING ELEVATION"
+    },
+    {
+      "bounds": {
+        "max_x": 0.4,
+        "max_y": 1.9,
+        "min_x": -1,
+        "min_y": 0.5
+      },
+      "callouts": [
+        {
+          "anchor": "start",
+          "source_id": "EQ-A",
+          "text": "CABINET",
+          "x_mm": 180,
+          "y_mm": 260
+        },
+        {
+          "anchor": "start",
+          "source_id": "EQ-B",
+          "text": "CONNECTION ENCLOSURE",
+          "x_mm": 10,
+          "y_mm": 120
+        },
+        {
+          "anchor": "end",
+          "source_id": "P-A",
+          "text": "SUPPLIED ENTRY",
+          "x_mm": 130,
+          "y_mm": 220
+        },
+        {
+          "anchor": "start",
+          "source_id": "P-B",
+          "text": "SUPPLIED ENTRY",
+          "x_mm": 95,
+          "y_mm": 70
+        },
+        {
+          "anchor": "end",
+          "source_id": "R1",
+          "text": "25 mm EMT CENTERLINE",
+          "x_mm": 90,
+          "y_mm": 140
+        }
+      ],
+      "connection_spec": "Supplied R1 route and P-A/P-B entry locations only. Terminals, fittings and wiring not supplied.",
+      "dimension_lanes": [
+        {
+          "gap_mm": 7,
+          "source_id": "EQ-B",
+          "vertical_side": "left"
+        }
+      ],
+      "dimension_source_ids": [
+        "EQ-B"
+      ],
+      "direction": {
+        "x": 0,
+        "y": 1,
+        "z": 0
+      },
+      "far_m": 1,
+      "id": "D2",
+      "mounting_spec": "Supplied rail envelopes and host interface locations only. Anchor pattern and capacity not supplied.",
+      "near_m": -1,
+      "notes": [
+        "SYNTHETIC FACTS. Confirm missing product profiles and attachment design before installation."
+      ],
+      "notes_y_mm": 350,
+      "number": "2",
+      "origin": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "recipe": "connection-close-up@2",
+      "scale": 5,
+      "source_ids": [
+        "EQ-A",
+        "EQ-B",
+        "P-A",
+        "P-B",
+        "R1"
+      ],
+      "title": "CONNECTION ROUTE / LOCATIONS"
+    },
+    {
+      "bounds": {
+        "max_x": 1.1,
+        "max_y": 2,
+        "min_x": -0.5,
+        "min_y": 0
+      },
+      "callouts": [
+        {
+          "anchor": "start",
+          "source_id": "EQ-A",
+          "text": "CABINET",
+          "x_mm": 10,
+          "y_mm": 60
+        },
+        {
+          "anchor": "start",
+          "source_id": "S-A",
+          "text": "LOWER RAIL",
+          "x_mm": 10,
+          "y_mm": 200
+        },
+        {
+          "anchor": "start",
+          "source_id": "S-B",
+          "text": "UPPER RAIL",
+          "x_mm": 10,
+          "y_mm": 40
+        },
+        {
+          "anchor": "start",
+          "source_id": "W1",
+          "text": "200 mm HOST WALL",
+          "x_mm": 120,
+          "y_mm": 200
+        }
+      ],
+      "connection_spec": "Supplied R1 route and P-A/P-B entry locations only. Terminals, fittings and wiring not supplied.",
+      "dimension_lanes": [
+        {
+          "gap_mm": 7,
+          "source_id": "EQ-A",
+          "vertical_side": "left"
+        }
+      ],
+      "dimension_source_ids": [
+        "EQ-A"
+      ],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "far_m": 1,
+      "id": "D3",
+      "mounting_spec": "Supplied rail envelopes and host interface locations only. Anchor pattern and capacity not supplied.",
+      "near_m": -1,
+      "notes": [
+        "SYNTHETIC FACTS. Confirm missing product profiles and attachment design before installation."
+      ],
+      "notes_y_mm": 350,
+      "number": "3",
+      "origin": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "recipe": "supported-section@2",
+      "scale": 10,
+      "source_ids": [
+        "EQ-A",
+        "S-A",
+        "S-B",
+        "W1"
+      ],
+      "title": "HOST / SUPPORT SECTION"
+    }
+  ],
+  "placements": [
+    {
+      "bounds_mm": [
+        10,
+        20,
+        270,
+        560
+      ],
+      "detail_id": "D1",
+      "sheet_id": "ED1"
+    },
+    {
+      "bounds_mm": [
+        280,
+        20,
+        590,
+        560
+      ],
+      "detail_id": "D2",
+      "sheet_id": "ED1"
+    },
+    {
+      "bounds_mm": [
+        600,
+        20,
+        810,
+        560
+      ],
+      "detail_id": "D3",
+      "sheet_id": "ED1"
+    }
+  ],
+  "version": "detail-sheet-set@2"
+}

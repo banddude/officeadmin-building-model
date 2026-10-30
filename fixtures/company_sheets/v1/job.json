@@ -1,0 +1,24 @@
+{
+  "version": "company-sheet-job-v1",
+  "set_id": "synthetic-company-demo",
+  "date": "2026-01-20",
+  "revision": "A",
+  "fields": {
+    "project": "SYNTHETIC WORKSHOP",
+    "client": "EXAMPLE CLIENT",
+    "address": "SYNTHETIC SITE",
+    "city": "EXAMPLE CITY",
+    "project_number": "DEMO-001",
+    "drawn_by": "AB",
+    "checked_by": "UNREVIEWED",
+    "scale": "AS NOTED",
+    "issue": "DRAFT - NOT FOR CONSTRUCTION",
+    "revision_description": "INITIAL"
+  },
+  "formats": ["svg", "pdf"],
+  "sheets": [
+    {"id": "E0.0", "title": "COVER SHEET"},
+    {"id": "E1.0", "title": "SITE PLAN"},
+    {"id": "E2.0", "title": "ELECTRICAL DETAILS", "fields": {"drawn_by": "CD"}}
+  ]
+}

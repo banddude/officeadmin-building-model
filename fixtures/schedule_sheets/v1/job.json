@@ -1,0 +1,14 @@
+{
+  "version": "company-sheet-job-v1",
+  "set_id": "synthetic-panel-schedules",
+  "date": "2026-10-27",
+  "revision": "A",
+  "fields": {
+    "project": "SYNTHETIC PANEL FACTS",
+    "issue": "DRAFT - NOT FOR CONSTRUCTION",
+    "scale": "TABLES",
+    "revision_description": "SUPPLIED FACTS"
+  },
+  "formats": ["svg", "pdf"],
+  "sheets": [{"id": "E6.0", "title": "PANEL SCHEDULES"}]
+}

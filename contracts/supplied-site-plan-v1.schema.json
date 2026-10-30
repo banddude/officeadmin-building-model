@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:oabm:supplied-site-plan-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "supplied-site-plan-v1"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "units": {
+      "enum": [
+        "m",
+        "mm",
+        "ft"
+      ]
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001f]+$"
+        },
+        "axes": {
+          "const": "local-xy,+x-right,+y-up"
+        }
+      },
+      "required": [
+        "id",
+        "axes"
+      ]
+    },
+    "drawing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scale": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "placement_mm": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": 0
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "padding_mm": {
+          "type": "number",
+          "minimum": 5
+        },
+        "legend_width_mm": {
+          "type": "number",
+          "minimum": 95
+        },
+        "north_degrees": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "exclusiveMaximum": 360
+            }
+          ]
+        },
+        "scale_mode": {
+          "enum": [
+            "fixed",
+            "fit"
+          ]
+        },
+        "allowed_scales": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "legend_columns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "allowed_legend_columns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          }
+        },
+        "presentation_role": {
+          "enum": [
+            "overview",
+            "detail"
+          ]
+        },
+        "detail_feature_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          }
+        }
+      },
+      "required": [
+        "scale",
+        "placement_mm",
+        "padding_mm",
+        "legend_width_mm",
+        "north_degrees"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scale_mode": {
+                "const": "fit"
+              }
+            },
+            "required": [
+              "scale_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scale": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "allowed_scales"
+            ],
+            "not": {
+              "required": [
+                "legend_columns"
+              ]
+            }
+          },
+          "else": {
+            "properties": {
+              "scale": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "allowed_scales"
+                  ]
+                },
+                {
+                  "required": [
+                    "allowed_legend_columns"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "presentation_role": {
+                "const": "detail"
+              }
+            },
+            "required": [
+              "presentation_role"
+            ]
+          },
+          "then": {
+            "required": [
+              "detail_feature_ids"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "detail_feature_ids"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "features": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          },
+          "kind": {
+            "enum": [
+              "building",
+              "curb",
+              "parking",
+              "landscape",
+              "equipment",
+              "route"
+            ]
+          },
+          "frame_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f]+$"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001f]+$"
+          },
+          "evidence": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f]+$"
+              },
+              "reference": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f]+$"
+              },
+              "qualification": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000-\\u001f]+$"
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "required": [
+              "source_id",
+              "reference",
+              "qualification",
+              "confidence"
+            ]
+          },
+          "route_status": {
+            "enum": [
+              "supplied",
+              "empty",
+              "future"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "frame_id",
+          "points",
+          "closed",
+          "label",
+          "evidence"
+        ]
+      }
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "units",
+    "frame",
+    "drawing",
+    "features"
+  ]
+}

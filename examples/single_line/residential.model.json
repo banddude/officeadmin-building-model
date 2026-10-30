@@ -1,0 +1,597 @@
+{
+  "attributes": {},
+  "ceilings": [],
+  "circuits": [
+    {
+      "attributes": {},
+      "circuit_number": null,
+      "confidence": 1.0,
+      "id": "F001",
+      "load_port_ids": [
+        "F001-in"
+      ],
+      "load_va": null,
+      "name": null,
+      "phase": "AB",
+      "poles": 2,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "F001-out",
+      "voltage_v": 240
+    },
+    {
+      "attributes": {},
+      "circuit_number": null,
+      "confidence": 1.0,
+      "id": "F002",
+      "load_port_ids": [
+        "F002-in"
+      ],
+      "load_va": null,
+      "name": null,
+      "phase": "AB",
+      "poles": 2,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "F002-out",
+      "voltage_v": 240
+    },
+    {
+      "attributes": {},
+      "circuit_number": null,
+      "confidence": 1.0,
+      "id": "F003",
+      "load_port_ids": [
+        "F003-in"
+      ],
+      "load_va": null,
+      "name": null,
+      "phase": "AB",
+      "poles": 2,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "F003-out",
+      "voltage_v": 240
+    }
+  ],
+  "conductors": [
+    {
+      "attributes": {},
+      "circuit_id": "F001",
+      "confidence": 1.0,
+      "count": 2,
+      "id": "F001-wire",
+      "insulation": "THHN",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "phase",
+      "route_ids": [],
+      "size": "4 AWG"
+    },
+    {
+      "attributes": {},
+      "circuit_id": "F002",
+      "confidence": 1.0,
+      "count": 2,
+      "id": "F002-wire",
+      "insulation": "THHN",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "phase",
+      "route_ids": [],
+      "size": "4 AWG"
+    },
+    {
+      "attributes": {},
+      "circuit_id": "F003",
+      "confidence": 1.0,
+      "count": 2,
+      "id": "F003-wire",
+      "insulation": "THHN",
+      "material": "copper",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "phase",
+      "route_ids": [],
+      "size": "4 AWG"
+    }
+  ],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "source",
+      "host_id": null,
+      "id": "UTILITY",
+      "level_id": null,
+      "name": "Synthetic utility supply",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 240,
+      "size": null,
+      "space_id": null,
+      "system": null
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "meter",
+      "host_id": null,
+      "id": "METER",
+      "level_id": null,
+      "name": "Residential meter",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 240,
+      "size": null,
+      "space_id": null,
+      "system": null
+    },
+    {
+      "attributes": {
+        "single_line_notes": [
+          "Synthetic supplied rating: 200 A; 22 kAIC. No sizing or code verification performed."
+        ]
+      },
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "MAIN",
+      "level_id": null,
+      "name": "Main residential panel",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 240,
+      "size": null,
+      "space_id": null,
+      "system": null
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "SUB",
+      "level_id": null,
+      "name": "Detached workshop subpanel with a deliberately long supplied equipment label",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 240,
+      "size": null,
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "levels": [],
+  "model_id": "synthetic-residential",
+  "name": null,
+  "obstacles": [],
+  "openings": [],
+  "ports": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "electrical",
+      "id": "F001-out",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "UTILITY",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "feeder"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "electrical",
+      "id": "F001-in",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "METER",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "incoming"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "electrical",
+      "id": "F002-out",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "METER",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "feeder"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "electrical",
+      "id": "F002-in",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "MAIN",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "incoming"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "electrical",
+      "id": "F003-out",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "MAIN",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "feeder"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "electrical",
+      "id": "F003-in",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "SUB",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": "explicit-demo-facts",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "single-line-demo",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "incoming"
+    }
+  ],
+  "provenance": [],
+  "route_constraints": [],
+  "route_fittings": [],
+  "routes": [],
+  "schema_version": "1.0.0",
+  "slabs": [],
+  "spaces": [],
+  "walls": []
+}

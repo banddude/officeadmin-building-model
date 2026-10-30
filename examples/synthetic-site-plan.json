@@ -1,0 +1,265 @@
+{
+  "version": "supplied-site-plan-v1",
+  "id": "synthetic-site",
+  "units": "m",
+  "frame": {
+    "id": "synthetic-local",
+    "axes": "local-xy,+x-right,+y-up"
+  },
+  "drawing": {
+    "scale": 200,
+    "placement_mm": [
+      15,
+      15
+    ],
+    "padding_mm": 12,
+    "legend_width_mm": 105,
+    "north_degrees": 15
+  },
+  "features": [
+    {
+      "id": "building-a",
+      "kind": "building",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          0,
+          15
+        ],
+        [
+          25,
+          15
+        ],
+        [
+          25,
+          40
+        ],
+        [
+          0,
+          40
+        ]
+      ],
+      "closed": true,
+      "label": "Building A",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger building-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      }
+    },
+    {
+      "id": "curb-a",
+      "kind": "curb",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          -3,
+          -3
+        ],
+        [
+          60,
+          -3
+        ],
+        [
+          60,
+          45
+        ],
+        [
+          -3,
+          45
+        ]
+      ],
+      "closed": false,
+      "label": "Curb",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger curb-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      }
+    },
+    {
+      "id": "parking-a",
+      "kind": "parking",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          30,
+          0
+        ],
+        [
+          55,
+          0
+        ],
+        [
+          55,
+          10
+        ],
+        [
+          30,
+          10
+        ]
+      ],
+      "closed": true,
+      "label": "Parking",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger parking-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      }
+    },
+    {
+      "id": "landscape-a",
+      "kind": "landscape",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          32,
+          30
+        ],
+        [
+          55,
+          30
+        ],
+        [
+          55,
+          40
+        ],
+        [
+          32,
+          40
+        ]
+      ],
+      "closed": true,
+      "label": "Landscape",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger landscape-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      }
+    },
+    {
+      "id": "gear-a",
+      "kind": "equipment",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          27,
+          15
+        ]
+      ],
+      "closed": false,
+      "label": "Gear A",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger gear-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      }
+    },
+    {
+      "id": "charger-a",
+      "kind": "equipment",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          40,
+          12
+        ]
+      ],
+      "closed": false,
+      "label": "Charger A",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger charger-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      }
+    },
+    {
+      "id": "route-a",
+      "kind": "route",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          27,
+          15
+        ],
+        [
+          27,
+          12
+        ],
+        [
+          40,
+          12
+        ]
+      ],
+      "closed": false,
+      "label": "Route A",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger route-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      },
+      "route_status": "supplied"
+    },
+    {
+      "id": "future-a",
+      "kind": "route",
+      "frame_id": "synthetic-local",
+      "points": [
+        [
+          40,
+          12
+        ],
+        [
+          52,
+          12
+        ]
+      ],
+      "closed": false,
+      "label": "Future A",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger future-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      },
+      "route_status": "future"
+    },
+    {
+      "id": "empty-a",
+      "kind": "route",
+      "frame_id": "synthetic-local",
+      "points": [],
+      "closed": false,
+      "label": "Unrouted A",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger empty-a",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      },
+      "route_status": "empty"
+    },
+    {
+      "id": "future-b",
+      "kind": "route",
+      "frame_id": "synthetic-local",
+      "points": [],
+      "closed": false,
+      "label": "Future B",
+      "evidence": {
+        "source_id": "synthetic-measured-v1",
+        "reference": "synthetic coordinate ledger future-b",
+        "qualification": "Synthetic supplied coordinates",
+        "confidence": 0.8
+      },
+      "route_status": "future"
+    }
+  ]
+}

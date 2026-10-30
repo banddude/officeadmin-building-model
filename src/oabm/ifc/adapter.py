@@ -123,6 +123,8 @@ _GLASS_COLOUR_RGB = (0.80, 0.86, 0.90)
 _BODY_SLOP_M = 1e-6
 
 _COLLECTION_BY_KIND = {
+    "building_assembly": "building_assemblies",
+    "assembly_component": "assembly_components",
     "level": "levels",
     "space": "spaces",
     "wall": "walls",
@@ -178,6 +180,7 @@ def to_ifc(
     *,
     groups: Mapping[str, Iterable[str]] | None = None,
     element_status: Mapping[str, str] | None = None,
+    assembly_geometry: str | None = None,
 ) -> ifcopenshell.file:
     """Materialize a canonical model as IFC4 suitable for Bonsai editing.
 
@@ -265,9 +268,12 @@ def to_ifc(
     default export without the option ever being present.
     """
 
-    require_no_populated_building_assemblies(
-        model, "IFC export", error_type=IfcAdapterError,
-    )
+    if assembly_geometry not in (None, "tessellated"):
+        raise IfcAdapterError("assembly_geometry: use None or explicit 'tessellated'")
+    if assembly_geometry is None:
+        require_no_populated_building_assemblies(
+            model, "IFC export", error_type=IfcAdapterError,
+        )
 
     # IFC4 where-rules give IfcProject and IfcBuildingElementProxy an
     # ``exists(Name)`` requirement, and ``from_ifc`` reads ``Name`` back as the
@@ -403,10 +409,31 @@ def to_ifc(
             _assign_spatial_container(ifc, entity, item, storeys, spaces)
         return item
 
+    if model.building_assemblies:
+        from .assembly_consumer import assign_component_body
+        for ordinal, assembly in enumerate(model.building_assemblies):
+            item = add_product(assembly, "building_assembly", ordinal, "IfcElementAssembly", pose=Pose(position=Point3(x=0,y=0,z=0)))
+            _mark_adapter(ifc, item, AssemblyGeometry="tessellated", ParametricEditability="not-supported")
+        for ordinal, component in enumerate(model.assembly_components):
+            item = add_product(component, "assembly_component", ordinal,
+                "IfcBuildingElementProxy", pose=Pose(position=Point3(x=0,y=0,z=0)), assign_container=False)
+            item.Name = component.name or component.part_key
+            assign_component_body(ifc, item, body_context, component)
+            _mark_adapter(ifc, item, AssemblyGeometry="tessellated", GeometryBasis=component.geometry_basis)
+        for assembly in model.building_assemblies:
+            # Direct deterministic aggregation avoids API placement rewrites
+            # whose set iteration order changes STEP entity numbering.
+            ifc.create_entity("IfcRelAggregates",
+                GlobalId=canonical_id_to_ifc_guid(assembly.id + "#physical-children"),
+                RelatingObject=entity_ifc[assembly.id],
+                RelatedObjects=[entity_ifc[cid] for cid in assembly.component_ids])
+
+    represented_hosts = {a.host_id for a in model.building_assemblies if a.host_representation == "aggregate_host"}
     for ordinal, wall in enumerate(model.walls):
         item = add_product(wall, "wall", ordinal, "IfcWall")
         _assign_polyline_representation(ifc, item, axis_context, wall.centerline.points)
-        _mark_body(ifc, item, _assign_wall_body(ifc, item, body_context, wall))
+        _mark_body(ifc, item, "physical assembly children replace aggregate host Body" if wall.id in represented_hosts
+                   else _assign_wall_body(ifc, item, body_context, wall))
 
     _assign_wall_materials(ifc, model, entity_ifc)
 
@@ -437,7 +464,9 @@ def to_ifc(
             axis_context,
             (*ceiling.footprint.points, ceiling.footprint.points[0]),
         )
-        if ceiling.thickness_m is None:
+        if ceiling.id in represented_hosts:
+            _mark_adapter(ifc, item, Body="no", BodyReason="physical assembly children replace aggregate host Body")
+        elif ceiling.thickness_m is None:
             _mark_adapter(ifc, item, Body="no", BodyReason="no canonical thickness")
         else:
             reason = _assign_polygon_extrusion_body(
@@ -1359,9 +1388,8 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
     if header["schema_version"] in FITTING_SCHEMA_VERSIONS:
         document.update(fitting_selections=[], fitting_interfaces=[], fitting_selection_outcomes=[])
     if header["schema_version"] in ASSEMBLY_SCHEMA_VERSIONS:
-        # IFC has no building-assembly payload yet. to_ifc refuses populated
-        # assemblies, so only the exact empty 1.6 collections are reconstructible.
-        # Unknown canonical entity kinds still fail below instead of being dropped.
+        # Explicit tessellated export retains both collections and validates
+        # native child geometry and parent membership before returning.
         document.update(building_assemblies=[], assembly_components=[])
 
     canonical_items: dict[str, tuple[Any, dict[str, Any], int, str]] = {}
@@ -1438,18 +1466,21 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
         document[collection] = [data for _, data in items]
 
     try:
-        return BuildingModel.from_dict(document)
+        result = BuildingModel.from_dict(document)
+        if result.building_assemblies or result.assembly_components:
+            from .assembly_consumer import validate_native_assemblies
+            validate_native_assemblies(result, canonical_items, IfcAdapterError)
+        return result
     except Exception as exc:
         raise IfcAdapterError(f"IFC edit no longer forms a valid canonical model: {exc}") from exc
 
 
-def round_trip(model: BuildingModel) -> BuildingModel:
+def round_trip(model: BuildingModel, *, assembly_geometry: str | None = None) -> BuildingModel:
     """Convenience in-memory canonical -> IFC -> canonical round trip."""
 
-    require_no_populated_building_assemblies(
-        model, "IFC round trip", error_type=IfcAdapterError,
-    )
-    return from_ifc(to_ifc(model))
+    if assembly_geometry is None:
+        require_no_populated_building_assemblies(model, "IFC round trip", error_type=IfcAdapterError)
+    return from_ifc(to_ifc(model, assembly_geometry=assembly_geometry))
 
 
 def _assign_caller_groups(
@@ -2907,6 +2938,10 @@ def _apply_ifc_overrides(
     overwrite or contradict the canonical dimension fields.
     """
 
+    if kind in {"building_assembly", "assembly_component"}:
+        # Assembly native edits are validated against source-bound geometry and
+        # identity after the complete canonical model is reconstructed.
+        return
     if "name" in data:
         data["name"] = item.Name
 

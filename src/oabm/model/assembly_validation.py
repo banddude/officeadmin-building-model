@@ -53,8 +53,13 @@ def _digest(domain: str, value: Any) -> str:
     return hashlib.sha256((domain+"\0"+payload).encode("utf-8")).hexdigest()
 
 
-def compute_assembly_input_digest(model: Any, assembly: BuildingAssembly) -> str:
-    """Digest exact current source records, including provenance, plus frozen choices."""
+def assembly_input_source_records(model: Any, assembly: BuildingAssembly) -> tuple[Any, ...]:
+    """Exact source-record dependencies already used by the assembly input digest.
+
+    Read-only introspection shared by downstream consumers; no schema, selection
+    rules or digest semantics change. Sources include levels and wall openings
+    even when no separate opening insert has been requested.
+    """
     walls={item.id:item for item in model.walls}
     ceilings={item.id:item for item in model.ceilings}
     openings={item.id:item for item in model.openings}
@@ -80,6 +85,12 @@ def compute_assembly_input_digest(model: Any, assembly: BuildingAssembly) -> str
         source_objects[host.level_id]=levels[host.level_id]
         if assembly.deck_id in slabs:
             source_objects[assembly.deck_id]=slabs[assembly.deck_id]
+    return tuple(source_objects[key] for key in sorted(source_objects))
+
+
+def compute_assembly_input_digest(model: Any, assembly: BuildingAssembly) -> str:
+    """Digest exact current source records, including provenance, plus frozen choices."""
+    source_objects={item.id:item for item in assembly_input_source_records(model,assembly)}
     snapshot={
         "assembly_id": assembly.id,
         "assembly_kind": assembly.assembly_kind,

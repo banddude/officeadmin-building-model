@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit schedule sheet layout settings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "layout"
+  ],
+  "properties": {
+    "version": {
+      "const": "panel-schedule-sheet-set-v1"
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text_height_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "line_height_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "padding_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "column_widths_mm": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "packing": {
+          "enum": [
+            "one_table_per_sheet",
+            "compact"
+          ]
+        }
+      }
+    }
+  }
+}

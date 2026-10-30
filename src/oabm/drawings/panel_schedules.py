@@ -17,20 +17,22 @@ def panel_report_to_drawing_schedules(report: PanelScheduleReport) -> tuple[Draw
         ('load_ports','Load ports',None),('poles','Supplied poles',None),('phase','Supplied phase',None),
         ('voltage','Supplied voltage','V'),('connected_load','Supplied connected load','VA'),
         ('routes','Route IDs',None),('missing','Missing supplied facts',None),
-        ('assignment','Source assignment',None),('source_confidence','Circuit source confidence',None)))
-    def row(fact):
+        ('assignment','Source assignment',None),('conflict','Printed label conflict',None),('source_confidence','Circuit source confidence',None)))
+    def row(fact, conflicts=()):
         circuit=fact.circuit.entity
         return ScheduleRow(source_id=fact.circuit.id,cells=(fact.circuit.id,
             _value(circuit['circuit_number']),fact.source_port.id,fact.source_owner.id,
             ', '.join(circuit['load_port_ids']),_value(circuit['poles']),_value(circuit['phase']),
             _value(circuit['voltage_v']),_value(circuit['load_va']),', '.join(circuit['route_ids']),
-            ', '.join(fact.missing_fields),fact.assignment_status,str(circuit['confidence'])))
+            ', '.join(fact.missing_fields) or 'none',fact.assignment_status,
+            ('duplicate label; circuits: ' + ', '.join(next(c.circuit_ids for c in conflicts if fact.circuit.id in c.circuit_ids)))
+            if any(fact.circuit.id in c.circuit_ids for c in conflicts) else 'none',str(circuit['confidence'])))
     schedules=[]
     for group in report.panels:
         title=f'Panel {group.panel.id}: supplied circuit facts'
         if group.label_conflicts:title+=' (duplicate printed labels)'
         schedules.append(DrawingSchedule(id=stable_id('schedule',f'panel-facts:{group.panel.id}'),
-            title=title,columns=columns,rows=tuple(row(fact) for fact in group.circuits)))
+            title=title,columns=columns,rows=tuple(row(fact, group.label_conflicts) for fact in group.circuits)))
         summary_columns=(ScheduleColumn('panel','Panel ID'),ScheduleColumn('known','Known connected subtotal','VA'),
             ScheduleColumn('complete','All listed circuit loads known'),ScheduleColumn('unknown','Unknown-load circuit IDs'),
             ScheduleColumn('conflicts','Conflicting opaque labels'),ScheduleColumn('verification','Code verification'))

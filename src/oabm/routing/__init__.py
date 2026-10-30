@@ -29,3 +29,16 @@ __all__ = [
     "RouteOverlap", "find_overlapping_route_runs",
     "ConsolidationReport", "ConsolidationResult", "consolidate_bundled_routes",
 ]
+
+__all__ += ["AssemblyRouteCandidate", "CheckedAssemblyRoute", "NoCheckedAssemblyRoute", "route_checked_assembly"]
+
+
+def __getattr__(name):
+    # Quantity extraction imports routing.overlap. Loading the optional checked
+    # workflow here eagerly would recurse through qa.revision_diff -> quantities.
+    if name in {"AssemblyRouteCandidate", "CheckedAssemblyRoute", "NoCheckedAssemblyRoute", "route_checked_assembly"}:
+        from importlib import import_module
+        value = getattr(import_module(".checked_assembly", __name__), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

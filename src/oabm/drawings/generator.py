@@ -280,6 +280,7 @@ def generate_drawing_set(
     dimension_decimals: int | None = None,
     label_overlap: str = "keep",
     dimension_overlap: str = "keep",
+    assembly_geometry: str | None = None,
 ) -> DrawingSet:
     """Generate immutable drawing output from canonical model semantics.
 
@@ -291,7 +292,14 @@ def generate_drawing_set(
     opt-in presentation options shared by every generated view; see
     :func:`generate_plan`.
     """
-    require_no_populated_building_assemblies(model, "generate_drawing_set")
+    if assembly_geometry not in (None, "cut"):
+        raise ValueError("assembly_geometry: use None or explicit 'cut'")
+    elevations = tuple(elevations)
+    populated = bool(model.building_assemblies or model.assembly_components)
+    if assembly_geometry is None:
+        require_no_populated_building_assemblies(model, "generate_drawing_set")
+    elif populated and (elevations or include_schedules):
+        raise ValueError("assembly cut drawing sets support plans/sections only; omit elevations and set include_schedules=False")
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -306,6 +314,7 @@ def generate_drawing_set(
                 dimension_decimals=decimals,
                 label_overlap=overlap,
                 dimension_overlap=dimension_mode,
+                assembly_geometry=assembly_geometry,
             )
         )
     for spec in sorted(tuple(elevations), key=lambda item: item.id):
@@ -330,6 +339,7 @@ def generate_drawing_set(
                 dimension_decimals=decimals,
                 label_overlap=overlap,
                 dimension_overlap=dimension_mode,
+                assembly_geometry=assembly_geometry,
             )
         )
 
@@ -337,7 +347,8 @@ def generate_drawing_set(
     # Keep a deterministic identity/provenance index for the canonical model.
     # Derived geometry only stores source IDs; this index lets downstream renderers
     # trace any drawing reference back to provenance without copying model semantics.
-    source_index = tuple(_source_reference(entity) for entity in sorted(_entities(model), key=lambda item: item.id))
+    indexed = (*_entities(model), *model.building_assemblies, *model.assembly_components) if assembly_geometry == "cut" else _entities(model)
+    source_index = tuple(_source_reference(entity) for entity in sorted(indexed, key=lambda item: item.id))
     return DrawingSet(
         model_id=model.model_id,
         views=tuple(sorted(views, key=lambda item: (item.view_type, item.id))),
@@ -355,6 +366,7 @@ def generate_plan(
     dimension_decimals: int | None = None,
     label_overlap: str = "keep",
     dimension_overlap: str = "keep",
+    assembly_geometry: str | None = None,
 ) -> DrawingView:
     """Generate one plan view.
 
@@ -380,7 +392,35 @@ def generate_plan(
     before labels, so ``"skip_with_dimensions"`` only sees the dimensions that
     survived this pass.
     """
+    if assembly_geometry not in (None, "cut"):
+        raise ValueError("assembly_geometry: use None or explicit 'cut'")
+    if assembly_geometry == "cut":
+        from .assembly_cuts import physical_cut_view
+        return physical_cut_view(model, spec, _generate_plan_base, dict(
+            symbol_provider=symbol_provider, label_provider=label_provider,
+            dimension_decimals=dimension_decimals, label_overlap=label_overlap,
+            dimension_overlap=dimension_overlap))
     require_no_populated_building_assemblies(model, "generate_plan")
+    return _generate_plan_base(model, spec, symbol_provider=symbol_provider,
+        label_provider=label_provider, dimension_decimals=dimension_decimals,
+        label_overlap=label_overlap, dimension_overlap=dimension_overlap)
+
+
+def _generate_plan_base(
+    model: BuildingModel,
+    spec: PlanSpec,
+    *,
+    symbol_provider: SymbolProvider,
+    label_provider: LabelProvider,
+    dimension_decimals: int | None,
+    label_overlap: str,
+    dimension_overlap: str,
+) -> DrawingView:
+    """Project ordinary entities from the original model after public admission.
+
+    Physical cut composition reuses this projection without deleting canonical
+    assemblies or invalidating the route receipts that depend on them.
+    """
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -533,14 +573,46 @@ def generate_section(
     dimension_decimals: int | None = None,
     label_overlap: str = "keep",
     dimension_overlap: str = "keep",
+    assembly_geometry: str | None = None,
 ) -> DrawingView:
     """Generate one section view; see :func:`generate_plan` for the options.
+
+    Explicit ``assembly_geometry="cut"`` includes physical child plane cuts;
+    no beyond-cut assembly projection or hidden-line elevation is implied.
 
     Sections carry no dimension builders, so ``dimension_decimals`` and
     ``dimension_overlap`` are validated for interface parity but do not change
     section output.
     """
+    if assembly_geometry not in (None, "cut"):
+        raise ValueError("assembly_geometry: use None or explicit 'cut'")
+    if assembly_geometry == "cut":
+        from .assembly_cuts import physical_cut_view
+        return physical_cut_view(model, spec, _generate_section_base, dict(
+            symbol_provider=symbol_provider, label_provider=label_provider,
+            dimension_decimals=dimension_decimals, label_overlap=label_overlap,
+            dimension_overlap=dimension_overlap))
     require_no_populated_building_assemblies(model, "generate_section")
+    return _generate_section_base(model, spec, symbol_provider=symbol_provider,
+        label_provider=label_provider, dimension_decimals=dimension_decimals,
+        label_overlap=label_overlap, dimension_overlap=dimension_overlap)
+
+
+def _generate_section_base(
+    model: BuildingModel,
+    spec: SectionSpec,
+    *,
+    symbol_provider: SymbolProvider,
+    label_provider: LabelProvider,
+    dimension_decimals: int | None,
+    label_overlap: str,
+    dimension_overlap: str,
+) -> DrawingView:
+    """Project ordinary entities from the original model after public admission.
+
+    Physical cut composition reuses this projection without deleting canonical
+    assemblies or invalidating the route receipts that depend on them.
+    """
     overlap = _validated_label_overlap(label_overlap)
     _validated_dimension_decimals(dimension_decimals)
     _validated_dimension_overlap(dimension_overlap)

@@ -1,0 +1,2033 @@
+{
+  "version": "supplied-site-plan-v1",
+  "id": "synthetic-campus",
+  "units": "m",
+  "frame": {
+    "id": "synthetic-campus",
+    "axes": "local-xy,+x-right,+y-up"
+  },
+  "features": [
+    {
+      "id": "workshop",
+      "kind": "building",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          44,
+          0
+        ],
+        [
+          44,
+          28
+        ],
+        [
+          34,
+          28
+        ],
+        [
+          34,
+          45
+        ],
+        [
+          0,
+          45
+        ]
+      ],
+      "label": "EXISTING WORKSHOP",
+      "closed": true,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic workshop",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "annex",
+      "kind": "building",
+      "points": [
+        [
+          72,
+          34
+        ],
+        [
+          94,
+          34
+        ],
+        [
+          94,
+          60
+        ],
+        [
+          72,
+          60
+        ]
+      ],
+      "label": "PROPOSED SERVICE ANNEX",
+      "closed": true,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic annex",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "curb",
+      "kind": "curb",
+      "points": [
+        [
+          -8,
+          -10
+        ],
+        [
+          112,
+          -10
+        ],
+        [
+          116,
+          -6
+        ],
+        [
+          116,
+          66
+        ],
+        [
+          112,
+          70
+        ],
+        [
+          -8,
+          70
+        ],
+        [
+          -12,
+          66
+        ],
+        [
+          -12,
+          -6
+        ]
+      ],
+      "label": "CURB EDGE",
+      "closed": true,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic curb",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "aisle-south",
+      "kind": "parking",
+      "points": [
+        [
+          -5,
+          -9
+        ],
+        [
+          109,
+          -9
+        ]
+      ],
+      "label": "SOUTH PARKING EDGE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic aisle-south",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "aisle-east",
+      "kind": "parking",
+      "points": [
+        [
+          112,
+          -5
+        ],
+        [
+          112,
+          62
+        ]
+      ],
+      "label": "EAST PARKING EDGE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic aisle-east",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-0",
+      "kind": "parking",
+      "points": [
+        [
+          -5.0,
+          -8
+        ],
+        [
+          -5.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-0",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-1",
+      "kind": "parking",
+      "points": [
+        [
+          -1.5,
+          -8
+        ],
+        [
+          -1.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-1",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-2",
+      "kind": "parking",
+      "points": [
+        [
+          2.0,
+          -8
+        ],
+        [
+          2.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-2",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-3",
+      "kind": "parking",
+      "points": [
+        [
+          5.5,
+          -8
+        ],
+        [
+          5.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-3",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-4",
+      "kind": "parking",
+      "points": [
+        [
+          9.0,
+          -8
+        ],
+        [
+          9.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-4",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-5",
+      "kind": "parking",
+      "points": [
+        [
+          12.5,
+          -8
+        ],
+        [
+          12.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-5",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-6",
+      "kind": "parking",
+      "points": [
+        [
+          16.0,
+          -8
+        ],
+        [
+          16.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-6",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-7",
+      "kind": "parking",
+      "points": [
+        [
+          19.5,
+          -8
+        ],
+        [
+          19.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-7",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-8",
+      "kind": "parking",
+      "points": [
+        [
+          23.0,
+          -8
+        ],
+        [
+          23.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-8",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-9",
+      "kind": "parking",
+      "points": [
+        [
+          26.5,
+          -8
+        ],
+        [
+          26.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-9",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-10",
+      "kind": "parking",
+      "points": [
+        [
+          30.0,
+          -8
+        ],
+        [
+          30.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-10",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-11",
+      "kind": "parking",
+      "points": [
+        [
+          33.5,
+          -8
+        ],
+        [
+          33.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-11",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-12",
+      "kind": "parking",
+      "points": [
+        [
+          37.0,
+          -8
+        ],
+        [
+          37.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-12",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-13",
+      "kind": "parking",
+      "points": [
+        [
+          40.5,
+          -8
+        ],
+        [
+          40.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-13",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-14",
+      "kind": "parking",
+      "points": [
+        [
+          44.0,
+          -8
+        ],
+        [
+          44.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-14",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-15",
+      "kind": "parking",
+      "points": [
+        [
+          47.5,
+          -8
+        ],
+        [
+          47.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-15",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-16",
+      "kind": "parking",
+      "points": [
+        [
+          51.0,
+          -8
+        ],
+        [
+          51.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-16",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-17",
+      "kind": "parking",
+      "points": [
+        [
+          54.5,
+          -8
+        ],
+        [
+          54.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-17",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-18",
+      "kind": "parking",
+      "points": [
+        [
+          58.0,
+          -8
+        ],
+        [
+          58.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-18",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-19",
+      "kind": "parking",
+      "points": [
+        [
+          61.5,
+          -8
+        ],
+        [
+          61.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-19",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-20",
+      "kind": "parking",
+      "points": [
+        [
+          65.0,
+          -8
+        ],
+        [
+          65.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-20",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-21",
+      "kind": "parking",
+      "points": [
+        [
+          68.5,
+          -8
+        ],
+        [
+          68.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-21",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-22",
+      "kind": "parking",
+      "points": [
+        [
+          72.0,
+          -8
+        ],
+        [
+          72.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-22",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-23",
+      "kind": "parking",
+      "points": [
+        [
+          75.5,
+          -8
+        ],
+        [
+          75.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-23",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-24",
+      "kind": "parking",
+      "points": [
+        [
+          79.0,
+          -8
+        ],
+        [
+          79.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-24",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-25",
+      "kind": "parking",
+      "points": [
+        [
+          82.5,
+          -8
+        ],
+        [
+          82.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-25",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-26",
+      "kind": "parking",
+      "points": [
+        [
+          86.0,
+          -8
+        ],
+        [
+          86.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-26",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-27",
+      "kind": "parking",
+      "points": [
+        [
+          89.5,
+          -8
+        ],
+        [
+          89.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-27",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-28",
+      "kind": "parking",
+      "points": [
+        [
+          93.0,
+          -8
+        ],
+        [
+          93.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-28",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-29",
+      "kind": "parking",
+      "points": [
+        [
+          96.5,
+          -8
+        ],
+        [
+          96.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-29",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-30",
+      "kind": "parking",
+      "points": [
+        [
+          100.0,
+          -8
+        ],
+        [
+          100.0,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-30",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-s-31",
+      "kind": "parking",
+      "points": [
+        [
+          103.5,
+          -8
+        ],
+        [
+          103.5,
+          -1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-s-31",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-0",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          -4.0
+        ],
+        [
+          111,
+          -4.0
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-0",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-1",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          -0.9
+        ],
+        [
+          111,
+          -0.9
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-1",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-2",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          2.2
+        ],
+        [
+          111,
+          2.2
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-2",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-3",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          5.3
+        ],
+        [
+          111,
+          5.3
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-3",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-4",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          8.4
+        ],
+        [
+          111,
+          8.4
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-4",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-5",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          11.5
+        ],
+        [
+          111,
+          11.5
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-5",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-6",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          14.6
+        ],
+        [
+          111,
+          14.6
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-6",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-7",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          17.7
+        ],
+        [
+          111,
+          17.7
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-7",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-8",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          20.8
+        ],
+        [
+          111,
+          20.8
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-8",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-9",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          23.9
+        ],
+        [
+          111,
+          23.9
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-9",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-10",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          27.0
+        ],
+        [
+          111,
+          27.0
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-10",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-11",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          30.1
+        ],
+        [
+          111,
+          30.1
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-11",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-12",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          33.2
+        ],
+        [
+          111,
+          33.2
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-12",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-13",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          36.3
+        ],
+        [
+          111,
+          36.3
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-13",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-14",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          39.4
+        ],
+        [
+          111,
+          39.4
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-14",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-15",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          42.5
+        ],
+        [
+          111,
+          42.5
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-15",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-16",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          45.6
+        ],
+        [
+          111,
+          45.6
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-16",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-17",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          48.7
+        ],
+        [
+          111,
+          48.7
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-17",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-18",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          51.8
+        ],
+        [
+          111,
+          51.8
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-18",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-19",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          54.9
+        ],
+        [
+          111,
+          54.9
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-19",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-e-20",
+      "kind": "parking",
+      "points": [
+        [
+          98,
+          58.0
+        ],
+        [
+          111,
+          58.0
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-e-20",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-0",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          2.0
+        ],
+        [
+          -1,
+          2.0
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-0",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-1",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          5.6
+        ],
+        [
+          -1,
+          5.6
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-1",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-2",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          9.2
+        ],
+        [
+          -1,
+          9.2
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-2",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-3",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          12.8
+        ],
+        [
+          -1,
+          12.8
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-3",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-4",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          16.4
+        ],
+        [
+          -1,
+          16.4
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-4",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-5",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          20.0
+        ],
+        [
+          -1,
+          20.0
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-5",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-6",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          23.6
+        ],
+        [
+          -1,
+          23.6
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-6",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-7",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          27.2
+        ],
+        [
+          -1,
+          27.2
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-7",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-8",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          30.8
+        ],
+        [
+          -1,
+          30.8
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-8",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-9",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          34.4
+        ],
+        [
+          -1,
+          34.4
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-9",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-10",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          38.0
+        ],
+        [
+          -1,
+          38.0
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-10",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-11",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          41.6
+        ],
+        [
+          -1,
+          41.6
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-11",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "stall-w-12",
+      "kind": "parking",
+      "points": [
+        [
+          -10,
+          45.2
+        ],
+        [
+          -1,
+          45.2
+        ]
+      ],
+      "label": "PARKING STRIPE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic stall-w-12",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "island-north",
+      "kind": "landscape",
+      "points": [
+        [
+          98,
+          64
+        ],
+        [
+          111,
+          64
+        ],
+        [
+          113,
+          66
+        ],
+        [
+          111,
+          68
+        ],
+        [
+          98,
+          68
+        ]
+      ],
+      "label": "LANDSCAPE",
+      "closed": true,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic island-north",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "island-west",
+      "kind": "landscape",
+      "points": [
+        [
+          -10,
+          54
+        ],
+        [
+          -2,
+          54
+        ],
+        [
+          -2,
+          66
+        ],
+        [
+          -7,
+          66
+        ],
+        [
+          -10,
+          62
+        ]
+      ],
+      "label": "LANDSCAPE",
+      "closed": true,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic island-west",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "main-panel",
+      "kind": "equipment",
+      "points": [
+        [
+          6,
+          16
+        ]
+      ],
+      "label": "PANEL-S",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic main-panel",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "jb-1",
+      "kind": "equipment",
+      "points": [
+        [
+          63,
+          34
+        ]
+      ],
+      "label": "JB-1",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic jb-1",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "jb-2",
+      "kind": "equipment",
+      "points": [
+        [
+          72,
+          34
+        ]
+      ],
+      "label": "JB-2",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic jb-2",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "annex-panel",
+      "kind": "equipment",
+      "points": [
+        [
+          72,
+          39
+        ]
+      ],
+      "label": "PANEL-A",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic annex-panel",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "control",
+      "kind": "equipment",
+      "points": [
+        [
+          88,
+          44
+        ]
+      ],
+      "label": "CONTROL",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic control",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      }
+    },
+    {
+      "id": "existing-service",
+      "kind": "route",
+      "points": [
+        [
+          -6,
+          4
+        ],
+        [
+          6,
+          4
+        ],
+        [
+          6,
+          16
+        ]
+      ],
+      "label": "EXISTING ROUTE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic existing-service",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      },
+      "route_status": "supplied"
+    },
+    {
+      "id": "proposed-feeder",
+      "kind": "route",
+      "points": [
+        [
+          6,
+          16
+        ],
+        [
+          44,
+          16
+        ],
+        [
+          44,
+          29
+        ],
+        [
+          63,
+          29
+        ],
+        [
+          63,
+          34
+        ]
+      ],
+      "label": "PROPOSED FEEDER",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic proposed-feeder",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      },
+      "route_status": "supplied"
+    },
+    {
+      "id": "span",
+      "kind": "route",
+      "points": [
+        [
+          63,
+          34
+        ],
+        [
+          72,
+          34
+        ]
+      ],
+      "label": "SUPPLIED SPAN",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic span",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      },
+      "route_status": "supplied"
+    },
+    {
+      "id": "annex-drop",
+      "kind": "route",
+      "points": [
+        [
+          72,
+          34
+        ],
+        [
+          72,
+          39
+        ]
+      ],
+      "label": "PANEL APPROACH",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic annex-drop",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      },
+      "route_status": "supplied"
+    },
+    {
+      "id": "future-control",
+      "kind": "route",
+      "points": [
+        [
+          72,
+          39
+        ],
+        [
+          80,
+          39
+        ],
+        [
+          80,
+          44
+        ],
+        [
+          88,
+          44
+        ]
+      ],
+      "label": "FUTURE CONTROL ROUTE",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic future-control",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      },
+      "route_status": "future"
+    },
+    {
+      "id": "future-intent",
+      "kind": "route",
+      "points": [],
+      "label": "FUTURE CONNECTION INTENT",
+      "closed": false,
+      "frame_id": "synthetic-campus",
+      "evidence": {
+        "source_id": "synthetic-campus-coordinate-ledger",
+        "reference": "supplied synthetic future-intent",
+        "qualification": "Synthetic coordinate example only; not survey or construction information.",
+        "confidence": 1.0
+      },
+      "route_status": "future"
+    }
+  ],
+  "drawing": {
+    "scale": null,
+    "scale_mode": "fit",
+    "allowed_scales": [
+      200,
+      250,
+      300,
+      500
+    ],
+    "placement_mm": [
+      15,
+      15
+    ],
+    "padding_mm": 12,
+    "legend_width_mm": 105,
+    "north_degrees": 0
+  }
+}

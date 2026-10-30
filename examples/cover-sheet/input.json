@@ -1,0 +1,9 @@
+{
+  "version": "cover-sheet-v1",
+  "id": "G001",
+  "project": {"name": "Synthetic Workshop", "location": "Synthetic Site A", "number": "DEMO-001"},
+  "scope": ["Install the supplied demonstration lighting and power scope.", "Coordinate supplied equipment locations with the project team."],
+  "sheets": [{"id": "G001", "title": "Cover Sheet"}, {"id": "E101", "title": "Lighting Plan"}, {"id": "E201", "title": "Power Plan"}],
+  "contacts": [{"role": "Designer", "name": "Synthetic Design Team", "email": "design@example.invalid"}],
+  "notes": ["Synthetic fixture for layout review."]
+}

@@ -271,3 +271,29 @@ and signed length delta. Route identity is unchanged. Fittings and measured rout
 length are generated from the final centerline, so downstream conductor takeoff
 includes connector length rather than omitting a branch-to-trunk gap. This is a
 geometric proposal; it does not add a physical minimum bend-radius design rule.
+
+### Bounded-domain lattice size
+
+For a supplied allowed domain, candidate generation omits rule planes whose
+already-expanded bounds lie wholly outside every allowed volume, then removes
+axis coordinates outside all raw domain intervals before counting grid nodes.
+All hard blockers remain in collision checks and receipts. The exact swept
+union-coverage check and the 200,000-node cap are unchanged. Raw intervals, not
+per-box shrunken intervals, preserve candidates at connected-volume seams.
+Unbounded routing retains its original candidate-generation behavior. This
+avoids spending the finite grid budget on framing/levels that the requested
+plenum or cavity route cannot reach; it does not enlarge the routing domain.
+
+Within a bounded search, up to 65,536 directed-edge checks and 65,536 lattice
+points are cached for that request only. Direction, bend-count and corridor-mask
+states can reuse an identical geometry/cost result. The cache is discarded after
+the call, never reused across models, and does not replace domain, collision,
+route-receipt freshness or search-budget checks. Tests compare cached and uncached
+routes exactly, rather than using a wall-clock performance threshold.
+
+Bounded searches also discard a state only when another state at the same node,
+arrival direction and required-corridor mask has no more cost and no more bends.
+Every continuation then has identical incremental geometry/cost, while the
+smaller bend count retains at least the same remaining bend allowance. Cost/bend
+tradeoffs remain in the frontier; exact comparisons do not collapse near ties.
+The pushed-state limit stays at 500,000, and unbounded search is unchanged.

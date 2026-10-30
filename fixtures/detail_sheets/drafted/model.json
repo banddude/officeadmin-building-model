@@ -1,0 +1,549 @@
+{
+  "attributes": {},
+  "box_selection_outcomes": [],
+  "ceilings": [],
+  "circuits": [],
+  "conductors": [],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_boxes": [],
+  "electrical_devices": [],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "cabinet",
+      "host_id": null,
+      "id": "EQ-A",
+      "level_id": "L1",
+      "name": "Synthetic cabinet",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": -0.1,
+          "z": 1.2
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": null,
+      "size": {
+        "x": 0.6,
+        "y": 0.2,
+        "z": 0.8
+      },
+      "space_id": null,
+      "system": null
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "junction_enclosure",
+      "host_id": null,
+      "id": "EQ-B",
+      "level_id": "L1",
+      "name": "Synthetic connection enclosure",
+      "pose": {
+        "position": {
+          "x": 0.8,
+          "y": -0.1,
+          "z": 1.6
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": null,
+      "size": {
+        "x": 0.2,
+        "y": 0.2,
+        "z": 0.2
+      },
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "levels": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "elevation_m": 0,
+      "height_m": null,
+      "id": "L1",
+      "name": null,
+      "provenance": []
+    }
+  ],
+  "model_id": "synthetic:detailed-installation",
+  "name": null,
+  "obstacles": [],
+  "openings": [],
+  "ports": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "P-A",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "EQ-A",
+      "pose": {
+        "position": {
+          "x": 0.3,
+          "y": -0.1,
+          "z": 1.2
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": -1,
+        "y": 0,
+        "z": 0
+      },
+      "domain": "power",
+      "id": "P-B",
+      "name": null,
+      "nominal_diameter_m": null,
+      "owner_id": "EQ-B",
+      "pose": {
+        "position": {
+          "x": 0.7,
+          "y": -0.1,
+          "z": 1.6
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    }
+  ],
+  "provenance": [],
+  "raceway_selection_outcomes": [],
+  "raceway_selections": [],
+  "route_constraints": [],
+  "route_fittings": [],
+  "routes": [
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.3,
+            "y": -0.1,
+            "z": 1.2
+          },
+          {
+            "x": 0.5,
+            "y": -0.1,
+            "z": 1.2
+          },
+          {
+            "x": 0.5,
+            "y": -0.1,
+            "z": 1.6
+          },
+          {
+            "x": 0.7,
+            "y": -0.1,
+            "z": 1.6
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "end_port_id": "P-B",
+      "fitting_ids": [],
+      "id": "R1",
+      "name": null,
+      "nominal_diameter_m": 0.025,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_type": "emt",
+      "start_port_id": "P-A"
+    }
+  ],
+  "schema_version": "1.3.0",
+  "slabs": [],
+  "spaces": [],
+  "support_assemblies": [
+    {
+      "assembly_type": "supplied_two_rail_envelopes",
+      "attributes": {},
+      "basis": {
+        "authority": "synthetic-caller",
+        "revision": "1",
+        "rule_id": "supplied-mounting-positions"
+      },
+      "component_ids": [
+        "S-A",
+        "S-B"
+      ],
+      "confidence": 1.0,
+      "id": "SA1",
+      "intent_id": "supplied-layout",
+      "interface_ids": [
+        "I-S-A",
+        "I-S-B"
+      ],
+      "level_id": "L1",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "supported_object_ids": [
+        "EQ-A"
+      ]
+    }
+  ],
+  "support_components": [
+    {
+      "assembly_id": "SA1",
+      "attributes": {},
+      "category": "support",
+      "component_type": "supplied_rail_envelope",
+      "confidence": 1.0,
+      "geometry_basis": "catalog_exterior_envelope",
+      "id": "S-A",
+      "level_id": "L1",
+      "name": null,
+      "part_key": "S-A",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0.06,
+          "z": 0.9
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "product": {
+        "catalog_id": "synthetic",
+        "catalog_revision": "1",
+        "product_id": "exterior-rail"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "size": {
+        "x": 0.8,
+        "y": 0.08,
+        "z": 0.06
+      }
+    },
+    {
+      "assembly_id": "SA1",
+      "attributes": {},
+      "category": "support",
+      "component_type": "supplied_rail_envelope",
+      "confidence": 1.0,
+      "geometry_basis": "catalog_exterior_envelope",
+      "id": "S-B",
+      "level_id": "L1",
+      "name": null,
+      "part_key": "S-B",
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0.06,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "product": {
+        "catalog_id": "synthetic",
+        "catalog_revision": "1",
+        "product_id": "exterior-rail"
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "size": {
+        "x": 0.8,
+        "y": 0.08,
+        "z": 0.06
+      }
+    }
+  ],
+  "support_interfaces": [
+    {
+      "assembly_id": "SA1",
+      "attributes": {},
+      "component_ids": [
+        "S-A"
+      ],
+      "confidence": 1.0,
+      "host_id": "W1",
+      "id": "I-S-A",
+      "interface_key": "S-A",
+      "level_id": "L1",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0.1,
+          "z": 0.9
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "substrate": "concrete"
+    },
+    {
+      "assembly_id": "SA1",
+      "attributes": {},
+      "component_ids": [
+        "S-B"
+      ],
+      "confidence": 1.0,
+      "host_id": "W1",
+      "id": "I-S-B",
+      "interface_key": "S-B",
+      "level_id": "L1",
+      "name": null,
+      "pose": {
+        "position": {
+          "x": 0,
+          "y": 0.1,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "substrate": "concrete"
+    }
+  ],
+  "support_selection_outcomes": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "id": "SO1",
+      "intent_id": "supplied-layout",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "reason_codes": [],
+      "requested_basis": {
+        "authority": "synthetic-caller",
+        "revision": "1",
+        "rule_id": "supplied-mounting-positions"
+      },
+      "requested_level_id": "L1",
+      "selected_assembly_id": "SA1",
+      "status": "selected",
+      "supported_object_ids": [
+        "EQ-A"
+      ]
+    }
+  ],
+  "walls": [
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": -0.8,
+            "y": 0.2,
+            "z": 0
+          },
+          {
+            "x": 0.8,
+            "y": 0.2,
+            "z": 0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "construction": "concrete",
+      "height_m": 1.9,
+      "id": "W1",
+      "level_id": "L1",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:explicit-detail-facts",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.2
+    }
+  ]
+}

@@ -1,0 +1,3270 @@
+{
+  "attributes": {
+    "fixture_purpose": "contract coverage only; not routing acceptance"
+  },
+  "ceilings": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 2.8
+          },
+          {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 2.8
+          },
+          {
+            "x": 6.0,
+            "y": 5.0,
+            "z": 2.8
+          },
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "z": 2.8
+          }
+        ]
+      },
+      "id": "ceiling:garage",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.02
+    }
+  ],
+  "circuits": [
+    {
+      "attributes": {},
+      "circuit_number": "duplicate supplied label",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-000",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 0.0,
+      "name": "Synthetic supplied circuit 0",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "duplicate supplied label",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-001",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": null,
+      "name": "Synthetic supplied circuit 1",
+      "phase": null,
+      "poles": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": null
+    },
+    {
+      "attributes": {},
+      "circuit_number": "3",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-002",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 20.0,
+      "name": "Synthetic supplied circuit 2",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "4",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-003",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 30.0,
+      "name": "Synthetic supplied circuit 3",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "5",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-004",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 40.0,
+      "name": "Synthetic supplied circuit 4",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "6",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-005",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 50.0,
+      "name": "Synthetic supplied circuit 5",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "7",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-006",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 60.0,
+      "name": "Synthetic supplied circuit 6",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "8",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-007",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 70.0,
+      "name": "Synthetic supplied circuit 7",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "9",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-008",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 80.0,
+      "name": "Synthetic supplied circuit 8",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "10",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-009",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 90.0,
+      "name": "Synthetic supplied circuit 9",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "11",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-010",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 100.0,
+      "name": "Synthetic supplied circuit 10",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "12",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-011",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 110.0,
+      "name": "Synthetic supplied circuit 11",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "13",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-012",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 120.0,
+      "name": "Synthetic supplied circuit 12",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "14",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-013",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 130.0,
+      "name": "Synthetic supplied circuit 13",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "15",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-014",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 140.0,
+      "name": "Synthetic supplied circuit 14",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "16",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-015",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 150.0,
+      "name": "Synthetic supplied circuit 15",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "17",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-016",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 160.0,
+      "name": "Synthetic supplied circuit 16",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "18",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-017",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 170.0,
+      "name": "Synthetic supplied circuit 17",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "19",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-018",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 180.0,
+      "name": "Synthetic supplied circuit 18",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "20",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-019",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 190.0,
+      "name": "Synthetic supplied circuit 19",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "21",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-020",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 200.0,
+      "name": "Synthetic supplied circuit 20",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "22",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-021",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 210.0,
+      "name": "Synthetic supplied circuit 21",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "23",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-022",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 220.0,
+      "name": "Synthetic supplied circuit 22",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "24",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-023",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 230.0,
+      "name": "Synthetic supplied circuit 23",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "25",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-024",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 240.0,
+      "name": "Synthetic supplied circuit 24",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "26",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-025",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 250.0,
+      "name": "Synthetic supplied circuit 25",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "27",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-026",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 260.0,
+      "name": "Synthetic supplied circuit 26",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "28",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-027",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 270.0,
+      "name": "Synthetic supplied circuit 27",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "29",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-028",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 280.0,
+      "name": "Synthetic supplied circuit 28",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "30",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-029",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 290.0,
+      "name": "Synthetic supplied circuit 29",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "31",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-030",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 300.0,
+      "name": "Synthetic supplied circuit 30",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "32",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-031",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 310.0,
+      "name": "Synthetic supplied circuit 31",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "33",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-032",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 320.0,
+      "name": "Synthetic supplied circuit 32",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "34",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-033",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 330.0,
+      "name": "Synthetic supplied circuit 33",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "35",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-034",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 340.0,
+      "name": "Synthetic supplied circuit 34",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "36",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-035",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 350.0,
+      "name": "Synthetic supplied circuit 35",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "37",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-036",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 360.0,
+      "name": "Synthetic supplied circuit 36",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "38",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-037",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 370.0,
+      "name": "Synthetic supplied circuit 37",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "39",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-038",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 380.0,
+      "name": "Synthetic supplied circuit 38",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "40",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-039",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 390.0,
+      "name": "Synthetic supplied circuit 39",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "41",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-040",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 400.0,
+      "name": "Synthetic supplied circuit 40",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "42",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-041",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 410.0,
+      "name": "Synthetic supplied circuit 41",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "43",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-042",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 420.0,
+      "name": "Synthetic supplied circuit 42",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "44",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-043",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 430.0,
+      "name": "Synthetic supplied circuit 43",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "45",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-044",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 440.0,
+      "name": "Synthetic supplied circuit 44",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "46",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-045",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 450.0,
+      "name": "Synthetic supplied circuit 45",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "47",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-046",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 460.0,
+      "name": "Synthetic supplied circuit 46",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "48",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-047",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 470.0,
+      "name": "Synthetic supplied circuit 47",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "49",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-048",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 480.0,
+      "name": "Synthetic supplied circuit 48",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "50",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-049",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 490.0,
+      "name": "Synthetic supplied circuit 49",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "51",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-050",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 500.0,
+      "name": "Synthetic supplied circuit 50",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "52",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-051",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 510.0,
+      "name": "Synthetic supplied circuit 51",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "53",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-052",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 520.0,
+      "name": "Synthetic supplied circuit 52",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "54",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-053",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 530.0,
+      "name": "Synthetic supplied circuit 53",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "55",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-054",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 540.0,
+      "name": "Synthetic supplied circuit 54",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "56",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-055",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 550.0,
+      "name": "Synthetic supplied circuit 55",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "57",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-056",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 560.0,
+      "name": "Synthetic supplied circuit 56",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "58",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-057",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 570.0,
+      "name": "Synthetic supplied circuit 57",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "59",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-058",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 580.0,
+      "name": "Synthetic supplied circuit 58",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "60",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-059",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 590.0,
+      "name": "Synthetic supplied circuit 59",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "61",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-060",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 600.0,
+      "name": "Synthetic supplied circuit 60",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "62",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-061",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 610.0,
+      "name": "Synthetic supplied circuit 61",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "63",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-062",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 620.0,
+      "name": "Synthetic supplied circuit 62",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "64",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-063",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 630.0,
+      "name": "Synthetic supplied circuit 63",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "65",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-064",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 640.0,
+      "name": "Synthetic supplied circuit 64",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "66",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-065",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 650.0,
+      "name": "Synthetic supplied circuit 65",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "67",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-066",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 660.0,
+      "name": "Synthetic supplied circuit 66",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "68",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-067",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 670.0,
+      "name": "Synthetic supplied circuit 67",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "69",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-068",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 680.0,
+      "name": "Synthetic supplied circuit 68",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "70",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-069",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 690.0,
+      "name": "Synthetic supplied circuit 69",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "71",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-070",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 700.0,
+      "name": "Synthetic supplied circuit 70",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "72",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-071",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 710.0,
+      "name": "Synthetic supplied circuit 71",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "73",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-072",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 720.0,
+      "name": "Synthetic supplied circuit 72",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "74",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-073",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 730.0,
+      "name": "Synthetic supplied circuit 73",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "75",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-074",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 740.0,
+      "name": "Synthetic supplied circuit 74",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "76",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-075",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 750.0,
+      "name": "Synthetic supplied circuit 75",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "77",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-076",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 760.0,
+      "name": "Synthetic supplied circuit 76",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "78",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-077",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 770.0,
+      "name": "Synthetic supplied circuit 77",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "79",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-078",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 780.0,
+      "name": "Synthetic supplied circuit 78",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "80",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-079",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 790.0,
+      "name": "Synthetic supplied circuit 79",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "81",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-080",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 800.0,
+      "name": "Synthetic supplied circuit 80",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "82",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-081",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 810.0,
+      "name": "Synthetic supplied circuit 81",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "83",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-082",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 820.0,
+      "name": "Synthetic supplied circuit 82",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "84",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-083",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 830.0,
+      "name": "Synthetic supplied circuit 83",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "85",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-084",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 840.0,
+      "name": "Synthetic supplied circuit 84",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "86",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-085",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 850.0,
+      "name": "Synthetic supplied circuit 85",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "87",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-086",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 860.0,
+      "name": "Synthetic supplied circuit 86",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:panel-load",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "88",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-087",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 870.0,
+      "name": "Synthetic supplied circuit 87",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:synthetic-panel-b-source",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "89",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-088",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 880.0,
+      "name": "Synthetic supplied circuit 88",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:synthetic-panel-b-source",
+      "voltage_v": 120.0
+    },
+    {
+      "attributes": {},
+      "circuit_number": "90",
+      "confidence": 1.0,
+      "id": "circuit:synthetic-089",
+      "load_port_ids": [
+        "port:evse-feed"
+      ],
+      "load_va": 890.0,
+      "name": "Synthetic supplied circuit 89",
+      "phase": "A",
+      "poles": 1,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:schedule-sheet-production",
+          "source_kind": "synthetic"
+        }
+      ],
+      "route_ids": [],
+      "source_port_id": "port:synthetic-panel-b-source",
+      "voltage_v": 120.0
+    }
+  ],
+  "conductors": [],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": 0.0,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "device_type": "evse",
+      "host_id": "wall:south",
+      "id": "device:evse",
+      "level_id": "level:ground",
+      "name": "EVSE",
+      "pose": {
+        "position": {
+          "x": 5.2,
+          "y": 0.2,
+          "z": 1.2
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 240.0,
+      "size": {
+        "x": 0.3,
+        "y": 0.15,
+        "z": 0.5
+      },
+      "space_id": "space:garage",
+      "system": "240V-1ph"
+    }
+  ],
+  "electrical_equipment": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "equip:panel",
+      "level_id": "level:ground",
+      "name": "Panel LP",
+      "pose": {
+        "position": {
+          "x": 0.2,
+          "y": 0.2,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 240.0,
+      "size": {
+        "x": 0.4,
+        "y": 0.12,
+        "z": 0.8
+      },
+      "space_id": "space:garage",
+      "system": "120/240V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "panelboard",
+      "host_id": null,
+      "id": "equipment:synthetic-panel-b",
+      "level_id": "level:ground",
+      "name": "Synthetic panel B",
+      "pose": {
+        "position": {
+          "x": 0.2,
+          "y": 0.2,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": 240.0,
+      "size": {
+        "x": 0.4,
+        "y": 0.12,
+        "z": 0.8
+      },
+      "space_id": "space:garage",
+      "system": "120/240V-1ph"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "equipment_type": "cabinet",
+      "host_id": null,
+      "id": "equipment:demo",
+      "level_id": null,
+      "name": "Synthetic cabinet",
+      "pose": {
+        "position": {
+          "x": 1.0,
+          "y": 0.0,
+          "z": 1.0
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "derivation": "user",
+          "method": null,
+          "page": null,
+          "source_element_id": null,
+          "source_id": "synthetic:detail-input",
+          "source_kind": "synthetic"
+        }
+      ],
+      "rated_voltage_v": null,
+      "size": {
+        "x": 0.6,
+        "y": 0.2,
+        "z": 0.8
+      },
+      "space_id": null,
+      "system": null
+    }
+  ],
+  "levels": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "elevation_m": 0.0,
+      "height_m": 2.8,
+      "id": "level:ground",
+      "name": "Ground",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ]
+    }
+  ],
+  "model_id": "model:synthetic-production-set",
+  "name": "Synthetic garage contract example",
+  "obstacles": [
+    {
+      "attributes": {},
+      "clearance_m": 0.05,
+      "confidence": 1.0,
+      "geometry": {
+        "kind": "box3d",
+        "pose": {
+          "position": {
+            "x": 3.0,
+            "y": 0.2,
+            "z": 2.5
+          },
+          "rotation": {
+            "w": 1.0,
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        },
+        "size": {
+          "x": 0.4,
+          "y": 0.4,
+          "z": 0.4
+        }
+      },
+      "id": "obstacle:beam",
+      "level_id": "level:ground",
+      "name": "Beam keepout",
+      "obstacle_type": "hard",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ]
+    }
+  ],
+  "openings": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "host_id": "wall:south",
+      "id": "opening:door",
+      "name": "Garage door",
+      "opening_type": "door",
+      "pose": {
+        "position": {
+          "x": 3.0,
+          "y": 0.0,
+          "z": 1.1
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "size": {
+        "x": 2.8,
+        "y": 0.2,
+        "z": 2.2
+      }
+    }
+  ],
+  "ports": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 1.0
+      },
+      "domain": "power",
+      "id": "port:panel-load",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equip:panel",
+      "pose": {
+        "position": {
+          "x": 0.2,
+          "y": 0.2,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 1.0
+      },
+      "domain": "power",
+      "id": "port:evse-feed",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "device:evse",
+      "pose": {
+        "position": {
+          "x": 5.2,
+          "y": 0.2,
+          "z": 1.2
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "sink"
+    },
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "connected_port_ids": [],
+      "direction": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 1.0
+      },
+      "domain": "power",
+      "id": "port:synthetic-panel-b-source",
+      "name": null,
+      "nominal_diameter_m": 0.021,
+      "owner_id": "equipment:synthetic-panel-b",
+      "pose": {
+        "position": {
+          "x": 0.2,
+          "y": 0.2,
+          "z": 1.5
+        },
+        "rotation": {
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        }
+      },
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "role": "source"
+    }
+  ],
+  "provenance": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "method": "hand-authored contract fixture",
+      "page": null,
+      "source_element_id": null,
+      "source_id": "fixture:garage-route-v1",
+      "source_kind": "synthetic"
+    }
+  ],
+  "route_constraints": [
+    {
+      "applies_to": [
+        "emt"
+      ],
+      "attributes": {},
+      "clearance_m": 0.0,
+      "confidence": 1.0,
+      "constraint_type": "preferred-corridor",
+      "geometry": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.2,
+            "y": 0.2,
+            "z": 2.5
+          },
+          {
+            "x": 5.2,
+            "y": 0.2,
+            "z": 2.5
+          }
+        ]
+      },
+      "hard": false,
+      "id": "constraint:ceiling-zone",
+      "level_id": "level:ground",
+      "name": "Preferred ceiling routing zone",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ]
+    }
+  ],
+  "route_fittings": [],
+  "routes": [],
+  "schema_version": "1.0.0",
+  "slabs": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          {
+            "x": 6.0,
+            "y": 5.0,
+            "z": 0.0
+          },
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "z": 0.0
+          }
+        ]
+      },
+      "id": "slab:garage",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.1
+    }
+  ],
+  "spaces": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          {
+            "x": 6.0,
+            "y": 5.0,
+            "z": 0.0
+          },
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "z": 0.0
+          }
+        ]
+      },
+      "height_m": 2.8,
+      "id": "space:garage",
+      "level_id": "level:ground",
+      "name": "Garage",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "usage": "garage"
+    }
+  ],
+  "walls": [
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 2.8,
+      "id": "wall:south",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.14
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 6.0,
+            "y": 0.0,
+            "z": 0.0
+          },
+          {
+            "x": 6.0,
+            "y": 5.0,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 2.8,
+      "id": "wall:east",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.14
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 6.0,
+            "y": 5.0,
+            "z": 0.0
+          },
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 2.8,
+      "id": "wall:north",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.14
+    },
+    {
+      "attributes": {},
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0.0,
+            "y": 5.0,
+            "z": 0.0
+          },
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0
+          }
+        ]
+      },
+      "confidence": 1.0,
+      "height_m": 2.8,
+      "id": "wall:west",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:garage-route-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.14
+    }
+  ]
+}

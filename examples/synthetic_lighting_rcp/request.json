@@ -1,0 +1,156 @@
+{
+  "version": "supplied-lighting-rcp-v1",
+  "id": "demo",
+  "units": "m",
+  "frame": {
+    "id": "frame1",
+    "origin": [
+      0,
+      0
+    ],
+    "x_axis": "right",
+    "y_axis": "up",
+    "qualification": "local drawing XY only"
+  },
+  "sources": [
+    {
+      "id": "source1",
+      "path": "source.txt",
+      "sha256": "2544a84dbeb331a61aa63d98110161855a7cab1a5185ff0c58074154552328c2",
+      "qualification": "synthetic design intent"
+    }
+  ],
+  "context": [
+    {
+      "id": "wall1",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          8,
+          0
+        ],
+        [
+          8,
+          5
+        ],
+        [
+          0,
+          5
+        ]
+      ],
+      "closed": true,
+      "source_ids": [
+        "source1"
+      ]
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "head1",
+      "kind": "spot",
+      "symbol": "track_head",
+      "zone_id": "zone1",
+      "xy": [
+        2,
+        3
+      ],
+      "aim_xy": [
+        2.5,
+        2
+      ],
+      "source_ids": [
+        "source1"
+      ]
+    },
+    {
+      "id": "light2",
+      "kind": "downlight",
+      "symbol": "downlight",
+      "zone_id": "zone1",
+      "xy": [
+        5,
+        3
+      ],
+      "aim_xy": null,
+      "source_ids": [
+        "source1"
+      ]
+    }
+  ],
+  "tracks": [
+    {
+      "id": "track1",
+      "points": [
+        [
+          1,
+          3
+        ],
+        [
+          4,
+          3
+        ]
+      ],
+      "head_ids": [
+        "head1"
+      ],
+      "source_ids": [
+        "source1"
+      ]
+    }
+  ],
+  "zones": [
+    {
+      "id": "zone1",
+      "label": "DISPLAY",
+      "source_ids": [
+        "source1"
+      ]
+    }
+  ],
+  "notes": [
+    {
+      "id": "note1",
+      "text": "SUPPLIED DESIGN INTENT; VERIFY ON SITE",
+      "source_ids": [
+        "source1"
+      ]
+    }
+  ],
+  "declared_counts": {
+    "context": 1,
+    "fixtures": 2,
+    "tracks": 1
+  },
+  "drawing": {
+    "sheet_id": "E2",
+    "scale": 20,
+    "origin_mm": [
+      10,
+      20
+    ],
+    "view_bounds": [
+      -1,
+      -1,
+      9,
+      6
+    ]
+  },
+  "physical_elevation_m": null,
+  "ceiling_height_m": null,
+  "annotations": [
+    {
+      "id": "room1",
+      "text": "SYNTHETIC ROOM",
+      "xy": [
+        1,
+        4
+      ],
+      "source_ids": [
+        "source1"
+      ]
+    }
+  ]
+}

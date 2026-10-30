@@ -66,6 +66,8 @@ from oabm.model import (
     Space,
     Wall,
 )
+from oabm.assembly_mesh import (assembly_component_mesh as _assembly_component_mesh,
+    _pose_world_point, _index_triangle_soup, _local_box_vertices)
 from oabm.model.assemblies import ASSEMBLY_GEOMETRY_TOLERANCE_M
 from oabm.model.entities import WALL_CONSTRUCTION_GLAZED
 from oabm.geometry_primitives import (
@@ -296,6 +298,7 @@ class _DisplayOptions(NamedTuple):
     glazed_outline: bool = False
     # Walls thinner than this draw at this thickness; None draws canonically.
     min_display_wall_thickness_m: float | None = None
+    route_bend_radii_m: tuple[tuple[str, float], ...] = ()
 
 
 def to_glb(
@@ -314,6 +317,7 @@ def to_glb(
     hidden_groups: Iterable[str] = (),
     glazed_outline: bool = False,
     min_display_wall_thickness_m: float | None = None,
+    route_bend_radii_m: Mapping[str, float] | None = None,
     _return_payload: bool = False,
 ) -> dict[str, Any] | bytes:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
@@ -334,6 +338,14 @@ def to_glb(
     The keyword-only options are display-only rendering parameters, each
     defaulting off:
 
+    - ``route_bend_radii_m`` maps selected route IDs to explicitly supplied
+      centerline bend radii in metres. Selected routes must pass the existing
+      bend preflight and have a known diameter smaller than twice the radius.
+      Their tube and conductor previews follow sampled tangent circular arcs.
+      The original sharp centerlines, route IDs, fittings and quantity lengths
+      remain unchanged. Node extras disclose this display derivation and that
+      swept clearance and manufacturer fitting geometry remain unverified.
+      Omitted or empty mapping preserves the original export bytes.
     - ``reference_planes`` adds a translucent floor plane per level that has
       no canonical slab, and — where the level height is known — a fainter
       ceiling plane per level that has no canonical ceiling, so heights have
@@ -473,6 +485,22 @@ def to_glb(
                     )
                 owner_of[member_id] = name
 
+    normalized_radii = {}
+    if route_bend_radii_m is not None:
+        from oabm.qa.route_bends import check_route_bends
+        report = check_route_bends(model, radii_m=route_bend_radii_m)
+        normalized_radii = dict(route_bend_radii_m)
+        failures = [d for d in report.diagnostics if d.route_id in normalized_radii]
+        if failures:
+            raise ValueError('curved preview requires passing bend preflight: '+', '.join(d.code for d in failures))
+        selected_fittings = {f.id for f in model.route_fittings if f.route_id in normalized_radii}
+        if any(s.fitting_id in selected_fittings and s.geometry_basis == 'dimension_derived_envelope'
+               for s in model.fitting_selections):
+            raise ValueError('curved preview cannot relocate or reconcile selected fitting envelopes; retain the canonical preview')
+        for route in model.routes:
+            if route.id in normalized_radii and (route.nominal_diameter_m is None or normalized_radii[route.id] <= route.nominal_diameter_m/2):
+                raise ValueError('curved preview requires a known route diameter smaller than twice its centerline bend radius')
+
     group_names = {name for name, _ in normalized_groups}
     options = _DisplayOptions(
         reference_planes=reference_planes,
@@ -489,6 +517,7 @@ def to_glb(
         ),
         glazed_outline=glazed_outline,
         min_display_wall_thickness_m=min_display_wall_thickness_m,
+        route_bend_radii_m=tuple(sorted(normalized_radii.items())),
     )
     document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
@@ -947,8 +976,21 @@ def _build_document(
             )
             add({"name": fitting.id, "meshless": True, "extras": extras,
                  "pose": fitting.pose})
+    from .curved_routes import fillet_points, sweep_vertices
+    bend_radii = dict(options.route_bend_radii_m)
+    curved_points = {route.id: fillet_points(route.centerline.points, bend_radii[route.id])
+                     for route in model.routes if route.id in bend_radii}
     for entity in model.routes:
         extras = _route_extras(model, entity)
+        if entity.id in curved_points:
+            extras['curved_preview'] = {
+                'centerline_radius_m': bend_radii[entity.id],
+                'sampled_centerline_length_m': _polyline_length(curved_points[entity.id]),
+                'maximum_arc_step_degrees': 5,
+                'basis': 'caller radius; canonical sharp polyline and quantities unchanged',
+                'clearance_verified': False,
+                'manufacturer_fitting_geometry': False,
+            }
         _add_name(extras, entity)
         if entity.id in options.dimmed_ids:
             dimmed_count += 1
@@ -962,11 +1004,12 @@ def _build_document(
             material_key = ("route", _is_derived(entity.provenance, entity.attributes))
         add({
             "name": entity.id,
-            "vertices": _route_vertices(entity),
+            "vertices": (sweep_vertices(curved_points[entity.id], entity.nominal_diameter_m/2, _CYLINDER_SIDES)
+                         if entity.id in curved_points else _route_vertices(entity)),
             "material_key": material_key,
             "extras": extras,
         })
-    wire_entries = _wire_entries(model, options.dimmed_ids)
+    wire_entries = _wire_entries(model, options.dimmed_ids, curved_points=curved_points)
     dimmed_wire_count = sum(
         1 for entry in wire_entries if entry["material_key"][0] == "dimmed"
     )
@@ -1369,156 +1412,10 @@ def _require_assembly_float32_precision(
         )
 
 
-def _assembly_component_mesh(
-    component: AssemblyComponent,
-) -> tuple[list[tuple[float, float, float]], tuple[int, ...]]:
-    """Return one indexed world-space mesh for one canonical assembly part.
-
-    Section extrusions and every round-wire segment use the strict shared
-    assembly geometry kernel. Panels use the shared deterministic planar ear
-    clipper after the canonical contract has already established a simple,
-    planar polygon; failure here is explicit and never falls back to a fan.
-    """
-
-    geometry = component.geometry
-    if isinstance(geometry, Box3D):
-        soup = _local_box_vertices(geometry.size.x, geometry.size.y, geometry.size.z)
-        world = [
-            _pose_world_point(vertex, geometry.pose.position, geometry.pose.rotation)
-            for vertex in soup
-        ]
-        return _index_triangle_soup(world)
-
-    if isinstance(geometry, ProfileExtrusion):
-        if isinstance(geometry.profile, Profile2D):
-            profile_xy = geometry.profile.outline_xy_m()
-        elif isinstance(geometry.profile, ProfileOutline2D):
-            profile_xy = tuple((point.x, point.y) for point in geometry.profile.points_m)
-        else:  # defensive: the v1.6 discriminated union must fail closed
-            raise ValueError(f"{component.id} has an unsupported profile section")
-        try:
-            derived = extrude_simple_section_m(profile_xy, geometry.length_m, geometry.pose)
-        except GeometryInputError as error:
-            raise ValueError(f"{component.id} cannot be meshed: {error}") from error
-        world = [
-            _pose_world_point(vertex, derived.pose.position_m, derived.pose.rotation_xyzw)
-            for vertex in derived.vertices_m
-        ]
-        return world, tuple(index for tri in derived.triangles for index in tri)
-
-    if isinstance(geometry, PanelGeometry):
-        points = geometry.boundary.points
-        normal = (geometry.normal.x, geometry.normal.y, geometry.normal.z)
-        axis = max(range(3), key=lambda index: abs(normal[index]))
-        plan = [
-            (point.y, point.z) if axis == 0 else
-            (point.x, point.z) if axis == 1 else
-            (point.x, point.y)
-            for point in points
-        ]
-        # The shared ear clipper operates on local planar extents. Subtracting
-        # a stable anchor avoids cancellation in its signed-area predicates at
-        # large world origins without changing the canonical points or output
-        # vertex positions.
-        anchor = plan[0]
-        local_plan = [(u - anchor[0], v - anchor[1]) for u, v in plan]
-        triangles = _plan_ear_triangles(local_plan)
-        if triangles is None:
-            raise ValueError(f"{component.id} panel boundary is not triangulable")
-        half = geometry.thickness_m / 2.0
-        lower = [
-            (point.x - normal[0] * half,
-             point.y - normal[1] * half,
-             point.z - normal[2] * half)
-            for point in points
-        ]
-        upper = [
-            (point.x + normal[0] * half,
-             point.y + normal[1] * half,
-             point.z + normal[2] * half)
-            for point in points
-        ]
-        count = len(points)
-        vertices = lower + upper
-        # Ear clipping returns consistent planar triangles; orient the caps
-        # against the canonical explicit normal, independent of ring winding.
-        first = triangles[0]
-        a, b, c = (points[index] for index in first)
-        ab = (b.x - a.x, b.y - a.y, b.z - a.z)
-        ac = (c.x - a.x, c.y - a.y, c.z - a.z)
-        cross = (ab[1] * ac[2] - ab[2] * ac[1],
-                 ab[2] * ac[0] - ab[0] * ac[2],
-                 ab[0] * ac[1] - ab[1] * ac[0])
-        aligned = sum(cross[index] * normal[index] for index in range(3)) > 0.0
-        indices: list[int] = []
-        for first, second, third in triangles:
-            top = (count + first, count + second, count + third)
-            bottom = (first, second, third)
-            if not aligned:
-                top = (top[0], top[2], top[1])
-                bottom = (bottom[0], bottom[2], bottom[1])
-            indices.extend(top)
-            indices.extend((bottom[0], bottom[2], bottom[1]))
-        for index in range(count):
-            nxt = (index + 1) % count
-            first_pair = ((index, nxt, count + nxt), (index, count + nxt, count + index))
-            if aligned:
-                indices.extend(first_pair[0])
-                indices.extend(first_pair[1])
-            else:
-                indices.extend((first_pair[0][0], first_pair[0][2], first_pair[0][1]))
-                indices.extend((first_pair[1][0], first_pair[1][2], first_pair[1][1]))
-        return vertices, tuple(indices)
-
-    if isinstance(geometry, WireSweep):
-        vertices: list[tuple[float, float, float]] = []
-        indices: list[int] = []
-        for start, end in zip(geometry.centerline.points, geometry.centerline.points[1:]):
-            try:
-                derived = straight_round_wire_m(start, end, geometry.diameter_m / 2.0)
-            except (GeometryInputError, ValueError) as error:
-                raise ValueError(f"{component.id} wire segment cannot be meshed: {error}") from error
-            base = len(vertices)
-            vertices.extend(
-                _pose_world_point(vertex, derived.pose.position_m, derived.pose.rotation_xyzw)
-                for vertex in derived.vertices_m
-            )
-            indices.extend(base + index for tri in derived.triangles for index in tri)
-        if not indices:
-            raise ValueError(f"{component.id} wire sweep produced no triangles")
-        return vertices, tuple(indices)
-
-    raise ValueError(f"unsupported assembly component geometry: {type(geometry).__name__}")
 
 
-def _pose_world_point(vertex: tuple[float, float, float], position: Any,
-                      rotation: Any) -> tuple[float, float, float]:
-    rotated = rotate_vector_xyzw(vertex, rotation)
-    if isinstance(position, tuple):
-        origin = position
-    else:
-        origin = (position.x, position.y, position.z)
-    return tuple(origin[index] + rotated[index] for index in range(3))
 
 
-def _index_triangle_soup(
-    vertices: list[tuple[float, float, float]],
-) -> tuple[list[tuple[float, float, float]], tuple[int, ...]]:
-    """Deduplicate exact box corners while retaining its deterministic winding."""
-
-    indexed: list[tuple[float, float, float]] = []
-    lookup: dict[tuple[float, float, float], int] = {}
-    indices: list[int] = []
-    for vertex in vertices:
-        index = lookup.get(vertex)
-        if index is None:
-            index = len(indexed)
-            lookup[vertex] = index
-            indexed.append(vertex)
-        indices.append(index)
-    if not indexed or len(indices) % 3:
-        raise ValueError("assembly box did not produce a complete triangle mesh")
-    return indexed, tuple(indices)
 
 
 def _material(material_class: str, derived: bool) -> dict[str, Any]:
@@ -1941,6 +1838,7 @@ def _wire_node_name(conductor_id: str, route_id: str, index: int) -> str:
 def _wire_entries(
     model: BuildingModel,
     dimmed_route_ids: frozenset[str] = frozenset(),
+    *, curved_points=None,
 ) -> list[dict[str, Any]]:
     """One wire mesh per conductor per route it rides, bundled in the conduit.
 
@@ -1957,6 +1855,8 @@ def _wire_entries(
     default export stays byte-identical.
     """
 
+    curved_points = curved_points or {}
+    from .curved_routes import sweep_vertices
     route_by_id = {route.id: route for route in model.routes}
     phase_seen: dict[str, int] = {}
     material_by_conductor: dict[str, str] = {}
@@ -1999,6 +1899,8 @@ def _wire_entries(
                 "route_id": route_id,
                 "canonical_id": conductor.id,
             }
+            if route_id in curved_points:
+                extras["curved_preview"] = "follows caller-radius preview; not manufacturer or swept-clearance approval"
             if conductor.size:
                 extras["size"] = conductor.size
             if derivation is not None:
@@ -2013,7 +1915,9 @@ def _wire_entries(
                 )
             entries.append({
                 "name": _wire_node_name(conductor.id, route_id, index),
-                "vertices": _wire_vertices(route, offset, 2.0 * math.pi * position / total),
+                "vertices": (sweep_vertices(curved_points[route_id], _WIRE_RADIUS_M, _CYLINDER_SIDES,
+                            offset_m=offset, offset_angle=2.0*math.pi*position/total)
+                             if route_id in curved_points else _wire_vertices(route, offset, 2.0 * math.pi * position / total)),
                 "material_key": material_key,
                 "extras": extras,
             })
@@ -2284,33 +2188,6 @@ def _prism_vertices(
     return vertices, triangulation
 
 
-def _local_box_vertices(
-    width: float, depth: float, height: float
-) -> list[tuple[float, float, float]]:
-    """Axis-aligned box centred on the local origin (base at -height/2)."""
-
-    hx, hy, hz = width / 2.0, depth / 2.0, height / 2.0
-    corners = [
-        (-hx, -hy, -hz),
-        (hx, -hy, -hz),
-        (hx, hy, -hz),
-        (-hx, hy, -hz),
-    ]
-    top = [(x, y, hz) for x, y, _ in corners]
-    return [
-        corners[0], corners[2], corners[1],
-        corners[0], corners[3], corners[2],
-        top[0], top[1], top[2],
-        top[0], top[2], top[3],
-        corners[0], corners[1], top[1],
-        corners[0], top[1], top[0],
-        corners[1], corners[2], top[2],
-        corners[1], top[2], top[1],
-        corners[2], corners[3], top[3],
-        corners[2], top[3], top[2],
-        corners[3], corners[0], top[0],
-        corners[3], top[0], top[3],
-    ]
 
 
 def _local_cylinder_vertices(

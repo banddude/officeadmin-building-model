@@ -36,6 +36,21 @@ def prepared(tmp_path,svg=SVG):
     return tmp_path/'request.json'
 
 
+def original_on_same_paper(svg):
+    """Keep source content/styles, using only the declared paper placement.
+
+    Cairo/FreeType text hinting depends on the viewport/CTM. A standalone
+    100mm image is not a pixel reference for a nested view on 200mm paper,
+    even at nominally identical scale. Compare both in the same paper frame;
+    do not normalize source paths, text, CSS or fonts to the adapter's result.
+    """
+    root=ET.fromstring(svg)
+    root.set('x','10');root.set('y','20');root.set('width','100.0');root.set('height','50.0')
+    paper=ET.Element('{http://www.w3.org/2000/svg}svg',{'width':'200mm','height':'100mm','viewBox':'0 0 200 100'})
+    paper.append(root)
+    return ET.tostring(paper)
+
+
 def test_native_shapes_and_compound_holes_remain_exact_and_styles_isolated(tmp_path):
     root=native(tmp_path);asset=native_view_asset(root,'plan',origin_mm=(10,20));component,receipt=render_native_vector(asset,(5,5,150,95))
     original=ET.fromstring(SVG)
@@ -53,7 +68,7 @@ def test_shared_svg_pdf_matches_native_pixels_and_rebuilds(tmp_path):
     shared=delivery/'company/delivery';svg=next((shared/'sheets').glob('*.svg')).read_bytes()
     def rgb(raw):
         image=Image.open(io.BytesIO(raw)).convert('RGBA');bg=Image.new('RGBA',image.size,'white');bg.alpha_composite(image);return bg.convert('RGB')
-    original=rgb(cairosvg.svg2png(bytestring=SVG,output_width=400,output_height=200))
+    original=rgb(cairosvg.svg2png(bytestring=original_on_same_paper(SVG),output_width=800,output_height=400)).crop((40,80,440,280))
     sheet=rgb(cairosvg.svg2png(bytestring=svg,output_width=800,output_height=400))
     actual=sheet.crop((40,80,440,280));assert ImageChops.difference(original,actual).getbbox() is None
     assert (shared/'sheet-set.pdf').read_bytes().startswith(b'%PDF')
@@ -159,7 +174,7 @@ def test_nested_mixed_text_preserves_pixels_and_accounts_for_tail_only_fonts(tmp
     actual_svg=next((shared/'sheets').glob('*.svg')).read_bytes()
     def rgb(raw):
         image=Image.open(io.BytesIO(raw)).convert('RGBA');bg=Image.new('RGBA',image.size,'white');bg.alpha_composite(image);return bg.convert('RGB')
-    expected=rgb(cairosvg.svg2png(bytestring=svg,output_width=400,output_height=200))
+    expected=rgb(cairosvg.svg2png(bytestring=original_on_same_paper(svg),output_width=800,output_height=400)).crop((40,80,440,280))
     actual=rgb(cairosvg.svg2png(bytestring=actual_svg,output_width=800,output_height=400)).crop((40,80,440,280))
     assert ImageChops.difference(expected,actual).getbbox() is None
     manifest=json.loads((shared/'MANIFEST.json').read_text())
@@ -255,7 +270,8 @@ def test_inherited_fill_stroke_and_font_preserve_original_pixels(tmp_path):
     def raster(raw,width,height):
         image=Image.open(io.BytesIO(cairosvg.svg2png(bytestring=raw,output_width=width,output_height=height))).convert('RGBA')
         bg=Image.new('RGBA',image.size,'white');bg.alpha_composite(image);return bg.convert('RGB')
-    difference=ImageChops.difference(raster(svg,400,200),raster(shared,800,400).crop((40,80,440,280)))
-    # Stroked glyphs can incur one 8-bit channel level of nested-viewport
-    # antialias rounding. Geometry, inherited colors and source face stay fixed.
+    expected=raster(original_on_same_paper(svg),800,400).crop((40,80,440,280))
+    difference=ImageChops.difference(expected,raster(shared,800,400).crop((40,80,440,280)))
+    # Preserve the existing one-channel-level allowance for stroked glyph
+    # antialias rounding; the reference now uses the same paper viewport.
     assert max(high for low,high in difference.getextrema())<=1

@@ -27,23 +27,47 @@ The initial producer supports one explicit same-page legend format:
 - One horizontal straight sample, 10 to 80 displayed points long, strictly
   left of that label by at most 20 points and within 3 points of its baseline.
   Multiple possible samples or headings leave the row unsupported.
-- Sample and classified strokes use the same observed DeviceGray and positive
+- Sample and classified strokes use observed black DeviceGray and the same positive
   displayed width. Only opaque, solid, open, straight `S` strokes with supported
   default line-end conventions and uniform orthogonal transforms qualify.
   Dash, line-cap/join/miter operators, extended graphics states, non-DeviceGray
   colour spaces and unsupported paint refuse this producer's classification.
 
-Heading/label text and samples must lie inside the displayed page frame.
-This initial visibility boundary conservatively refuses page-wide legend text
-semantics if the content uses nonzero text rendering modes, extended graphics
-states, clipping or unsupported non-black text paint. It does not assume that
-extracted text was visibly painted, nor try to infer visibility after clipping
-or transparency. Delayed text callbacks cannot reset a hidden run into evidence.
-Nontrivial CropBox visibility, optional-content catalogs, marked-content groups
-and XObjects with optional-content membership also refuse the initial producer.
-An explicit CropBox equal to MediaBox remains supported. This is conservative
-evidence refusal, not a PDF rendering implementation; the legacy displayed frame
-and unrelated recognition behavior are unchanged.
+## Enforceable paint and resource subset
+
+The extraction records `PdfTextObservation.branch_legend_paint_supported` only
+after visiting the complete page. True requires every actual operation to belong
+to the explicit plain page-level stroke/text grammar in `_make_page_visitors`;
+an unknown operator or state leaves the page's evidence unsupported. False and
+missing values mean unproven, not a claim that all page text is invisible.
+
+The admitted text uses standard nonembedded Type1 Helvetica without custom
+encoding, ToUnicode, widths, descriptor or glyph program. Each text object has
+one printable normalized ASCII literal `Tj`, its own explicit font and position,
+finite positive size, supported
+nondegenerate transforms and an upright displayed baseline. Text state must be
+`Tr=0`, `Tz=100`, `Ts=Tc=Tw=0`. Default settings and explicit equivalent settings
+are supported. `Tj` must be followed directly by `ET`; geometry/graphics changes
+inside a text object are unsupported. Delayed callbacks, inherited font state
+and later state resets cannot manufacture supported paint evidence.
+
+Other admitted paint consists of opaque black DeviceGray stroke paths with
+finite positive width, default line ends and supported uniform transforms.
+Forms (including their implicit BBox clipping), images, inline images, shadings,
+fill paints, custom fonts, annotations, optional-content/marked-content groups,
+nontrivial CropBox, clipping, transparency and unknown resource/container semantics
+are outside this subset. Page groups and DefaultGray overrides also refuse it.
+An explicit CropBox equal to MediaBox remains supported. Legacy extraction and
+recognition continue; these restrictions govern evidence admission only.
+
+Heading, row and sample paint bounds must lie inside the displayed page and be
+clear of every other painted text/path bound. Path bounds include stroke width
+and curve control hulls. Text bounds conservatively include Helvetica advances,
+descenders and a margin. Overlap or an unknown bound refuses the support region
+regardless of paint order, including thick-stroke overpaint. No visibility is
+inferred from extracted strings alone. This is a deliberately narrow admission
+proof, not a PDF renderer. Broader sources require separate rendered validation
+or a source-bound reviewed-evidence boundary.
 
 These bounded dimensions locate a legend row; they do not classify branch runs
 by their shape, length, junction degree or vector count. The electrical meaning
@@ -83,8 +107,7 @@ than rescuing membership. Recognition of panels/devices remains independent.
 
 Observed printed numbers are scoped to `circuit_number`; observed voltage, poles
 and phase retain their own scopes when supplied in the supporting source text.
-Synthesized
-source/load membership and ports carry inferred provenance. Supported branch
+Synthesized source/load membership and ports carry inferred provenance. Supported branch
 vectors retain their legend support IDs, producer/version and confidence.
 Ports retain the supporting circuit evidence with port-relative scopes. Every
 admitted materializer, including direct-tag, named-text and topology, attaches

@@ -3,7 +3,7 @@ from dataclasses import replace
 
 import pytest
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, RectangleObject, TextStringObject
+from pypdf.generic import ArrayObject, BooleanObject, DecodedStreamObject, DictionaryObject, FloatObject, NameObject, NumberObject, RectangleObject, TextStringObject
 
 from test_pdf_branch_geometry import sheet, inputs
 from oabm.importers.pdf_electrical import ElectricalPdfImporter
@@ -307,3 +307,115 @@ def test_crop_and_optional_content_visibility_boundaries(tmp_path, visibility):
         assert not model.circuits and not model.ports
         assert any(row.get('reason_code') == 'branch_ownership_unresolved'
                    for row in model.attributes['pdf_electrical']['unresolved_circuits'])
+
+
+@pytest.mark.parametrize('container', ['clipped_form', 'visible_form', 'direct_page'])
+def test_legend_form_bbox_visibility_is_not_assumed_from_extracted_text(tmp_path, container):
+    path = sheet(tmp_path/'form-legend.pdf', length=80, extra=LEGEND)
+    if container != 'direct_page':
+        reader = PdfReader(path)
+        writer = PdfWriter()
+        page = writer.add_page(reader.pages[0])
+        content = page.get_contents().get_data()
+        legend = ('\n'.join(LEGEND) + '\n').encode()
+        assert legend in content
+        form = DecodedStreamObject()
+        form.set_data(legend)
+        form.update({NameObject('/Type'): NameObject('/XObject'),
+            NameObject('/Subtype'): NameObject('/Form'),
+            NameObject('/BBox'): RectangleObject([0, 0, 1, 1] if container == 'clipped_form'
+                                                 else [0, 0, 800, 700]),
+            NameObject('/Matrix'): ArrayObject([FloatObject(v) for v in (1, 0, 0, 1, 0, 0)]),
+            NameObject('/Resources'): DictionaryObject({
+                NameObject('/Font'): page['/Resources']['/Font']})})
+        page['/Resources'][NameObject('/XObject')] = DictionaryObject({
+            NameObject('/LegendForm'): writer._add_object(form)})
+        stream = DecodedStreamObject()
+        stream.set_data(content.replace(legend, b'/LegendForm Do\n'))
+        page[NameObject('/Contents')] = writer._add_object(stream)
+        writer.write(path)
+    doc, arch, walls, _, _ = inputs(path)
+    assert any(text.text == 'ELECTRICAL BRANCH WIRING' for text in doc.texts)
+    assert ElectricalPdfImporter().import_document(doc).circuits
+    model = ElectricalPdfImporter().import_document(doc, wall_evidence=walls, architecture_document=arch)
+    if container == 'direct_page':
+        assert len(model.circuits) == 1 and len(model.ports) == 2
+    else:
+        assert not model.circuits and not model.ports
+        assert any(row.get('reason_code') == 'branch_ownership_unresolved'
+                   for row in model.attributes['pdf_electrical']['unresolved_circuits'])
+
+
+@pytest.mark.parametrize('paint', ['fill_cover', 'collapsed', 'raised', 'degenerate',
+    'white_strokes', 'image_cover', 'shading_cover', 'thick_stroke_cover', 'custom_widths'])
+def test_only_supported_visible_source_subset_can_qualify_legend(tmp_path, paint):
+    extra = (*LEGEND, '0 640 400 60 re f') if paint == 'fill_cover' else LEGEND
+    if paint == 'thick_stroke_cover':
+        extra = (*LEGEND, 'q 60 w 0 670 m 400 670 l S Q')
+    path = sheet(tmp_path/'paint-subset.pdf', length=80, extra=extra)
+    if paint in ('collapsed', 'raised'):
+        before, after = ((b'0 Tz ', b' 100 Tz') if paint == 'collapsed'
+                         else (b'1000 Ts ', b' 0 Ts'))
+        for text in (b'(LINE LEGEND)', b'(ELECTRICAL BRANCH WIRING)'):
+            rewrite(path, text + b' Tj ET', before + text + b' Tj' + after + b' ET')
+    elif paint == 'degenerate':
+        rewrite(path, b'20 675 Td', b'0 0 0 0 20 675 Tm')
+        rewrite(path, b'90 650 Td', b'0 0 0 0 90 650 Tm')
+    elif paint in ('white_strokes', 'image_cover', 'shading_cover', 'custom_widths'):
+        reader = PdfReader(path)
+        writer = PdfWriter()
+        page = writer.add_page(reader.pages[0])
+        content = page.get_contents().get_data()
+        if paint == 'white_strokes':
+            content = b'1 G\n' + content
+        elif paint == 'image_cover':
+            bitmap = DecodedStreamObject()
+            bitmap.set_data(b'\x00')
+            bitmap.update({NameObject('/Type'): NameObject('/XObject'),
+                NameObject('/Subtype'): NameObject('/Image'), NameObject('/Width'): NumberObject(1),
+                NameObject('/Height'): NumberObject(1), NameObject('/BitsPerComponent'): NumberObject(8),
+                NameObject('/ColorSpace'): NameObject('/DeviceGray')})
+            page['/Resources'][NameObject('/XObject')] = DictionaryObject({NameObject('/Cover'): writer._add_object(bitmap)})
+            content += b'q 400 0 0 60 0 640 cm /Cover Do Q\n'
+        elif paint == 'shading_cover':
+            function = DictionaryObject({NameObject('/FunctionType'): NumberObject(2),
+                NameObject('/Domain'): ArrayObject([NumberObject(0), NumberObject(1)]),
+                NameObject('/C0'): ArrayObject([NumberObject(0)]),
+                NameObject('/C1'): ArrayObject([NumberObject(0)]), NameObject('/N'): NumberObject(1)})
+            shading = DictionaryObject({NameObject('/ShadingType'): NumberObject(2),
+                NameObject('/ColorSpace'): NameObject('/DeviceGray'),
+                NameObject('/Coords'): ArrayObject([NumberObject(v) for v in (0, 640, 400, 700)]),
+                NameObject('/BBox'): RectangleObject([0, 640, 400, 700]),
+                NameObject('/Function'): function,
+                NameObject('/Extend'): ArrayObject([BooleanObject(True), BooleanObject(True)])})
+            page['/Resources'][NameObject('/Shading')] = DictionaryObject({NameObject('/Cover'): writer._add_object(shading)})
+            content += b'/Cover sh\n'
+        else:
+            font = page['/Resources']['/Font']['/F1']
+            font[NameObject('/FirstChar')] = NumberObject(32)
+            font[NameObject('/LastChar')] = NumberObject(126)
+            font[NameObject('/Widths')] = ArrayObject([NumberObject(0) for _ in range(95)])
+        stream = DecodedStreamObject()
+        stream.set_data(content)
+        page[NameObject('/Contents')] = writer._add_object(stream)
+        writer.write(path)
+    doc, arch, walls, _, _ = inputs(path)
+    assert any(text.text == 'ELECTRICAL BRANCH WIRING' for text in doc.texts)
+    if paint == 'thick_stroke_cover':
+        assert all(text.branch_legend_paint_supported is True for text in doc.texts)
+    assert ElectricalPdfImporter().import_document(doc).circuits
+    model = ElectricalPdfImporter().import_document(doc, wall_evidence=walls, architecture_document=arch)
+    assert not model.circuits and not model.ports
+    assert any(row.get('reason_code') == 'branch_ownership_unresolved'
+               for row in model.attributes['pdf_electrical']['unresolved_circuits'])
+
+
+def test_explicit_normal_text_state_and_nondegenerate_transform_are_supported(tmp_path):
+    path = sheet(tmp_path/'normal-state.pdf', length=80, extra=LEGEND)
+    rewrite(path, b'20 675 Td', b'1 0 0 1 20 675 Tm')
+    rewrite(path, b'90 650 Td', b'1 0 0 1 90 650 Tm')
+    for text in (b'(LINE LEGEND)', b'(ELECTRICAL BRANCH WIRING)'):
+        rewrite(path, text + b' Tj', b'0 Tr 100 Tz 0 Ts 0 Tc 0 Tw ' + text + b' Tj')
+    doc, model = run(path)
+    assert all(text.branch_legend_paint_supported is True for text in doc.texts)
+    assert len(model.circuits) == 1 and len(model.ports) == 2

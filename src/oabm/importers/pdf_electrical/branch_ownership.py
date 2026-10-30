@@ -22,9 +22,37 @@ def _style(vector):
             or metadata.get("branch_style_supported") is not True):
         return None
     gray, width = metadata.get("stroke_gray"), metadata.get("line_width_pt")
-    if gray is None or width is None or width <= 0:
+    if gray != 0. or width is None or width <= 0:
         return None
     return gray, width
+
+
+def _text_region(text):
+    size = text.font_size_pt
+    if size is None or not math.isfinite(size) or size <= 0:
+        return None
+    # Core Helvetica's maximum advance is 1.015 em and its AFM glyph box is
+    # [-.166, -.225, 1, .931] em. Enlarge those extents and add a margin.
+    # This is a conservative paint bound for the admitted font, not layout.
+    return (text.x_pt - .2 * size - 1, text.y_pt - .3 * size - 1,
+            text.x_pt + len(text.text) * 1.1 * size + 1, text.y_pt + size + 1)
+
+
+def _stroke_region(vector):
+    width = vector.metadata.get("line_width_pt")
+    if width is None or not math.isfinite(width) or width <= 0:
+        return None
+    points = list(vector.points_pt)
+    for command in vector.metadata.get("curve_commands", ()):
+        points.extend(command.get("control_points_pt", ()))
+    margin = width / 2 + 1
+    return (min(p[0] for p in points) - margin, min(p[1] for p in points) - margin,
+            max(p[0] for p in points) + margin, max(p[1] for p in points) + margin)
+
+
+def _overlaps(left, right):
+    return not (left[2] < right[0] or right[2] < left[0]
+                or left[3] < right[1] or right[3] < left[1])
 
 
 def source_branch_evidence(document, *, page):
@@ -47,13 +75,22 @@ def source_branch_evidence(document, *, page):
         raise ValueError("branch ownership requires a valid displayed page")
     def in_frame(points):
         return all(0 <= x <= frame[2] and 0 <= y <= frame[3] for x, y in points)
-    def supported_text(text):
-        size = text.font_size_pt
-        return (text.branch_legend_paint_supported is True
-            and size is not None and math.isfinite(size) and size > 0
-            and in_frame(((text.x_pt, text.y_pt),
-                (text.x_pt + len(text.text) * size, text.y_pt + size))))
     vectors = tuple(v for v in document.vectors if v.page == page)
+    page_texts = tuple(t for t in document.texts if t.page == page)
+    stroke_regions = {v.element_id: _stroke_region(v) for v in vectors}
+    text_regions = {t.element_id: _text_region(t) for t in page_texts}
+    def clear_region(region, *, text_id=None, vector_id=None):
+        if region is None or not in_frame(((region[0], region[1]), (region[2], region[3]))):
+            return False
+        # Refuse overlap regardless of paint order. Unknown bounds also refuse;
+        # extracted strings alone cannot establish that the legend was visible.
+        return (all(bounds is not None and not _overlaps(region, bounds)
+                    for key, bounds in stroke_regions.items() if key != vector_id)
+            and all(bounds is not None and not _overlaps(region, bounds)
+                    for key, bounds in text_regions.items() if key != text_id))
+    def supported_text(text):
+        return (text.branch_legend_paint_supported is True
+            and clear_region(text_regions[text.element_id], text_id=text.element_id))
     if len({v.element_id for v in vectors}) != len(vectors):
         raise ValueError("duplicate branch source observations")
     if len({t.element_id for t in document.texts}) != len(document.texts):
@@ -73,7 +110,7 @@ def source_branch_evidence(document, *, page):
         candidates = []
         for vector in vectors:
             if (_style(vector) is None or len(vector.points_pt) != 2
-                    or not in_frame(vector.points_pt)):
+                    or not clear_region(stroke_regions[vector.element_id], vector_id=vector.element_id)):
                 continue
             (x0, y0), (x1, y1) = sorted(vector.points_pt)
             # A bounded legend row, not a clearance over the page. The line is

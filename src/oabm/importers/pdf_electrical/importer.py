@@ -950,6 +950,72 @@ def _make_page_visitors(
     state_stack: list[_VectorPaintState] = []
     resource_stack: list[Any] = [_resolved_pdf_object(resources)]
     form_frames: list[tuple[bool, _VectorPaintState, int]] = []
+    text_shows_in_object = 0
+    text_object_active = False
+    text_font_ready = False
+    text_position_ready = False
+
+    # This is an admission subset, not a list of known invisible cases. Any
+    # operation outside this plain page-level stroke/text grammar is unknown
+    # to the source-evidence producer even though legacy extraction continues.
+    plain_operators = frozenset({b"q", b"Q", b"cm", b"w", b"G", b"g",
+        b"BT", b"ET", b"Tf", b"Tm", b"Td", b"Tj", b"Tr", b"Tz", b"Ts", b"Tc", b"Tw",
+        b"m", b"l", b"c", b"v", b"y", b"re", b"h", b"S", b"s", b"n"})
+
+    def finite_numbers(values, count):
+        try:
+            return len(values) == count and all(not isinstance(v, bool)
+                and isinstance(v, (int, float)) and math.isfinite(v) for v in values)
+        except OverflowError:
+            return False
+
+    def supported_matrix(values):
+        if not finite_numbers(values, 6):
+            return False
+        x_scale, y_scale = math.hypot(*values[:2]), math.hypot(*values[2:4])
+        return (math.isfinite(x_scale) and math.isfinite(y_scale) and x_scale > 0 and y_scale > 0
+            and math.isclose(x_scale, y_scale, rel_tol=1e-9, abs_tol=1e-12)
+            and math.isclose((values[0]/x_scale)*(values[2]/y_scale)
+                + (values[1]/x_scale)*(values[3]/y_scale), 0., abs_tol=1e-12))
+
+    def supported_plain_operation(operator, operands):
+        if operator not in plain_operators:
+            return False
+        if operator in {b"cm", b"Tm"}:
+            return supported_matrix(operands)
+        counts = {b"m": 2, b"l": 2, b"c": 6, b"v": 4, b"y": 4, b"re": 4, b"Td": 2}
+        if operator in counts:
+            return finite_numbers(operands, counts[operator])
+        if operator in {b"G", b"g", b"Tr", b"Tc", b"Tw", b"Ts", b"Tz"}:
+            return finite_numbers(operands, 1) and operands[0] == (100 if operator == b"Tz" else 0)
+        if operator == b"w":
+            return finite_numbers(operands, 1) and operands[0] > 0
+        if operator == b"Tf":
+            return len(operands) == 2 and isinstance(operands[0], str) and finite_numbers(operands[1:], 1) and operands[1] > 0
+        if operator == b"Tj":
+            if len(operands) != 1 or not isinstance(operands[0], (str, bytes)):
+                return False
+            try:
+                literal = operands[0].decode("ascii") if isinstance(operands[0], bytes) else operands[0]
+            except UnicodeDecodeError:
+                return False
+            return (literal == " ".join(literal.split())
+                and all(32 <= ord(char) <= 126 for char in literal))
+        return not operands
+
+    def supported_text_transform(cm, tm, font_size):
+        if (not supported_matrix(cm) or not supported_matrix(tm)
+                or not finite_numbers((font_size,), 1) or font_size <= 0):
+            return False
+        origin, x_axis, y_axis = [display_transform.apply(*_transform_graphics_point(cm, x, y))
+            for x, y in ((tm[4], tm[5]), (tm[4] + tm[0], tm[5] + tm[1]),
+                         (tm[4] + tm[2], tm[5] + tm[3]))]
+        dx, dy = x_axis[0] - origin[0], y_axis[1] - origin[1]
+        return (math.isfinite(dx) and math.isfinite(dy) and dx > 0 and dy > 0
+            and math.isfinite(font_size * dx) and font_size * dx > 0
+            and math.isclose(dx, dy, rel_tol=1e-9, abs_tol=1e-9)
+            and math.isclose(x_axis[1], origin[1], abs_tol=1e-9)
+            and math.isclose(y_axis[0], origin[0], abs_tol=1e-9))
 
     def displayed_graphics_point(
         cm: Sequence[float],
@@ -972,6 +1038,16 @@ def _make_page_visitors(
         cleaned = " ".join(text.split())
         if not cleaned:
             return
+        if branch_text_visibility is not None and (
+            not isinstance(font_dict, Mapping)
+            or font_dict.get("/Type") != "/Font"
+            or font_dict.get("/Subtype") != "/Type1"
+            or font_dict.get("/BaseFont") != "/Helvetica"
+            or not set(font_dict).issubset({"/Type", "/Subtype", "/BaseFont", "/Name"})
+            or not supported_text_transform(cm, tm, font_size)
+            or not finite_numbers((font_size,), 1) or font_size <= 0
+        ):
+            branch_text_visibility["font_visibility"] = "unsupported"
         text_counter += 1
         # pypdf visitor values are absolute user space (see displayed_graphics_point).
         raw_x_pt, raw_y_pt = _transform_text_point(cm, tm)
@@ -1044,10 +1120,7 @@ def _make_page_visitors(
                 and paint_state.stroke_color is not None
                 and len(paint_state.stroke_color) == 1
                 and paint_state.stroke_alpha == 1.0
-                and len(cm) == 6
-                and math.isclose(cm[0]**2 + cm[1]**2, cm[2]**2 + cm[3]**2,
-                                 rel_tol=1e-9, abs_tol=1e-12)
-                and math.isclose(cm[0]*cm[2] + cm[1]*cm[3], 0., abs_tol=1e-12)
+                and supported_matrix(cm)
             )
             # Colour and width are recorded at the paint operator from the
             # current graphics state; a pattern or unknown colour omits the
@@ -1097,19 +1170,42 @@ def _make_page_visitors(
     ) -> None:
         nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
         nonlocal paint_state
+        nonlocal text_shows_in_object
+        nonlocal text_object_active, text_font_ready, text_position_ready
         operator_counter += 1
 
-        # Text extraction is not paint visibility. The bounded legend producer
-        # refuses this entire page's text semantics if any unsupported paint or
-        # clipping convention occurs. This conservative page-level taint avoids
-        # pypdf's delayed text callbacks attributing a hidden run to a later Tr.
-        if branch_text_visibility is not None and (
-            (operator == b"Tr" and (not operands or operands[0] != 0))
-            or operator in {b"gs", b"W", b"W*", b"cs", b"sc", b"scn", b"rg", b"k",
-                            b"BDC", b"BMC", b"EMC"}
-            or (operator == b"g" and (not operands or operands[0] != 0))
-        ):
-            branch_text_visibility["branch_legend_text_visibility"] = "unsupported"
+        if operator == b"BT":
+            if text_object_active and branch_text_visibility is not None:
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+            text_object_active = True
+            text_font_ready = text_position_ready = False
+            text_shows_in_object = 0
+        elif text_object_active:
+            text_ops = {b"Tf", b"Tm", b"Td", b"Tj", b"Tr", b"Tz", b"Ts", b"Tc", b"Tw", b"ET"}
+            if branch_text_visibility is not None and (
+                operator not in text_ops or (text_shows_in_object and operator != b"ET")
+            ):
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+            if operator == b"Tf":
+                text_font_ready = True
+            if operator in {b"Tm", b"Td"}:
+                text_position_ready = True
+            if operator == b"Tj" and not (text_font_ready and text_position_ready) and branch_text_visibility is not None:
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+            if operator == b"ET":
+                text_object_active = False
+                if text_shows_in_object != 1 and branch_text_visibility is not None:
+                    branch_text_visibility["text_object_grammar"] = "unsupported"
+        elif operator in {b"Tf", b"Tm", b"Td", b"Tj", b"Tr", b"Tz", b"Ts", b"Tc", b"Tw", b"ET"}:
+            if branch_text_visibility is not None:
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+        if operator in {b"Tj", b"TJ", b"'", b'"'}:
+            text_shows_in_object += 1
+            if branch_text_visibility is not None and text_shows_in_object > 1:
+                branch_text_visibility["text_layout"] = "unsupported"
+
+        if branch_text_visibility is not None and not supported_plain_operation(operator, operands):
+            branch_text_visibility["plain_operation_subset"] = "unsupported"
 
         if operator == b"q":
             state_stack.append(paint_state)
@@ -1449,6 +1545,13 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             branch_text_visibility["crop_visibility"] = "unsupported"
         if reader.trailer["/Root"].get("/OCProperties") is not None:
             branch_text_visibility["optional_content"] = "unsupported"
+        if page.get("/Annots"):
+            branch_text_visibility["annotation_visibility"] = "unsupported"
+        if page.get("/Group") is not None:
+            branch_text_visibility["page_group_visibility"] = "unsupported"
+        color_spaces = _resolved_pdf_object(resources.get("/ColorSpace")) if isinstance(resources, Mapping) else None
+        if isinstance(color_spaces, Mapping) and color_spaces.get("/DefaultGray") is not None:
+            branch_text_visibility["device_gray_override"] = "unsupported"
         visitor_text, visitor_operand_before, visitor_operand_after = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),

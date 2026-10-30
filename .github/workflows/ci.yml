@@ -47,36 +47,77 @@ jobs:
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          export PYTHONPATH=src:examples
+          export PYTHONPATH="$GITHUB_WORKSPACE/src:$GITHUB_WORKSPACE/examples"
           python examples/reference_production_set.py "$RUNNER_TEMP/oabm-synthetic-review" --variant reference --adaptive-layout --reference-cover
           cd "$RUNNER_TEMP/oabm-synthetic-review"
           printf 'checkout_commit=%s\npr_head=%s\ncommand=PYTHONPATH=src:examples python examples/reference_production_set.py FRESH_OUTPUT --variant reference --adaptive-layout --reference-cover\n' "$GITHUB_SHA" "$PR_HEAD_SHA" > REVIEW-PROVENANCE.txt
           python - <<'PYRENDER'
           import hashlib
           import json
+          import os
+          from dataclasses import replace
           from pathlib import Path
           import pypdfium2
+          from panel_schedule_sheets import synthetic_two_panel_model
+          from oabm.drawings.schedule_set import VERSION, create_panel_schedule_sheet_set
+
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          def render_packet(pdf_path, sheet_ids, images, provenance):
+              images.mkdir(parents=True)
+              pages = []
+              with pypdfium2.PdfDocument(pdf_path) as pdf:
+                  if len(pdf) != len(sheet_ids):
+                      raise ValueError('PDF page count does not match resolved sheet order')
+                  for index, sheet_id in enumerate(sheet_ids):
+                      image_path = images / f'{index + 1:03d}.png'
+                      pdf[index].render(scale=1.5).to_pil().convert('RGB').save(image_path)
+                      pages.append({'page': index + 1, 'sheet_id': sheet_id,
+                                    'image': image_path.as_posix(), 'sha256': digest(image_path)})
+              provenance.write_text(json.dumps({
+                  'pdf': pdf_path.as_posix(), 'pdf_sha256': digest(pdf_path),
+                  'scale': 1.5, 'pages': pages}, sort_keys=True, indent=2) + '\n')
 
           shared = Path('attempt/delivery/company/delivery')
-          pdf_path = shared / 'sheet-set.pdf'
           sheets = json.loads((shared / 'resolved-sheets.json').read_bytes())
-          images = Path('page-images')
-          images.mkdir()
-          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
-          pages = []
-          with pypdfium2.PdfDocument(pdf_path) as pdf:
-              if len(pdf) != len(sheets):
-                  raise ValueError('PDF page count does not match resolved sheet order')
-              for index, sheet in enumerate(sheets):
-                  image_path = images / f'{index + 1:03d}.png'
-                  pdf[index].render(scale=1.5).to_pil().convert('RGB').save(image_path)
-                  pages.append({'page': index + 1, 'sheet_id': sheet['id'],
-                                'image': image_path.as_posix(), 'sha256': digest(image_path)})
-          Path('PAGE-PROVENANCE.json').write_text(json.dumps({
-              'pdf': pdf_path.as_posix(), 'pdf_sha256': digest(pdf_path),
-              'scale': 1.5, 'pages': pages}, sort_keys=True, indent=2) + '\n')
+          render_packet(shared / 'sheet-set.pdf', [sheet['id'] for sheet in sheets],
+                        Path('page-images'), Path('PAGE-PROVENANCE.json'))
+
+          # Exercise this presentation change with public synthetic facts:
+          # one panel mixes supplied left/right slots with unknown positions;
+          # its own bus and one circuit's own protection are explicitly supplied.
+          inputs = Path('schedules/inputs')
+          inputs.mkdir(parents=True)
+          model = synthetic_two_panel_model(12)
+          panels = list(model.electrical_equipment)
+          panels[0] = replace(panels[0], attributes={**panels[0].attributes,
+              'single_line_drafting': {'bus_current_a': 100}})
+          circuits = []
+          for index, circuit in enumerate(model.circuits):
+              attributes = dict(circuit.attributes)
+              if index in (0, 2):
+                  attributes['panel_schedule'] = {
+                      'side': 'left' if index == 0 else 'right', 'row': 1}
+              if index == 0:
+                  attributes['single_line_drafting'] = {'protection': {
+                      'kind': 'breaker', 'rating_a': 60, 'poles': circuit.poles}}
+              circuits.append(replace(circuit, attributes=attributes))
+          model = replace(model, electrical_equipment=tuple(panels), circuits=tuple(circuits))
+          (inputs / 'model.json').write_text(model.to_json() + '\n')
+          (inputs / 'settings.json').write_text(json.dumps({'version': VERSION, 'layout': {}}) + '\n')
+          workspace = Path(os.environ['GITHUB_WORKSPACE'])
+          delivery = create_panel_schedule_sheet_set(inputs / 'model.json',
+              workspace / 'fixtures/company_sheets/v1/profile.json',
+              workspace / 'fixtures/schedule_sheets/v1/job.json', inputs / 'settings.json',
+              output_directory=Path('schedules/attempt')).relative_to(Path.cwd())
+          manifest = json.loads((delivery / 'SCHEDULE-MANIFEST.json').read_bytes())
+          rows = [row for row in manifest['rows'] if row['source_id'].startswith('circuit:')]
+          assert len(rows) == 12 and {row['source_id'] for row in rows} == {c.id for c in circuits}
+          sides = {circuits[0].id: 'left', circuits[2].id: 'right'}
+          assert all(row['display_side'] == sides.get(row['source_id'], 'unpositioned') for row in rows)
+          render_packet(delivery / 'sheet-set.pdf', manifest['sheet_order'],
+                        Path('schedules/page-images'), Path('schedules/PAGE-PROVENANCE.json'))
           PYRENDER
-          find inputs attempt page-images -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          find inputs attempt page-images schedules -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
           sha256sum REVIEW-PROVENANCE.txt PAGE-PROVENANCE.json >> SHA256SUMS.txt
       - name: Retain synthetic production review packet
         uses: actions/upload-artifact@v4

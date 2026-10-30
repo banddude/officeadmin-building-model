@@ -49,8 +49,9 @@ def test_unpositioned_packet_has_no_fictitious_bank_and_preserves_source_coverag
     section_ids = {sid for section in manifest['schedule_pages'] for sid in section['included_schedule_ids']}
     assert {row['schedule_id'] for row in manifest['rows']} <= section_ids
     assert paths[0].read_bytes() == (out / 'schedule-source/model.json').read_bytes() == before
-    svg = ET.fromstring(sorted((out / 'sheets').glob('*.svg'))[0].read_bytes())
-    texts = [n.text or '' for n in svg.findall('.//{http://www.w3.org/2000/svg}text')]
+    svgs = [ET.fromstring(path.read_bytes()) for path in sorted((out / 'sheets').glob('*.svg'))]
+    svg = svgs[0]
+    texts = [n.text or '' for page in svgs for n in page.findall('.//{http://www.w3.org/2000/svg}text')]
     assert texts.count('CKT') >= 2 and texts.count('LOAD / DESCRIPTION') >= 2
     assert 'ROW / CKT' not in texts
     assert 'SUPPLIED CONNECTED-LOAD SUMMARY' in texts
@@ -320,3 +321,51 @@ def test_long_source_ids_wrap_without_loss_in_heading_conflicts_and_pdf(tmp_path
         row=next(row for row in manifest['rows'] if row['source_id']==cid)
         assert row['label_conflict_circuit_ids']==long_ids
         assert any(cid in cell for cell in row['display_cells'])
+
+
+def test_mixed_positions_are_separate_unpositioned_section(tmp_path):
+    model = source(12, positioned=True)
+    report, drawing = panel_schedule_drawing_set(model)
+    sheet = resolve_company_sheet_set(ROOT / 'fixtures/company_sheets/v1/profile.json', ROOT / 'fixtures/schedule_sheets/v1/job.json').sheets[0]
+    pages = draft_panel_schedule_pages(report, drawing, sheet, layout=ScheduleLayout(packing='compact'))
+    rows = [row for page in pages for row in page.row_map if row['source_id'].startswith('circuit:')]
+    assert len(rows) == len(model.circuits)
+    assert {r['source_id'] for r in rows} == {c.id for c in model.circuits}
+    for row in rows:
+        if row['supplied_side'] is None:
+            assert row['display_side'] == 'unpositioned'
+            assert row['position_status'] == 'not_supplied_display_order_only'
+            assert 'TBD /' not in row['display_cells'][0]
+        else:
+            assert row['display_side'] == row['supplied_side']
+    body = ''.join(page.body_svg(ScheduleLayout()) for page in pages)
+    assert 'UNPOSITIONED CIRCUITS' in body
+    assert 'CIRCUIT POSITIONS NOT SUPPLIED' in body
+
+
+def test_drafted_layout_controls_are_not_silently_ignored(tmp_path):
+    model = source()
+    report, drawing = panel_schedule_drawing_set(model)
+    sheet = resolve_company_sheet_set(ROOT / 'fixtures/company_sheets/v1/profile.json', ROOT / 'fixtures/schedule_sheets/v1/job.json').sheets[0]
+    with pytest.raises(ValueError, match='do not support column_widths_mm'):
+        draft_panel_schedule_pages(report, drawing, sheet, layout=ScheduleLayout(column_widths_mm={'number': 9999}))
+    one = draft_panel_schedule_pages(report, drawing, sheet, layout=ScheduleLayout(packing='one_table_per_sheet'))
+    compact = draft_panel_schedule_pages(report, drawing, sheet, layout=ScheduleLayout(packing='compact'))
+    assert len(one) > len(compact)
+    assert all(len(page.sections) == 1 for page in one)
+
+
+def test_mixed_positions_for_unsupported_owner_remain_separate():
+    model = source(6)
+    second = replace(model.electrical_equipment[1], equipment_type='transformer')
+    model = replace(model, electrical_equipment=(model.electrical_equipment[0], second))
+    report, _ = panel_schedule_drawing_set(model)
+    target = report.unassigned_circuits[0].circuit.id
+    circuits = tuple(replace(c, attributes={'panel_schedule': {'side': 'right', 'row': 2}}) if c.id == target else c for c in model.circuits)
+    report, drawing = panel_schedule_drawing_set(replace(model, circuits=circuits))
+    sheet = resolve_company_sheet_set(ROOT / 'fixtures/company_sheets/v1/profile.json', ROOT / 'fixtures/schedule_sheets/v1/job.json').sheets[0]
+    pages = draft_panel_schedule_pages(report, drawing, sheet)
+    rows = [r for p in pages for r in p.row_map if r['source_id'] in {f.circuit.id for f in report.unassigned_circuits}]
+    assert len(rows) == len(report.unassigned_circuits)
+    assert next(r for r in rows if r['source_id'] == target)['display_side'] == 'right'
+    assert all(r['display_side'] == 'unpositioned' for r in rows if r['source_id'] != target)

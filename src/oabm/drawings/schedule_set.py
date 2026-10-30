@@ -95,7 +95,12 @@ def create_panel_schedule_sheet_set(model_path, profile_path, job_path, settings
         raise ValueError('settings: supply exact version panel-schedule-sheet-set-v1 and layout object')
     if not isinstance(settings['layout'], dict) or set(settings['layout']) - set(ScheduleLayout.__dataclass_fields__):
         raise ValueError('settings.layout: unknown property or invalid object')
-    layout = ScheduleLayout(**settings['layout'])
+    layout_values = dict(settings['layout'])
+    # Legacy drafted cards were compact when packing was omitted; ledger
+    # mode retains its one-table-per-sheet default. Explicit values win.
+    if presentation == 'drafted':
+        layout_values.setdefault('packing', 'compact')
+    layout = ScheduleLayout(**layout_values)
     resolved = resolve_company_sheet_set(profile_path, job_path)
     if resolved.profile_json != inputs['profile.json'] or resolved.job_json != inputs['job.json']:
         raise ValueError('profile/job changed during input snapshot; retry with stable inputs')

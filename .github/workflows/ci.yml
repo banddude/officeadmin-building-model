@@ -43,6 +43,48 @@ jobs:
         run: >-
           pytest -v -n auto --durations=30 --durations-min=1
           --junitxml=test-results/pytest.xml
+      - name: Generate synthetic production review packet
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          export PYTHONPATH=src:examples
+          python examples/reference_production_set.py "$RUNNER_TEMP/oabm-synthetic-review" --variant reference --adaptive-layout --reference-cover
+          cd "$RUNNER_TEMP/oabm-synthetic-review"
+          printf 'checkout_commit=%s\npr_head=%s\ncommand=PYTHONPATH=src:examples python examples/reference_production_set.py FRESH_OUTPUT --variant reference --adaptive-layout --reference-cover\n' "$GITHUB_SHA" "$PR_HEAD_SHA" > REVIEW-PROVENANCE.txt
+          python - <<'PYRENDER'
+          import hashlib
+          import json
+          from pathlib import Path
+          import pypdfium2
+
+          shared = Path('attempt/delivery/company/delivery')
+          pdf_path = shared / 'sheet-set.pdf'
+          sheets = json.loads((shared / 'resolved-sheets.json').read_bytes())
+          images = Path('page-images')
+          images.mkdir()
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          pages = []
+          with pypdfium2.PdfDocument(pdf_path) as pdf:
+              if len(pdf) != len(sheets):
+                  raise ValueError('PDF page count does not match resolved sheet order')
+              for index, sheet in enumerate(sheets):
+                  image_path = images / f'{index + 1:03d}.png'
+                  pdf[index].render(scale=1.5).to_pil().convert('RGB').save(image_path)
+                  pages.append({'page': index + 1, 'sheet_id': sheet['id'],
+                                'image': image_path.as_posix(), 'sha256': digest(image_path)})
+          Path('PAGE-PROVENANCE.json').write_text(json.dumps({
+              'pdf': pdf_path.as_posix(), 'pdf_sha256': digest(pdf_path),
+              'scale': 1.5, 'pages': pages}, sort_keys=True, indent=2) + '\n')
+          PYRENDER
+          find inputs attempt page-images -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          sha256sum REVIEW-PROVENANCE.txt PAGE-PROVENANCE.json >> SHA256SUMS.txt
+      - name: Retain synthetic production review packet
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-production-review-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/oabm-synthetic-review
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain per-test timings
         if: always()
         uses: actions/upload-artifact@v4

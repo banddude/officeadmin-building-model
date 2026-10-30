@@ -24,6 +24,7 @@ oabm-company-sheets = "oabm.drawings.company_sheets:main"
 oabm-site-plan = "oabm.drawings.site_plan:main"
 oabm-panel-schedule-sheets = "oabm.drawings.schedule_set:main"
 oabm-blank-sheets = "oabm.drawings.blank_set:main"
+oabm-native-bonsai = "oabm.native_bonsai.__main__:main"
 
 [project.optional-dependencies]
 # Local SVG-to-vector-PDF sheet conversion; native Cairo must be installed.

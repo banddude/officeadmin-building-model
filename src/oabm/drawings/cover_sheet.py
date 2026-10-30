@@ -1,7 +1,7 @@
 """Supplied project facts to a bounded cover body on shared company stationery."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -777,7 +777,7 @@ def create_cover_sheet(config_path, *, profile_path, job_path, output_directory,
     """Produce the cover through the shared company profile and sheet tool."""
     raw = Path(config_path).read_bytes()
     config = validate_cover(_decode(raw))
-    from .company_sheets import resolve_company_sheet_set, create_company_sheet_set
+    from .company_sheets import resolve_company_sheet_set, create_company_sheet_set, assert_company_delivery_matches
 
     resolved = resolve_company_sheet_set(profile_path, job_path)
     actual_index = [{'id': sheet.id, 'title': sheet.title} for sheet in resolved.sheets]
@@ -805,9 +805,11 @@ def create_cover_sheet(config_path, *, profile_path, job_path, output_directory,
     pending = target / '.pending'
     pending.mkdir()
     effective_job = Path(job_path)
+    effective_job_bytes = None
+    expected = resolved
     if len(pagination.pages) > 1:
-        source_job = _decode(Path(job_path).read_bytes())
-        (pending / 'cover-source-job.json').write_bytes(Path(job_path).read_bytes())
+        source_job = _decode(resolved.job_json)
+        (pending / 'cover-source-job.json').write_bytes(resolved.job_json)
         # Preserve asset meaning when the expanded job moves into the attempt.
         def absolute_logos(row):
             if 'logos' in row:
@@ -824,10 +826,19 @@ def create_cover_sheet(config_path, *, profile_path, job_path, output_directory,
                 expanded_rows.append(row)
         source_job['sheets'] = expanded_rows
         effective_job = pending / 'cover-expanded-job.json'
-        effective_job.write_bytes(_json(source_job))
+        effective_job_bytes = _json(source_job)
+        effective_job.write_bytes(effective_job_bytes)
+        expanded_sheets = []
+        for original in resolved.sheets:
+            if original.id == sheet.id:
+                expanded_sheets.extend(replace(original,id=p.id,title=p.title) for p in pagination.pages)
+            else:
+                expanded_sheets.append(original)
+        expected = replace(resolved,sheets=tuple(expanded_sheets))
     images={p.id:p.images for p in pagination.pages if p.images}
     shared = create_company_sheet_set(profile_path, effective_job, output_directory=pending / 'company',
                                       bodies={p.id:p.body_svg for p in pagination.pages},**({'images':images} if images else {}))
+    assert_company_delivery_matches(shared, expected, job_json=effective_job_bytes)
     if snapshot is not None:
         (pending/'cover-map-source.json').write_bytes(_json({'sha256':snapshot.sha256,'media_type':'image/png',
             'width_px':snapshot.width_px,'height_px':snapshot.height_px,'attribution':snapshot.attribution,

@@ -145,6 +145,47 @@ def test_portable_rebuild_uses_retained_assets_and_body(tmp_path):
     with pytest.raises(ValueError,match='receipt mismatch'):cs.rebuild_company_sheet_set(a,output_directory=tmp_path/'bad')
 
 
+@pytest.mark.parametrize('missing', ['resolved-sheets.json', 'inputs/profile-portable.json',
+    'inputs/job-portable.json', 'inputs/bodies/E0.0.svg', 'logo'])
+def test_rebuild_refuses_unreceipted_consumed_inputs(tmp_path, missing):
+    p,j=inputs(tmp_path)
+    Image.new('RGB',(20,10),'blue').save(tmp_path/'logo.png')
+    profile=json.loads(p.read_bytes());profile['logos']={'icon':'logo.png'};p.write_text(json.dumps(profile))
+    delivery=cs.create_company_sheet_set(p,j,output_directory=tmp_path/'original',
+        bodies={'E0.0':'<g><text x="20" y="20" font-size="3">BODY</text></g>'})
+    manifest_path=delivery/'MANIFEST.json';manifest=json.loads(manifest_path.read_bytes())
+    if missing=='logo':
+        missing=next(row['path'] for row in manifest['files'] if row['path'].startswith('inputs/assets/'))
+    manifest['files']=[row for row in manifest['files'] if row['path']!=missing]
+    manifest_path.write_text(json.dumps(manifest))
+    if missing=='inputs/job-portable.json':
+        job_path=delivery/missing;job=json.loads(job_path.read_bytes())
+        job['sheets'][0]['title']='Changed synthetic title'
+        job_path.write_text(json.dumps(job))
+    with pytest.raises(ValueError,match='unreceipted'):
+        cs.rebuild_company_sheet_set(delivery,output_directory=tmp_path/'rebuilt')
+    assert not (tmp_path/'rebuilt').exists()
+
+
+def test_rebuild_refuses_unreceipted_extra_and_external_logo(tmp_path):
+    p,j=inputs(tmp_path)
+    delivery=cs.create_company_sheet_set(p,j,output_directory=tmp_path/'original')
+    extra=delivery/'inputs/extra.png';extra.write_bytes(b'extra')
+    with pytest.raises(ValueError,match='unreceipted'):
+        cs.rebuild_company_sheet_set(delivery,output_directory=tmp_path/'extra')
+    extra.unlink()
+    job_path=delivery/'inputs/job-portable.json';job=json.loads(job_path.read_bytes())
+    job['sheets'][0]['logos']={'icon':'../outside.png'}
+    raw=json.dumps(job).encode();job_path.write_bytes(raw)
+    manifest_path=delivery/'MANIFEST.json';manifest=json.loads(manifest_path.read_bytes())
+    row=next(row for row in manifest['files'] if row['path']=='inputs/job-portable.json')
+    row.update(bytes=len(raw),sha256=hashlib.sha256(raw).hexdigest())
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='content-addressed asset'):
+        cs.rebuild_company_sheet_set(delivery,output_directory=tmp_path/'external')
+    assert not (tmp_path/'external').exists()
+
+
 def test_wide_glyph_advance_blocks_title_rail_intrusion(tmp_path):
     p,j=inputs(tmp_path);sheet=cs.resolve_company_sheet_set(p,j).sheets[0]
     right=sheet.drawing_bounds_mm[2]

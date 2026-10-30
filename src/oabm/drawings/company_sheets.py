@@ -566,6 +566,24 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
         raise BlankSheetSetError(attempt,stage,exc) from exc
 
 
+def assert_company_delivery_matches(delivery, resolved, *, job_json=None):
+    """Bind shared output to the caller's detached preflight inputs and assets."""
+    root=Path(delivery)
+    if ((root/'inputs/profile.json').read_bytes()!=resolved.profile_json or
+        (root/'inputs/job.json').read_bytes()!=(resolved.job_json if job_json is None else job_json)):
+        raise ValueError('company inputs changed during sheet production')
+    rows=_decode((root/'resolved-sheets.json').read_bytes())
+    if len(rows)!=len(resolved.sheets):raise ValueError('company inputs changed during sheet production')
+    for sheet,row in zip(resolved.sheets,rows,strict=True):
+        assets={name:f'inputs/assets/{_sha(raw)}.png' for name,raw in sheet.logos}
+        expected={'id':sheet.id,'title':sheet.title,'fields':dict(sheet.fields),
+                  'template':dict(sheet.template),'drawing_bounds_mm':list(sheet.drawing_bounds_mm),'logos':assets}
+        if any(row.get(key)!=value for key,value in expected.items()):
+            raise ValueError('company inputs changed during sheet production')
+        for name,raw in sheet.logos:
+            if (root/assets[name]).read_bytes()!=raw:raise ValueError('company inputs changed during sheet production')
+
+
 def rebuild_company_sheet_set(delivery, *, output_directory):
     """Verify retained receipts and rerun the same composition API portably."""
     root=Path(delivery).resolve()
@@ -583,8 +601,34 @@ def rebuild_company_sheet_set(delivery, *, output_directory):
         receipts[row['path']]=row
         raw=retained_path(row['path']).read_bytes()
         if len(raw)!=row['bytes'] or _sha(raw)!=row['sha256']: raise ValueError('retained input/output receipt mismatch')
-    rows=_decode((root/'resolved-sheets.json').read_bytes())
-    bodies={row['id']:(root/'inputs/bodies'/f"{row['id']}.svg").read_text() for row in rows if row['has_body']}
+    def receipted(name):
+        if name not in receipts:raise ValueError(f'unreceipted retained input: {name}')
+        return retained_path(name)
+    for path in retained_path('inputs').rglob('*'):
+        if path.is_symlink():raise ValueError('retained input symlinks are refused')
+        if path.is_file() and path.relative_to(root).as_posix() not in receipts:
+            raise ValueError('unreceipted retained input refused')
+    profile_path=receipted('inputs/profile-portable.json')
+    job_path=receipted('inputs/job-portable.json')
+    profile=_decode(profile_path.read_bytes());job=_decode(job_path.read_bytes())
+    if not isinstance(profile,dict) or not isinstance(job,dict) or not isinstance(job.get('sheets'),list):
+        raise ValueError('invalid portable profile/job')
+    for owner in [profile,job,*job['sheets']]:
+        if not isinstance(owner,dict) or not isinstance(owner.get('logos',{}),dict):
+            raise ValueError('invalid portable logo owner')
+        for value in owner.get('logos',{}).values():
+            if value is None:continue
+            if not isinstance(value,str) or not re.fullmatch(r'assets/[0-9a-f]{64}\.png',value):
+                raise ValueError('portable logo must be a receipted content-addressed asset')
+            name='inputs/'+value
+            receipted(name)
+            if receipts[name]['sha256']!=Path(value).stem:raise ValueError('portable logo asset hash mismatch')
+    rows=_decode(receipted('resolved-sheets.json').read_bytes())
+    bodies={}
+    for row in rows:
+        identity=_identifier(row['id'],'sheet.id')
+        if row['has_body']:
+            bodies[identity]=receipted(f'inputs/bodies/{identity}.svg').read_text()
     images={}
     for row in rows:
         assets=[]
@@ -599,7 +643,7 @@ def rebuild_company_sheet_set(delivery, *, output_directory):
             if _sha(raw)!=digest or len(raw)!=receipt['bytes']:raise ValueError('retained image receipt mismatch')
             assets.append(SheetImageAsset(image['id'],raw,tuple(image['bounds_mm']),image['attribution'],image['provenance']))
         images[row['id']]=tuple(assets)
-    return create_company_sheet_set(root/'inputs/profile-portable.json',root/'inputs/job-portable.json',
+    return create_company_sheet_set(profile_path,job_path,
                                     output_directory=output_directory,bodies=bodies,images=images)
 
 

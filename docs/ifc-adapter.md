@@ -205,3 +205,21 @@ round_tripped = from_ifc("garage-route.ifc")
 ```
 
 Install IFC support with `pip install -e '.[ifc]'`; the repository `dev` extra also includes IfcOpenShell so CI exercises this lane.
+
+## Native plumbing additions: refuse lossy canonical conversion
+
+`from_ifc` rejects native pipe segments/fittings, sanitary/waste terminals,
+their type definitions and
+explicitly plumbing-typed systems/ports. The canonical model has no supported
+plumbing lane; returning only its electrical/architectural subset would silently
+remove these additions on re-export. This guard applies even if a plumbing
+product carries misleading canonical metadata. Diagnostics identify classes and
+GlobalIds, not source names or private property contents. Inputs are not changed.
+
+For the bounded, self-contained native extension preservation route see
+[Native Bonsai review drawings](native-bonsai.md#bounded-existing-ifc-plumbing-preservation-374).
+That route retains native facts without promoting them to canonical plumbing,
+automatic sizing or code-compliance claims. Existing drawing instructions can
+be retained opaque while only trusted new
+drawings are rendered; external resource bytes are not copied or validated.
+Unsupported geometry/resources still refuse; preserve the original IFC.

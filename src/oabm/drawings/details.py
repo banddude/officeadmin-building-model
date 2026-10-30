@@ -364,7 +364,7 @@ def create_detail_sheet_set(model_path, details_path, profile_path, job_path, *,
     """Real shared company sheet pipeline; preflight all bodies before output."""
     import json
     from pathlib import Path
-    from .company_sheets import resolve_company_sheet_set, create_company_sheet_set
+    from .company_sheets import resolve_company_sheet_set, create_company_sheet_set, assert_company_delivery_matches
     model_bytes = Path(model_path).read_bytes()
     request_bytes = Path(details_path).read_bytes()
     model = BuildingModel.from_json(model_bytes)
@@ -386,7 +386,8 @@ def create_detail_sheet_set(model_path, details_path, profile_path, job_path, *,
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".detail-stage-", dir=destination.parent) as staging:
         package = Path(staging) / "package"
-        create_company_sheet_set(profile_path, job_path, output_directory=package, bodies=bodies)
+        shared = create_company_sheet_set(profile_path, job_path, output_directory=package, bodies=bodies)
+        assert_company_delivery_matches(shared, resolved)
         retained = {"detail-model.json": model_bytes,
                     "detail-request.json": request_bytes}
         for name, data in retained.items():

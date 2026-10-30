@@ -60,7 +60,9 @@ def test_input_winding_preserves_fitted_geometry():
     assert len(first) == len(second) == 1
     first_endpoints = sorted((first[0].start_pt, first[0].end_pt))
     second_endpoints = sorted((second[0].start_pt, second[0].end_pt))
+    assert len(first_endpoints) == len(second_endpoints) == 2
     for actual, expected in zip(first_endpoints, second_endpoints, strict=True):
+        assert len(actual) == len(expected) == 2
         assert actual == pytest.approx(expected)
 
 

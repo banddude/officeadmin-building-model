@@ -108,7 +108,7 @@ jobs:
           delivery = create_panel_schedule_sheet_set(inputs / 'model.json',
               workspace / 'fixtures/company_sheets/v1/profile.json',
               workspace / 'fixtures/schedule_sheets/v1/job.json', inputs / 'settings.json',
-              output_directory=Path('schedules/attempt'))
+              output_directory=Path('schedules/attempt')).relative_to(Path.cwd())
           manifest = json.loads((delivery / 'SCHEDULE-MANIFEST.json').read_bytes())
           rows = [row for row in manifest['rows'] if row['source_id'].startswith('circuit:')]
           assert len(rows) == 12 and {row['source_id'] for row in rows} == {c.id for c in circuits}

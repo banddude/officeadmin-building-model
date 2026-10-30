@@ -1,0 +1,492 @@
+{
+  "attributes": {},
+  "ceilings": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 2.7
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "z": 2.7
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 2.7
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "z": 2.7
+          }
+        ]
+      },
+      "id": "ceiling:room",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.02
+    }
+  ],
+  "circuits": [],
+  "conductors": [],
+  "coordinate_system": {
+    "angle_unit": "rad",
+    "crs": null,
+    "frame_id": "model",
+    "handedness": "right",
+    "length_unit": "m",
+    "origin_in_crs": null,
+    "true_north_radians": null,
+    "up_axis": "+Z"
+  },
+  "electrical_devices": [
+    {
+      "id": "device:L1",
+      "name": "L1",
+      "device_type": "luminaire",
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": null,
+      "pose": {
+        "position": {
+          "x": 2,
+          "y": 1.5,
+          "z": 2.7
+        },
+        "rotation": {
+          "w": 1,
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "size": null,
+      "system": null,
+      "rated_voltage_v": null,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:native-bonsai",
+          "method": "invented public-safe test geometry",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "confidence": 1,
+      "attributes": {
+        "synthetic_only": true
+      }
+    },
+    {
+      "id": "device:R1",
+      "name": "R1",
+      "device_type": "receptacle",
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": null,
+      "pose": {
+        "position": {
+          "x": 1,
+          "y": 0.1,
+          "z": 0.4
+        },
+        "rotation": {
+          "w": 1,
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "size": null,
+      "system": null,
+      "rated_voltage_v": null,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:native-bonsai",
+          "method": "invented public-safe test geometry",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "confidence": 1,
+      "attributes": {
+        "synthetic_only": true
+      }
+    },
+    {
+      "id": "device:S1",
+      "name": "S1",
+      "device_type": "switch",
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": null,
+      "pose": {
+        "position": {
+          "x": 0.1,
+          "y": 1,
+          "z": 1.2
+        },
+        "rotation": {
+          "w": 1,
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "size": null,
+      "system": null,
+      "rated_voltage_v": null,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:native-bonsai",
+          "method": "invented public-safe test geometry",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "confidence": 1,
+      "attributes": {
+        "synthetic_only": true
+      }
+    },
+    {
+      "id": "device:F1",
+      "name": "F1",
+      "device_type": "exhaust_fan",
+      "level_id": "level:ground",
+      "space_id": "space:room",
+      "host_id": null,
+      "pose": {
+        "position": {
+          "x": 3,
+          "y": 2,
+          "z": 2.6
+        },
+        "rotation": {
+          "w": 1,
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      },
+      "size": {
+        "x": 0.25,
+        "y": 0.25,
+        "z": 0.08
+      },
+      "system": null,
+      "rated_voltage_v": null,
+      "provenance": [
+        {
+          "source_kind": "synthetic",
+          "source_id": "fixture:native-bonsai",
+          "method": "invented public-safe test geometry",
+          "confidence": 1,
+          "attributes": {}
+        }
+      ],
+      "confidence": 1,
+      "attributes": {
+        "synthetic_only": true
+      }
+    }
+  ],
+  "electrical_equipment": [],
+  "levels": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "elevation_m": 0,
+      "height_m": 2.7,
+      "id": "level:ground",
+      "name": "Ground",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ]
+    }
+  ],
+  "model_id": "model:synthetic-native-drawing",
+  "name": "Synthetic native drawing proof",
+  "obstacles": [],
+  "openings": [],
+  "ports": [],
+  "provenance": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "method": "hand-authored contract fixture",
+      "page": null,
+      "source_element_id": null,
+      "source_id": "fixture:minimal-room-v1",
+      "source_kind": "synthetic"
+    }
+  ],
+  "route_constraints": [],
+  "route_fittings": [],
+  "routes": [],
+  "schema_version": "1.0.0",
+  "slabs": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "z": 0
+          }
+        ]
+      },
+      "id": "slab:ground",
+      "level_id": "level:ground",
+      "name": null,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "thickness_m": 0.1
+    }
+  ],
+  "spaces": [
+    {
+      "attributes": {},
+      "confidence": 1.0,
+      "footprint": {
+        "kind": "polygon3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "z": 0
+          }
+        ]
+      },
+      "height_m": 2.7,
+      "id": "space:room",
+      "level_id": "level:ground",
+      "name": "Room",
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "usage": null
+    }
+  ],
+  "walls": [
+    {
+      "id": "wall:synthetic-1",
+      "name": "Synthetic wall 1",
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.15,
+      "height_m": 2.7,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "confidence": 1,
+      "attributes": {}
+    },
+    {
+      "id": "wall:synthetic-2",
+      "name": "Synthetic wall 2",
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4,
+            "y": 0,
+            "z": 0
+          },
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.15,
+      "height_m": 2.7,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "confidence": 1,
+      "attributes": {}
+    },
+    {
+      "id": "wall:synthetic-3",
+      "name": "Synthetic wall 3",
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 4,
+            "y": 3,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 3,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.15,
+      "height_m": 2.7,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "confidence": 1,
+      "attributes": {}
+    },
+    {
+      "id": "wall:synthetic-4",
+      "name": "Synthetic wall 4",
+      "level_id": "level:ground",
+      "centerline": {
+        "kind": "polyline3d",
+        "points": [
+          {
+            "x": 0,
+            "y": 3,
+            "z": 0
+          },
+          {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          }
+        ]
+      },
+      "thickness_m": 0.15,
+      "height_m": 2.7,
+      "provenance": [
+        {
+          "attributes": {},
+          "confidence": 1.0,
+          "method": "hand-authored contract fixture",
+          "page": null,
+          "source_element_id": null,
+          "source_id": "fixture:minimal-room-v1",
+          "source_kind": "synthetic"
+        }
+      ],
+      "confidence": 1,
+      "attributes": {}
+    }
+  ]
+}

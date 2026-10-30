@@ -1827,6 +1827,7 @@ def test_field_fixture_run_far_right_of_legend_stays_field(tmp_path: Path) -> No
     expected_positions = [(852.0, 585.0), (852.0, 615.0)]
     assert len(tag_positions) == len(expected_positions)
     for actual, expected in zip(tag_positions, expected_positions, strict=True):
+        assert len(actual) == len(expected) == 2
         assert actual == pytest.approx(expected, abs=1.0)
 
     lighting = model.attributes["pdf_electrical"]["lighting_recognition"]

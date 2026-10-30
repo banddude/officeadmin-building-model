@@ -65,7 +65,9 @@ clear of every other painted text/path bound. Path bounds include stroke width
 and curve control hulls. Text bounds conservatively include Helvetica advances,
 descenders and a margin. Overlap or an unknown bound refuses the support region
 regardless of paint order, including thick-stroke overpaint. No visibility is
-inferred from extracted strings alone. This is a deliberately narrow admission
+inferred from extracted strings alone. Joined and closed paths use a conservative
+full default-miter-limit envelope (10 stroke widths) to cover acute joins.
+This is a deliberately narrow admission
 proof, not a PDF renderer. Broader sources require separate rendered validation
 or a source-bound reviewed-evidence boundary.
 

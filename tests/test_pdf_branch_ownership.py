@@ -419,3 +419,18 @@ def test_explicit_normal_text_state_and_nondegenerate_transform_are_supported(tm
     doc, model = run(path)
     assert all(text.branch_legend_paint_supported is True for text in doc.texts)
     assert len(model.circuits) == 1 and len(model.ports) == 2
+
+
+@pytest.mark.parametrize('overlap', [True, False])
+def test_default_miter_join_bound_cannot_hide_legend_overpaint(tmp_path, overlap):
+    offset = 0 if overlap else 500
+    path = sheet(tmp_path/'miter-paint.pdf', length=80, extra=(*LEGEND,
+        f'q 20 w {110+offset} 600 m {120+offset} 630 l {130+offset} 600 l S Q'))
+    doc, model = run(path)
+    assert all(text.branch_legend_paint_supported is True for text in doc.texts)
+    if overlap:
+        assert not model.circuits and not model.ports
+        assert any(row.get('reason_code') == 'branch_ownership_unresolved'
+                   for row in model.attributes['pdf_electrical']['unresolved_circuits'])
+    else:
+        assert len(model.circuits) == 1 and len(model.ports) == 2

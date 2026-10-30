@@ -45,7 +45,10 @@ def _stroke_region(vector):
     points = list(vector.points_pt)
     for command in vector.metadata.get("curve_commands", ()):
         points.extend(command.get("control_points_pt", ()))
-    margin = width / 2 + 1
+    # The admitted grammar never changes PDF's default miter limit (10).
+    # Acute joins extend beyond half-width. Use a deliberately conservative
+    # full-limit bound for joined/closed paths, independent of paint order.
+    margin = (10 * width if vector.closed or len(vector.points_pt) > 2 else width / 2) + 1
     return (min(p[0] for p in points) - margin, min(p[1] for p in points) - margin,
             max(p[0] for p in points) + margin, max(p[1] for p in points) + margin)
 

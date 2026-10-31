@@ -389,7 +389,7 @@ def _body_group(body, bounds):
     return root
 
 
-def render_company_sheet_svg(sheet, *, body_svg=None, images=()):
+def render_company_sheet_svg(sheet, *, body_svg=None, images=(), vectors=()):
     """Compose the shared right rail and optional bounded consumer body."""
     t,f=sheet.template,sheet.fields
     w,h,m,r,i=(t[k] for k in DEFAULT_TEMPLATE)
@@ -401,6 +401,15 @@ def render_company_sheet_svg(sheet, *, body_svg=None, images=()):
         l,t,r,b=asset.bounds_mm
         _el(root,'image',x=l,y=t,width=r-l,height=b-t,preserveAspectRatio='xMidYMid meet',
             href='data:image/png;base64,'+base64.b64encode(asset.png_bytes).decode())
+    from .native_vectors import render_native_vector
+    vectors=tuple(vectors)
+    if len(vectors)>8 or len({v.id for v in vectors})!=len(vectors):raise ValueError('at most eight uniquely identified native vector components required')
+    vector_bounds=[]
+    for asset in vectors:
+        subtree,receipt=render_native_vector(asset,sheet.drawing_bounds_mm)
+        l,t,r,b=receipt['bounds_mm']
+        if any(l<q[2] and r>q[0] and t<q[3] and b>q[1] for q in vector_bounds):raise ValueError('native vector viewports overlap')
+        vector_bounds.append((l,t,r,b));root.append(subtree)
     if body_svg is not None: root.append(_body_group(body_svg,sheet.drawing_bounds_mm))
     _el(root,'line',x1=x,y1=top,x2=x,y2=h-m,stroke='#4a4a4a',stroke_width=.2)
     def yy(frac):return top+rh*frac
@@ -455,6 +464,15 @@ def render_company_sheet_svg(sheet, *, body_svg=None, images=()):
     return result
 
 
+def _owned_svg_text(node):
+    """Text and direct child tails use this element's effective font.
+
+    A tspan's own text has its own cascade; its tail returns to its parent's
+    cascade, including when that parent has no leading node.text at all.
+    """
+    return (node.text or '')+''.join(child.tail or '' for child in node)
+
+
 def _pdf(sheets, svgs, title):
     cairo,ffi,pypdf=_dependencies()
     writer=pypdf.PdfWriter();writer.add_metadata({'/Title':title,'/Producer':'oabm company sheets'})
@@ -467,8 +485,9 @@ def _pdf(sheets, svgs, title):
         text=' '.join((page.extract_text() or '').split())
         if sheet.id not in text: raise ValueError('PDF sheet identity text missing')
         expected_fonts=set()
-        for element in ET.fromstring(svg).iter(f'{{{SVG}}}text'):
-            if (element.text or '').strip():
+        for element in ET.fromstring(svg).iter():
+            if element.tag not in {f'{{{SVG}}}text',f'{{{SVG}}}tspan'}:continue
+            if _owned_svg_text(element).strip():
                 expected_fonts.add(_font(element.get('font-family','Liberation Sans'),int(element.get('font-weight','400')))[3])
         actual_fonts={re.sub(r'^[A-Z]{6}\+','',str(font.get_object()['/BaseFont']).removeprefix('/'))
                       for font in page['/Resources'].get('/Font',{}).values()}
@@ -483,7 +502,7 @@ def _pdf(sheets, svgs, title):
 def _used_font_faces(svgs):
     """Bind only actual rendered-text faces; never probe unrelated aliases."""
     used={(node.get('font-family','Liberation Sans'),int(node.get('font-weight','400')))
-          for svg in svgs for node in ET.fromstring(svg).iter(f'{{{SVG}}}text') if node.text}
+          for svg in svgs for node in ET.fromstring(svg).iter() if node.tag in {f'{{{SVG}}}text',f'{{{SVG}}}tspan'} and _owned_svg_text(node).strip()}
     result=[]
     for family,weight in sorted(used):
         font,actual,_,postscript=_font(family,weight)
@@ -492,7 +511,7 @@ def _used_font_faces(svgs):
     return result
 
 
-def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies=None, images=None):
+def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies=None, images=None, vectors=None):
     """Publish a fresh delivery; never modify profile/job defaults or existing output.
 
     Caller must exclusively own attempt contents throughout generation. Rename
@@ -505,8 +524,11 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
     images={} if images is None else {key:tuple(value) for key,value in images.items()}
     if set(images)-{s.id for s in resolved.sheets}:raise ValueError('image references unknown sheet id')
     images={s.id:_sheet_images(images.get(s.id,()),s.drawing_bounds_mm) for s in resolved.sheets}
+    vectors={} if vectors is None else dict(vectors)
+    if set(vectors)-{s.id for s in resolved.sheets}:raise ValueError('native vector references unknown sheet id')
+    vectors={s.id:tuple(vectors.get(s.id,())) for s in resolved.sheets}
     # Resolve layout/overflow and snapshot assets before reserving an attempt.
-    svgs=[render_company_sheet_svg(s,body_svg=bodies.get(s.id),images=images[s.id]) for s in resolved.sheets]
+    svgs=[render_company_sheet_svg(s,body_svg=bodies.get(s.id),images=images[s.id],vectors=vectors[s.id]) for s in resolved.sheets]
     attempt=Path(output_directory).absolute();attempt.parent.mkdir(parents=True,exist_ok=True);attempt.mkdir()
     pending=attempt/'.pending';pending.mkdir();stage='snapshot'
     try:
@@ -531,7 +553,15 @@ def create_company_sheet_set(profile_path, job_path, *, output_directory, bodies
                 path=f'inputs/assets/{_sha(image.png_bytes)}.png'
                 if not (pending/path).exists():write(path,image.png_bytes)
                 image_rows.append({'id':image.id,'path':path,'sha256':_sha(image.png_bytes),'bounds_mm':list(image.bounds_mm),'attribution':image.attribution,'provenance':dict(image.provenance)})
-            rows.append({'images':image_rows,'id':sheet.id,'title':sheet.title,'fields':dict(sheet.fields),'template':dict(sheet.template),
+            vector_rows=[]
+            from .native_vectors import render_native_vector
+            for vector in vectors[sheet.id]:
+                _,binding=render_native_vector(vector,sheet.drawing_bounds_mm)
+                path=f'inputs/native-vectors/{_sha(vector.svg_bytes)}.svg'
+                if not (pending/path).exists():write(path,vector.svg_bytes)
+                vector_rows.append({'id':vector.id,'path':path,'origin_mm':list(vector.origin_mm),
+                                    'provenance':json.loads(vector.provenance_json),'binding':binding})
+            rows.append({**({'vectors':vector_rows} if vector_rows else {}),'images':image_rows,'id':sheet.id,'title':sheet.title,'fields':dict(sheet.fields),'template':dict(sheet.template),
                          'drawing_bounds_mm':sheet.drawing_bounds_mm,'logos':assets,'has_body':sheet.id in bodies})
         write('resolved-sheets.json',_json(rows))
         # Portable editable inputs point only at retained assets. Original exact
@@ -630,6 +660,7 @@ def rebuild_company_sheet_set(delivery, *, output_directory):
         if row['has_body']:
             bodies[identity]=receipted(f'inputs/bodies/{identity}.svg').read_text()
     images={}
+    vectors={}
     for row in rows:
         assets=[]
         for image in row.get('images',()):
@@ -643,8 +674,17 @@ def rebuild_company_sheet_set(delivery, *, output_directory):
             if _sha(raw)!=digest or len(raw)!=receipt['bytes']:raise ValueError('retained image receipt mismatch')
             assets.append(SheetImageAsset(image['id'],raw,tuple(image['bounds_mm']),image['attribution'],image['provenance']))
         images[row['id']]=tuple(assets)
+        from .native_vectors import NativeViewAsset
+        native=[]
+        for vector in row.get('vectors',()):
+            digest=vector['provenance']['svg_sha256'];name=vector['path']
+            if name!=f'inputs/native-vectors/{digest}.svg':raise ValueError('native vector must use its content-addressed retained path')
+            raw=receipted(name).read_bytes()
+            if _sha(raw)!=digest:raise ValueError('native vector retained hash mismatch')
+            native.append(NativeViewAsset(vector['id'],raw,tuple(vector['origin_mm']),json.dumps(vector['provenance'],sort_keys=True).encode()))
+        vectors[row['id']]=tuple(native)
     return create_company_sheet_set(profile_path,job_path,
-                                    output_directory=output_directory,bodies=bodies,images=images)
+                                    output_directory=output_directory,bodies=bodies,images=images,vectors=vectors)
 
 
 def update_company_profile(profile_path, changes_path, *, expected_sha256):

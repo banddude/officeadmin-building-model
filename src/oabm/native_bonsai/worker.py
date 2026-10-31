@@ -50,25 +50,39 @@ def main() -> None:
     model = BuildingModel.from_dict(_json(inputs['model.json']))
     source_proof = None
     native_diagnostics = []
+    bound_source = False
+    bound_identities = None
     read_canonical = from_ifc
     if mode == 'export-ifc':
         from oabm.native_bonsai.api import validate_ifc_request
         from oabm.native_bonsai.extensions import source_snapshot, verify_source_snapshot, prepare_render_source, merge_render_additions
         from oabm.ifc.adapter import _from_ifc_canonical_subset
         original_native = ifcopenshell.file.from_string(inputs['source.ifc'].decode('utf-8'))
+        from oabm.native_bonsai.source_bindings import VERSION as BOUND_VERSION, binding_contract, verify_source_hash
+        bound_source = _json(inputs['request.json']).get('version') == BOUND_VERSION
+        verify_source_hash(_json(inputs['request.json']), inputs['source.ifc'])
         request = validate_ifc_request(_json(inputs['request.json']), model, original_native)
         source_proof = source_snapshot(original_native)
-        native, render_baseline, native_diagnostics = prepare_render_source(original_native, model)
+        native, render_baseline, native_diagnostics = prepare_render_source(original_native, model, request if bound_source else None)
+        if bound_source: bound_identities = binding_contract(request, model, native)
         read_canonical = _from_ifc_canonical_subset
     else:
         request = validate_request(_json(inputs['request.json']), model)
         native = to_ifc(model)  # Existing guards remain active.
-    differences = round_trip_differences(model, read_canonical(native))
+    differences = () if bound_source else round_trip_differences(model, read_canonical(native))
     if differences:
         raise ValueError(f'IFC adapter roundtrip mismatch: {differences}')
     canonical = {}
     omissions = []
+    if bound_source:
+        for cid, row in bound_identities.items():
+            item = native.by_guid(row['source_guid'])
+            canonical[cid] = {'ifc_guid': item.GlobalId, 'ifc_class': item.is_a(),
+                              'canonical_kind': 'source_bound', 'geometry_authority': 'original_native_source'}
+            if not item.is_a('IfcBuildingStorey') and (not item.Representation or not any(r.RepresentationIdentifier == 'Body' for r in item.Representation.Representations)):
+                omissions.append({'canonical_id': cid, 'ifc_guid': item.GlobalId, 'reason': 'Original source has no Body; no geometry invented.'})
     for item in native.by_type('IfcRoot'):
+        if bound_source: break
         ps = element.get_pset(item, 'OABM_Canonical')
         if not ps:
             continue
@@ -148,17 +162,21 @@ def main() -> None:
 
     for spec in request['views']:
         point_annotations = list(spec['annotations'])
-        annotation_sources = {('canonical', cid): (canonical_id_to_ifc_guid(cid), (d.pose.position.x, d.pose.position.y)) for cid, d in devices.items()}
+        annotation_sources = {('canonical', cid): (canonical[cid]['ifc_guid'], (d.pose.position.x, d.pose.position.y)) for cid, d in devices.items()}
         for annotation in spec.get('native_annotations', []):
             product = f.by_guid(annotation['source_guid'])
             xyz = ifcopenshell.util.placement.get_local_placement(product.ObjectPlacement)[:3, 3]
+            anchor_basis='native_placement'
+            if bound_source:
+                from oabm.native_bonsai.source_bindings import native_label_anchor
+                xyz,anchor_basis=native_label_anchor(product)
             annotation_sources[('native', product.GlobalId)] = (product.GlobalId, (float(xyz[0]), float(xyz[1])))
-            point_annotations.append({'source_id': product.GlobalId, 'kind': 'text', 'text': annotation['text'], 'label_offset_mm': annotation['label_offset_mm'], 'native_source': True})
+            point_annotations.append({'source_id': product.GlobalId, 'kind': 'text', 'text': annotation['text'], 'label_offset_mm': annotation['label_offset_mm'], 'native_source': True, 'anchor_basis':anchor_basis})
         elevation = spec['target_view'] == 'ELEVATION_VIEW'
         position = spec['camera_xyz_m'] if elevation else (*spec['center_m'], spec['cut_height_m'])
         bpy.context.scene.cursor.location = position
         hint = ({'+X': 'WEST', '-X': 'EAST', '+Y': 'SOUTH', '-Y': 'NORTH'}[spec['direction']]
-                if elevation else f.by_guid(canonical_id_to_ifc_guid(spec['level_id'])).id())
+                if elevation else f.by_guid(canonical[spec['level_id']]['ifc_guid']).id())
         # Avoid creating file paths from untrusted canonical storey names.
         original_name_generator = tool.Drawing.__dict__['generate_drawing_name']
         tool.Drawing.generate_drawing_name = classmethod(lambda cls, *args, **kwargs: spec['id'])
@@ -202,13 +220,13 @@ def main() -> None:
                     for y in (-native_height / 2, native_height / 2):
                         for coordinate in camera.matrix_world @ Vector((x, y, -depth)):
                             _local_coordinate(float(coordinate), 'native elevation complete camera frustum')
-        query = ','.join(canonical[cid]['ifc_guid'] for cid in spec['exclude_ids'])
+        query = ','.join([canonical[cid]['ifc_guid'] for cid in spec['exclude_ids']]+spec.get('native_exclude_guids',[]))
         ps = element.get_pset(drawing, 'EPset_Drawing')
         library = resources / ('symbols-' + spec['id'] + '.svg')
         ifcopenshell.api.run('pset.edit_pset', f, pset=f.by_id(ps['id']),
                             properties={'Exclude': query, 'Symbols': library.relative_to(out).as_posix(),
-                                        **({'GlobalReferencing': False} if elevation else {})})
-        if elevation:
+                                        **({'GlobalReferencing': False} if elevation or bound_source else {})})
+        if elevation or bound_source:
             # Isolated details have no automatic cross-elevation/storey callouts.
             references = [e.GlobalId for e in f.by_type('IfcAnnotation') if e.ObjectType == 'DRAWING' and e != drawing]
             references += [e.GlobalId for e in f.by_type('IfcBuildingStorey')]
@@ -266,6 +284,7 @@ def main() -> None:
                                 'native_annotation_xy_m': [obj.location.x, obj.location.y],
                                 'presentation_plane_z_m': obj.location.z, 'anchor_inside_view_xy': inside,
                                 'label_offset_mm': annotation['label_offset_mm'], 'physical_size_inferred': False})
+            if annotation.get('native_source'):annotations[-1]['anchor_basis']=annotation['anchor_basis']
         space_results = []
         space_rects = []
         spaces = {space.id: space for space in model.spaces}
@@ -277,7 +296,7 @@ def main() -> None:
             space = spaces[annotation['source_id']]
             area, centroid, anchor, rect = space_label_placement(space, annotation, spec, devices, space_rects)
             space_rects.append(rect)
-            product = f.by_guid(canonical_id_to_ifc_guid(space.id))
+            product = f.by_guid(canonical[space.id]['ifc_guid'])
             displayed = area if annotation['area_unit'] == 'm2' else area / .09290304
             label = f"{annotation['label']}: {displayed:.2f} {annotation['area_unit']}"
             fill_guid = None
@@ -324,7 +343,7 @@ def main() -> None:
                                   'provenance': model.to_dict()['spaces'][next(i for i, s in enumerate(model.spaces) if s.id == space.id)]['provenance']})
         selected = {e.GlobalId for e in tool.Drawing.get_drawing_elements(drawing) if hasattr(e, 'GlobalId')}
         coverage = [{'canonical_id': cid, **mapping,
-                     'selection': ('explicitly_excluded' if cid in spec['exclude_ids'] else
+                     'selection': ('explicitly_excluded' if cid in spec['exclude_ids'] or mapping['ifc_guid'] in spec.get('native_exclude_guids',[]) else
                                    'native_selected' if mapping['ifc_guid'] in selected else 'not_native_selected')}
                     for cid, mapping in sorted(canonical.items())]
         props = tool.Drawing.get_document_props()
@@ -355,7 +374,8 @@ def main() -> None:
                              **({'camera_xyz_m': list(position), 'direction': spec['direction'],
                                  'automatic_reference_markers': False, 'native_drawing_depth_m': [0.0, spec['far_m']]} if elevation else {}),
                              'annotations': annotations, 'coverage': coverage,
-                             **({'native_extension_coverage': [{'ifc_guid': row['ifc_guid'], 'ifc_class': row['ifc_class'], 'selection': 'native_selected' if row['ifc_guid'] in selected else 'not_native_selected'} for row in native_diagnostics if row.get('status') == 'preserved_native_only']} if source_proof is not None else {}), **({'space_annotations': space_results} if 'space_annotations' in spec else {}),
+                             **({'native_extension_coverage': [{'ifc_guid': row['ifc_guid'], 'ifc_class': row['ifc_class'], 'selection': 'explicitly_excluded' if row['ifc_guid'] in spec.get('native_exclude_guids',[]) else ('native_selected' if row['ifc_guid'] in selected else 'not_native_selected')} for row in native_diagnostics if row.get('status') == 'preserved_native_only']} if source_proof is not None else {}), **({'space_annotations': space_results} if 'space_annotations' in spec else {}),
+                             **({'native_exclude_guids': spec.get('native_exclude_guids',[])} if bound_source else {}),
                              'exclude_ids': spec['exclude_ids'], 'symbol_resource': library.relative_to(out).as_posix()}
     if bpy.ops.bim.save_project(filepath=str(path)) != {'FINISHED'}:
         raise RuntimeError('native save failed')
@@ -365,8 +385,13 @@ def main() -> None:
         saved.write(str(path))
         saved = ifcopenshell.open(str(path))
         verify_source_snapshot(source_proof, saved, allow_drawing_context_additions=True)
-    restored = read_canonical(saved)
-    differences = round_trip_differences(model, restored)
+    restored = None if bound_source else read_canonical(saved)
+    if bound_source:
+        # The actual source graph is independently proven immutable above.
+        # Recheck identity/fact bindings; do not claim a canonical geometry
+        # roundtrip for native-authoritative meshes and symbolic source bodies.
+        binding_contract(request, model, saved)
+    differences = () if bound_source else round_trip_differences(model, restored)
     if differences:
         raise ValueError(f'native saved roundtrip mismatch: {differences}')
     # Resource values must be portable local descendants, not URLs or external file paths.
@@ -379,7 +404,8 @@ def main() -> None:
             if resource.is_absolute() or not (out / resource).resolve().is_relative_to(out.resolve()) or not (out / resource).is_file():
                 raise ValueError('non-portable native resource: ' + key)
     receipt = {'status': 'review_only_success', 'input_sha256': hashes, 'runtime': runtime,
-               'canonical_roundtrip': {'exact_equal': model.to_dict() == restored.to_dict(), 'numerical_differences': list(differences)},
+               'canonical_roundtrip': ({'performed': False, 'reason': 'Explicit source-bound native geometry; original IFC preservation is proven separately.'} if bound_source else {'exact_equal': model.to_dict() == restored.to_dict(), 'numerical_differences': list(differences)}),
+               **({'source_bindings': bound_identities} if bound_source else {}),
                'units': {'canonical_length': 'm', 'ifc_length_scale_to_m': ifcopenshell.util.unit.calculate_unit_scale(saved), 'svg_length': 'mm'},
                'local_coordinate_scope': {'limit_m': LOCAL_COORDINATE_LIMIT_M, 'native_false_origin': False, 'all_body_extents_checked': True},
                'appearance_boundary': ('Bounded original IFC retained; no external resources or canonical plumbing conversion.' if source_proof is not None else 'Canonical adapter geometry only; no external appearance meshes or existing IFC intake.'),

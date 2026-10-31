@@ -254,12 +254,12 @@ def test_resource_limit_preserves_exact_pending_child_cell():
     assert ledger.cursor.ids == ('m', 'hole')
     facts = dict(ledger.cursor.exact)
     assert len(facts) == 13
-    assert facts['depth'] == 1
+    assert facts['depth_dimensionless'] == 1
     # Arc t is widest in physical contribution and its lower half is first.
-    assert facts['a_0_low_parameter'] == 0
-    assert facts['a_0_high_parameter'] == F(1, 2)
-    assert facts['b_0_low_parameter'] == F(-1, 1000)
-    assert facts['b_0_high_parameter'] == F(1, 1000)
+    assert facts['body_a_t_dimensionless_lo'] == 0
+    assert facts['body_a_t_dimensionless_hi'] == F(1, 2)
+    assert facts['body_b_station_m_lo'] == F(-1, 1000)
+    assert facts['body_b_station_m_hi'] == F(1, 1000)
 
 
 def test_shape_and_split_limit_cursors():
@@ -273,4 +273,4 @@ def test_shape_and_split_limit_cursors():
     with pytest.raises(WorkLimit):
         _cover(a, b, ledger, 24)
     assert ledger.cursor.kind == 'self_split'
-    assert dict(ledger.cursor.exact)['depth'] == 0
+    assert dict(ledger.cursor.exact)['depth_dimensionless'] == 0

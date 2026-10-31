@@ -186,11 +186,13 @@ def _local(a, m, b):
 def _cell_cursor(ledger, stage, a, b, ca, cb, depth):
     # Fixed 13 exact facts capture the pending product before its work debit.
     ledger.set_cursor(stage, (a.segment_id, b.segment_id), exact=
-                      (("depth", F(depth)),) + tuple(
-                          (f"{name}_{axis}_{edge}_parameter", value)
-                          for name, cell in (("a", ca), ("b", cb))
-                          for axis, interval in enumerate(cell)
-                          for edge, value in zip(("low", "high"), interval)))
+                      (("depth_dimensionless", F(depth)),) + tuple(
+                          (f"body_{name}_{parameter}_{edge}", value)
+                          for name, p, cell in (("a", a, ca), ("b", b, cb))
+                          for parameter, interval in zip(
+                              (("t_dimensionless" if p.kind == "quarter_arc" else "station_m"),
+                               "u_m", "v_m"), cell)
+                          for edge, value in zip(("lo", "hi"), interval)))
 
 
 def _cover(a, b, ledger, max_depth):

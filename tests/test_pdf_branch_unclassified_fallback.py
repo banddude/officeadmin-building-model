@@ -49,11 +49,11 @@ def test_unclassified_open_chain_cannot_gain_membership_through_fallback(
     )
     assert {item.name for item in control.electrical_equipment} == {"LP"}
     assert {item.name for item in control.electrical_devices} == {"EVSE-1", "EVSE-2"}
-    assert len(control.circuits) == 1 and len(control.ports) == 2
-    assert {record.method for record in control.circuits[0].provenance} == {method}
-    owners = {port.id: port.owner_id for port in control.ports}
-    devices = {item.id: item.name for item in control.electrical_devices}
-    assert [devices[owners[port]] for port in control.circuits[0].load_port_ids] == ["EVSE-2"]
+    # Disconnecting an unknown path does not positively identify it as wiring.
+    # Both components now require source ownership before any membership.
+    assert not control.circuits and not control.ports
+    assert any(row.get("reason_code") == "branch_ownership_unresolved"
+               for row in control.attributes["pdf_electrical"]["unresolved_circuits"])
 
     path = source("touching.pdf", touching=True)
     doc, arch, evidence, _, _ = inputs(path)
@@ -94,19 +94,19 @@ def test_unclassified_open_chain_cannot_gain_membership_through_fallback(
     assert len(local_vectors) == 2
     assert local_vectors.issubset(check["source_element_ids"])
     assert not guarded.circuits and not guarded.ports
-    assert any(row.get("reason_code") == "no_panel_token" for row in lane["unresolved_circuits"])
+    assert any(row.get("reason_code") == "branch_ownership_unresolved" for row in lane["unresolved_circuits"])
     miss, = [
         row for row in lane["unresolved_circuits"]
         if row.get("method") == method
     ]
-    assert miss["reason_code"] == "unresolved_branch_circuit"
+    assert miss["reason_code"] == "branch_geometry_rejected"
     assert miss["load_ids"] == [
         item.id for item in guarded.electrical_devices if item.name == "EVSE-2"
     ]
     assert miss["source_element_id"] == next(
         item.element_id for item in doc.texts if item.text == callout
     )
-    assert any(row.get("reason") == "unresolved_branch_circuit" for row in lane["unresolved_topology"])
+    assert any(row.get("reason") == "branch_geometry_rejected" for row in lane["unresolved_topology"])
     assert guarded.to_json() == import_pdf(
         path, wall_evidence=evidence, architecture_document=arch,
     ).to_json()

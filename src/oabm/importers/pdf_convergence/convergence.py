@@ -6,8 +6,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .sheet_registration import ElectricalSheetRegistration
+
 from oabm.model import (
     DERIVATION_INFERRED,
+    DERIVATION_OBSERVED,
     BuildingModel,
     Ceiling,
     ElectricalDevice,
@@ -135,9 +138,114 @@ def _ambiguity(
     rows.append(row)
 
 
+def _registered_target_level(
+    entity: ElectricalEntity,
+    architecture: BuildingModel,
+    electrical: BuildingModel,
+    accepted_registration: ElectricalSheetRegistration | None,
+    levels_by_id: Mapping[str, Level],
+    ambiguities: list[dict[str, Any]],
+) -> tuple[Level | None, bool]:
+    """Consume the existing producer handoff only when bound to this target."""
+    lane = entity.attributes.get("pdf_electrical", {})
+    transform = lane.get("page_transform") if isinstance(lane, Mapping) else None
+    registration = transform.get("registration") if isinstance(transform, Mapping) else None
+    if not isinstance(registration, Mapping) or "level_id" not in registration:
+        return None, False  # Explicit caller transforms keep the legacy resolver.
+
+    def refuse(reason: str) -> tuple[None, bool]:
+        _ambiguity(
+            ambiguities, entity=entity, code="registration_target_level_invalid",
+            detail=reason,
+            target_level_id=registration.get("level_id"),
+            target_region_id=registration.get("target_region_id"),
+        )
+        return None, True
+
+    level_id = registration.get("level_id")
+    if (not isinstance(accepted_registration, ElectricalSheetRegistration)
+            or not accepted_registration.all_registered
+            or accepted_registration.architecture_model_id != architecture.model_id
+            or accepted_registration.frame_id != architecture.coordinate_system.frame_id):
+        return refuse("target-level assignment requires the accepted sheet-registration result")
+    binding = registration.get("source_binding")
+    source_page = lane.get("source_page")
+    coefficients = {key: value for key, value in transform.items() if key != "registration"}
+    # The electrical importer preserves observed source kinds such as
+    # "form-xobject" and "annotation" as well as "pdf-vector-path". The
+    # accepted result and exact source/page binding establish identity;
+    # a spelling prefix on the observation kind does not.
+    source_ids = {item.source_id for item in entity.provenance
+                  if item.page == source_page and item.derivation == DERIVATION_OBSERVED}
+    if (not isinstance(binding, Mapping)
+            or binding.get("producer") != "oabm.pdf_sheet_registration.v1"
+            or binding.get("architecture_model_id") != architecture.model_id
+            or not isinstance(source_page, int) or isinstance(source_page, bool)
+            or binding.get("source_page") != source_page
+            or binding.get("electrical_source_id") not in source_ids
+            or binding.get("electrical_source_id") != accepted_registration.electrical_source_id
+            or binding.get("page_transform") != coefficients):
+        return refuse("registration is not bound to this source/page and accepted transform")
+    accepted_transforms = [
+        candidate.to_attributes()
+        for page in accepted_registration.pages if page.page == source_page
+        for candidate in ([page.transform] if page.transform is not None
+                          else [drawing.transform for drawing in page.drawing_transforms])
+    ]
+    if accepted_transforms.count(transform) != 1:
+        return refuse("entity transform disagrees with the accepted registration result")
+    records = [item for item in electrical.provenance
+               if item.source_kind == "pdf-electrical"
+               and item.derivation == DERIVATION_INFERRED
+               and item.source_id == binding["electrical_source_id"]
+               and item.page == source_page
+               and item.attributes.get("registration_status") == "registered-from-matched-evidence"
+               and item.attributes.get("page_transform") == transform]
+    confidence = registration.get("confidence")
+    if (len(records) != 1 or not isinstance(confidence, (int, float))
+            or isinstance(confidence, bool) or not math.isfinite(confidence)
+            or not 0 <= confidence <= 1 or records[0].confidence != confidence):
+        return refuse("registration has no unique matching source-bound model provenance")
+    if not isinstance(level_id, str) or level_id not in levels_by_id:
+        return refuse("registered target level does not exist in this architecture")
+    regions = architecture.attributes.get("pdf_architecture", {})
+    regions = regions.get("drawing_regions", ()) if isinstance(regions, Mapping) else ()
+    if not isinstance(regions, (list, tuple)):
+        return refuse("architecture drawing regions are not a collection")
+    region_id = registration.get("target_region_id")
+    matches = [region for region in regions if isinstance(region, Mapping)
+               and isinstance(region_id, str) and region.get("region_id") == region_id]
+    if len(matches) != 1:
+        return refuse("registration does not identify one current architectural region")
+    region = matches[0]
+    region_level, region_frame = region.get("level"), region.get("frame")
+    target_page = registration.get("target_page")
+    if (region.get("status") != "resolved"
+            or not isinstance(target_page, int) or isinstance(target_page, bool)
+            or target_page < 1 or region.get("page") != target_page
+            or not isinstance(region_level, Mapping)
+            or region_level.get("level_id") != level_id):
+        return refuse("registered region is unresolved or disagrees with its level/page")
+    frame_id = architecture.coordinate_system.frame_id
+    if (transform.get("frame_id") != frame_id
+            or not isinstance(region_frame, Mapping)
+            or region_frame.get("frame_id") != frame_id):
+        return refuse("registered region and page transform disagree with the canonical frame")
+    level = levels_by_id[level_id]
+    for value in (transform.get("z_m"), registration.get("level_elevation_m"),
+                  region_level.get("elevation_m")):
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value)
+                or not math.isclose(value, level.elevation_m, rel_tol=0.0, abs_tol=1e-6)):
+            return refuse("registered target elevation disagrees with the current level")
+    return level, True
+
+
 def _resolve_level(
     entity: ElectricalEntity,
     architecture: BuildingModel,
+    electrical: BuildingModel,
+    accepted_registration: ElectricalSheetRegistration | None,
     *,
     options: PdfConvergenceOptions,
     ambiguities: list[dict[str, Any]],
@@ -152,7 +260,14 @@ def _resolve_level(
         )
         return None, None
 
+    registered_level, claimed = _registered_target_level(
+        entity, architecture, electrical, accepted_registration, levels_by_id, ambiguities,
+    )
+    if claimed and registered_level is None:
+        return None, None
     if len(levels_by_id) == 1:
+        if registered_level is not None:
+            return registered_level, "accepted_sheet_registration_target"
         return next(iter(levels_by_id.values())), "single_architectural_level"
 
     point = entity.pose.position
@@ -175,6 +290,20 @@ def _resolve_level(
             )
         }
     )
+
+    if registered_level is not None:
+        conflicting_z = bool(z_matches) and registered_level.id not in {level.id for level in z_matches}
+        conflicting_xy = bool(xy_level_ids) and registered_level.id not in xy_level_ids
+        if conflicting_z or conflicting_xy:
+            _ambiguity(
+                ambiguities, entity=entity, code="level_evidence_conflict",
+                detail="accepted registration target conflicts with registered Z or plan containment",
+                registered_target_level_id=registered_level.id,
+                z_level_ids=[level.id for level in z_matches],
+                plan_level_ids=xy_level_ids,
+            )
+            return None, None
+        return registered_level, "accepted_sheet_registration_target"
 
     if len(z_matches) == 1 and len(xy_level_ids) == 1 and z_matches[0].id != xy_level_ids[0]:
         _ambiguity(
@@ -359,6 +488,8 @@ def _resolve_polygon_host(
 def _resolve_entity(
     entity: ElectricalEntity,
     architecture: BuildingModel,
+    electrical: BuildingModel,
+    accepted_registration: ElectricalSheetRegistration | None,
     *,
     options: PdfConvergenceOptions,
     convergence_source_id: str,
@@ -374,6 +505,8 @@ def _resolve_entity(
     level, level_method = _resolve_level(
         entity,
         architecture,
+        electrical,
+        accepted_registration,
         options=options,
         ambiguities=ambiguities,
     )
@@ -510,6 +643,8 @@ def _resolve_entity(
     target_confidences = [
         item.confidence for item in (level, space, host) if item is not None
     ]
+    if level_method == "accepted_sheet_registration_target":
+        target_confidences.append(lane["page_transform"]["registration"]["confidence"])
     spatial_confidence = min(target_confidences) if target_confidences else None
     confidence = (
         min(entity.confidence, spatial_confidence)
@@ -761,13 +896,16 @@ def converge_pdf_models(
     electrical: BuildingModel,
     *,
     options: PdfConvergenceOptions | None = None,
+    registration: ElectricalSheetRegistration | None = None,
 ) -> BuildingModel:
     """Join the two PDF lane outputs into one canonical semantic model.
 
     Both inputs remain canonical v1 BuildingModel values.  This function does
     not re-run PDF recognition or create a parallel representation.  The
     electrical lane must already be explicitly registered into the same frame
-    as the architectural lane.
+    as the architectural lane. Target-level claims additionally require the
+    accepted sheet-registration result used for import, supplied explicitly
+    as ``registration``; arbitrary metadata is not an acceptance receipt.
     """
 
     _validate_lane_models(architecture, electrical)
@@ -785,6 +923,8 @@ def converge_pdf_models(
         item.id: _resolve_entity(
             item,
             architecture,
+            electrical,
+            registration,
             options=options,
             convergence_source_id=convergence_source_id,
             ambiguities=ambiguities,

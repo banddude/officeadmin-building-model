@@ -122,9 +122,9 @@ def test_filled_strips_supply_evidence_when_face_pairing_is_sparse(monkeypatch: 
     assert len(evidence.drawings[0][1]) == len(FIXTURE["plan_a_strips"])
 
 
-def _electrical_devices_document(x: float, y: float) -> PdfElectricalDocument:
+def _electrical_devices_document(x: float, y: float, *, source_id: str) -> PdfElectricalDocument:
     return PdfElectricalDocument(
-        source_id="fixture:filled-construction-electrical",
+        source_id=source_id,
         page_count=1,
         texts=(ElectricalTextObservation(
             element_id="electrical-sheet", page=1, text="E-110 POWER PLAN",
@@ -162,9 +162,10 @@ def test_filled_plan_registers_sparse_electrical_walls() -> None:
     assert point.y == pytest.approx((y - dy) * MPP, abs=1e-6)
     assert point.z == model.levels[0].elevation_m
     electrical_model = ElectricalPdfImporter().import_document(
-        _electrical_devices_document(x, y), page_transforms=result.page_transforms(),
+        _electrical_devices_document(x, y, source_id=electrical.source_id),
+        page_transforms=result.page_transforms(),
     )
-    merged = converge_pdf_models(model, electrical_model)
+    merged = converge_pdf_models(model, electrical_model, registration=result)
     validate_model(merged)
     assert len(merged.electrical_devices) == 1
     placed = merged.electrical_devices[0]
@@ -618,7 +619,8 @@ def test_native_rectangle_ticks_do_not_break_sparse_electrical_registration():
     source = _document(annotated, "arch")
     model = import_observations(source)
     validate_model(model)
-    result = register_electrical_sheets(model, source, _document(_electrical(), "electrical"))
+    electrical_source = _document(_electrical(), "electrical")
+    result = register_electrical_sheets(model, source, electrical_source)
     assert result.all_registered
     record = result.pages[0].record["registration"]
     assert record["wall_inlier_count"] >= 8
@@ -631,9 +633,10 @@ def test_native_rectangle_ticks_do_not_break_sparse_electrical_registration():
     assert point.x == pytest.approx((x - dx) * MPP, abs=1e-6)
     assert point.y == pytest.approx((y - dy) * MPP, abs=1e-6)
     electrical_model = ElectricalPdfImporter().import_document(
-        _electrical_devices_document(x, y), page_transforms=result.page_transforms(),
+        _electrical_devices_document(x, y, source_id=electrical_source.source_id),
+        page_transforms=result.page_transforms(),
     )
-    merged = converge_pdf_models(model, electrical_model)
+    merged = converge_pdf_models(model, electrical_model, registration=result)
     validate_model(merged)
     assert len(merged.electrical_devices) == 1
     placed = merged.electrical_devices[0]

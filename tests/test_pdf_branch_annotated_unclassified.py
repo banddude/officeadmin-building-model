@@ -1,9 +1,4 @@
-"""Actual-source probe for the annotated, unclassified open-chain gap (#76).
-
-The strict xfail is an unsatisfied acceptance check, not a classifier or fix.
-Only the dedicated membership exception can xfail; fixture/binding failures fail.
-"""
-import pytest
+"""Actual-source acceptance probe for unclassified open-chain membership."""
 
 from test_pdf_branch_geometry import inputs, sheet
 from oabm.importers.pdf_electrical import ElectricalPdfImporter
@@ -14,10 +9,12 @@ class UnclassifiedBranchMembership(AssertionError):
     """The unresolved semantic distinction still produced canonical membership."""
 
 
-def annotated_sheet(path, *, touching=True):
+def annotated_sheet(path, *, touching=True, legend=False):
     # The sole circuit annotation is LP-1, next to the arrow at (500, 350).
     # EVSE-2 and EVSE-3 are identities, not named circuit members in that text.
     return sheet(path, length=80, extra=(
+        *(("BT /F1 8 Tf 20 675 Td (LINE LEGEND) Tj ET", "20 650 m 80 650 l S",
+           "BT /F1 8 Tf 90 650 Td (ELECTRICAL BRANCH WIRING) Tj ET") if legend else ()),
         "300 200 m 300 500 l S", "303 200 m 303 500 l S",
         "300 500 m 380 500 l S", "300 503 m 380 503 l S",
         f"460 {350 if touching else 330} m 460 200 l S",
@@ -57,14 +54,16 @@ def load_names(model):
 
 def test_disconnecting_only_the_open_chain_preserves_the_annotated_branch(tmp_path):
     _, _, _, model = observed_import(
-        annotated_sheet(tmp_path / "disconnected.pdf", touching=False),
+        annotated_sheet(tmp_path / "disconnected.pdf", touching=False, legend=True),
     )
     assert len(model.circuits) == 1 and len(model.ports) == 2
     assert load_names(model) == {"EVSE-1"}
     assert model.circuits[0].circuit_number == "1"
-    assert {record.method for record in model.circuits[0].provenance} == {
-        "pdf-homerun-annotation",
-    }
+    assert "pdf-source-legend-branch-membership" in {
+        record.method for record in model.circuits[0].provenance}
+    assert not any(record.derivation == "observed" and
+        provenance_applies_to(record, ("load_port_ids",))
+        for record in model.circuits[0].provenance)
 
 
 def test_authored_intent_without_source_evidence_cannot_change_the_extraction(tmp_path):
@@ -83,10 +82,6 @@ def test_authored_intent_without_source_evidence_cannot_change_the_extraction(tm
     assert left_evidence.frame_pt == right_evidence.frame_pt
 
 
-@pytest.mark.xfail(
-    strict=True, raises=UnclassifiedBranchMembership,
-    reason="#76 lacks source-bound electrical branch ownership/local semantic coverage",
-)
 def test_annotated_unclassified_component_requires_semantics_before_membership(tmp_path):
     document, architecture, evidence, model = observed_import(
         annotated_sheet(tmp_path / "touching.pdf"),
@@ -127,6 +122,9 @@ def test_annotated_unclassified_component_requires_semantics_before_membership(t
     assert check["architecture_evidence_status"] == "supplied_positive"
     assert not check["wall_chain_ids"] and not check["wall_evidence_element_ids"]
     assert {item.element_id for item in local_vectors}.issubset(check["source_element_ids"])
+    assert any(row["unresolved_element_ids"] for row in lane["branch_ownership_checks"])
+    assert any(row.get("reason_code") == "branch_ownership_unresolved"
+               for row in lane["unresolved_circuits"])
     observed_membership = [
         record for circuit in model.circuits for record in circuit.provenance
         if record.derivation == "observed"

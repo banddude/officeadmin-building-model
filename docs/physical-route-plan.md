@@ -66,3 +66,11 @@ route generator. `route/` has the generator result, model, GLB and schedule;
 `drawing/` has the SVG and source-bound drawing delivery. The example uses only
 synthetic supplied geometry. The model identity in both schedules and the GLB
 agrees. No app code or PDF importing participates.
+
+Text wrapping measures the resolved DejaVu Sans regular/bold faces through the
+shared sheet font helper (Fontconfig, Pillow and fontTools). The resolved family
+is written into SVG. Overlong identity tokens wrap without truncation; missing
+fonts/glyphs fail explicitly. Every positive projected segment, OD/radius and
+box footprint dimension must survive the six-decimal-mm output precision.
+Geometry that collapses at that presentation scale refuses before a delivery
+directory is created; intentional vertical-line projections still use OD discs.

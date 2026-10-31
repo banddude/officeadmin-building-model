@@ -7,7 +7,6 @@ import html
 import json
 import math
 from pathlib import Path
-import textwrap
 
 from oabm.model import BuildingModel, ContractError, PhysicalRoute, physical_segment_facts
 from oabm.model.physical_route_context import physical_box_bounds
@@ -15,6 +14,7 @@ from oabm.reports.physical_routes import PhysicalRouteSchedule, generate_physica
 from oabm.routing.physical_capture import SOURCE_BYTES, bounded_source_json
 from oabm.routing.physical_verify_types import VerificationStop
 from .svg import _fmt
+from .company_sheets import _font, measure_sheet_text
 
 
 NOTES = (
@@ -49,7 +49,7 @@ def generate_physical_route_plan(model, *, scale=25):
     No plan cut, visibility filtering, building geometry inference or rerouting.
     Legacy routes are explicitly excluded by the attached source-bound schedule.
     """
-    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or not 1 <= scale <= 1000:
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not 1 <= scale <= 1000 or not math.isfinite(scale):
         raise ContractError('physical route plan scale must be finite in [1, 1000]')
     schedule = generate_physical_route_schedule(model)
     model = BuildingModel.from_json(schedule.source_model_json)
@@ -77,12 +77,49 @@ def generate_physical_route_plan(model, *, scale=25):
     report = schedule.to_dict()
     attrs = f'data-source-model-sha256="{report["source"]["sha256"]}"'
     body = []
+    try:
+        _, font_family, _, _ = _font('DejaVu Sans', 400)
+        _font('DejaVu Sans', 700)
+    except ValueError as exc:
+        raise ContractError(f'physical route plan font: {exc}') from exc
+    def measured(value, size=3, weight=400):
+        try:
+            return measure_sheet_text(value, size, font_family='DejaVu Sans', font_weight=weight)
+        except ValueError as exc:
+            raise ContractError(f'physical route plan text: {exc}') from exc
+    def positive_paper(value, label):
+        if float(_fmt(value)) <= 0:
+            raise ContractError(f'physical route plan {label} collapses at six-decimal-mm presentation precision; choose a larger drawing scale')
+        return _fmt(value)
     def text(x,y,value,**kw):
         extra = ' '.join(f'{k.replace("_","-")}="{_escape(v)}"' for k,v in kw.items())
         body.append(f'<text x="{_fmt(x)}" y="{_fmt(y)}" {extra}>{_escape(value)}</text>')
     def paragraph(y, value, **kw):
-        for line in textwrap.wrap(str(value), width=max(30,int((width-32)/1.6)), break_long_words=True, replace_whitespace=True) or ['']:
-            text(16,y,line,**kw); y += 4.5
+        # Wrap the displayed characters with the same resolved font as SVG.
+        # Breaking an overlong token is allowed; every identity character remains.
+        remaining = html.unescape(_escape(value)).replace('\t', r'\t').replace('\n', r'\n').replace('\r', r'\r')
+        weight = 700 if kw.get('font_weight') == 'bold' else 400
+        size = kw.get('font_size', 3)
+        while remaining:
+            lo, hi = 0, len(remaining)
+            while lo < hi:
+                mid = (lo+hi+1)//2
+                if measured(remaining[:mid], size, weight) <= width-32:
+                    lo = mid
+                else:
+                    hi = mid-1
+            if not lo:
+                raise ContractError('physical route plan text character exceeds available paper width')
+            end = lo
+            if end < len(remaining):
+                space = remaining.rfind(' ', 0, end)
+                if space > 0:
+                    end = space+1
+            text(16,y,remaining[:end],**kw)
+            remaining = remaining[end:]
+            y += 4.5
+            if y > 5000:
+                raise ContractError('physical route plan annotations exceed 5000 mm presentation limit')
         return y
     text(16,12,'PHYSICAL ROUTE / XY REVIEW',font_size=5,font_weight='bold')
     text(16,19,f'1:{scale:g} at native print size | metres | +Y up | no depth cut')
@@ -90,7 +127,9 @@ def generate_physical_route_plan(model, *, scale=25):
     body.append(f'<rect x="12" y="30" width="{_fmt(width-24)}" height="{_fmt(plot_height)}" fill="#fafcfd" stroke="#d1d9df" stroke-width="0.3"/>')
     for index,(obstacle,(lo,hi)) in enumerate(boxes,1):
         x=x_origin+(float(lo[0])/1e9-xmin)*ppu; y=y_origin+(ymax-float(hi[1])/1e9)*ppu
-        body.append(f'<rect x="{_fmt(x)}" y="{_fmt(y)}" width="{_fmt(float(hi[0]-lo[0])/1e9*ppu)}" height="{_fmt(float(hi[1]-lo[1])/1e9*ppu)}" fill="#dce2e6" stroke="#78858c" stroke-width="0.25" data-source-ids="{_escape(obstacle.id)}"><title>{_escape(obstacle.id)}</title></rect>')
+        box_width = positive_paper(float(hi[0]-lo[0])/1e9*ppu, 'obstacle width')
+        box_height = positive_paper(float(hi[1]-lo[1])/1e9*ppu, 'obstacle height')
+        body.append(f'<rect x="{_fmt(x)}" y="{_fmt(y)}" width="{box_width}" height="{box_height}" fill="#dce2e6" stroke="#78858c" stroke-width="0.25" data-source-ids="{_escape(obstacle.id)}"><title>{_escape(obstacle.id)}</title></rect>')
         text(x+1,y+3,f'O{index}',font_size=2.8)
     vertical = []
     for ri,route in enumerate(routes,1):
@@ -100,15 +139,21 @@ def generate_physical_route_plan(model, *, scale=25):
             ids=_escape(' '.join((route.id,seg.id,seg.start_joint_id,seg.end_joint_id,route.requirements.id)))
             od=route.requirements.outside_diameter_m*ppu
             horizontal=a.z==b.z
+            positive_paper(od, 'outside diameter')
+            vertical_line = seg.kind=='line' and a.x==b.x and a.y==b.y
+            if not vertical_line and point(a) == point(b):
+                raise ContractError('physical route plan projected segment collapses at six-decimal-mm presentation precision; choose a larger drawing scale')
             if seg.kind=='quarter_arc' and seg.plane_normal.z==1:
                 sweep=0 if seg.turn=='positive_quarter' else 1  # model +Y is SVG -Y
                 r=fact['radius_ticks']/1e9*ppu
+                positive_paper(r, 'arc radius')
                 d=f'M {point(a)} A {_fmt(r)} {_fmt(r)} 0 0 {sweep} {point(b)}'
             else:
                 d=f'M {point(a)} L {point(b)}'
-            if seg.kind=='line' and a.x==b.x and a.y==b.y:
+            if vertical_line:
                 x,y=xy(a)
-                body.append(f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{_fmt(od/2)}" fill="#1674ad" data-source-ids="{ids}"/>')
+                outside_radius = positive_paper(od/2, 'outside radius')
+                body.append(f'<circle cx="{_fmt(x)}" cy="{_fmt(y)}" r="{outside_radius}" fill="#1674ad" data-source-ids="{ids}"/>')
             else:
                 style=f'stroke="#1674ad" stroke-width="{_fmt(od)}"' if horizontal else 'stroke="#b75a18" stroke-width="0.4" stroke-dasharray="1.5 1"'
                 body.append(f'<path d="{d}" fill="none" {style} stroke-linecap="butt" data-source-ids="{ids}"><title>{_escape(seg.id)}; Z {_fmt(a.z)} to {_fmt(b.z)} m</title></path>')
@@ -149,7 +194,7 @@ def generate_physical_route_plan(model, *, scale=25):
     svg=(f'<svg xmlns="http://www.w3.org/2000/svg" width="{_fmt(width)}mm" height="{_fmt(y+12)}mm" viewBox="0 0 {_fmt(width)} {_fmt(y+12)}" {attrs}>\n'
          '<title>Source-bound physical route XY review</title>\n'
          f'<rect width="{_fmt(width)}" height="{_fmt(y+12)}" fill="white"/>\n'
-         '<g font-family="DejaVu Sans, sans-serif" font-size="3" fill="#142f43">\n'+'\n'.join(body)+'\n</g></svg>\n')
+         f'<g font-family="{_escape(font_family)}" font-size="3" fill="#142f43">\n'+'\n'.join(body)+'\n</g></svg>\n')
     return PhysicalRoutePlan(svg,schedule)
 
 

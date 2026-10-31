@@ -120,3 +120,68 @@ def test_unsupported_obstacle_geometry_and_oversized_print_fail_explicitly():
         generate_physical_route_plan(replace(model,obstacles=(obstacle,)))
     with pytest.raises(ContractError,match='extent'):
         generate_physical_route_plan(model,scale=1)
+
+
+def test_wide_identity_wraps_by_actual_font_width_without_losing_characters():
+    from oabm.drawings.company_sheets import measure_sheet_text
+    identity='W'*128
+    obstacle=Obstacle(id=identity,geometry=Box3D(pose=Pose(position=Point3(x=1,y=1,z=0)),size=Size3(x=.1,y=.1,z=.1)))
+    plan=generate_physical_route_plan(replace(measured_model(),obstacles=(obstacle,)))
+    root=ET.fromstring(plan.svg)
+    width=float(root.attrib['width'][:-2])
+    texts=root.findall('.//s:text',NS)
+    for node in texts:
+        size=float(node.attrib.get('font-size',3))
+        weight=700 if node.attrib.get('font-weight')=='bold' else 400
+        occupied=measure_sheet_text(node.text or '',size,font_family='DejaVu Sans',font_weight=weight)
+        assert float(node.attrib['x'])+occupied <= width
+    register=''.join(node.text or '' for node in texts)
+    assert identity in register and 'model Z -0.05 to 0.05 m' in register
+    assert root.find(f'.//s:rect[@data-source-ids="{identity}"]',NS) is not None
+
+
+def nanometre_route(*, vertical=False):
+    from physical_route_fixture import make_physical_source, make_physical_route
+    from oabm.model import Vector3, compute_physical_request_sha256, compute_physical_source_sha256
+    source=make_physical_source()
+    end=Point3(x=0 if vertical else 1e-9,y=0,z=1e-9 if vertical else 0)
+    source=replace(source,
+        electrical_devices=(source.electrical_devices[0],replace(source.electrical_devices[1],pose=Pose(position=end))),
+        ports=(replace(source.ports[0],direction=Vector3(x=0 if vertical else 1,y=0,z=1 if vertical else 0)),
+               replace(source.ports[1],pose=Pose(position=end),direction=Vector3(x=0 if vertical else -1,y=0,z=-1 if vertical else 0))))
+    route=make_physical_route()
+    req=replace(route.requirements,start_straight_min_m=0,end_straight_min_m=0)
+    context=replace(route.context,source_model_sha256=compute_physical_source_sha256(source))
+    context=replace(context,request_sha256=compute_physical_request_sha256(context,req))
+    joints=(route.joints[0],replace(route.joints[1],position=end))
+    return replace(source,routes=(replace(route,joints=joints,requirements=req,context=context),))
+
+
+def test_positive_segment_collapsing_at_output_precision_is_refused_before_write(tmp_path):
+    model=nanometre_route()
+    assert generate_physical_route_schedule(model).to_dict()['totals']['length']['straight_ticks']==1
+    with pytest.raises(ContractError,match='projected segment collapses'):
+        generate_physical_route_plan(model,scale=1000)
+    source=tmp_path/'input.json';source.write_text(model.to_json())
+    with pytest.raises(SystemExit):main([str(source),str(tmp_path/'out'),'--scale','1000'])
+    assert not (tmp_path/'out').exists()
+
+
+def test_positive_box_dimensions_collapsing_at_output_precision_are_refused():
+    obstacle=Obstacle(id='obstacle:tiny',geometry=Box3D(pose=Pose(position=Point3(x=1,y=1,z=0)),size=Size3(x=1e-9,y=1e-9,z=.1)))
+    with pytest.raises(ContractError,match='obstacle width collapses'):
+        generate_physical_route_plan(replace(measured_model(),obstacles=(obstacle,)),scale=1000)
+    obstacle=replace(obstacle,geometry=replace(obstacle.geometry,size=Size3(x=.1,y=1e-9,z=.1)))
+    with pytest.raises(ContractError,match='obstacle height collapses'):
+        generate_physical_route_plan(replace(measured_model(),obstacles=(obstacle,)),scale=1000)
+
+
+def test_intentional_vertical_projection_remains_an_od_disc():
+    root=ET.fromstring(generate_physical_route_plan(nanometre_route(vertical=True),scale=1000).svg)
+    discs=[node for node in root.findall('.//s:circle',NS) if node.attrib.get('fill')=='#1674ad']
+    assert len(discs)==1 and float(discs[0].attrib['r'])==.01
+
+
+def test_huge_integer_scale_is_a_contract_error():
+    with pytest.raises(ContractError,match='scale'):
+        generate_physical_route_plan(measured_model(),scale=10**1000)

@@ -68,9 +68,11 @@ class PhysicalGeometryCoverage:
 
     def __post_init__(self) -> None:
         _validate_id(self.source_entity_id, "coverage.source_entity_id")
-        if self.decision not in {"direct_blocker", "supplied_envelope", "outside_proof_scope"}:
+        if not isinstance(self.decision, str) or self.decision not in {"direct_blocker", "supplied_envelope", "outside_proof_scope"}:
             raise ContractError("unknown physical coverage decision")
-        if not isinstance(self.blocker_entity_ids, tuple) or len(self.blocker_entity_ids) > 4096 or len(set(self.blocker_entity_ids)) != len(self.blocker_entity_ids):
+        if (not isinstance(self.blocker_entity_ids, tuple) or len(self.blocker_entity_ids) > 4096 or
+                any(not isinstance(identity, str) for identity in self.blocker_entity_ids) or
+                len(set(self.blocker_entity_ids)) != len(self.blocker_entity_ids)):
             raise ContractError("coverage blocker IDs must be a unique tuple")
         for identity in self.blocker_entity_ids:
             _validate_id(identity, "coverage.blocker_entity_ids")

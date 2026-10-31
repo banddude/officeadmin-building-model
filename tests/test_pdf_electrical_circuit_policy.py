@@ -30,7 +30,8 @@ def _candidate_ids(model):
 
 
 def test_defer_all_withholds_ambiguous_source_pdf_graph_but_keeps_candidate_evidence(tmp_path):
-    path = annotated_sheet(tmp_path / "unclassified-touching.pdf", touching=True)
+    # Associations now require the actual source legend in the strict handoff.
+    path = annotated_sheet(tmp_path / "supported-touching.pdf", touching=True, legend=True)
     document, architecture, wall_evidence, _, _ = branch_inputs(path)
     assert not path.with_suffix(".expected.json").exists()
 

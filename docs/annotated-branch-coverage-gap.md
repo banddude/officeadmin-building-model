@@ -1,5 +1,11 @@
 # Annotated unclassified branch acceptance probe (#76)
 
+Current implementation status: [Source-backed branch ownership](branch-source-ownership.md)
+adds a bounded explicit-legend producer and whole-component refusal in the strict
+architecture-handoff path. The original negative source now passes without xfail.
+The investigation below records the original measured gap; full #76 and private
+real-plan acceptance remain open.
+
 This investigation leaves production behavior unchanged. It does not close #76
 or #72, and does not alter the reviewed #322 branch or the #320/#321 files.
 

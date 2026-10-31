@@ -1,5 +1,8 @@
 """Electrical PDF recognition into canonical electrical model objects."""
 
+from ..pdf_branch_evidence import BranchStrokeClaim, SourceBranchEvidence
+from .branch_ownership import source_branch_evidence
+
 from .shape_classes import (
     ShapeClass,
     TriangleMeshDiagnostic,
@@ -34,6 +37,9 @@ from ..pdf_wall_evidence import (
 )
 
 __all__ = [
+    "BranchStrokeClaim",
+    "SourceBranchEvidence",
+    "source_branch_evidence",
     "DEFAULT_SYMBOL_RULES",
     "POINT_TO_M",
     "ConfirmedScheduleRow",

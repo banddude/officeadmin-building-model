@@ -66,6 +66,7 @@ class PdfTextObservation:
     x_pt: float
     y_pt: float
     font_size_pt: float | None = None
+    branch_legend_paint_supported: bool | None = None
 
     def __post_init__(self) -> None:
         _validate_source_observation(self.element_id, self.page, self.x_pt, self.y_pt)
@@ -166,6 +167,7 @@ class PdfElectricalDocument:
                 font_size_pt=(
                     None if item.get("font_size_pt") is None else float(item["font_size_pt"])
                 ),
+                branch_legend_paint_supported=item.get("branch_legend_paint_supported"),
             )
             for item in data.get("texts", ())
         )
@@ -767,6 +769,7 @@ class _VectorPaintState(NamedTuple):
     stroke_color: tuple[float, ...] | None
     fill_color: tuple[float, ...] | None
     line_width: float | None
+    branch_style_supported: bool
 
 
 # PDF default graphics state: DeviceGray black in both colour slots and a
@@ -777,6 +780,7 @@ _INITIAL_PAINT_STATE = _VectorPaintState(
     stroke_color=(0.0,),
     fill_color=(0.0,),
     line_width=1.0,
+    branch_style_supported=True,
 )
 
 
@@ -833,7 +837,7 @@ def _displayed_line_width_pt(
 # Style keys recorded on observations for the shape-class groundwork. They are
 # recognition input only: provenance mirrors of source metadata must not carry
 # them, so every model output stays byte-identical to before.
-_VECTOR_STYLE_METADATA_KEYS = frozenset({"stroke_gray", "fill_gray", "line_width_pt"})
+_VECTOR_STYLE_METADATA_KEYS = frozenset({"stroke_gray", "fill_gray", "line_width_pt", "branch_style_supported"})
 
 
 def _provenance_vector_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -916,6 +920,7 @@ def _make_page_visitors(
     symbols: list[PdfSymbolObservation],
     vectors: list[PdfVectorPathObservation],
     resources: Any = None,
+    branch_text_visibility: dict | None = None,
 ):
     text_counter = 0
     operator_counter = 0
@@ -945,6 +950,72 @@ def _make_page_visitors(
     state_stack: list[_VectorPaintState] = []
     resource_stack: list[Any] = [_resolved_pdf_object(resources)]
     form_frames: list[tuple[bool, _VectorPaintState, int]] = []
+    text_shows_in_object = 0
+    text_object_active = False
+    text_font_ready = False
+    text_position_ready = False
+
+    # This is an admission subset, not a list of known invisible cases. Any
+    # operation outside this plain page-level stroke/text grammar is unknown
+    # to the source-evidence producer even though legacy extraction continues.
+    plain_operators = frozenset({b"q", b"Q", b"cm", b"w", b"G", b"g",
+        b"BT", b"ET", b"Tf", b"Tm", b"Td", b"Tj", b"Tr", b"Tz", b"Ts", b"Tc", b"Tw",
+        b"m", b"l", b"c", b"v", b"y", b"re", b"h", b"S", b"s", b"n"})
+
+    def finite_numbers(values, count):
+        try:
+            return len(values) == count and all(not isinstance(v, bool)
+                and isinstance(v, (int, float)) and math.isfinite(v) for v in values)
+        except OverflowError:
+            return False
+
+    def supported_matrix(values):
+        if not finite_numbers(values, 6):
+            return False
+        x_scale, y_scale = math.hypot(*values[:2]), math.hypot(*values[2:4])
+        return (math.isfinite(x_scale) and math.isfinite(y_scale) and x_scale > 0 and y_scale > 0
+            and math.isclose(x_scale, y_scale, rel_tol=1e-9, abs_tol=1e-12)
+            and math.isclose((values[0]/x_scale)*(values[2]/y_scale)
+                + (values[1]/x_scale)*(values[3]/y_scale), 0., abs_tol=1e-12))
+
+    def supported_plain_operation(operator, operands):
+        if operator not in plain_operators:
+            return False
+        if operator in {b"cm", b"Tm"}:
+            return supported_matrix(operands)
+        counts = {b"m": 2, b"l": 2, b"c": 6, b"v": 4, b"y": 4, b"re": 4, b"Td": 2}
+        if operator in counts:
+            return finite_numbers(operands, counts[operator])
+        if operator in {b"G", b"g", b"Tr", b"Tc", b"Tw", b"Ts", b"Tz"}:
+            return finite_numbers(operands, 1) and operands[0] == (100 if operator == b"Tz" else 0)
+        if operator == b"w":
+            return finite_numbers(operands, 1) and operands[0] > 0
+        if operator == b"Tf":
+            return len(operands) == 2 and isinstance(operands[0], str) and finite_numbers(operands[1:], 1) and operands[1] > 0
+        if operator == b"Tj":
+            if len(operands) != 1 or not isinstance(operands[0], (str, bytes)):
+                return False
+            try:
+                literal = operands[0].decode("ascii") if isinstance(operands[0], bytes) else operands[0]
+            except UnicodeDecodeError:
+                return False
+            return (literal == " ".join(literal.split())
+                and all(32 <= ord(char) <= 126 for char in literal))
+        return not operands
+
+    def supported_text_transform(cm, tm, font_size):
+        if (not supported_matrix(cm) or not supported_matrix(tm)
+                or not finite_numbers((font_size,), 1) or font_size <= 0):
+            return False
+        origin, x_axis, y_axis = [display_transform.apply(*_transform_graphics_point(cm, x, y))
+            for x, y in ((tm[4], tm[5]), (tm[4] + tm[0], tm[5] + tm[1]),
+                         (tm[4] + tm[2], tm[5] + tm[3]))]
+        dx, dy = x_axis[0] - origin[0], y_axis[1] - origin[1]
+        return (math.isfinite(dx) and math.isfinite(dy) and dx > 0 and dy > 0
+            and math.isfinite(font_size * dx) and font_size * dx > 0
+            and math.isclose(dx, dy, rel_tol=1e-9, abs_tol=1e-9)
+            and math.isclose(x_axis[1], origin[1], abs_tol=1e-9)
+            and math.isclose(y_axis[0], origin[0], abs_tol=1e-9))
 
     def displayed_graphics_point(
         cm: Sequence[float],
@@ -967,6 +1038,16 @@ def _make_page_visitors(
         cleaned = " ".join(text.split())
         if not cleaned:
             return
+        if branch_text_visibility is not None and (
+            not isinstance(font_dict, Mapping)
+            or font_dict.get("/Type") != "/Font"
+            or font_dict.get("/Subtype") != "/Type1"
+            or font_dict.get("/BaseFont") != "/Helvetica"
+            or not set(font_dict).issubset({"/Type", "/Subtype", "/BaseFont", "/Name"})
+            or not supported_text_transform(cm, tm, font_size)
+            or not finite_numbers((font_size,), 1) or font_size <= 0
+        ):
+            branch_text_visibility["font_visibility"] = "unsupported"
         text_counter += 1
         # pypdf visitor values are absolute user space (see displayed_graphics_point).
         raw_x_pt, raw_y_pt = _transform_text_point(cm, tm)
@@ -984,7 +1065,9 @@ def _make_page_visitors(
 
     def finish_current() -> None:
         nonlocal current_points, current_curve_commands, current_closed, current_supported
-        if len(current_points) >= 2:
+        # Retain incomplete subpaths until the paint operator. Discarding them
+        # here would hide actual paint coverage from the strict evidence gate.
+        if current_points or not current_supported:
             pending_subpaths.append(
                 (
                     tuple(current_points),
@@ -1012,8 +1095,12 @@ def _make_page_visitors(
         nonlocal pending_subpaths, vector_counter
         finish_current()
         paint_operator = operator.decode("ascii", errors="replace")
+        if not pending_subpaths and branch_text_visibility is not None:
+            branch_text_visibility["unaccounted_path_paint"] = "unsupported"
         for points, closed, supported, curve_commands in pending_subpaths:
             if not supported:
+                if branch_text_visibility is not None:
+                    branch_text_visibility["unaccounted_path_paint"] = "unsupported"
                 continue
             normalized_points: list[tuple[float, float]] = []
             for point in points:
@@ -1028,9 +1115,21 @@ def _make_page_visitors(
                     continue
                 normalized_points.append(point)
             if len(normalized_points) < 2 or (closed and len(normalized_points) < 3):
+                if branch_text_visibility is not None:
+                    branch_text_visibility["unaccounted_path_paint"] = "unsupported"
                 continue
             vector_counter += 1
             metadata: dict[str, Any] = {"paint_operator": paint_operator}
+            # The bounded branch legend producer supports only default solid,
+            # opaque DeviceGray strokes. Never alias an unrecorded dash, colour
+            # space, graphics-state override or line-end convention to that style.
+            metadata["branch_style_supported"] = (
+                paint_state.branch_style_supported
+                and paint_state.stroke_color is not None
+                and len(paint_state.stroke_color) == 1
+                and paint_state.stroke_alpha == 1.0
+                and supported_matrix(cm)
+            )
             # Colour and width are recorded at the paint operator from the
             # current graphics state; a pattern or unknown colour omits the
             # key instead of guessing.
@@ -1079,7 +1178,42 @@ def _make_page_visitors(
     ) -> None:
         nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
         nonlocal paint_state
+        nonlocal text_shows_in_object
+        nonlocal text_object_active, text_font_ready, text_position_ready
         operator_counter += 1
+
+        if operator == b"BT":
+            if text_object_active and branch_text_visibility is not None:
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+            text_object_active = True
+            text_font_ready = text_position_ready = False
+            text_shows_in_object = 0
+        elif text_object_active:
+            text_ops = {b"Tf", b"Tm", b"Td", b"Tj", b"Tr", b"Tz", b"Ts", b"Tc", b"Tw", b"ET"}
+            if branch_text_visibility is not None and (
+                operator not in text_ops or (text_shows_in_object and operator != b"ET")
+            ):
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+            if operator == b"Tf":
+                text_font_ready = True
+            if operator in {b"Tm", b"Td"}:
+                text_position_ready = True
+            if operator == b"Tj" and not (text_font_ready and text_position_ready) and branch_text_visibility is not None:
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+            if operator == b"ET":
+                text_object_active = False
+                if text_shows_in_object != 1 and branch_text_visibility is not None:
+                    branch_text_visibility["text_object_grammar"] = "unsupported"
+        elif operator in {b"Tf", b"Tm", b"Td", b"Tj", b"Tr", b"Tz", b"Ts", b"Tc", b"Tw", b"ET"}:
+            if branch_text_visibility is not None:
+                branch_text_visibility["text_object_grammar"] = "unsupported"
+        if operator in {b"Tj", b"TJ", b"'", b'"'}:
+            text_shows_in_object += 1
+            if branch_text_visibility is not None and text_shows_in_object > 1:
+                branch_text_visibility["text_layout"] = "unsupported"
+
+        if branch_text_visibility is not None and not supported_plain_operation(operator, operands):
+            branch_text_visibility["plain_operation_subset"] = "unsupported"
 
         if operator == b"q":
             state_stack.append(paint_state)
@@ -1093,12 +1227,16 @@ def _make_page_visitors(
                 resource_stack[-1], str(operands[0])
             )
             paint_state = paint_state._replace(
+                branch_style_supported=False,
                 stroke_alpha=(
                     paint_state.stroke_alpha if new_stroke is None else new_stroke
                 ),
                 fill_alpha=paint_state.fill_alpha if new_fill is None else new_fill,
             )
             return
+
+        if operator in {b"d", b"J", b"j", b"M", b"CS", b"SC", b"SCN", b"RG", b"K"}:
+            paint_state = paint_state._replace(branch_style_supported=False)
 
         if operator == b"G" and operands:
             paint_state = paint_state._replace(
@@ -1160,6 +1298,12 @@ def _make_page_visitors(
             return
 
         if operator == b"Do":
+            if branch_text_visibility is not None and operands:
+                resources = _resolved_pdf_object(resource_stack[-1])
+                objects = _resolved_pdf_object(resources.get("/XObject")) if isinstance(resources, Mapping) else None
+                obj = _resolved_pdf_object(objects.get(str(operands[0]))) if isinstance(objects, Mapping) else None
+                if isinstance(obj, Mapping) and obj.get("/OC") is not None:
+                    branch_text_visibility["optional_content"] = "unsupported"
             form_resources = (
                 _form_xobject_resources(resource_stack[-1], str(operands[0]))
                 if operands
@@ -1207,6 +1351,11 @@ def _make_page_visitors(
                         float(operands[1]),
                     )
                 )
+            elif branch_text_visibility is not None:
+                # For example, PDF permits continuing from a rectangle's
+                # current point, but this observation lane does not retain
+                # that continuation. Do not certify its missing paint bound.
+                branch_text_visibility["unaccounted_path_construction"] = "unsupported"
             return
 
         if operator == b"re" and len(operands) >= 4:
@@ -1397,6 +1546,25 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                         if str(xobject.get("/Subtype")) == "/Form":
                             form_names.add(str(raw_name))
 
+        page_text_start = len(texts)
+        branch_text_visibility = {}
+        # Display normalization remains MediaBox-based for legacy recognition.
+        # The strict evidence producer cannot certify cropped/optional-content
+        # text without a renderer, so retain an explicit unsupported source fact.
+        try:
+            if tuple(float(v) for v in page.cropbox) != tuple(float(v) for v in page.mediabox):
+                branch_text_visibility["crop_visibility"] = "unsupported"
+        except (TypeError, ValueError, KeyError):
+            branch_text_visibility["crop_visibility"] = "unsupported"
+        if reader.trailer["/Root"].get("/OCProperties") is not None:
+            branch_text_visibility["optional_content"] = "unsupported"
+        if page.get("/Annots"):
+            branch_text_visibility["annotation_visibility"] = "unsupported"
+        if page.get("/Group") is not None:
+            branch_text_visibility["page_group_visibility"] = "unsupported"
+        color_spaces = _resolved_pdf_object(resources.get("/ColorSpace")) if isinstance(resources, Mapping) else None
+        if isinstance(color_spaces, Mapping) and color_spaces.get("/DefaultGray") is not None:
+            branch_text_visibility["device_gray_override"] = "unsupported"
         visitor_text, visitor_operand_before, visitor_operand_after = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),
@@ -1405,6 +1573,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             symbols=symbols,
             vectors=vectors,
             resources=resources,
+            branch_text_visibility=branch_text_visibility,
         )
 
         temporary_font_resource = False
@@ -1431,6 +1600,10 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
         finally:
             if temporary_font_resource:
                 resources.pop(NameObject("/Font"), None)
+
+        texts[page_text_start:] = [replace(text,
+            branch_legend_paint_supported=not bool(branch_text_visibility))
+            for text in texts[page_text_start:]]
 
         annotations = page.get("/Annots") or ()
         for annotation_index, annotation_ref in enumerate(annotations, start=1):
@@ -11760,6 +11933,8 @@ class ElectricalPdfImporter:
                     or any(entity.id in rejected_branch_load_ids for entity in load_entities)):
                 unresolved_circuits.append({"kind": "device_circuit_tag", "page": observation.page,
                     "source_element_id": observation.element_id, "status": "unresolved",
+                    "method": method, "source_text": observation.text,
+                    "load_ids": [entity.id for entity in load_entities],
                     "reason_code": "branch_geometry_rejected",
                     "reason": "circuit evidence touches a source-bound rejected branch"})
                 return
@@ -12282,6 +12457,114 @@ class ElectricalPdfImporter:
         rejected_branch_annotation_ids: set[str] = set()
         unresolved_branch_vector_ids: set[str] = set()
         unresolved_branch_load_ids: set[str] = set()
+        branch_ownership_diagnostics: list[dict[str, Any]] = []
+        branch_claims = {}
+        branch_evidence_by_page = {}
+        owned_branch_vectors_by_load: dict[str, set[str]] = {}
+        def reject_strict_branch(component):
+            if architecture_document is None or not component:
+                return
+            page = component[0].page
+            rejected_branch_vector_ids.update(v.element_id for v in component)
+            for entity in devices:
+                if entity_source_positions[entity.id][0] == page and min(
+                    _point_path_distance_pt(entity_source_positions[entity.id][1:], v)
+                    for v in component) <= self.topology_endpoint_radius_pt:
+                        rejected_branch_load_ids.add(entity.id)
+            for text in texts:
+                if text.page == page and min(_point_path_distance_pt(
+                    (text.x_pt, text.y_pt), v) for v in component
+                ) <= self.topology_annotation_radius_pt:
+                    rejected_branch_annotation_ids.add(text.element_id)
+        if architecture_document is not None:
+            from .branch_ownership import source_branch_evidence
+            for page in selected_page_numbers:
+                evidence = source_branch_evidence(document, page=page)
+                branch_evidence_by_page[page] = evidence
+                branch_claims.update((claim.vector_id, claim) for claim in evidence.claims)
+            # Evaluate complete components before ANY membership sink. This
+            # includes unarrowed paths used by direct-tag and topology passes.
+            # Coverage is broader than the paths a materializer understands.
+            # Curves and unclaimed closed paths must not vanish from the
+            # ownership boundary while the residual straight run is certified.
+            ownership_vectors = [v for v in vectors
+                if v.page in selected_page_set
+                and v.element_id not in vector_symbol_ids
+                and v.element_id not in glyph_vector_ids]
+            roots = list(range(len(ownership_vectors)))
+            def branch_root(index):
+                while roots[index] != index:
+                    roots[index] = roots[roots[index]]
+                    index = roots[index]
+                return index
+            for left, right in _topology_candidate_pairs(ownership_vectors, snap_tolerance_pt):
+                if _paths_cross_or_touch(ownership_vectors[left], ownership_vectors[right],
+                                         tolerance_pt=snap_tolerance_pt):
+                    a, b = branch_root(left), branch_root(right)
+                    roots[max(a, b)] = min(a, b)
+            ownership_components = {}
+            for index, vector in enumerate(ownership_vectors):
+                ownership_components.setdefault(branch_root(index), []).append(vector)
+            for component in ownership_components.values():
+                page = component[0].page
+                unknown = sorted(v.element_id for v in component
+                    if branch_claims[v.element_id].classification != "electrical")
+                attached = {entity.id for entity in devices
+                    if entity_source_positions[entity.id][0] == page
+                    and min(_point_path_distance_pt(entity_source_positions[entity.id][1:], v)
+                            for v in component) <= self.topology_endpoint_radius_pt}
+                # Keep source candidates visible even when no recognized load
+                # can be attached. No trimming and no unknown-as-wiring fallback.
+                source_evidence = branch_evidence_by_page[page]
+                row = {"page": page, "source_element_ids": sorted(v.element_id for v in component),
+                    "content_sha256": source_evidence.content_sha256,
+                    "observation_sha256": source_evidence.observation_sha256,
+                    "frame_pt": list(source_evidence.frame_pt),
+                    "producer": source_evidence.producer, "producer_version": source_evidence.version,
+                    "status": "unresolved" if unknown else "electrical",
+                    "unresolved_element_ids": unknown,
+                    "claims": [{"vector_id": v.element_id,
+                        "classification": branch_claims[v.element_id].classification,
+                        "support_ids": list(branch_claims[v.element_id].support_ids),
+                        "confidence": branch_claims[v.element_id].confidence}
+                        for v in sorted(component, key=lambda v: v.element_id)]}
+                # Ownership is necessary, not sufficient. Run every strict
+                # geometry veto before ANY materializer, including direct tags
+                # on unarrowed components. A later homerun-only continue cannot
+                # revoke memberships already admitted by another path.
+                geometry_reason = None
+                geometry_component = [v for v in component
+                    if v.element_id not in homerun_arrowhead_ids]
+                if not unknown and geometry_component:
+                    enclosing = (touching_unclaimed_closed(geometry_component)
+                        or component_encloses_area(geometry_component))
+                    if enclosing is not None:
+                        geometry_reason = "branch_run_not_isolated"
+                        row["cycle_element_id"] = enclosing.element_id
+                    else:
+                        conflict = _wall_chain_conflict(geometry_component,
+                            wall_chains_by_page.get(page, ()),
+                            own_symbol_outlines=component_own_symbol_outlines(geometry_component),
+                            tolerance_pt=snap_tolerance_pt)
+                        if conflict is not None:
+                            geometry_reason = "enters_classified_wall_chain"
+                            row["wall_chain_id"] = conflict.chain_id
+                    if geometry_reason:
+                        row["status"] = "unresolved"
+                        row["reason_code"] = geometry_reason
+                branch_ownership_diagnostics.append(row)
+                if not unknown and not geometry_reason:
+                    for owner_id in attached:
+                        owned_branch_vectors_by_load.setdefault(owner_id, set()).update(
+                            v.element_id for v in component)
+                    continue
+                reject_strict_branch(component)
+                if attached:
+                    unresolved_circuits.append({**row, "kind": "branch_ownership",
+                        "source_element_id": row["source_element_ids"][0],
+                        "reason_code": geometry_reason or "branch_ownership_unresolved",
+                        "reason": ("whole-component geometry rejected before materialization"
+                            if geometry_reason else "whole-component electrical ownership is not established")})
         if architecture_document is not None:
             from .branch_geometry import discriminate_branch_geometry
             source_vectors = {vector.element_id: vector for vector in vectors}
@@ -12373,6 +12656,8 @@ class ElectricalPdfImporter:
 
         for component in homerun_components:
             page = component[0].page
+            if rejected_branch_vector_ids.intersection(v.element_id for v in component):
+                continue
             load_entities = [
                 entity
                 for entity in devices
@@ -12389,6 +12674,7 @@ class ElectricalPdfImporter:
                 ) <= self.topology_endpoint_radius_pt
             ]
             if not load_entities:
+                reject_strict_branch(component)
                 # An arrowed leader touching no recognized device is a
                 # dimension or annotation leader, not a homerun. #72 names this
                 # case directly, and it is the accurate code for it.
@@ -12409,6 +12695,7 @@ class ElectricalPdfImporter:
                 continue
             enclosing = touching_unclaimed_closed(component) or component_encloses_area(component)
             if enclosing is not None:
+                reject_strict_branch(component)
                 unresolved_circuits.append(
                     {
                         "kind": "homerun",
@@ -12434,6 +12721,7 @@ class ElectricalPdfImporter:
                 tolerance_pt=snap_tolerance_pt,
             )
             if wall_conflict is not None:
+                reject_strict_branch(component)
                 unresolved_circuits.append(
                     {
                         "kind": "homerun",
@@ -13511,6 +13799,46 @@ class ElectricalPdfImporter:
             }
             if conflicts:
                 lane_attributes["conflicting_electrical_evidence"] = conflicts
+            circuit_provenance = _merge_provenance(bucket["provenance"])
+            if architecture_document is not None:
+                scoped = []
+                for record in circuit_provenance:
+                    # An observed printed number does not observe synthesized
+                    # ports or the geometrically associated membership set.
+                    if record.method != "pdf-vector-topology-link":
+                        facts = ["circuit_number"] if bucket["circuit_number"] is not None else []
+                        text = str(record.attributes.get("source_text", ""))
+                        observed_voltage, _ = _extract_voltage((text,))
+                        observed_poles = _POLES_RE.search(text)
+                        observed_phase = _PHASE_RE.search(text)
+                        if voltage_v is not None and observed_voltage == voltage_v:
+                            facts.append("voltage_v")
+                        if poles is not None and observed_poles and int(observed_poles.group("poles")) == poles:
+                            facts.append("poles")
+                        if phase is not None and observed_phase and f"{observed_phase.group('phase')}ph" == phase:
+                            facts.append("phase")
+                        if facts:
+                            scoped.append(replace(record, scope_paths=tuple(facts)))
+                    scoped.append(replace(record, derivation=DERIVATION_INFERRED,
+                        scope_paths=("source_port_id", "load_port_ids")))
+                # All admission paths consume the same actual ownership map.
+                # Do not rely on homerun-only attributes to retain that evidence.
+                owners = {port.id: port.owner_id for port in ports_by_owner_role.values()}
+                support_vectors = {key for port_id in bucket["load_port_ids"]
+                    for key in owned_branch_vectors_by_load.get(owners[port_id], ())}
+                source_vectors = {v.element_id: v for v in vectors}
+                for key in sorted(support_vectors):
+                    claim = branch_claims[key]
+                    vector = source_vectors[key]
+                    scoped.append(replace(_provenance(document, element_id=key,
+                        page=vector.page, source_kind=vector.source_kind,
+                        method="pdf-source-legend-branch-membership",
+                        derivation=DERIVATION_INFERRED,
+                        confidence=min(claim.confidence, *(r.confidence for r in circuit_provenance)),
+                        attributes={"support_element_ids": list(claim.support_ids),
+                            "producer": "pdf_electrical.source_branch_evidence", "version": "1"}),
+                        scope_paths=("load_port_ids",)))
+                circuit_provenance = _merge_provenance(scoped)
             circuits.append(
                 Circuit(
                     id=circuit_id,
@@ -13521,11 +13849,25 @@ class ElectricalPdfImporter:
                     voltage_v=voltage_v,
                     poles=poles,
                     phase=phase,
-                    confidence=max(bucket["confidence"], default=0.0),
-                    provenance=_merge_provenance(bucket["provenance"]),
+                    confidence=(min(item.confidence for item in circuit_provenance)
+                                if architecture_document is not None else
+                                max(bucket["confidence"], default=0.0)),
+                    provenance=circuit_provenance,
                     attributes={"pdf_electrical": lane_attributes},
                 )
             )
+
+        if architecture_document is not None:
+            for key, port in tuple(ports_by_owner_role.items()):
+                supporting = [replace(record, derivation=DERIVATION_INFERRED, scope_paths=None)
+                    for circuit in circuits
+                    if port.id in (circuit.source_port_id, *circuit.load_port_ids)
+                    for record in circuit.provenance
+                    if record.derivation == DERIVATION_INFERRED]
+                if supporting:
+                    merged = _merge_provenance((*port.provenance, *supporting))
+                    ports_by_owner_role[key] = replace(port, provenance=merged,
+                        confidence=min(record.confidence for record in merged))
 
         global_notes = [
             {
@@ -13823,6 +14165,8 @@ class ElectricalPdfImporter:
                         ),
                     ),
                     **({"branch_geometry_checks": branch_geometry_diagnostics}
+                       if architecture_document is not None else {}),
+                    **({"branch_ownership_checks": branch_ownership_diagnostics}
                        if architecture_document is not None else {}),
                     "branch_wall_evidence": (
                         {

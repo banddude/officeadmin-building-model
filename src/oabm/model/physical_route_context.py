@@ -228,6 +228,32 @@ def physical_geometry_inventory(model: Any, route_type: str) -> dict[str, Any]:
 
 
 def _validate_physical_context_source(model: Any, route: Any, *, source_json: str | bytes | None = None) -> str:
+    from .physical_routes import validate_physical_route_ports
+    from .model import validate_model
+    validate_model(model)
+    route.__post_init__()
+    ports = {port.id: port for port in model.ports}
+    if route.start_port_id not in ports or route.end_port_id not in ports:
+        raise ContractError("physical source is missing an endpoint port")
+    validate_physical_route_ports(route, ports, model.coordinate_system.frame_id)
+    return validate_physical_request_source(model, route.context, route.requirements,
+                                           source_json=source_json)
+
+
+def validate_physical_request_source(model: Any, context: PhysicalRoutingContext, requirements: Any, *, source_json: str | bytes | None = None) -> str:
+    from .model import BuildingModel
+    from .physical_routes import PhysicalRouteRequirements
+    if type(model) is not BuildingModel or type(context) is not PhysicalRoutingContext or type(requirements) is not PhysicalRouteRequirements:
+        raise ContractError("physical source admission requires typed model, context and requirements")
+    if source_json is not None and not isinstance(source_json, (str, bytes)):
+        raise ContractError("physical source_json must be text or bytes")
+    try:
+        return _validate_physical_request_source(model, context, requirements, source_json=source_json)
+    except (AttributeError, KeyError, TypeError, OverflowError) as exc:
+        raise ContractError("malformed physical request source or typed structure") from exc
+
+
+def _validate_physical_request_source(model: Any, context: PhysicalRoutingContext, requirements: Any, *, source_json: str | bytes | None = None) -> str:
     """Validate exact CURRENT pre-route binding and declared coverage, not safety.
 
     The supplied model must be the pre-route snapshot. This function never
@@ -237,13 +263,26 @@ def _validate_physical_context_source(model: Any, route: Any, *, source_json: st
     """
     from .entities import Obstacle, RouteConstraint
     from .structural import StructuralMember
-    from .physical_routes import exact_ticks, validate_physical_route_ports
+    from .physical_routes import exact_ticks, point_ticks, PhysicalRouteRequirements
     from .model import validate_model
     validate_model(model)
+    if type(context) is not PhysicalRoutingContext or type(requirements) is not PhysicalRouteRequirements:
+        raise ContractError("physical request requires typed context and requirements")
     ports = {port.id: port for port in model.ports}
-    if route.start_port_id not in ports or route.end_port_id not in ports:
+    if context.start_port_id not in ports or context.end_port_id not in ports:
         raise ContractError("physical source is missing an endpoint port")
-    validate_physical_route_ports(route, ports, model.coordinate_system.frame_id)
+    # Reconstruct nested canonical records to revalidate mutated frozen owners.
+    from .model import _decode_dataclass
+    context = _decode_dataclass(PhysicalRoutingContext, _canonical_record(context))
+    requirements = _decode_dataclass(PhysicalRouteRequirements, _canonical_record(requirements))
+    for identity in (context.start_port_id, context.end_port_id):
+        port = ports[identity]
+        point_ticks(port.pose.position, "source endpoint")
+        if port.direction is None:
+            raise ContractError("physical source endpoint direction is required")
+        direction = (port.direction.x, port.direction.y, port.direction.z)
+        if any(isinstance(v, bool) for v in direction) or direction not in ((1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)):
+            raise ContractError("physical source endpoint direction must be an exact signed unit axis")
     admission_mode = "canonical_python_snapshot"
     if source_json is not None:
         from decimal import Decimal
@@ -255,7 +294,7 @@ def _validate_physical_context_source(model: Any, route: Any, *, source_json: st
             raise ContractError("invalid physical source JSON") from exc
         if not isinstance(raw, dict):
             raise ContractError("physical source JSON must be an object")
-        endpoint_ids = {route.start_port_id, route.end_port_id}
+        endpoint_ids = {context.start_port_id, context.end_port_id}
         for port in raw.get("ports", ()):
             if port.get("id") in endpoint_ids:
                 _raw_point(port.get("pose", {}).get("position"), "source endpoint")
@@ -266,7 +305,7 @@ def _validate_physical_context_source(model: Any, route: Any, *, source_json: st
             for item in raw.get(name, ()):
                 if name == "route_constraints":
                     applies = item.get("applies_to", ())
-                    if applies and route.route_type not in applies and "*" not in applies:
+                    if applies and context.route_type not in applies and "*" not in applies:
                         continue
                 if name == "structural_members":
                     _raw_box({"pose": item.get("pose"), "size": item.get("size")})
@@ -277,17 +316,16 @@ def _validate_physical_context_source(model: Any, route: Any, *, source_json: st
         if compute_physical_source_sha256(parsed) != compute_physical_source_sha256(model):
             raise PhysicalRoutingAdmissionError('raw physical source snapshot differs from supplied model', category='invalid_input', reason='raw_source_mismatch')
         admission_mode = "raw_json_lexemes"
-    context = route.context
-    validate_request_binding(context, route.requirements)
+    validate_request_binding(context, requirements)
     if context.source_model_schema_version != model.schema_version:
         raise PhysicalRoutingAdmissionError('physical source schema binding is stale', category='invalid_input', reason='stale_schema_binding')
     if context.coordinate_frame_id != model.coordinate_system.frame_id:
         raise PhysicalRoutingAdmissionError('physical source frame binding is stale', category='invalid_input', reason='stale_frame_binding')
     if context.source_model_sha256 != compute_physical_source_sha256(model):
         raise PhysicalRoutingAdmissionError('physical source model binding is stale; rebuild current coverage', category='invalid_input', reason='stale_source_binding')
-    if route.id in {r.id for r in model.routes}:
+    if requirements.route_id in {r.id for r in model.routes}:
         raise ContractError("physical source must be pre-route, not self-containing")
-    inventory = physical_geometry_inventory(model, route.route_type)
+    inventory = physical_geometry_inventory(model, context.route_type)
     coverage = {row.source_entity_id: row for row in context.coverage}
     if set(coverage) != set(inventory):
         raise PhysicalRoutingAdmissionError('unsupported incomplete physical coverage for current source inventory', category='unsupported_input', reason='incomplete_coverage')

@@ -118,8 +118,8 @@ def _finish(status, reason, ledger, authority, scope, stop=None):
     return PhysicalRouteVerificationResult(status, reason, text)
 
 
-def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
-                          source_json: str | bytes | None = None) -> PhysicalRouteVerificationResult:
+def _verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
+                           source_json: str | bytes | None = None, session=None) -> PhysicalRouteVerificationResult:
     ledger = None
     authority = {}
     scope = {"checked_source_ids": [], "excluded_source_ids": [],
@@ -156,7 +156,8 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
             "kernel_precision_bits": [32,64,128][:limits.interval_refinement_depth+1]}
         authority["obstacle_domain_margin_m"] = {"numerator":"1","denominator":"1000000"}
         authority["self_required_separation_m"] = {"numerator":"0","denominator":"1","comparison":"strictly_greater"}
-        ledger = WorkLedger(limits.total_refinement_cells)
+        ledger = (WorkLedger(limits.total_refinement_cells) if session is None
+                  else session._candidate_ledger(authority))
         inventory = physical_geometry_inventory(base, route.route_type)
         optional_geometry = (base.electrical_equipment, base.electrical_devices,
                              base.fitting_selections)
@@ -218,3 +219,109 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
         return _finish(stop.status, stop.reason, ledger, authority, scope, stop)
     except VerificationStop:
         return _finish("resource_limit", "receipt_encoding_limit", ledger, authority, scope)
+
+class _CandidateWorkLedger(WorkLedger):
+    """Candidate-only trace/diagnostics; every debit spends the shared budget."""
+    def __init__(self, shared):
+        super().__init__(shared.limit)
+        self._shared = shared
+
+    def debit(self, kind, units=1):
+        # Shared debit fails before either candidate work or local accounting.
+        self._shared.debit(kind, units)
+        super().debit(kind, units)
+
+    def set_cursor(self, stage, ids=(), *, exact=()):
+        super().set_cursor(stage, ids, exact=exact)
+        self._shared.set_cursor(stage, ids, exact=exact)
+
+
+class _PhysicalVerificationSession:
+    """Internal single-threaded session, not a captured-input or binding bypass.
+
+    Search may charge the exact shared WorkLedger before/between calls. This
+    object pins the first admitted source/request and original effective limit.
+    Candidate trace/diagnostics never include another candidate's checks.
+    Concurrent session use or external concurrent ledger mutation is unsupported.
+    """
+    def __init__(self, shared_ledger):
+        if type(shared_ledger) is not WorkLedger:
+            raise ValueError("exact WorkLedger required")
+        self._shared = shared_ledger
+        self._original_shared = shared_ledger
+        self._limit = shared_ledger.limit
+        self._authority_key = None
+        self._busy = False
+        self._last_used = 0
+        self._last_counts = {}
+        self._check_accounting()
+        self._last_used = shared_ledger.used
+        self._last_counts = dict(shared_ledger.counters)
+
+    def _check_accounting(self):
+        ledger = self._shared
+        if ledger is not self._original_shared or type(ledger) is not WorkLedger:
+            raise VerificationStop("invalid_input", "verification_session_ledger_changed")
+        counts = dict(ledger.counters)
+        if (type(ledger.limit) is not int or ledger.limit != self._limit
+                or type(ledger.used) is not int
+                or not 0 <= ledger.used <= ledger.limit or ledger.used < self._last_used
+                or any(type(v) is not int or v < 0 for v in counts.values())
+                or sum(counts.values()) != ledger.used
+                or any(counts.get(k, 0) < v for k, v in self._last_counts.items())):
+            raise VerificationStop("invalid_input", "verification_session_ledger_changed")
+
+    def _candidate_ledger(self, authority):
+        self._check_accounting()
+        limits = authority["effective_proof_limits"]
+        if self._limit != limits["total_work_units"]:
+            raise VerificationStop("invalid_input", "verification_session_limit_mismatch")
+        key = (authority["source_model_sha256"], authority["request_sha256"],
+               authority["numerical_profile"], _encode(limits))
+        if self._authority_key is not None and key != self._authority_key:
+            raise VerificationStop("invalid_input", "verification_session_authority_mismatch")
+        self._authority_key = key
+        return _CandidateWorkLedger(self._shared)
+
+    def verify(self, source, candidate, *, source_json=None):
+        if self._busy:
+            raise VerificationStop("invalid_input", "verification_session_reentrant")
+        self._check_accounting()
+        self._busy = True
+        start = self._shared.used
+        # Input-admission failures must not inherit the previous candidate cursor.
+        self._shared.set_cursor("input_admission")
+        try:
+            result = _verify_physical_route(source, candidate,
+                                           source_json=source_json, session=self)
+            document = result.to_dict()
+            document["session_work"] = {
+                "accounting": "shared_search_and_candidate_proof_charges",
+                "limit": self._shared.limit,
+                "charged_at_candidate_start": start,
+                "available_at_candidate_start": self._shared.limit-start,
+                "candidate_charged": self._shared.used-start,
+                "charged_cumulative": self._shared.used,
+                "charged_by_kind_cumulative": dict(self._shared.counters),
+                "candidate_trace_scope": "this_candidate_only",
+            }
+            if result.status != "verified_route":
+                document["session_work"]["unfinished_cursor"] = self._shared.cursor.to_dict()
+                document["session_work"]["remaining_count"] = "unknown"
+            text = _encode(document)
+            if len(text) > REPORT_BYTES:
+                document = {"algorithm_profile": PROFILE, "status": "resource_limit",
+                            "reason": "report_byte_limit", "authority": document.get("authority", {}),
+                            "session_work": document["session_work"], "remaining_count": "unknown"}
+                return PhysicalRouteVerificationResult("resource_limit", "report_byte_limit", _encode(document))
+            return PhysicalRouteVerificationResult(result.status, result.reason, text)
+        finally:
+            self._last_used = self._shared.used
+            self._last_counts = dict(self._shared.counters)
+            self._busy = False
+
+
+def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
+                          source_json: str | bytes | None = None) -> PhysicalRouteVerificationResult:
+    """Verify one supplied route with its original independent work budget."""
+    return _verify_physical_route(source, candidate, source_json=source_json)

@@ -34,6 +34,14 @@ class ContractError(ValueError):
     """Raised when a document violates the canonical model contract."""
 
 
+class PhysicalRoutingAdmissionError(ContractError):
+    """Stable physical admission category/reason; still a ContractError."""
+    def __init__(self, message: str, *, category: str, reason: str):
+        super().__init__(message)
+        self.category = category
+        self.reason = reason
+
+
 class UnsupportedSchemaVersion(ContractError):
     """Raised when this model implementation cannot read a schema version."""
 

@@ -215,6 +215,7 @@ __all__ = [
     "Circuit",
     "Conductor",
     "ContractError",
+    "PhysicalRoutingAdmissionError",
     "CoordinateSystem",
     "ElectricalDevice",
     "ElectricalEquipment",
@@ -263,3 +264,5 @@ __all__ = [
     "stable_id",
     "validate_model",
 ]
+
+from .common import PhysicalRoutingAdmissionError

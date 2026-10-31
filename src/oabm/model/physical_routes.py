@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Mapping
 
-from .common import (ContractError, Entity, Point3, Provenance, Vector3,
+from .common import (ContractError, PhysicalRoutingAdmissionError, Entity, Point3, Provenance, Vector3,
                      PHYSICAL_ROUTE_SCHEMA_VERSION, _validate_id)
 
 PHYSICAL_ROUTE_NUMERICAL_PROFILE = "physical-routing-decimal-nm-v1"
@@ -29,8 +29,10 @@ def exact_ticks(value: Any, label: str, *, minimum: str = "-1000", maximum: str 
         decimal = value if isinstance(value, Decimal) else Decimal(str(value))
     except InvalidOperation as exc:
         raise ContractError(f"{label} must be a finite decimal number") from exc
-    if not decimal.is_finite() or not Decimal(minimum) <= decimal <= Decimal(maximum):
+    if not decimal.is_finite():
         raise ContractError(f"{label} is outside [{minimum}, {maximum}] metres")
+    if not Decimal(minimum) <= decimal <= Decimal(maximum):
+        raise PhysicalRoutingAdmissionError(f"{label} is outside [{minimum}, {maximum}] metres", category="unsupported_input", reason="numeric_profile_range")
     # Inspect the finite decimal coefficient/exponent BEFORE any power or
     # Fraction conversion. A short token with an enormous negative exponent
     # must not allocate an enormous denominator merely to discover it is off-grid.
@@ -43,11 +45,11 @@ def exact_ticks(value: Any, label: str, *, minimum: str = "-1000", maximum: str 
     else:
         shift = exponent + len(digits) - significant + 9
         if shift < 0:
-            raise ContractError(f"{label} must be an exact decimal nanometre multiple; no snapping")
+            raise PhysicalRoutingAdmissionError(f"{label} must be an exact decimal nanometre multiple; no snapping", category="unsupported_input", reason="numeric_grid")
         # The largest supported authored length is 2000 m. After the range
         # check above, at most 13 decimal digits can contribute to integer ticks.
         if significant + shift > 13:
-            raise ContractError(f"{label} exceeds the bounded integer tick profile")
+            raise PhysicalRoutingAdmissionError(f"{label} exceeds the bounded integer tick profile", category="unsupported_input", reason="numeric_tick_bound")
         ticks = 0
         for digit in digits[:significant]:
             ticks = ticks * 10 + digit
@@ -56,7 +58,7 @@ def exact_ticks(value: Any, label: str, *, minimum: str = "-1000", maximum: str 
             ticks = -ticks
     # Successful authored input must survive canonical JSON numeric rendering.
     if Decimal(str(float(decimal))) != decimal:
-        raise ContractError(f"{label} cannot preserve exact ticks through serialization")
+        raise PhysicalRoutingAdmissionError(f"{label} cannot preserve exact ticks through serialization", category="unsupported_input", reason="numeric_serialization_closure")
     return ticks
 
 

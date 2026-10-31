@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from fractions import Fraction
 from typing import Any
 
-from .common import Box3D, ContractError, Entity, Provenance, _validate_id
+from .common import Box3D, ContractError, PhysicalRoutingAdmissionError, Entity, Provenance, _validate_id
 
 PROFILE = "physical-routing-decimal-nm-v1"
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -32,14 +32,14 @@ def physical_box_bounds(box: Box3D):
         raise ContractError("physical domain/blocker requires typed Box3D")
     q = box.pose.rotation
     if (q.x, q.y, q.z, q.w) != (0, 0, 0, 1):
-        raise ContractError("unsupported physical box rotation; canonical identity rotation required")
+        raise PhysicalRoutingAdmissionError('unsupported physical box rotation; canonical identity rotation required', category='unsupported_input', reason='box_rotation')
     centre = point_ticks(box.pose.position, "physical box centre")
     size = tuple(exact_ticks(getattr(box.size, axis), "box full dimension", minimum="0.000000001", maximum="2000")
                  for axis in ("x", "y", "z"))
     lower = tuple(Fraction(c) - Fraction(s, 2) for c, s in zip(centre, size))
     upper = tuple(Fraction(c) + Fraction(s, 2) for c, s in zip(centre, size))
     if any(abs(v) > 1_000_000_000_000 for v in (*lower, *upper)):
-        raise ContractError("physical box extrema exceed coordinate scope")
+        raise PhysicalRoutingAdmissionError('physical box extrema exceed coordinate scope', category='unsupported_input', reason='box_extrema_profile')
     return lower, upper
 
 
@@ -182,7 +182,7 @@ def compute_physical_request_sha256(context: PhysicalRoutingContext, requirement
 
 def validate_request_binding(context: PhysicalRoutingContext, requirements: Any) -> None:
     if compute_physical_request_sha256(context, requirements) != context.request_sha256:
-        raise ContractError("physical request digest does not bind the full context and requirements")
+        raise PhysicalRoutingAdmissionError('physical request digest does not bind the full context and requirements', category='invalid_input', reason='stale_request_binding')
 
 
 # Explicit inventory fields. Additions to BuildingModel require review, rather
@@ -216,14 +216,14 @@ def physical_geometry_inventory(model: Any, route_type: str) -> dict[str, Any]:
                     if item.applies_to and route_type not in item.applies_to and "*" not in item.applies_to:
                         continue
                     if not item.hard or item.constraint_type not in {"keepout", "keep_out", "no_go", "keep-out", "avoid"}:
-                        raise ContractError("unsupported applicable hard physical route constraint")
+                        raise PhysicalRoutingAdmissionError('unsupported applicable hard physical route constraint', category='unsupported_input', reason='active_constraint_adapter')
                 inventory[item.id] = item
         elif name in _NON_GEOMETRY_COLLECTIONS or name in {
             "model_id", "name", "schema_version", "coordinate_system", "provenance", "attributes"
         }:
             continue
         elif value:
-            raise ContractError(f"unsupported populated model collection {name!r} in physical inventory")
+            raise PhysicalRoutingAdmissionError(f"unsupported populated model collection {name!r} in physical inventory", category="unsupported_input", reason="source_collection_adapter")
     return inventory
 
 
@@ -275,35 +275,35 @@ def _validate_physical_context_source(model: Any, route: Any, *, source_json: st
                     exact_ticks(item.get("clearance_m", 0), "source blocker clearance", minimum="0", maximum="100")
         parsed = BuildingModel.from_json(source_json)
         if compute_physical_source_sha256(parsed) != compute_physical_source_sha256(model):
-            raise ContractError("raw physical source snapshot differs from supplied model")
+            raise PhysicalRoutingAdmissionError('raw physical source snapshot differs from supplied model', category='invalid_input', reason='raw_source_mismatch')
         admission_mode = "raw_json_lexemes"
     context = route.context
     validate_request_binding(context, route.requirements)
     if context.source_model_schema_version != model.schema_version:
-        raise ContractError("physical source schema binding is stale")
+        raise PhysicalRoutingAdmissionError('physical source schema binding is stale', category='invalid_input', reason='stale_schema_binding')
     if context.coordinate_frame_id != model.coordinate_system.frame_id:
-        raise ContractError("physical source frame binding is stale")
+        raise PhysicalRoutingAdmissionError('physical source frame binding is stale', category='invalid_input', reason='stale_frame_binding')
     if context.source_model_sha256 != compute_physical_source_sha256(model):
-        raise ContractError("physical source model binding is stale; rebuild current coverage")
+        raise PhysicalRoutingAdmissionError('physical source model binding is stale; rebuild current coverage', category='invalid_input', reason='stale_source_binding')
     if route.id in {r.id for r in model.routes}:
         raise ContractError("physical source must be pre-route, not self-containing")
     inventory = physical_geometry_inventory(model, route.route_type)
     coverage = {row.source_entity_id: row for row in context.coverage}
     if set(coverage) != set(inventory):
-        raise ContractError("unsupported incomplete physical coverage for current source inventory")
+        raise PhysicalRoutingAdmissionError('unsupported incomplete physical coverage for current source inventory', category='unsupported_input', reason='incomplete_coverage')
     obstacle_ids = {item.id for item in model.obstacles}
     blocker_ids = set()
     for identity, item in inventory.items():
         row = coverage[identity]
         mandatory = isinstance(item, (Obstacle, RouteConstraint, StructuralMember))
         if mandatory and row.decision == "outside_proof_scope":
-            raise ContractError("mandatory hard source cannot be excluded from physical coverage")
+            raise PhysicalRoutingAdmissionError('mandatory hard source cannot be excluded from physical coverage', category='invalid_input', reason='mandatory_source_excluded')
         if row.decision == "outside_proof_scope":
             continue
         if row.decision == "supplied_envelope":
             if not set(row.blocker_entity_ids).issubset(obstacle_ids):
                 raise ContractError("supplied envelopes must reference canonical obstacles")
-            raise ContractError("unsupported envelope enclosure adapter; no original-geometry clearance claim")
+            raise PhysicalRoutingAdmissionError('unsupported envelope enclosure adapter; no original-geometry clearance claim', category='unsupported_input', reason='envelope_adapter')
         if row.blocker_entity_ids != (identity,):
             raise ContractError("direct coverage must bind exactly its own source identity")
         if isinstance(item, (Obstacle, RouteConstraint)):
@@ -312,10 +312,10 @@ def _validate_physical_context_source(model: Any, route: Any, *, source_json: st
         elif isinstance(item, StructuralMember):
             physical_box_bounds(Box3D(pose=item.pose, size=item.size))
         else:
-            raise ContractError("unsupported direct physical source geometry adapter")
+            raise PhysicalRoutingAdmissionError('unsupported direct physical source geometry adapter', category='unsupported_input', reason='direct_source_adapter')
         blocker_ids.add(identity)
     if len(blocker_ids) > 4096:
-        raise ContractError("physical source exceeds 4096 resolved blocker boxes")
+        raise PhysicalRoutingAdmissionError('physical source exceeds 4096 resolved blocker boxes', category='unsupported_input', reason='blocker_count_profile')
     return admission_mode
 
 

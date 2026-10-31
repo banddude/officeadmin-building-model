@@ -9,7 +9,8 @@ description = "Semantic 3D building and electrical modeling engine for OfficeAdm
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26,<3",
-    "pypdf>=5.9,<7",
+    "pypdf>=6.21,<7",
+    "packaging>=24,<27",
     "pdfplumber>=0.11.10,<1",
     "Pillow>=11,<13",
     "fonttools>=4.60,<5",

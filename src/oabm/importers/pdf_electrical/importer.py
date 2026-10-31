@@ -679,6 +679,13 @@ def _transform_text_point(cm: Sequence[float], tm: Sequence[float]) -> tuple[flo
     return x, y
 
 
+def _compose_pdf_matrices(outer: Sequence[float], inner: Sequence[float]) -> tuple[float, ...]:
+    """Apply inner first, then outer, using PDF six-coefficient matrices."""
+    a, b, c, d, e, f = (float(v) for v in outer)
+    g, h, i, j, k, l = (float(v) for v in inner)
+    return (a*g+c*h, b*g+d*h, a*i+c*j, b*i+d*j, a*k+c*l+e, b*k+d*l+f)
+
+
 def _rendered_font_size(
     font_size: float | None,
     cm: Sequence[float],
@@ -921,6 +928,7 @@ def _make_page_visitors(
     vectors: list[PdfVectorPathObservation],
     resources: Any = None,
     branch_text_visibility: dict | None = None,
+    extraction_errors: list[str] | None = None,
 ):
     text_counter = 0
     operator_counter = 0
@@ -950,6 +958,18 @@ def _make_page_visitors(
     state_stack: list[_VectorPaintState] = []
     resource_stack: list[Any] = [_resolved_pdf_object(resources)]
     form_frames: list[tuple[bool, _VectorPaintState, int]] = []
+    # pypdf recursively reports Form contents in a fresh local CTM, without
+    # either the caller CTM or the Form /Matrix. Activate the enclosing map
+    # only at the first recursive operator: pypdf flushes caller text after
+    # the Do-before callback and before entering that recursive stream.
+    form_coordinates: list[dict[str, Any] | None] = []
+
+    def page_matrix(local):
+        for frame in reversed(form_coordinates):
+            if frame is not None and frame["active"]:
+                return _compose_pdf_matrices(frame["matrix"], local)
+        return local
+
     text_shows_in_object = 0
     text_object_active = False
     text_font_ready = False
@@ -1035,6 +1055,7 @@ def _make_page_visitors(
         font_size: float,
     ) -> None:
         nonlocal text_counter
+        cm = page_matrix(cm)
         cleaned = " ".join(text.split())
         if not cleaned:
             return
@@ -1177,9 +1198,12 @@ def _make_page_visitors(
         tm: Sequence[float],
     ) -> None:
         nonlocal operator_counter, current_points, current_curve_commands, current_closed, current_supported
-        nonlocal paint_state
+        nonlocal paint_state, pending_subpaths
         nonlocal text_shows_in_object
         nonlocal text_object_active, text_font_ready, text_position_ready
+        if form_coordinates and form_coordinates[-1] is not None:
+            form_coordinates[-1]["active"] = True
+        cm = page_matrix(cm)
         operator_counter += 1
 
         if operator == b"BT":
@@ -1309,26 +1333,49 @@ def _make_page_visitors(
                 if operands
                 else None
             )
-            form_frames.append(
-                (form_resources is not None, paint_state, len(state_stack))
-            )
+            frame = None
             if form_resources is not None:
+                objects = _resolved_pdf_object(resource_stack[-1].get("/XObject"))
+                form = _resolved_pdf_object(objects.get(str(operands[0])))
+                matrix = _resolved_pdf_object(form.get("/Matrix", (1, 0, 0, 1, 0, 0)))
+                try:
+                    valid = len(matrix) == 6 and all(
+                        not isinstance(v, bool) and isinstance(v, (int, float))
+                        and math.isfinite(v) for v in matrix)
+                    composed = _compose_pdf_matrices(cm, matrix) if valid else ()
+                    valid = valid and all(math.isfinite(v) for v in composed)
+                except (TypeError, ValueError, OverflowError):
+                    valid = False
+                if not valid:
+                    message = "Form /Matrix must contain six finite numeric coefficients"
+                    if extraction_errors is not None:
+                        extraction_errors.append(message)
+                    raise ElectricalPdfError(message)
+                frame = {"matrix": composed, "active": False,
+                         "paths": (current_points, current_curve_commands, current_closed,
+                                   current_supported, pending_subpaths)}
+                current_points, current_curve_commands = [], []
+                current_closed, current_supported, pending_subpaths = False, True, []
                 resource_stack.append(form_resources)
+            # Commit linked stacks only after the complete frame is validated.
+            form_frames.append((form_resources is not None, paint_state, len(state_stack)))
+            form_coordinates.append(frame)
 
         if operator == b"Do" and operands:
             name = str(operands[0])
             if not form_names or name in form_names:
-                # cm translation components are absolute user space.
+                # The Form origin includes its own matrix as well as its caller.
+                symbol_cm = form_coordinates[-1]["matrix"] if form_coordinates[-1] else cm
                 symbols.append(
                     PdfSymbolObservation(
                         element_id=f"p{page_number}:xobject:{operator_counter:05d}",
                         page=page_number,
                         name=name,
                         x_pt=display_transform.apply(
-                            float(cm[4]), float(cm[5])
+                            float(symbol_cm[4]), float(symbol_cm[5])
                         )[0],
                         y_pt=display_transform.apply(
-                            float(cm[4]), float(cm[5])
+                            float(symbol_cm[4]), float(symbol_cm[5])
                         )[1],
                         source_kind="form-xobject",
                     )
@@ -1463,10 +1510,15 @@ def _make_page_visitors(
         cm: Sequence[float],
         tm: Sequence[float],
     ) -> None:
-        nonlocal paint_state
+        nonlocal paint_state, current_points, current_curve_commands, current_closed
+        nonlocal current_supported, pending_subpaths
         if operator != b"Do" or not form_frames:
             return
         is_form, saved_state, depth = form_frames.pop()
+        frame = form_coordinates.pop()
+        if frame is not None:
+            (current_points, current_curve_commands, current_closed,
+             current_supported, pending_subpaths) = frame["paths"]
         if not is_form:
             return
         # A form XObject paints inside an implicit q/Q with its own resources.
@@ -1476,6 +1528,19 @@ def _make_page_visitors(
         del state_stack[depth:]
 
     return visitor_text, visitor_operand_before, visitor_operand_after
+
+
+def _require_supported_pypdf() -> None:
+    """Do not guess Form callback semantics on unsupported parser versions."""
+    from importlib.metadata import PackageNotFoundError, version
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import InvalidVersion, Version
+    try:
+        installed = Version(version("pypdf"))
+    except (PackageNotFoundError, InvalidVersion) as exc:
+        raise ElectricalPdfError("cannot verify pypdf version; electrical extraction requires pypdf>=6.21,<7") from exc
+    if not SpecifierSet(">=6.21,<7").contains(installed, prereleases=False):
+        raise ElectricalPdfError("electrical extraction requires pypdf>=6.21,<7 for Form callbacks; found " + str(installed))
 
 
 def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectricalDocument:
@@ -1492,6 +1557,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
     except ImportError as exc:  # pragma: no cover - packaging guard
         raise ElectricalPdfError("pypdf is required for PDF extraction") from exc
 
+    _require_supported_pypdf()
     pdf_path = Path(path)
     payload = pdf_path.read_bytes()
     resolved_source_id = source_id or f"sha256:{hashlib.sha256(payload).hexdigest()}"
@@ -1565,6 +1631,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
         color_spaces = _resolved_pdf_object(resources.get("/ColorSpace")) if isinstance(resources, Mapping) else None
         if isinstance(color_spaces, Mapping) and color_spaces.get("/DefaultGray") is not None:
             branch_text_visibility["device_gray_override"] = "unsupported"
+        extraction_errors: list[str] = []
         visitor_text, visitor_operand_before, visitor_operand_after = _make_page_visitors(
             page_number=page_number,
             form_names=frozenset(form_names),
@@ -1574,6 +1641,7 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
             vectors=vectors,
             resources=resources,
             branch_text_visibility=branch_text_visibility,
+            extraction_errors=extraction_errors,
         )
 
         temporary_font_resource = False
@@ -1593,6 +1661,10 @@ def extract_pdf(path: str | Path, *, source_id: str | None = None) -> PdfElectri
                 visitor_operand_before=visitor_operand_before,
                 visitor_operand_after=visitor_operand_after,
             )
+            # pypdf logs and suppresses exceptions raised during nested Forms.
+            # Never return a partial document after an invalid source matrix.
+            if extraction_errors:
+                raise ElectricalPdfError(extraction_errors[0])
         except Exception as exc:
             raise ElectricalPdfError(
                 f"failed to extract page {page_number}: {exc}"

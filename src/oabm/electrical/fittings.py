@@ -1,4 +1,5 @@
 """Exact, caller-bound route-fitting product selection; no placement or CAD import."""
+from oabm.model import reject_physical_routes
 from dataclasses import asdict, dataclass, replace
 import json
 import re
@@ -147,6 +148,7 @@ def select_route_fittings(model: BuildingModel, *, intents: Sequence[FittingInte
     counterpart ports can be selected. Missing product facts remain unresolved;
     this function never creates geometry or ports.
     """
+    reject_physical_routes(model, "select_route_fittings")
     if model.schema_version != FITTING_SCHEMA_VERSION:
         raise ContractError("explicit upgrade_to_v1_5 is required for route-fitting selections")
     # Subclasses may override fitting_entry() and detach returned objects from

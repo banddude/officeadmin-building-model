@@ -1,6 +1,7 @@
 """One canonical-model input to a fresh, hash-bound plan/GLB review delivery."""
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import argparse
 from dataclasses import asdict, replace
 import hashlib
@@ -146,6 +147,7 @@ def deliver_model(model_path, options_path, *, output_directory) -> Path:
     model_bytes, options_bytes = Path(model_path).read_bytes(), Path(options_path).read_bytes()
     options, plans = _options(options_bytes)
     model = BuildingModel.from_json(model_bytes)
+    reject_physical_routes(model, "deliver_model")
     validate_model(model)
     if any(plan.level_id not in {level.id for level in model.levels} for plan in plans):
         raise ContractError("plan references an unknown canonical level")

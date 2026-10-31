@@ -5,6 +5,7 @@ read back from native IFC receive tolerance; metadata and topology stay exact.
 """
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import math
 from typing import Any
 
@@ -24,6 +25,8 @@ def round_trip_differences(before: BuildingModel, after: BuildingModel) -> tuple
     is performed. A quaternion and its whole-vector negation encode the same
     orientation. Arbitrary attributes/provenance never receive numeric slack.
     """
+    reject_physical_routes(before, "round_trip_differences")
+    reject_physical_routes(after, "round_trip_differences")
     differences: list[str] = []
 
     def pointer(path: tuple[str | int, ...]) -> str:

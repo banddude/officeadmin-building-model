@@ -35,6 +35,7 @@ viewer, and it does not claim to reconcile identities across sources.
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import dataclasses
 import hashlib
 import json
@@ -175,8 +176,9 @@ def _entity_collections(model: BuildingModel) -> dict[str, dict[str, Entity]]:
         if (
             get_origin(hint) is tuple
             and arguments
-            and isinstance(arguments[0], type)
-            and issubclass(arguments[0], Entity)
+            and (field_info.name == "routes" or (
+                isinstance(arguments[0], type) and issubclass(arguments[0], Entity)
+            ))
         ):
             result[field_info.name] = {
                 entity.id: entity for entity in getattr(model, field_info.name)
@@ -484,6 +486,8 @@ def build_revision_diff(base: BuildingModel, target: BuildingModel) -> RevisionD
     quantities lane as a side effect of the real takeoff on each.
     """
 
+    reject_physical_routes(base, "build_revision_diff")
+    reject_physical_routes(target, "build_revision_diff")
     require_no_populated_building_assemblies(base, "build_revision_diff base snapshot")
     require_no_populated_building_assemblies(target, "build_revision_diff target snapshot")
     _require_comparable(base, target)

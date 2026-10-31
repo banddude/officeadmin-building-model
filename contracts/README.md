@@ -62,3 +62,7 @@ regulatory compliance. The schema covers structural shapes and evidence scopes;
 cross-record identities, source agreement, geometry/host fit and digest
 freshness remain Python semantic checks. See the [bounded contract](../docs/building-assemblies-contract-v1.6-draft.md)
 and [wall producer](../docs/building-assembly-wall-producer-v1.md).
+
+## Opt-in canonical physical routes (1.7)
+
+See [the physical-route structural contract](../docs/physical-route-contract-v1.7.md) for shared-joint cardinal line/quarter-arc records, exact decimal admission, typed source/context binding and explicit unsupported-consumer refusals. This is not a clearance verifier or completed routing section. Default 1.0 and legacy Route serialization remain unchanged.

@@ -20,6 +20,7 @@ returned as the same object, untouched.
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import math
 from dataclasses import dataclass, replace
 
@@ -672,6 +673,7 @@ def consolidate_bundled_routes(
     compatibility, conductor fill, ampacity, or engineering approval check.
     """
 
+    reject_physical_routes(model, "consolidate_bundled_routes")
     require_no_populated_building_assemblies(
         model, "consolidate_bundled_routes", error_type=RoutingError,
     )

@@ -1,6 +1,7 @@
 """Canonical OfficeAdmin Building Model contract."""
 
 from .v1 import (
+    PHYSICAL_ROUTE_SCHEMA_VERSION, PHYSICAL_ROUTE_NUMERICAL_PROFILE, PhysicalRoute, PhysicalRouteJoint, LineSegment3D, QuarterArc3D, PhysicalRouteRequirements, AllowedPhysicalDomain, PhysicalGeometryCoverage, PhysicalRoutingObjective, PhysicalRoutingExecutionLimits, PhysicalRoutingContext, compute_physical_source_sha256, compute_physical_request_sha256, validate_physical_context_source, physical_geometry_inventory, physical_box_bounds, physical_segment_facts, reject_physical_routes, upgrade_to_v1_7,
     SCHEMA_VERSION,
     PHYSICAL_SCHEMA_VERSION,
     RACEWAY_SCHEMA_VERSION,
@@ -132,6 +133,7 @@ from .v1 import (
 )
 
 __all__ = [
+    'PHYSICAL_ROUTE_SCHEMA_VERSION', 'PHYSICAL_ROUTE_NUMERICAL_PROFILE', 'PhysicalRoute', 'PhysicalRouteJoint', 'LineSegment3D', 'QuarterArc3D', 'PhysicalRouteRequirements', 'AllowedPhysicalDomain', 'PhysicalGeometryCoverage', 'PhysicalRoutingObjective', 'PhysicalRoutingExecutionLimits', 'PhysicalRoutingContext', 'compute_physical_source_sha256', 'compute_physical_request_sha256', 'validate_physical_context_source', 'physical_geometry_inventory', 'physical_box_bounds', 'physical_segment_facts', 'reject_physical_routes', 'upgrade_to_v1_7',
     "SCHEMA_VERSION",
     "PHYSICAL_SCHEMA_VERSION",
     "RACEWAY_SCHEMA_VERSION",

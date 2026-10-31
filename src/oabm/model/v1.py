@@ -2,7 +2,7 @@
 
 from .common import (
     DERIVATION_CLASSES, DERIVATION_INFERRED, DERIVATION_OBSERVED, DERIVATION_USER,
-    SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, SUPPORT_SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSIONS, RACEWAY_SCHEMA_VERSIONS, SUPPORTED_SCHEMA_VERSIONS, SUPPORT_SCHEMA_VERSIONS, STRUCTURAL_SCHEMA_VERSION, STRUCTURAL_SCHEMA_VERSIONS, FITTING_SCHEMA_VERSION, FITTING_SCHEMA_VERSIONS, ASSEMBLY_SCHEMA_VERSION, ASSEMBLY_SCHEMA_VERSIONS,
+    SCHEMA_VERSION, PHYSICAL_ROUTE_SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSION, RACEWAY_SCHEMA_VERSION, SUPPORT_SCHEMA_VERSION, PHYSICAL_SCHEMA_VERSIONS, RACEWAY_SCHEMA_VERSIONS, SUPPORTED_SCHEMA_VERSIONS, SUPPORT_SCHEMA_VERSIONS, STRUCTURAL_SCHEMA_VERSION, STRUCTURAL_SCHEMA_VERSIONS, FITTING_SCHEMA_VERSION, FITTING_SCHEMA_VERSIONS, ASSEMBLY_SCHEMA_VERSION, ASSEMBLY_SCHEMA_VERSIONS,
     Box3D, ContractError, CoordinateSystem, Entity, Geometry3D,
     Point3, Polygon3D, Polyline3D, Pose, Provenance, Quaternion, Size3,
     UnsupportedSchemaVersion, Vector3, is_observed, provenance_applies_to, stable_id,
@@ -12,7 +12,7 @@ from .entities import (
     ElectricalEquipment, Level, Obstacle, Opening, Port, Route, RouteConstraint,
     RouteFitting, Slab, Space, Wall,
 )
-from .model import BuildingModel, upgrade_to_v1_1, upgrade_to_v1_2, upgrade_to_v1_3, upgrade_to_v1_4, upgrade_to_v1_5, upgrade_to_v1_6, validate_model
+from .model import BuildingModel, upgrade_to_v1_1, upgrade_to_v1_2, upgrade_to_v1_3, upgrade_to_v1_4, upgrade_to_v1_5, upgrade_to_v1_6, upgrade_to_v1_7, validate_model
 from .physical import BOX_MOUNTINGS, CatalogProduct, ElectricalBox, BoxSelectionOutcome
 
 from .raceway import RuleReference, RacewaySelection, RacewaySelectionOutcome
@@ -44,5 +44,12 @@ from .assembly_validation import (
     compute_assembly_input_digest, compute_assembly_output_digest,
     compute_assembly_digests, component_world_points,
 )
+
+from .physical_routes import (PhysicalRoute, PhysicalRouteJoint, LineSegment3D, QuarterArc3D,
+    PhysicalRouteRequirements, PHYSICAL_ROUTE_NUMERICAL_PROFILE, physical_segment_facts, reject_physical_routes)
+from .physical_route_context import (AllowedPhysicalDomain, PhysicalGeometryCoverage,
+    PhysicalRoutingObjective, PhysicalRoutingExecutionLimits, PhysicalRoutingContext,
+    compute_physical_source_sha256, compute_physical_request_sha256,
+    validate_physical_context_source, physical_geometry_inventory, physical_box_bounds)
 
 __all__ = [name for name in globals() if not name.startswith("_")]

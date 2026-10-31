@@ -143,3 +143,7 @@ SVG output, linked paper annotations and fail-closed omissions. This optional to
 does not install runtimes, infer geometry or establish engineering acceptance.
 
 See [Source-object coverage](docs/source-object-coverage.md) for an opt-in, source- and model-bound accounting gate.
+
+## Opt-in canonical physical routes (1.7)
+
+See [the physical-route structural contract](docs/physical-route-contract-v1.7.md) for shared-joint cardinal line/quarter-arc records, exact decimal admission, typed source/context binding and explicit unsupported-consumer refusals. This is not a clearance verifier or completed routing section. Default 1.0 and legacy Route serialization remain unchanged.

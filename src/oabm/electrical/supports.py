@@ -1,4 +1,5 @@
 """Explicit shared assembly installation inputs; no spacing/load certification."""
+from oabm.model import reject_physical_routes
 from dataclasses import asdict,dataclass,replace
 import json
 from typing import Sequence
@@ -123,6 +124,7 @@ class SupportIntent:
 
 def select_supports(model: BuildingModel,*,intents: Sequence[SupportIntent],
                     catalog: Sequence[SupportCatalogEntry],rules: Sequence[SupportRule]) -> BuildingModel:
+    reject_physical_routes(model, "select_supports")
     if model.schema_version!=SUPPORT_SCHEMA_VERSION:
         raise ContractError('explicit upgrade_to_v1_3 is required for support inventory')
     for entity in (*model.support_assemblies,*model.support_components,*model.support_interfaces,*model.support_selection_outcomes):

@@ -1,5 +1,6 @@
 """Explicit canonical model plus checked-route request to a retained delivery."""
 from __future__ import annotations
+from oabm.model import reject_physical_routes
 import argparse
 from dataclasses import fields
 import hashlib
@@ -28,6 +29,7 @@ def deliver_checked_assembly_route(model_path, request_path, *, output_directory
     """Snapshot inputs and publish a fresh result only when a candidate passes."""
     model_bytes=Path(model_path).read_bytes();request_bytes=Path(request_path).read_bytes()
     model=BuildingModel.from_json(model_bytes);request=_decode(request_bytes)
+    reject_physical_routes(model, "deliver_checked_assembly_route")
     keys={'version','start_port_id','end_port_id','route_type','assembly_id','domain_kind',
           'nominal_diameter_m','centerline_radius_m','candidates'}
     if not isinstance(request,dict) or set(request)!=keys or request['version']!='checked-assembly-route-v1':

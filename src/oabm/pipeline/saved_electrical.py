@@ -11,7 +11,7 @@ import re
 import stat
 import sys
 
-from oabm.model import BuildingModel, ContractError
+from oabm.model import BuildingModel, ContractError, reject_physical_routes
 from oabm.proposals.symbols import SymbolRun
 from oabm.importers.pdf_electrical.symbol_stage import SymbolReview, SymbolDecision, SymbolRegistration
 from oabm.importers.pdf_electrical.placement_assertions import PlacementAssertionReview
@@ -90,8 +90,8 @@ class SavedElectricalInputs:
     kwargs: dict
 
 
-def read_saved_reference(ref, manifest_path, label):
-    """Read one exact local path/hash reference; shared by saved input callers."""
+def _saved_reference_path(ref, manifest_path):
+    """Validate a local hash reference without reading its mutable path."""
     if (not isinstance(ref,dict) or set(ref)!={"path","sha256"}
             or not isinstance(ref["path"],str) or not ref["path"].strip()
             or "://" in ref["path"] or "\x00" in ref["path"]
@@ -99,19 +99,27 @@ def read_saved_reference(ref, manifest_path, label):
         raise ContractError("input reference requires local path and SHA-256")
     path=Path(ref["path"])
     if not path.is_absolute():path=Path(manifest_path).absolute().parent/path
-    data=_read(path)
+    return path
+
+
+def read_saved_reference(ref, manifest_path, label):
+    """Read one exact local path/hash reference; shared by saved input callers."""
+    data = _read(_saved_reference_path(ref, manifest_path))
     if _sha(data)!=ref["sha256"]:raise ContractError("saved input hash mismatch: "+label)
     return data
 
 
-def load_saved_electrical_inputs(manifest_path, *, journal_directory):
+def load_saved_electrical_inputs(manifest_path, *, journal_directory, _snapshot=None):
     """Use the delivery reader without exporting or invoking providers.
 
     journal_directory must be a fresh private destination. Original journal bytes
     are copied exactly and remain source-bound inputs, never reopened for dispatch.
     """
+    if _snapshot is not None and (not isinstance(_snapshot, tuple) or len(_snapshot) != 2
+                                  or any(not isinstance(data, bytes) for data in _snapshot)):
+        raise ContractError("saved input snapshot requires immutable manifest/model bytes")
     manifest_path = Path(manifest_path).absolute()
-    manifest_bytes = _read(manifest_path)
+    manifest_bytes = _read(manifest_path) if _snapshot is None else _snapshot[0]
     manifest = _decode(manifest_bytes)
     if not isinstance(manifest,dict):raise ContractError("saved input manifest must be an object")
     version=manifest.get("version")
@@ -125,7 +133,13 @@ def load_saved_electrical_inputs(manifest_path, *, journal_directory):
     receipts = []
     input_payloads = {}
     def read_ref(ref, label):
-        data = read_saved_reference(ref, manifest_path, label)
+        if _snapshot is not None and label == "model":
+            _saved_reference_path(ref, manifest_path)
+            data = _snapshot[1]
+            if not isinstance(data, bytes) or _sha(data) != ref["sha256"]:
+                raise ContractError("saved input hash mismatch: " + label)
+        else:
+            data = read_saved_reference(ref, manifest_path, label)
         input_payloads[label] = data
         receipts.append({"input": label, "sha256": _sha(data), "bytes": len(data)})
         return data
@@ -142,6 +156,7 @@ def load_saved_electrical_inputs(manifest_path, *, journal_directory):
             raise ContractError(key + " must map explicit identities to file references")
         return {k: read_ref(ref, key + "/" + k) for k, ref in sorted(refs.items())}
     model = BuildingModel.from_dict(doc("model"))
+    reject_physical_routes(model, "load_saved_electrical_inputs")
     review = SymbolReview.from_dict(doc("review"))
     runs = sequence("runs", SymbolRun)
     decisions = sequence("decisions", SymbolDecision)
@@ -208,6 +223,27 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
     """
     if not isinstance(run_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", run_id) is None:
         raise ContractError("run ID must be 1-80 ASCII letters, digits, underscores or hyphens")
+    # Snapshot the manifest and its hash-bound model before reserving any output.
+    # The loader consumes these exact immutable bytes, never a second path read.
+    # Preserve retained-attempt semantics for invalid legacy inputs; an explicit
+    # physical geometry tag is refused here even if its payload is malformed.
+    snapshot = None
+    snapshot_error = None
+    physical_payload = False
+    try:
+        manifest_bytes = _read(Path(manifest_path).absolute())
+        manifest = _decode(manifest_bytes)
+        model_bytes = read_saved_reference(manifest["model"], manifest_path, "model")
+        model_document = _decode(model_bytes)
+        physical_payload = (isinstance(model_document, dict)
+            and isinstance(model_document.get("routes"), list)
+            and any(isinstance(route, dict) and route.get("geometry_kind") == "line_arc_v1"
+                    for route in model_document["routes"]))
+        snapshot = (manifest_bytes, model_bytes)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        snapshot_error = exc
+    if physical_payload:
+        raise ContractError("persist_saved_electrical does not support physical routes (line_arc_v1)")
     root = Path(output_root).resolve()
     attempt = root / run_id
     pending = attempt / ".pending"
@@ -230,7 +266,10 @@ def persist_saved_electrical(manifest_path, *, output_root, run_id):
         _write(attempt / "attempt.json", _json({"version": VERSION, "run_id": run_id,
             "state": "reserved", "completion_rule": "delivery/COMPLETED.json plus verified file hashes"}))
         stage = "load_inputs"
-        inputs = load_saved_electrical_inputs(manifest_path, journal_directory=pending / "journals")
+        if snapshot_error is not None:
+            raise snapshot_error
+        inputs = load_saved_electrical_inputs(manifest_path, journal_directory=pending / "journals",
+                                              _snapshot=snapshot)
         manifest, manifest_bytes = inputs.manifest, inputs.manifest_bytes
         receipts, input_payloads = inputs.receipts, inputs.input_payloads
         circuit_design = inputs.kwargs["circuit_design"]

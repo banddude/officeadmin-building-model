@@ -5,6 +5,7 @@ No geometry, connectivity, catalog decisions or engineering approvals are change
 """
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import argparse
 from dataclasses import asdict, dataclass
 import json
@@ -75,6 +76,7 @@ def check_route_bends(model: BuildingModel, *, radii_m: Mapping[str, float],
     junction elbow at a straight trunk endpoint reports elbow_off_turn; its
     cross-route bend budget is unsupported, not evidence of invalid topology.
     """
+    reject_physical_routes(model, "check_route_bends")
     validate_model(model)
     for value in (tolerance_m, angle_tolerance_rad):
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:

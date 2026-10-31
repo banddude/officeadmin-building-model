@@ -5,6 +5,7 @@ never fetches, uploads, signs, or guesses at an artifact location.
 """
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import hashlib
 import json
 import math
@@ -76,8 +77,9 @@ def _entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:
         if (
             get_origin(hint) is tuple
             and args
-            and isinstance(args[0], type)
-            and issubclass(args[0], Entity)
+            and (field_info.name == "routes" or (
+                isinstance(args[0], type) and issubclass(args[0], Entity)
+            ))
         ):
             values = getattr(model, field_info.name)
             if not isinstance(values, tuple) or any(not isinstance(item, Entity) for item in values):
@@ -453,6 +455,7 @@ def build_review_bundle(
     """
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")
+    reject_physical_routes(model, "build_review_bundle")
     require_no_populated_building_assemblies(model, "build_review_bundle")
     refs = {
         "model": _reference(model_reference, "model_reference"),

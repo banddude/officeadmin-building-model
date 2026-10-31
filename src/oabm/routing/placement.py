@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import math
 from dataclasses import dataclass, replace
 
@@ -171,6 +172,7 @@ def apply_equipment_proposal(
 ) -> BuildingModel:
     """Add canonical inferred equipment and a source port, with no circuit facts."""
 
+    reject_physical_routes(model, "apply_equipment_proposal")
     equipment_id = stable_id("equipment", f"{model.model_id}:proposal:{proposal.identity_key}")
     port_id = stable_id("port", f"{equipment_id}:source")
     if any(item.id == equipment_id or (proposal.name and item.name == proposal.name)
@@ -210,6 +212,7 @@ def set_user_equipment_placement(
 ) -> BuildingModel:
     """Accept or move a proposal and recalculate its direct dependent routes."""
 
+    reject_physical_routes(model, "set_user_equipment_placement")
     if not user_input_id.strip():
         raise PlacementError("user_input_id is required for an authoritative placement")
     equipment = next((item for item in model.electrical_equipment if item.id == equipment_id), None)

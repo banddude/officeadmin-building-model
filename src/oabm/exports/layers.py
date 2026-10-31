@@ -21,6 +21,7 @@ silently advertising the behaviour as working.
 """
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -56,6 +57,7 @@ def layer_glb_plan(
 ) -> LayerGlbPlan:
     """Build the GLB export inputs for one resolved preset."""
 
+    reject_physical_routes(model, "layer_glb_plan")
     ghost_capable = _ghost_capable_ids(model)
     tag = resolution.preset_id
     groups: dict[str, frozenset[str]] = {}

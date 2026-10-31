@@ -37,6 +37,8 @@ actually support today.
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
+
 import hashlib
 import json
 import math
@@ -635,8 +637,9 @@ def _entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:
         if (
             get_origin(hint) is tuple
             and arguments
-            and isinstance(arguments[0], type)
-            and issubclass(arguments[0], Entity)
+            and (field_info.name == "routes" or (
+                isinstance(arguments[0], type) and issubclass(arguments[0], Entity)
+            ))
         ):
             result[field_info.name] = getattr(model, field_info.name)
     if not result:
@@ -842,6 +845,7 @@ def build_confidence_review(
 
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")
+    reject_physical_routes(model, "build_confidence_review")
     if not isinstance(config, ReviewConfig):
         raise TypeError("config must be a ReviewConfig")
     require_no_populated_building_assemblies(model, "build_confidence_review")

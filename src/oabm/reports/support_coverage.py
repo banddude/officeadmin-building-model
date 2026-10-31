@@ -2,6 +2,7 @@
 
 No support placement, hardware sizing, load capacity or code approval is inferred.
 """
+from oabm.model import reject_physical_routes
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -102,6 +103,7 @@ def report_support_coverage(model, *, expected_model_sha256, rules, stations):
     """
     if not isinstance(model, BuildingModel):
         raise ContractError("support coverage requires a canonical model")
+    reject_physical_routes(model, "report_support_coverage")
     # Pin the actual caller serialization before the typed decoder normalizes
     # equivalent numeric spellings (for example an integer coordinate to float).
     source_json = model.to_json()

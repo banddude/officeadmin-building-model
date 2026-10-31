@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import hashlib
 import math
 from dataclasses import dataclass, replace
@@ -292,6 +293,7 @@ def generate_drawing_set(
     opt-in presentation options shared by every generated view; see
     :func:`generate_plan`.
     """
+    reject_physical_routes(model, "generate_drawing_set")
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     elevations = tuple(elevations)
@@ -392,6 +394,7 @@ def generate_plan(
     before labels, so ``"skip_with_dimensions"`` only sees the dimensions that
     survived this pass.
     """
+    reject_physical_routes(model, "generate_plan")
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     if assembly_geometry == "cut":
@@ -504,6 +507,7 @@ def generate_elevation(
     dimension_overlap: str = "keep",
 ) -> DrawingView:
     """Generate one elevation view; see :func:`generate_plan` for the options."""
+    reject_physical_routes(model, "generate_elevation")
     require_no_populated_building_assemblies(model, "generate_elevation")
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
@@ -584,6 +588,7 @@ def generate_section(
     ``dimension_overlap`` are validated for interface parity but do not change
     section output.
     """
+    reject_physical_routes(model, "generate_section")
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     if assembly_geometry == "cut":
@@ -667,6 +672,7 @@ def _generate_section_base(
 
 
 def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
+    reject_physical_routes(model, "generate_schedules")
     require_no_populated_building_assemblies(model, "generate_schedules")
     schedules = (
         _room_schedule(model),

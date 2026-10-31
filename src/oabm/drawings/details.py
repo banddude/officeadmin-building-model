@@ -4,6 +4,7 @@ No installation design, physical product selection, or alternate model contract.
 """
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 from dataclasses import dataclass, replace
 import html
 import math
@@ -127,6 +128,7 @@ class DetailResult:
 
 def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
     """Reject missing dimensions, cropped sources, unsupported geometry and empty cuts."""
+    reject_physical_routes(model, "generate_detail")
     require_no_populated_building_assemblies(model, "generate_detail")
     entities = {e.id: e for name in _COLLECTIONS for e in getattr(model, name)}
     selections = _fitting_selection_by_id(model)
@@ -198,6 +200,7 @@ def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
 
 
 def generate_details(model, specs):
+    reject_physical_routes(model, "generate_details")
     specs = tuple(specs)
     if not specs or len({s.id for s in specs}) != len(specs) or len({s.number for s in specs}) != len(specs):
         raise ValueError("details require unique stable IDs and numbers")
@@ -291,6 +294,7 @@ def company_detail_bodies(model, specs, resolved_sheets, *, placements=None):
     Explicit slots use paper millimetres and must partition all requested details
     exactly once across the resolved sheets, without overlapping one another.
     """
+    reject_physical_routes(model, "company_detail_bodies")
     details = generate_details(model, specs)
     sheets = {sheet.id: sheet for sheet in resolved_sheets}
     if placements is None:
@@ -368,6 +372,7 @@ def create_detail_sheet_set(model_path, details_path, profile_path, job_path, *,
     model_bytes = Path(model_path).read_bytes()
     request_bytes = Path(details_path).read_bytes()
     model = BuildingModel.from_json(model_bytes)
+    reject_physical_routes(model, "create_detail_sheet_set")
     request = json.loads(request_bytes)
     specs = detail_specs_from_dict(request)
     resolved = resolve_company_sheet_set(profile_path, job_path)

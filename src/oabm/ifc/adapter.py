@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import json
 import math
 import uuid
@@ -268,6 +269,7 @@ def to_ifc(
     default export without the option ever being present.
     """
 
+    reject_physical_routes(model, "to_ifc")
     if assembly_geometry not in (None, "tessellated"):
         raise IfcAdapterError("assembly_geometry: use None or explicit 'tessellated'")
     if assembly_geometry is None:
@@ -1405,6 +1407,8 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
         if kind not in _COLLECTION_BY_KIND:
             raise IfcAdapterError(f"unknown OABM canonical kind {kind!r}")
         data = dict(meta["json"])
+        if kind == "route" and data.get("geometry_kind") == "line_arc_v1":
+            raise IfcAdapterError("IFC import does not support physical routes (line_arc_v1)")
         canonical_id = data.get("id")
         if not canonical_id:
             raise IfcAdapterError(f"{item.is_a()} {item.GlobalId} has no canonical id")
@@ -1478,6 +1482,7 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
 def round_trip(model: BuildingModel, *, assembly_geometry: str | None = None) -> BuildingModel:
     """Convenience in-memory canonical -> IFC -> canonical round trip."""
 
+    reject_physical_routes(model, "round_trip")
     if assembly_geometry is None:
         require_no_populated_building_assemblies(model, "IFC round trip", error_type=IfcAdapterError)
     return from_ifc(to_ifc(model, assembly_geometry=assembly_geometry))

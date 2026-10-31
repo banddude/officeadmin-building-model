@@ -1,6 +1,7 @@
 """Opt-in review plans and supplied panel facts from one canonical snapshot."""
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 from dataclasses import dataclass, replace
 import html
 import json
@@ -146,6 +147,7 @@ def review_drawing_filenames(config):
 
 def generate_review_drawings(model, config, *, source_proposals_not_admitted=(), _dxf_replay_versions=None):
     """Return supplemental bytes and an honest visibility/coverage report."""
+    reject_physical_routes(model, "generate_review_drawings")
     from .review_sheet_delivery import ReviewSheetDeliveryConfig, generate_sheet_delivery
     if not isinstance(config, (ReviewDrawingConfig, ReviewSheetDeliveryConfig)):
         raise ContractError("typed review drawing configuration required")

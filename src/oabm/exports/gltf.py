@@ -35,6 +35,7 @@ Design notes:
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import hashlib
 import json
 import math
@@ -425,6 +426,7 @@ def to_glb(
       ``True`` can never masquerade as a 1 metre wall.
     """
 
+    reject_physical_routes(model, "to_glb")
     if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS:
         # 1.6 digests bind generated children to their exact source hosts.
         # Revalidate at this handoff so a stale source cannot leak into a
@@ -561,6 +563,7 @@ def build_glb_bytes(model: BuildingModel, **options: Any) -> bytes:
     to_glb. It is intended for consumers that must verify an artifact against
     the canonical model and explicit display options.
     """
+    reject_physical_routes(model, "build_glb_bytes")
     if "_return_payload" in options:
         raise TypeError("_return_payload is reserved for the exporter")
     payload = to_glb(model, Path(), _return_payload=True, **options)

@@ -1,7 +1,7 @@
 # PDF reviewed-region foundation
 
-Issue #381, first bounded implementation slice. This is not production PDF
-admission, a titleblock detector, or a fix to actual room/device counts.
+Synthetic contract evidence for the [issue #381 design](pdf-reviewed-region-design.md).
+This is not production PDF admission, a titleblock detector, or a fix to actual room/device counts.
 
 ## Implemented boundary
 
@@ -114,10 +114,15 @@ page, evaluation rejects adapter readiness. The completeness flag is an
 adapter assertion, not machine proof. No production support adapters currently
 supply it.
 
-## Deferred acceptance
+## Design completion versus future production capability
 
-This foundation does not close #381 or the broader PDF acceptance issues.
-Required later work includes:
+Issue #381 is a design task. Publishing the accepted design and this synthetic
+contract evidence fulfills its design criteria; production admission readiness
+is not an additional requirement for that issue. This foundation alone does not
+claim actual recognition or count fixes, or resolve broader PDF acceptance.
+
+Future production capability work, separately verified before being enabled,
+includes:
 
 - Single-byte-snapshot architecture and electrical extractor adapters, with
   complete frame provenance and independently specified fingerprint versions.

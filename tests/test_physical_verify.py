@@ -217,3 +217,19 @@ def test_receipt_counts_omitted_completed_diagnostics_exactly():
     assert len(report["diagnostics"]) == 256
     assert report["diagnostics_total"] == 300
     assert report["diagnostics_omitted"] == 44
+
+
+def test_decisive_witness_reserved_when_normal_diagnostics_are_full():
+    from oabm.routing.physical_verify import _finish
+    from oabm.routing.physical_verify_types import WorkLedger, VerificationStop
+    ledger=WorkLedger(1000)
+    for index in range(300):
+        ledger.record("completed",(str(index),))
+    stop=VerificationStop("rejected_route","self_contact_or_overlap",("segment:a","segment:b"),
+                          (("witness_x_m",Fraction(1,10**9)),))
+    report=_finish(stop.status,stop.reason,ledger,{}, {},stop).to_dict()
+    assert len(report["diagnostics"]) == 256
+    assert report["diagnostics"][0]["kind"] == stop.reason
+    assert report["diagnostics"][0]["exact"]["witness_x_m"] == {"numerator":"1","denominator":"1000000000"}
+    assert report["diagnostics_total"] == 301
+    assert report["diagnostics_omitted"] == 45

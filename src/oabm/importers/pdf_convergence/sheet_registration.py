@@ -30,7 +30,7 @@ otherwise only records diagnostics.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from statistics import median
 from typing import Any, Mapping
@@ -1172,11 +1172,49 @@ def register_electrical_sheets(
         or _register_page(page, targets, options)
         for page in sorted(electrical_source.pages, key=lambda item: item.page_number)
     )
+    # Bind accepted evidence to the source/page and coefficients that actually
+    # passed registration. Downstream attributes alone are not an acceptance
+    # record: the electrical model must retain the matching provenance too.
+    bound_pages = []
+    for page in pages:
+        if page.status != REGISTERED:
+            bound_pages.append(page)
+            continue
+
+        def bind(transform: PdfPageTransform) -> PdfPageTransform:
+            coefficients = transform.to_attributes()
+            coefficients.pop("registration", None)
+            return replace(transform, registration={
+                **transform.registration,
+                "source_binding": {
+                    "producer": "oabm.pdf_sheet_registration.v1",
+                    "architecture_model_id": architecture.model_id,
+                    "electrical_source_id": electrical_source.source_id,
+                    "source_page": page.page,
+                    "page_transform": coefficients,
+                },
+            })
+
+        record = dict(page.record)
+        transform = bind(page.transform) if page.transform is not None else None
+        drawings = tuple(replace(drawing, transform=bind(drawing.transform))
+                         for drawing in page.drawing_transforms)
+        if transform is not None:
+            record.update(registration=transform.registration,
+                          page_transform=transform.to_attributes())
+        if drawings:
+            record["drawings"] = [
+                {**drawing_record, "registration": drawing.transform.registration,
+                 "page_transform": drawing.transform.to_attributes()}
+                for drawing_record, drawing in zip(record["drawings"], drawings)
+            ]
+        bound_pages.append(replace(page, transform=transform,
+                                   drawing_transforms=drawings, record=record))
     return ElectricalSheetRegistration(
         electrical_source_id=electrical_source.source_id,
         architecture_model_id=architecture.model_id,
         frame_id=architecture.coordinate_system.frame_id,
-        pages=pages,
+        pages=tuple(bound_pages),
     )
 
 

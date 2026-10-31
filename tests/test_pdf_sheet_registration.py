@@ -321,7 +321,7 @@ def test_registered_electrical_import_converges_into_the_architecture(tmp_path: 
         {"x": _local(ELECTRICAL, EVSE_AT)[0], "y": _local(ELECTRICAL, EVSE_AT)[1]}
     )
 
-    merged = converge_pdf_models(architecture, electrical)
+    merged = converge_pdf_models(architecture, electrical, registration=result)
     validate_model(merged)
     [placed] = merged.electrical_devices
     [space] = architecture.spaces
@@ -853,7 +853,7 @@ def test_each_drawing_of_a_two_floor_page_registers_to_its_own_level(tmp_path: P
     assert len(inferred) == 2
     assert all("drawing_region_bbox_pt" in item.attributes for item in inferred)
 
-    merged = converge_pdf_models(architecture, electrical)
+    merged = converge_pdf_models(architecture, electrical, registration=result)
     validate_model(merged)
     placed = sorted(
         merged.electrical_devices,

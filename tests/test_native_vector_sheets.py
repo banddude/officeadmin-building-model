@@ -47,6 +47,10 @@ def original_on_same_paper(svg):
     root=ET.fromstring(svg)
     root.set('x','10');root.set('y','20');root.set('width','100.0');root.set('height','50.0')
     paper=ET.Element('{http://www.w3.org/2000/svg}svg',{'width':'200mm','height':'100mm','viewBox':'0 0 200 100'})
+    # Match the declared opaque paper before glyph rasterization, not only
+    # by compositing white onto transparent pixels after rendering. The
+    # company frame border is outside this fixture's comparison crop.
+    ET.SubElement(paper,'{http://www.w3.org/2000/svg}rect',{'x':'5','y':'5','width':'190','height':'90','fill':'#ffffff'})
     paper.append(root)
     return ET.tostring(paper)
 

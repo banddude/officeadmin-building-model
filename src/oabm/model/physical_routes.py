@@ -31,14 +31,31 @@ def exact_ticks(value: Any, label: str, *, minimum: str = "-1000", maximum: str 
         raise ContractError(f"{label} must be a finite decimal number") from exc
     if not decimal.is_finite() or not Decimal(minimum) <= decimal <= Decimal(maximum):
         raise ContractError(f"{label} is outside [{minimum}, {maximum}] metres")
-    scaled = Fraction(decimal) * TICKS_PER_METRE
-    if scaled.denominator != 1:
-        raise ContractError(f"{label} must be an exact decimal nanometre multiple; no snapping")
-    ticks = scaled.numerator
-    # Successful authored input must survive the existing canonical JSON number
-    # representation, rather than publishing geometry different from validation.
-    rendered = Decimal(str(float(decimal)))
-    if Fraction(rendered) * TICKS_PER_METRE != ticks:
+    # Inspect the finite decimal coefficient/exponent BEFORE any power or
+    # Fraction conversion. A short token with an enormous negative exponent
+    # must not allocate an enormous denominator merely to discover it is off-grid.
+    sign, digits, exponent = decimal.as_tuple()
+    significant = len(digits)
+    while significant and digits[significant - 1] == 0:
+        significant -= 1
+    if not significant:
+        ticks = 0
+    else:
+        shift = exponent + len(digits) - significant + 9
+        if shift < 0:
+            raise ContractError(f"{label} must be an exact decimal nanometre multiple; no snapping")
+        # The largest supported authored length is 2000 m. After the range
+        # check above, at most 13 decimal digits can contribute to integer ticks.
+        if significant + shift > 13:
+            raise ContractError(f"{label} exceeds the bounded integer tick profile")
+        ticks = 0
+        for digit in digits[:significant]:
+            ticks = ticks * 10 + digit
+        ticks *= 10 ** shift
+        if sign:
+            ticks = -ticks
+    # Successful authored input must survive canonical JSON numeric rendering.
+    if Decimal(str(float(decimal))) != decimal:
         raise ContractError(f"{label} cannot preserve exact ticks through serialization")
     return ticks
 
@@ -71,6 +88,8 @@ def _owned_provenance(owner: Any, *, supplied_fields: tuple[str, ...] = ()) -> N
         not isinstance(record, Provenance) for record in owner.provenance
     ):
         raise ContractError("physical route records require typed nonempty provenance")
+    for record in owner.provenance:
+        record.__post_init__()
     for name in supplied_fields:
         if not any(
             record.derivation in {"observed", "user"}
@@ -207,7 +226,12 @@ class PhysicalRoute(Entity):
             raise ContractError("physical route segments require explicit supported types")
         if len(self.joints) != len(self.segments) + 1 or len({j.id for j in self.joints}) != len(self.joints):
             raise ContractError("physical route joints must form one unrepeated ordered chain")
+        # Frozen records may still contain mutable JSON metadata. Revalidate
+        # each actual owner so validate_model and serialize/reload agree.
+        self.context.__post_init__()
+        self.context.allowed_domain.__post_init__()
         for owner in (*self.joints, *self.segments, self.requirements):
+            owner.__post_init__()
             if owner.route_id != self.id:
                 raise ContractError("nested physical route owner belongs to another route")
         if len({owner.id for owner in (self, *self.joints, *self.segments, self.requirements)}) != 2 + len(self.joints) + len(self.segments):

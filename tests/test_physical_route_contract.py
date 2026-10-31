@@ -490,3 +490,37 @@ def test_mutated_requirement_metadata_invalidates_binding_on_model_validation():
     model=make_physical_model()
     model.routes[0].requirements.attributes["evidence_revision"]="changed"
     with pytest.raises(ContractError,match="digest"):validate_model(model)
+
+
+@pytest.mark.parametrize("owner_path", ["route", "joint", "segment", "requirements", "domain"])
+def test_mutated_physical_owner_shadow_metadata_fails_validate_and_reload(owner_path):
+    from oabm.model import validate_model
+    model=make_physical_model(); route=model.routes[0]
+    owner={"route":route,"joint":route.joints[0],"segment":route.segments[0],
+           "requirements":route.requirements,"domain":route.context.allowed_domain}[owner_path]
+    owner.attributes["centerline"]={"points":[]}
+    with pytest.raises(ContractError,match="shadow"):validate_model(model)
+    with pytest.raises(ContractError,match="shadow"):BuildingModel.from_json(model.to_json())
+
+
+def test_mutated_route_provenance_json_is_revalidated():
+    from oabm.model import validate_model
+    model=make_physical_model()
+    model.routes[0].provenance[0].attributes["invalid"]=object()
+    with pytest.raises(ContractError,match="JSON-compatible"):validate_model(model)
+
+
+def test_decimal_exponent_admission_precedes_any_fraction_expansion(monkeypatch):
+    import oabm.model.physical_routes as physical
+    def forbidden_fraction(*args,**kwargs):
+        raise AssertionError("authored grid admission must not expand a Fraction denominator")
+    monkeypatch.setattr(physical,"Fraction",forbidden_fraction)
+    # Constructing Decimal from this token is bounded; no rational conversion
+    # or power-of-ten expansion is permitted before rejection.
+    with pytest.raises(ContractError,match="nanometre"):
+        physical.exact_ticks(Decimal("1e-999999999"),"tiny exponent")
+    with pytest.raises(ContractError,match="nanometre"):
+        physical.exact_ticks(Decimal("0.00000000001"),"small off-grid")
+    assert physical.exact_ticks(Decimal("0e-999999999"),"zero")==0
+    assert physical.exact_ticks(Decimal("0.3000000000000000000000"),"trailing zeros")==300000000
+    assert physical.exact_ticks(Decimal("2E+3"),"bounded maximum",minimum="0",maximum="2000")==2000000000000

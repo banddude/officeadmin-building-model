@@ -501,7 +501,7 @@ def validate_model(model: BuildingModel) -> None:
         require(route.start_port_id, ports, f"{route.id}.start_port_id")
         require(route.end_port_id, ports, f"{route.id}.end_port_id")
         if isinstance(route, PhysicalRoute):
-            validate_request_binding(route.context, route.requirements)
+            route.__post_init__()
             validate_physical_route_ports(route, ports, model.coordinate_system.frame_id)
             continue
         start = ports[route.start_port_id].pose.position

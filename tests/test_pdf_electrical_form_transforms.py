@@ -9,6 +9,13 @@ from oabm.importers.pdf_electrical.importer import extract_pdf
 
 IDENTITY=(1,0,0,1,0,0)
 
+def assert_points(actual, expected):
+    # pytest 9.2 refuses nested sequences. Preserve cardinality and compare
+    # each coordinate pair with exactly the same default approx tolerance.
+    assert len(actual) == len(expected)
+    for actual_point, expected_point in zip(actual, expected, strict=True):
+        assert actual_point == pytest.approx(expected_point)
+
 def apply(matrix, point):
     a,b,c,d,e,f=matrix; x,y=point
     return a*x+c*y+e,b*x+d*y+f
@@ -63,7 +70,7 @@ def test_form_vectors_text_symbol_width_and_restoration(tmp_path,rotation,origin
         if nested: p=apply((2,0,0,2,11,13),apply((1,0,0,1,3,4),p))
         return apply(caller,p)
     expected=[display(world(p),rotation,origin) for p in [(10,10),(20,20)]]
-    assert doc.vectors[0].points_pt == pytest.approx(expected)
+    assert_points(doc.vectors[0].points_pt, expected)
     form_text=next(t for t in doc.texts if t.text=="FORM")
     assert (form_text.x_pt,form_text.y_pt)==pytest.approx(display(world((12,14)),rotation,origin))
     axis=(world((0,1))[0]-world((0,0))[0],world((0,1))[1]-world((0,0))[1])
@@ -72,8 +79,8 @@ def test_form_vectors_text_symbol_width_and_restoration(tmp_path,rotation,origin
     assert (caller_text.x_pt,caller_text.y_pt)==pytest.approx(display(apply(caller,(6,8)),rotation,origin))
     after=next(t for t in doc.texts if t.text=="AFTER")
     assert (after.x_pt,after.y_pt)==pytest.approx(display((70,80),rotation,origin))
-    assert doc.vectors[1].points_pt==pytest.approx([display(p,rotation,origin) for p in [(1,1),(2,2)]])
-    assert doc.vectors[2].points_pt==pytest.approx([display(p,rotation,origin) for p in [(60,60),(65,65)]])
+    assert_points(doc.vectors[1].points_pt, [display(p,rotation,origin) for p in [(1,1),(2,2)]])
+    assert_points(doc.vectors[2].points_pt, [display(p,rotation,origin) for p in [(60,60),(65,65)]])
     # Same Form name is deliberately used in parent and child resources.
     innermost=doc.symbols[-1]
     assert (innermost.x_pt,innermost.y_pt)==pytest.approx(display(world((0,0)),rotation,origin))
@@ -94,7 +101,7 @@ def test_local_stream_transform_composes_inside_form(tmp_path,local):
     path=tmp_path/"local.pdf"; pdf(path,local=local)
     doc=extract_pdf(path)
     def expected(p): return apply((1,0,0,1,100,120),apply((1,0,0,1,5,7),apply(local,p)))
-    assert doc.vectors[0].points_pt==pytest.approx([expected((10,10)),expected((20,20))])
+    assert_points(doc.vectors[0].points_pt, [expected((10,10)),expected((20,20))])
     text=next(t for t in doc.texts if t.text=="FORM")
     assert (text.x_pt,text.y_pt)==pytest.approx(expected((12,14)))
     # A local cm changes painted geometry, not the invoked Form origin.

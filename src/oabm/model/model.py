@@ -881,7 +881,8 @@ def _validate_fitting_producer_receipts(model: BuildingModel) -> None:
         if selected_id is None:
             if selection is not None or outcome.status != "unresolved":
                 raise ContractError("unresolved producer outcome cannot retain a selection")
-            if any(item.fitting_id == outcome.fitting_id for item in model.fitting_interfaces):
+            if any(ports_by_id[item.port_id].owner_id == outcome.fitting_id
+                   for item in model.fitting_interfaces):
                 raise ContractError("unresolved producer outcome cannot retain interfaces")
             continue
         if (selection is None or selected_id != selection.id or outcome.status != "selected" or

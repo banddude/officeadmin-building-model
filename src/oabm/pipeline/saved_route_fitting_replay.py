@@ -201,6 +201,45 @@ def _plan(value: Any) -> PlanSpec:
     return PlanSpec(**row)
 
 
+def _fitting_completion_summary(model: BuildingModel) -> dict[str, Any]:
+    """Describe fresh decisions, not saved claims or engineering acceptance."""
+    selections = {row.id: row for row in model.fitting_selections}
+    counts = {"selected": 0, "unresolved": 0}
+    geometry = {"dimension_derived_envelope": 0, "metadata_only": 0}
+    reasons: dict[str, int] = {}
+    outcomes = []
+    for outcome in sorted(model.fitting_selection_outcomes,
+                          key=lambda row: (row.fitting_id, row.intent_id, row.id)):
+        counts[outcome.status] += 1
+        selection = selections.get(outcome.selected_selection_id)
+        basis = None if selection is None else selection.geometry_basis
+        if basis is not None:
+            geometry[basis] += 1
+        for reason in outcome.reason_codes:
+            reasons[reason] = reasons.get(reason, 0) + 1
+        outcomes.append({
+            "outcome_id": outcome.id,
+            "intent_id": outcome.intent_id,
+            "fitting_id": outcome.fitting_id,
+            "status": outcome.status,
+            "reason_codes": sorted(outcome.reason_codes),
+            "selected_selection_id": outcome.selected_selection_id,
+            "geometry_basis": basis,
+            "actual_od_check_performed": outcome.actual_od_check_performed,
+        })
+    return {
+        "outcome_counts": counts,
+        "reason_counts": dict(sorted(reasons.items())),
+        "selected_geometry_counts": geometry,
+        "outcomes": outcomes,
+        "geometry_disclosure": (
+            "Dimension-derived envelopes are not manufacturer-native CAD or fit proof; "
+            "metadata-only selections have no fitting Body or mesh; "
+            "unresolved choices have no selected product geometry."
+        ),
+    }
+
+
 def replay_saved_route_fitting(manifest_path: str | Path) -> dict[str, Any]:
     """Regenerate a complete fitting-selection artifact set from saved bytes.
 
@@ -305,6 +344,7 @@ def replay_saved_route_fitting(manifest_path: str | Path) -> dict[str, Any]:
             "interfaces": len(base.fitting_interfaces),
             "outcomes": len(base.fitting_selection_outcomes),
         },
+        "fitting_completion": _fitting_completion_summary(selected),
         "comparison": "exact fresh byte comparison; no cached output reuse",
         "ifc_header_timestamp_policy": "existing IFC exporter pins a deterministic header value; it is not replay/event time",
         "source_authenticity_verified": False,

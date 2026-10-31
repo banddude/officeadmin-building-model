@@ -627,3 +627,82 @@ def test_legacy_model_provenance_cannot_scope_to_unserialized_v15_fields():
                                   "scope_paths": ["fitting_selections"]}]
     with pytest.raises(ContractError, match="requires schema_version 1.5.0"):
         BuildingModel.from_dict(legacy_json)
+
+
+def test_compression_does_not_imply_required_raintight_rating():
+    model, intent, product = build_model()
+    manifest = catalog_manifest()
+    interfaces = manifest.fitting_entry(product.product_id).interfaces
+    assert all(row.connection_method == "compression" and row.raintight is None
+               for row in interfaces)
+    result = run_selector(model, intent, product, manifest=manifest,
+                          required_environment=("raintight",))
+    assert result.fitting_selections == result.fitting_interfaces == ()
+    assert result.fitting_selection_outcomes[0].status == "unresolved"
+    assert result.fitting_selection_outcomes[0].reason_codes == ("environment_unknown",)
+
+
+@pytest.mark.parametrize("construction", ["MC", "AC", "NM-B"])
+def test_unsupported_exact_cable_constructions_never_become_emt_fittings(construction):
+    model, intent, product = build_model()
+    cable_product = CatalogProduct(catalog_id="synthetic-cables",
+        catalog_revision="r1", product_id=construction)
+    model = replace(model,
+        routes=(replace(model.routes[0], route_type="cable"),),
+        raceway_selections=(replace(model.raceway_selections[0], route_type="cable",
+            wiring_method="cable", designation_kind="listed_assembly",
+            designation=construction, product=cable_product),),
+        raceway_selection_outcomes=(replace(model.raceway_selection_outcomes[0],
+            requested_product=cable_product),))
+    result = run_selector(model, intent, product)
+    assert result.fitting_selections == result.fitting_interfaces == ()
+    outcome = result.fitting_selection_outcomes[0]
+    assert outcome.status == "unresolved"
+    assert "wrong_route_type" in outcome.reason_codes
+    assert outcome.actual_od_check_performed is False
+    assert result.routes == model.routes and result.ports == model.ports
+
+
+@pytest.mark.parametrize("nominal", [0.02, 0.05])
+def test_nominal_diameter_and_trade_designation_never_supply_actual_od(nominal):
+    model, intent, product = build_model()
+    model = replace(model,
+        routes=(replace(model.routes[0], nominal_diameter_m=nominal),),
+        route_fittings=(replace(model.route_fittings[0], nominal_diameter_m=nominal),),
+        ports=tuple(replace(port, nominal_diameter_m=nominal) for port in model.ports),
+        raceway_selections=(replace(model.raceway_selections[0],
+            nominal_diameter_m=nominal, designation="1/2 in synthetic"),))
+    document = json.loads(catalog_manifest().raw)
+    entry = next(row for row in document["entries"] if row["product_id"] == product.product_id)
+    for interface in entry["interfaces"]:
+        interface["nominal_designation"] = "1/2 in synthetic"
+        interface["actual_accepted_od_m"] = {"min_m": 0.019, "max_m": 0.021}
+        interface["evidence"].extend(_evidence(["nominal_designation", "actual_accepted_od_m"]))
+    manifest = CatalogManifest(json.dumps(document).encode())
+    result = run_selector(model, intent, product, manifest=manifest, check_actual_od=True)
+    assert result.fitting_selections == result.fitting_interfaces == ()
+    assert result.fitting_selection_outcomes[0].reason_codes == ("actual_od_unknown",)
+    assert result.fitting_selection_outcomes[0].actual_od_check_performed is False
+
+
+def test_mixed_selected_unresolved_validation_preserves_interface_ownership_checks():
+    from oabm.model import validate_model
+    model, intent, product = build_model()
+    unresolved_fitting = replace(model.route_fittings[0], id="fitting:unresolved")
+    model = replace(model, route_fittings=(*model.route_fittings, unresolved_fitting),
+        routes=(replace(model.routes[0], fitting_ids=(intent.fitting_id, unresolved_fitting.id)),))
+    unresolved_intent = replace(intent, intent_id="intent:unresolved",
+        fitting_id=unresolved_fitting.id, bindings=(), requested_product=None, basis=None)
+    result = select_route_fittings(model, intents=(intent, unresolved_intent),
+        catalog=catalog_manifest(), rules=(rule_for(product, "coupling"),))
+    validate_model(result)
+    assert {row.status for row in result.fitting_selection_outcomes} == {"selected", "unresolved"}
+    assert len(result.fitting_interfaces) == 2
+    assert BuildingModel.from_json(result.to_json()).to_dict() == result.to_dict()
+    # An interface cannot be attached to the unresolved fitting's port, even
+    # when its selection and the rest of its reciprocal geometry are intact.
+    stolen_port_id = result.fitting_interfaces[0].port_id
+    with pytest.raises(ContractError, match="interface port must be owned by its selected fitting"):
+        replace(result, ports=tuple(
+            replace(port, owner_id=unresolved_fitting.id) if port.id == stolen_port_id else port
+            for port in result.ports))

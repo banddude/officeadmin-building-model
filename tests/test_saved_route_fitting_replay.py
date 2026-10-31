@@ -77,8 +77,8 @@ def _outputs(base, intent, rules, catalog, plans):
     }
 
 
-def _saved_tree(root, *, include_rule=True, preselected_base=False, check_actual_od=False):
-    base, intent, rule, catalog, plans = _input_set()
+def _saved_tree(root, *, include_rule=True, preselected_base=False, check_actual_od=False, envelope=True):
+    base, intent, rule, catalog, plans = _input_set(envelope=envelope)
     current_rule = rule_for(rule.permitted_products[0], "connector", check_actual_od=check_actual_od)
     rules = (current_rule,) if include_rule else ()
     if preselected_base:
@@ -236,3 +236,84 @@ def test_saved_fitting_replay_requires_array_shaped_rule_policy(tmp_path):
     path.write_bytes(_dump(manifest))
     with pytest.raises(ContractError, match="must be arrays"):
         replay_saved_route_fitting(path)
+
+
+@pytest.mark.parametrize("envelope", [False, True])
+def test_completion_reports_fresh_selected_geometry_and_unverified_claims(tmp_path, envelope):
+    path, _ = _saved_tree(tmp_path, envelope=envelope)
+    receipt = replay_saved_route_fitting(path)
+    summary = receipt["fitting_completion"]
+    assert summary["outcome_counts"] == {"selected": 1, "unresolved": 0}
+    assert summary["selected_geometry_counts"] == {
+        "dimension_derived_envelope": int(envelope), "metadata_only": int(not envelope),
+    }
+    assert summary["reason_counts"] == {}
+    assert summary["outcomes"][0]["geometry_basis"] == (
+        "dimension_derived_envelope" if envelope else "metadata_only")
+    assert summary["outcomes"][0]["actual_od_check_performed"] is False
+    assert receipt == replay_saved_route_fitting(path)
+    for claim in ("source_authenticity_verified", "product_fit_verified",
+                  "code_or_listing_compliance_verified", "native_cad_imported",
+                  "engineering_approval"):
+        assert receipt[claim] is False
+
+
+def test_completion_uses_regenerated_unresolved_not_preselected_base(tmp_path):
+    path, _ = _saved_tree(tmp_path, preselected_base=True, check_actual_od=True)
+    receipt = replay_saved_route_fitting(path)
+    assert receipt["base_fitting_inventory"]["selections"] == 1
+    summary = receipt["fitting_completion"]
+    assert summary["outcome_counts"] == {"selected": 0, "unresolved": 1}
+    assert summary["selected_geometry_counts"] == {
+        "dimension_derived_envelope": 0, "metadata_only": 0,
+    }
+    assert summary["reason_counts"] == {"actual_od_unknown": 1}
+    assert summary["outcomes"][0]["reason_codes"] == ["actual_od_unknown"]
+    assert summary["outcomes"][0]["selected_selection_id"] is None
+    assert summary["outcomes"][0]["geometry_basis"] is None
+
+
+def test_completion_summary_mixed_outcomes_is_order_independent(tmp_path):
+    from oabm.pipeline.saved_route_fitting_replay import _fitting_completion_summary
+    base, intent, rule, catalog, plans = _input_set(envelope=False)
+    extra_fitting = replace(base.route_fittings[0], id="fitting:unresolved")
+    base = replace(base, route_fittings=(*base.route_fittings, extra_fitting),
+        routes=(replace(base.routes[0], fitting_ids=(*base.routes[0].fitting_ids, extra_fitting.id)),))
+    extra_intent = replace(intent, intent_id="intent:unresolved",
+        fitting_id=extra_fitting.id, bindings=(), requested_product=None, basis=None)
+    model = select_route_fittings(base, intents=(extra_intent, intent),
+                                  catalog=catalog, rules=(rule,))
+    summary = _fitting_completion_summary(model)
+    assert summary["outcome_counts"] == {"selected": 1, "unresolved": 1}
+    assert summary["selected_geometry_counts"] == {
+        "dimension_derived_envelope": 0, "metadata_only": 1,
+    }
+    assert summary["reason_counts"] == {
+        "missing_requested_product": 1, "missing_rule_reference": 1,
+    }
+    assert [row["fitting_id"] for row in summary["outcomes"]] == ["fitting:one", "fitting:unresolved"]
+    reordered = replace(model, fitting_selection_outcomes=tuple(reversed(model.fitting_selection_outcomes)))
+    assert _dump(_fitting_completion_summary(reordered)) == _dump(summary)
+
+    # Exercise the real byte-bound replay as well as summary ordering. Mixed
+    # selected/unresolved inventory must survive canonical validation and every
+    # exporter, without copying the selected base's claims.
+    inputs = _documents(base, intent, (rule,), catalog, plans)
+    inputs["intents"] = _dump({"version": "saved-route-fitting-intents-v1",
+                              "items": [asdict(extra_intent), asdict(intent)]})
+    outputs = {
+        "canonical_model": model.to_json(indent=None).encode(),
+        "quantities": extract_quantities(model).to_json(indent=None).encode(),
+        "glb": build_glb_bytes(model),
+        "ifc": to_ifc(model).to_string().encode(),
+        "drawings": generate_drawing_set(model, plans=plans).to_json(indent=None).encode(),
+    }
+    manifest = {"version": VERSION,
+        "inputs": {name: _write(tmp_path, "inputs/" + name + ".bin", payload)
+                   for name, payload in inputs.items()},
+        "expected_outputs": {name: _write(tmp_path, "expected/" + name + ".bin", payload)
+                             for name, payload in outputs.items()}}
+    path = tmp_path / "replay.json"
+    path.write_bytes(_dump(manifest))
+    receipt = replay_saved_route_fitting(path)
+    assert receipt["fitting_completion"] == summary

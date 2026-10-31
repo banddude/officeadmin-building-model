@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation, localcontext
 from fractions import Fraction
 from typing import Any, Mapping
 
@@ -15,6 +15,23 @@ TICKS_PER_METRE = 1_000_000_000
 MAX_COORDINATE_M = 1000
 MAX_PHYSICAL_ROUTE_SEGMENTS = 1024
 
+# This transient marker is never stored in a canonical model. Ordinary legacy
+# decoding still owns unconsumed metadata; only physical numeric consumers
+# reject an original JSON number beyond Decimal's representable exponent range.
+_UNREPRESENTABLE_JSON_NUMBER = object()
+
+
+def _physical_json_float(token: str):
+    try:
+        # Decimal construction must not depend on, or change, caller flags/traps.
+        with localcontext() as context:
+            context.traps[InvalidOperation] = True
+            value = Decimal(token)
+        return value if value.is_finite() else _UNREPRESENTABLE_JSON_NUMBER
+    except DecimalException:
+        return _UNREPRESENTABLE_JSON_NUMBER
+
+
 
 def exact_ticks(value: Any, label: str, *, minimum: str = "-1000", maximum: str = "1000") -> int:
     """Read authored decimal metres, never rounded or snapped to the grid.
@@ -23,6 +40,9 @@ def exact_ticks(value: Any, label: str, *, minimum: str = "-1000", maximum: str 
     use the canonical decimal rendering of their int/float snapshot. No global
     Decimal precision setting participates in the exact integer/rational test.
     """
+    if value is _UNREPRESENTABLE_JSON_NUMBER:
+        raise PhysicalRoutingAdmissionError("physical JSON number exceeds the exact decimal profile",
+            category="unsupported_input", reason="numeric_decimal_range")
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise ContractError(f"{label} must be a decimal number")
     try:

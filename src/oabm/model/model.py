@@ -182,8 +182,8 @@ class BuildingModel:
             return document
 
         try:
-            from decimal import Decimal
-            exact_document = json.loads(payload, object_pairs_hook=unique_pairs, parse_float=Decimal)
+            from .physical_routes import _physical_json_float
+            exact_document = json.loads(payload, object_pairs_hook=unique_pairs, parse_float=_physical_json_float)
             if isinstance(exact_document, dict) and exact_document.get("schema_version") == PHYSICAL_ROUTE_SCHEMA_VERSION:
                 validate_physical_json_numbers(exact_document)
             document = json.loads(payload, object_pairs_hook=unique_pairs)

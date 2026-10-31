@@ -285,11 +285,11 @@ def _validate_physical_request_source(model: Any, context: PhysicalRoutingContex
             raise ContractError("physical source endpoint direction must be an exact signed unit axis")
     admission_mode = "canonical_python_snapshot"
     if source_json is not None:
-        from decimal import Decimal
+        from .physical_routes import _physical_json_float
         from .model import BuildingModel
         from .physical_routes import _raw_box, _raw_point
         try:
-            raw = json.loads(source_json, parse_float=Decimal)
+            raw = json.loads(source_json, parse_float=_physical_json_float)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ContractError("invalid physical source JSON") from exc
         if not isinstance(raw, dict):

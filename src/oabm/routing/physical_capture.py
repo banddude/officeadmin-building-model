@@ -50,7 +50,9 @@ class Capture:
         if cls is int:
             if value.bit_length() > 4096:
                 raise VerificationStop("resource_limit", "capture_integer_limit")
-            self._charge(value.bit_length()//3+3)
+            # Include sign and .0 reserve for later typed int-to-float
+            # canonical normalization, not only the original integer token.
+            self._charge(value.bit_length()//3+6)
             return value
         if cls is float:
             if not math.isfinite(value):

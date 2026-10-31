@@ -168,3 +168,17 @@ def test_estimator_covers_default_canonical_spaces_not_only_compact_json(value):
     counter=Capture(SOURCE_BYTES)
     copied=counter.copy(model)
     assert counter.bytes >= len(copied.to_json(indent=None).encode("utf-8"))
+
+
+@pytest.mark.parametrize("value", [-1000,-100,-10,-1,0,1,10,100,1000])
+def test_scalar_estimate_covers_typed_numeric_normalization(value):
+    counter=Capture(1000)
+    counter.copy(value)
+    assert counter.bytes >= len(json.dumps(float(value)))
+    source=make_physical_source()
+    source=replace(source,ports=tuple(replace(p,pose=replace(p.pose,
+        position=replace(p.pose.position,x=value,y=value,z=value))) for p in source.ports))
+    counter=Capture(SOURCE_BYTES)
+    copied=counter.copy(source)
+    normalized=BuildingModel.from_json(copied.to_json(indent=None))
+    assert counter.bytes >= len(normalized.to_json(indent=None).encode("utf-8"))

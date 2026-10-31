@@ -107,3 +107,26 @@ importer self-checks, crop extraction, price-at-risk, bid pricing, a
 production viewer, or OA integration, and it does not detect every kind
 of uncertainty — only the ones the canonical signals above can support.
 The parents #241/#227 stay open for those.
+
+## Opt-in physical-route review
+
+For the bounded trusted-geometry viewer slice, call
+`build_confidence_review(model, config, physical_routes=True)`. The default
+still refuses physical routes. The opt-in retains every canonical collection
+and reviews the same confidence, provenance, missing-source and unresolved
+selection facts, including mixed legacy/physical route models.
+
+If any physical route is present, `extract_quantities` is unsupported for the
+whole model. The review does **not** remove physical routes, alter references,
+or fabricate a partial takeoff. Instead it emits
+`review:warning:physical_route_quantities_unsupported`, with reason
+`physical_route_quantities_unsupported`, naming the canonical physical route
+IDs and retaining their provenance and supplied evidence. Its detail explicitly
+states that the entire quantity pass, including legacy routes and other
+objects, was not evaluated. This is a capability limitation, not a
+`quantity_warning_*` result from a takeoff. Models without physical routes
+retain the existing quantity warning pass and output bytes.
+
+Populated building assemblies remain unsupported. Physical-route fitting
+references remain forbidden by canonical validation. Display does not establish live obstacle clearance,
+verification status, code compliance, or engineering approval.

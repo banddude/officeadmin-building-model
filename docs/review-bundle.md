@@ -45,3 +45,30 @@ ReviewBundle.to_json() is stable across repeated builds. ReviewBundle.from_dict(
 min_display_wall_thickness_m remains a labeled GLB drawing option. Re-exporting with a different value changes only the derived GLB vertices and disclosure metadata; it leaves canonical model serialization, IFC output, and quantities unchanged. A future viewer thickness control must request a re-export from the canonical model. It must not pretend to change a saved mesh or mutate canonical dimensions.
 
 Public tests use a synthetic model and caller-owned fixture paths only.
+
+## Physical-route viewer handoff
+
+The bounded opt-in uses the existing model and bundle, not a parallel route
+collection. Build confidence review with `physical_routes=True`, export the
+GLB with `physical_routes=True` and optionally `include_obstacles=True`, then
+supply those same flags in `build_review_bundle(..., glb_options=...)`.
+The builder reproduces the confidence manifest in that mode and re-exports
+the exact GLB before accepting it. Canonical JSON bytes and identity are
+unchanged; artifact hashes, source joins, immutable portable facts and stale
+evidence refusal remain enforced.
+
+Every physical route has one selectable canonical node. When obstacle export
+is enabled, every supported supplied obstacle must also have exactly one
+canonical node; missing or unexpected obstacle nodes refuse. Unsupported
+obstacle geometry refuses in the exporter rather than disappearing. New true
+flags are retained in artifact export options; false flags are omitted from
+the portable document so default bundle bytes and legacy round-trips remain
+unchanged.
+
+The physical review manifest explicitly records that the **entire model**
+quantity pass is unsupported. It never filters out physical routes to produce
+a misleading partial takeoff. Populated assemblies remain unsupported; canonical validation still forbids
+fitting references to physical routes. Tessellated conduit display and supplied obstacle
+meshes are review aids, not a new live clearance proof or engineering approval.
+The caller still provides authorized artifact and source references; this
+bridge does not upload anything or implement viewer transport.

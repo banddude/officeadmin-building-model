@@ -47,7 +47,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from typing import Any, Iterable, Mapping, Sequence, get_args, get_origin, get_type_hints
 
 from oabm.assembly_compat import require_no_populated_building_assemblies
-from oabm.model import BuildingModel, Entity, Provenance
+from oabm.model import BuildingModel, Entity, PhysicalRoute, Provenance, validate_model
 from oabm.model.common import _SCOPE_PATH_RE, _validate_id
 from oabm.quantities import QuantityWarning, extract_quantities
 
@@ -819,12 +819,16 @@ def build_confidence_review(
     config: ReviewConfig,
     *,
     evidence: Sequence[EvidenceReference] | None = None,
+    physical_routes: bool = False,
 ) -> ConfidenceReviewManifest:
     """Build the deterministic review manifest for ``model``.
 
     The model is only read: takeoff warnings come from the real
     ``extract_quantities`` run, and the model's serialized bytes are the
-    same before and after. Items are emitted for
+    same before and after. With ``physical_routes=True``, a model containing
+    physical routes instead records that the whole quantity pass is
+    unsupported; no filtered or partial takeoff is attempted.
+    Items are emitted for
 
     - entities whose own confidence is below the threshold
       (``low_entity_confidence``),
@@ -845,7 +849,18 @@ def build_confidence_review(
 
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")
-    reject_physical_routes(model, "build_confidence_review")
+    if not isinstance(physical_routes, bool):
+        raise ValueError("physical_routes must be a boolean")
+    if not physical_routes:
+        reject_physical_routes(model, "build_confidence_review")
+    physical = tuple(sorted(
+        (route for route in model.routes if isinstance(route, PhysicalRoute)),
+        key=lambda route: route.id,
+    ))
+    if physical:
+        # The ordinary takeoff pass validates canonical cross-references.
+        # Preserve that boundary when the pass itself is unavailable.
+        validate_model(model)
     if not isinstance(config, ReviewConfig):
         raise TypeError("config must be a ReviewConfig")
     require_no_populated_building_assemblies(model, "build_confidence_review")
@@ -908,9 +923,33 @@ def build_confidence_review(
                 crops=crops_by_entity.get(entity.id, ()),
             ))
 
-    items.extend(_warning_items(
-        extract_quantities(model).warnings, crops_by_entity, collections,
-    ))
+    if physical:
+        # Never filter a canonical model into a misleading partial takeoff.
+        # No quantity pass is supported for this model, including legacy rows.
+        items.append(ReviewItem(
+            item_id="review:warning:physical_route_quantities_unsupported",
+            entity_kind="routes",
+            entity_ids=tuple(route.id for route in physical),
+            reasons=("physical_route_quantities_unsupported",),
+            detail=(
+                "Physical-route quantities are unsupported. The entire model quantity "
+                "pass was not evaluated, including any legacy routes and other objects; "
+                "no takeoff warnings or completeness are asserted. Physical route display "
+                "is a tessellated review view, not live clearance proof or engineering approval."
+            ),
+            confidence=None,
+            provenance=tuple(
+                record for route in physical
+                for record in _provenance_payload(route.provenance, route.id)
+            ),
+            crops=tuple(
+                crop for route in physical for crop in crops_by_entity.get(route.id, ())
+            ),
+        ))
+    else:
+        items.extend(_warning_items(
+            extract_quantities(model).warnings, crops_by_entity, collections,
+        ))
     items.sort(key=lambda item: item.item_id)
     return ConfidenceReviewManifest(
         model_id=model.model_id,

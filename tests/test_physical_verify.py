@@ -168,3 +168,29 @@ def test_original_snapshot_mismatch_is_not_silently_replaced():
     result=verify_physical_route(source,route,source_json=altered.to_json())
     assert result.status == "invalid_input"
     assert result.reason == "raw_source_mismatch"
+
+
+def test_geometry_unspecified_scope_includes_nonendpoint_owners_separately():
+    source=make_physical_source()
+    source=replace(source,electrical_devices=(*source.electrical_devices,
+        replace(source.electrical_devices[0],id="device:no-port")))
+    route=make_physical_route(source)
+    result=verify_physical_route(source,route)
+    assert result.status == "verified_route",result.to_json()
+    scope=result.to_dict()["scope"]
+    assert scope["geometry_unspecified_source_ids"] == ["device:a","device:b","device:no-port"]
+    assert scope["excluded_source_ids"] == []
+    assert scope["checked_source_ids"] == []
+    assert result.to_dict()["work"]["charged_by_kind"]["geometry_scope_scan"] == 3
+
+
+def test_geometry_unspecified_disclosure_limit_is_not_success():
+    source=make_physical_source()
+    devices=(*source.electrical_devices,*(replace(source.electrical_devices[0],
+        id="device:extra-"+str(i)) for i in range(9999)))
+    source=replace(source,electrical_devices=devices)
+    route=make_physical_route(source)
+    result=verify_physical_route(source,route)
+    assert result.status == "resource_limit"
+    # Capture may independently reach a stricter declared memory cap first.
+    assert result.reason in {"scope_disclosure_limit","capture_node_limit","capture_byte_limit"}

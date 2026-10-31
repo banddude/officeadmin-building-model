@@ -112,7 +112,8 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
                           source_json: str | bytes | None = None) -> PhysicalRouteVerificationResult:
     ledger = None
     authority = {}
-    scope = {"checked_source_ids": [], "excluded_source_ids": []}
+    scope = {"checked_source_ids": [], "excluded_source_ids": [],
+             "geometry_unspecified_source_ids": []}
     try:
         if type(source) is not BuildingModel or type(candidate) is not PhysicalRoute:
             raise VerificationStop("invalid_input", "source_candidate_type")
@@ -146,8 +147,20 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
         authority["obstacle_domain_margin_m"] = {"numerator":"1","denominator":"1000000"}
         authority["self_required_separation_m"] = {"numerator":"0","denominator":"1","comparison":"strictly_greater"}
         ledger = WorkLedger(limits.total_refinement_cells)
-        primitives = adapt_primitives(route, ledger)
         inventory = physical_geometry_inventory(base, route.route_type)
+        optional_geometry = (base.electrical_equipment, base.electrical_devices,
+                             base.fitting_selections)
+        ledger.debit("geometry_scope_scan", sum(len(items) for items in optional_geometry))
+        unspecified = []
+        for items in optional_geometry:
+            for item in items:
+                if item.size is None:
+                    if len(inventory) + len(unspecified) >= 10_000:
+                        raise VerificationStop("resource_limit", "scope_disclosure_limit")
+                    ledger.debit("scope_id_retention")
+                    unspecified.append(item.id)
+        scope["geometry_unspecified_source_ids"] = reserved_sort(unspecified, ledger)
+        primitives = adapt_primitives(route, ledger)
         coverage = {row.source_entity_id: row for row in route.context.coverage}
         ledger.debit("coverage_inventory", len(inventory))
         identities = reserved_sort(tuple(inventory), ledger)
@@ -156,6 +169,7 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
         for identity in identities:
             item, row = inventory[identity], coverage[identity]
             if row.decision == "outside_proof_scope":
+                ledger.debit("scope_id_retention")
                 scope["excluded_source_ids"].append(identity)
                 ledger.record("explicit_scope_exclusion", (identity,))
                 continue
@@ -172,6 +186,7 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
                 check_box(primitive, box, threshold+extra, ledger,
                     ids=(primitive.segment_id, identity), max_depth=limits.interval_refinement_depth,
                     kind="obstacle")
+            ledger.debit("scope_id_retention")
             scope["checked_source_ids"].append(identity)
         ledger.debit("domain_adaptation", len(route.context.allowed_domain.volumes))
         domain = tuple(_box(box) for box in route.context.allowed_domain.volumes)

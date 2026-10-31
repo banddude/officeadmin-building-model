@@ -29,7 +29,12 @@ Typed candidate admission is always canonical_python_snapshot.
 
 Source/request/candidate hashes bind scope and evidence but do not prove clearance.
 All mandatory blockers are enumerated anew. Explicit permitted scope exclusions
-are reported. Unsupported source/envelope adapters refuse. Endpoint ownership is
+are reported separately from geometry_unspecified_source_ids, which discloses
+all size-unspecified equipment, devices and fitting selections, not just endpoint
+owners. The combined inventory and unspecified-owner scope is bounded to 10000
+IDs; exceeding disclosure capacity returns resource_limit, never success.
+No whole-building completeness is implied for unrepresented geometry.
+Unsupported source/envelope adapters refuse. Endpoint ownership is
 not an implicit obstacle exemption.
 
 PhysicalRoutingAdmissionError is an additive ContractError subclass with stable

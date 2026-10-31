@@ -151,3 +151,5 @@ See [the physical-route structural contract](docs/physical-route-contract-v1.7.m
 See [Trusted-geometry physical route generation](docs/physical-route-generation.md) for opt-in canonical line/arc candidates, live full-solid verification and explicit finite-search limits. Supplied geometry is required; this does not automate PDF intake or engineering approval.
 
 See [Physical-route 3D review preview](docs/physical-route-preview.md) for explicit canonical curved-conduit/obstacle GLB output and the source-bound viewer bundle.
+
+See [Physical-route geometric schedule](docs/physical-route-schedule.md) for source-bound JSON and CSV route/segment measurements, exact analytic centerline lengths and explicit legacy-route exclusions. This standalone report does not change whole-model takeoff or app consumers.

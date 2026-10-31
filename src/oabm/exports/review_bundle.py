@@ -96,6 +96,8 @@ def canonical_model_sha256(model: BuildingModel) -> str:
 
 
 _GLB_OPTION_DEFAULTS: dict[str, Any] = {
+    "physical_routes": False,
+    "include_obstacles": False,
     "reference_planes": False,
     "reference_floor_alpha": 0.25,
     "reference_ceiling_alpha": 0.08,
@@ -133,7 +135,7 @@ def _normalize_glb_options(
     options = dict(_GLB_OPTION_DEFAULTS)
     options.update(value)
 
-    for name in ("reference_planes", "glazed_outline"):
+    for name in ("reference_planes", "glazed_outline", "physical_routes", "include_obstacles"):
         if not isinstance(options[name], bool):
             raise ValueError(f"GLB option {name} must be a boolean")
     for name in (
@@ -197,6 +199,7 @@ def _normalize_glb_options(
             else options[name]
         )
         for name in sorted(options)
+        if name not in {"physical_routes", "include_obstacles"} or options[name]
     }
     _canonical_json_bytes(portable)
     return options, portable
@@ -215,7 +218,7 @@ def _decode_confidence_manifest(
 
 
 def _verify_confidence_manifest(
-    model: BuildingModel, manifest: ConfidenceReviewManifest,
+    model: BuildingModel, manifest: ConfidenceReviewManifest, *, physical_routes: bool = False,
 ) -> str:
     if manifest.model_id != model.model_id:
         raise ValueError("confidence review model_id does not match canonical model")
@@ -231,6 +234,7 @@ def _verify_confidence_manifest(
     )
     expected = build_confidence_review(
         model, ReviewConfig(manifest.confidence_threshold), evidence=evidence,
+        physical_routes=physical_routes,
     )
     canonical = manifest.to_json(indent=None)
     if expected.to_json(indent=None) != canonical:
@@ -374,7 +378,7 @@ def _node_index(
 
 
 def _verify_expected_rendered_nodes(
-    model: BuildingModel, node_indices: Mapping[str, list[int]],
+    model: BuildingModel, node_indices: Mapping[str, list[int]], *, include_obstacles: bool = False,
 ) -> None:
     """Require every exporter-supported canonical entity and wire instance."""
     expected: dict[str, int] = {}
@@ -386,6 +390,9 @@ def _verify_expected_rendered_nodes(
     ):
         for entity in collection:
             expected[entity.id] = 1
+    if include_obstacles:
+        for obstacle in model.obstacles:
+            expected[obstacle.id] = 1
     if model.schema_version in FITTING_SCHEMA_VERSIONS:
         for fitting in model.route_fittings:
             expected[fitting.id] = 1
@@ -455,7 +462,10 @@ def build_review_bundle(
     """
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")
-    reject_physical_routes(model, "build_review_bundle")
+    # Preserve default fail-fast refusal even when other required inputs are absent.
+    if not isinstance(glb_options, Mapping) or glb_options.get("physical_routes") is not True:
+        reject_physical_routes(model, "build_review_bundle")
+    export_args, export_options = _normalize_glb_options(glb_options)
     require_no_populated_building_assemblies(model, "build_review_bundle")
     refs = {
         "model": _reference(model_reference, "model_reference"),
@@ -472,8 +482,9 @@ def build_review_bundle(
         )
     model_sha = canonical_model_sha256(model)
     entities, serialized_entities = _canonical_entity_index(model)
-    manifest_sha = _verify_confidence_manifest(model, manifest)
-    export_args, export_options = _normalize_glb_options(glb_options)
+    manifest_sha = _verify_confidence_manifest(
+        model, manifest, physical_routes=export_args["physical_routes"],
+    )
     from oabm.exports.gltf import build_glb_bytes
 
     trusted_glb_bytes = build_glb_bytes(model, **export_args)
@@ -487,7 +498,9 @@ def build_review_bundle(
         raise ValueError("GLB canonical_model_sha256 is stale or mismatched")
 
     node_indices = _node_index(glb_document, entities)
-    _verify_expected_rendered_nodes(model, node_indices)
+    _verify_expected_rendered_nodes(
+        model, node_indices, include_obstacles=export_args["include_obstacles"],
+    )
     if glb_bytes != trusted_glb_bytes:
         raise ValueError("GLB bytes do not match the trusted canonical export and supplied display options")
     used_sources: set[tuple[str, str]] = set()

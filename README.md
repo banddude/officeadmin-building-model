@@ -149,3 +149,5 @@ See [Source-object coverage](docs/source-object-coverage.md) for an opt-in, sour
 See [the physical-route structural contract](docs/physical-route-contract-v1.7.md) for shared-joint cardinal line/quarter-arc records, exact decimal admission, typed source/context binding and explicit unsupported-consumer refusals. This is not a clearance verifier or completed routing section. Default 1.0 and legacy Route serialization remain unchanged.
 
 See [Trusted-geometry physical route generation](docs/physical-route-generation.md) for opt-in canonical line/arc candidates, live full-solid verification and explicit finite-search limits. Supplied geometry is required; this does not automate PDF intake or engineering approval.
+
+See [Physical-route 3D review preview](docs/physical-route-preview.md) for explicit canonical curved-conduit/obstacle GLB output and the source-bound viewer bundle.

@@ -59,6 +59,8 @@ from oabm.model import (
     ElectricalDevice,
     ElectricalEquipment,
     Point3,
+    Pose,
+    PhysicalRoute,
     Route,
     SUPPORT_SCHEMA_VERSIONS,
     PHYSICAL_SCHEMA_VERSIONS,
@@ -135,6 +137,7 @@ _COLOURS = {
     "slab": (0.55, 0.55, 0.55),
     "space": (0.45, 0.50, 0.55),
     "route": (0.60, 0.60, 0.62),
+    "obstacle": (0.75, 0.35, 0.18),
     # Dimension-derived fitting boxes are explicitly display envelopes, not
     # native manufacturer geometry. Their alpha is always the derived style.
     "fitting_envelope": (0.25, 0.58, 0.72),
@@ -300,6 +303,8 @@ class _DisplayOptions(NamedTuple):
     # Walls thinner than this draw at this thickness; None draws canonically.
     min_display_wall_thickness_m: float | None = None
     route_bend_radii_m: tuple[tuple[str, float], ...] = ()
+    physical_routes: bool = False
+    include_obstacles: bool = False
 
 
 def to_glb(
@@ -319,6 +324,8 @@ def to_glb(
     glazed_outline: bool = False,
     min_display_wall_thickness_m: float | None = None,
     route_bend_radii_m: Mapping[str, float] | None = None,
+    physical_routes: bool = False,
+    include_obstacles: bool = False,
     _return_payload: bool = False,
 ) -> dict[str, Any] | bytes:
     """Write ``model`` as a binary glTF 2.0 file and return a summary dict.
@@ -339,6 +346,14 @@ def to_glb(
     The keyword-only options are display-only rendering parameters, each
     defaulting off:
 
+    - ``physical_routes`` enables actual canonical line/quarter-arc tube meshes
+      with supplied outside diameter, analytic normals and flat terminal caps.
+      It does not assert live clearance. Display tessellation and float32 errors
+      are disclosed. Reference planes, caller bend-radius overrides and wires
+      attached to physical routes remain unsupported.
+    - ``include_obstacles`` emits supported canonical identity-pose Box3D
+      obstacles with selectable canonical IDs. Other constraint volumes remain
+      metadata; this option is not a complete occupied-building assertion.
     - ``route_bend_radii_m`` maps selected route IDs to explicitly supplied
       centerline bend radii in metres. Selected routes must pass the existing
       bend preflight and have a known diameter smaller than twice the radius.
@@ -426,7 +441,26 @@ def to_glb(
       ``True`` can never masquerade as a 1 metre wall.
     """
 
-    reject_physical_routes(model, "to_glb")
+    if type(physical_routes) is not bool or type(include_obstacles) is not bool:
+        raise ValueError("physical_routes and include_obstacles must be booleans")
+    physical = tuple(route for route in model.routes if isinstance(route, PhysicalRoute))
+    if not physical_routes:
+        reject_physical_routes(model, "to_glb")
+    elif physical:
+        validate_model(model)
+        if reference_planes or route_bend_radii_m is not None:
+            raise ValueError("physical route preview does not support reference planes or caller bend-radius overrides")
+        physical_ids = {route.id for route in physical}
+        if any(physical_ids.intersection(conductor.route_ids) for conductor in model.conductors):
+            raise ValueError("physical route conductor preview is unsupported; no synthetic wire geometry")
+    if include_obstacles:
+        if len(model.obstacles) > 4096:
+            raise ValueError("obstacle preview supports at most 4096 supplied boxes")
+        from oabm.model import physical_box_bounds
+        validate_model(model)
+        for obstacle in model.obstacles:
+            physical_box_bounds(obstacle.geometry)
+
     if model.schema_version in ASSEMBLY_SCHEMA_VERSIONS:
         # 1.6 digests bind generated children to their exact source hosts.
         # Revalidate at this handoff so a stale source cannot leak into a
@@ -520,6 +554,8 @@ def to_glb(
         glazed_outline=glazed_outline,
         min_display_wall_thickness_m=min_display_wall_thickness_m,
         route_bend_radii_m=tuple(sorted(normalized_radii.items())),
+        physical_routes=physical_routes,
+        include_obstacles=include_obstacles,
     )
     document, binary, summary_counts = _build_document(model, options)
     json_bytes = json.dumps(
@@ -563,7 +599,8 @@ def build_glb_bytes(model: BuildingModel, **options: Any) -> bytes:
     to_glb. It is intended for consumers that must verify an artifact against
     the canonical model and explicit display options.
     """
-    reject_physical_routes(model, "build_glb_bytes")
+    if not options.get("physical_routes", False):
+        reject_physical_routes(model, "build_glb_bytes")
     if "_return_payload" in options:
         raise TypeError("_return_payload is reserved for the exporter")
     payload = to_glb(model, Path(), _return_payload=True, **options)
@@ -983,8 +1020,18 @@ def _build_document(
     bend_radii = dict(options.route_bend_radii_m)
     curved_points = {route.id: fillet_points(route.centerline.points, bend_radii[route.id])
                      for route in model.routes if route.id in bend_radii}
+    from .physical_routes import physical_route_mesh, MAX_VERTICES
+    physical_vertices = 0
     for entity in model.routes:
-        extras = _route_extras(model, entity)
+        physical_mesh = None
+        if isinstance(entity, PhysicalRoute):
+            physical_mesh = physical_route_mesh(entity, vertex_budget=MAX_VERTICES-physical_vertices)
+            physical_vertices += len(physical_mesh["vertices"])
+            extras = _extras(entity, entity.route_type, _route_level_id(model, entity), include_canonical_id=True)
+            extras.update(physical_mesh["extras"])
+            extras["raceway"] = entity.route_type
+        else:
+            extras = _route_extras(model, entity)
         if entity.id in curved_points:
             extras['curved_preview'] = {
                 'centerline_radius_m': bend_radii[entity.id],
@@ -1005,13 +1052,33 @@ def _build_document(
             material_key = ("emphasized", "route")
         else:
             material_key = ("route", _is_derived(entity.provenance, entity.attributes))
-        add({
-            "name": entity.id,
-            "vertices": (sweep_vertices(curved_points[entity.id], entity.nominal_diameter_m/2, _CYLINDER_SIDES)
-                         if entity.id in curved_points else _route_vertices(entity)),
-            "material_key": material_key,
-            "extras": extras,
-        })
+        if physical_mesh is not None:
+            add({"name": entity.id, "vertices": physical_mesh["vertices"],
+                 "normals": physical_mesh["normals"], "indices": physical_mesh["indices"],
+                 "pose": Pose(position=physical_mesh["origin"]),
+                 "material_key": material_key, "extras": extras})
+        else:
+            add({
+                "name": entity.id,
+                "vertices": (sweep_vertices(curved_points[entity.id], entity.nominal_diameter_m/2, _CYLINDER_SIDES)
+                             if entity.id in curved_points else _route_vertices(entity)),
+                "material_key": material_key,
+                "extras": extras,
+            })
+    if options.include_obstacles:
+        for obstacle in model.obstacles:
+            extras = _extras(obstacle, "obstacle", None, include_canonical_id=True)
+            _add_name(extras, obstacle)
+            extras.update(geometry_disclosure="Supplied canonical box obstacle; display does not certify route clearance.",
+                          clearance_m=obstacle.clearance_m)
+            key = ("obstacle", _is_derived(obstacle.provenance, obstacle.attributes))
+            if obstacle.id in options.dimmed_ids:
+                key=("dimmed","obstacle");extras["display"]=_DIMMED_DISPLAY;dimmed_count+=1
+            elif obstacle.id in options.emphasized_ids:
+                key=("emphasized","obstacle");extras["display"]=_EMPHASIZED_DISPLAY;emphasized_count+=1
+            size=obstacle.geometry.size
+            add({"name":obstacle.id,"vertices":_local_box_vertices(size.x,size.y,size.z),
+                 "pose":obstacle.geometry.pose,"material_key":key,"extras":extras})
     wire_entries = _wire_entries(model, options.dimmed_ids, curved_points=curved_points)
     dimmed_wire_count = sum(
         1 for entry in wire_entries if entry["material_key"][0] == "dimmed"
@@ -1069,6 +1136,19 @@ def _build_document(
             "material": material_index[entry["material_key"]],
             "mode": entry.get("mode", 4),
         }
+        normals = entry.get("normals")
+        if normals is not None:
+            if len(normals) != len(entry["vertices"]) or any(
+                len(n) != 3 or not all(math.isfinite(v) for v in n)
+                or abs(math.sqrt(sum(v*v for v in n))-1) > 1e-6 for n in normals
+            ):
+                raise ValueError(f"{entry['name']} has invalid analytic normals")
+            byte_offset=len(buffer)
+            packed_normals=struct.pack(f"<{len(normals)*3}f", *(v for n in normals for v in _yup_vertex(n)))
+            buffer += packed_normals
+            buffer_views.append({"buffer":0,"byteOffset":byte_offset,"byteLength":len(packed_normals),"target":_TARGET_ARRAY_BUFFER})
+            accessors.append({"bufferView":len(buffer_views)-1,"componentType":_COMPONENT_FLOAT,"count":len(normals),"type":"VEC3"})
+            primitive["attributes"]["NORMAL"]=len(accessors)-1
         # New assembly meshes use the indexed output of the shared geometry
         # kernel. Older meshes remain their historical triangle soup, keeping
         # all 1.0–1.5 GLB bytes unchanged.
@@ -1249,6 +1329,10 @@ def _build_document(
         "dimmed": dimmed_count,
         "emphasized": emphasized_count,
     }
+    if options.include_obstacles:
+        counts["obstacles"] = len(model.obstacles)
+    if options.physical_routes:
+        counts["physical_routes"] = sum(isinstance(route, PhysicalRoute) for route in model.routes)
     if options.groups:
         counts["groups"] = group_counts
         counts["unmatched_group_ids"] = unmatched_group_ids

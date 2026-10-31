@@ -81,6 +81,11 @@ def _cardinal(delta, label):
 
 
 def _owned_provenance(owner: Any, *, supplied_fields: tuple[str, ...] = ()) -> None:
+    if isinstance(owner, Entity):
+        if owner.name is not None and not isinstance(owner.name, str):
+            raise ContractError("physical owner name must be a string or null")
+        if not isinstance(owner.attributes, dict):
+            raise ContractError("physical owner attributes must be a JSON object")
     reserved = {item.name for item in fields(owner)} | {"centerline", "arc_center", "sharp_vertex"}
     if reserved.intersection(getattr(owner, "attributes", {})):
         raise ContractError("physical attributes cannot shadow canonical geometry or fields")
@@ -89,6 +94,13 @@ def _owned_provenance(owner: Any, *, supplied_fields: tuple[str, ...] = ()) -> N
     ):
         raise ContractError("physical route records require typed nonempty provenance")
     for record in owner.provenance:
+        if not all(isinstance(getattr(record, name), str) for name in ("source_kind", "source_id")):
+            raise ContractError("physical provenance source identifiers must be strings")
+        if any(getattr(record, name) is not None and not isinstance(getattr(record, name), str)
+               for name in ("source_element_id", "method")):
+            raise ContractError("physical provenance optional text must be strings or null")
+        if not isinstance(record.attributes, dict):
+            raise ContractError("physical provenance attributes must be a JSON object")
         record.__post_init__()
     for name in supplied_fields:
         if not any(
@@ -150,7 +162,7 @@ class QuarterArc3D(Entity):
             (1, 0, 0), (0, 1, 0), (0, 0, 1)
         ):
             raise ContractError("quarter arc normal must be a canonical positive unit axis")
-        if self.turn not in {"positive_quarter", "negative_quarter"}:
+        if not isinstance(self.turn, str) or self.turn not in {"positive_quarter", "negative_quarter"}:
             raise ContractError("quarter arc turn must be positive_quarter or negative_quarter")
         _owned_provenance(self)
 

@@ -548,3 +548,17 @@ def test_legacy_only_serialization_does_not_add_physical_validation(monkeypatch)
     monkeypatch.setattr(model_module,"validate_model",forbidden)
     assert source.to_dict()["schema_version"]=="1.7.0"
     assert '"schema_version": "1.7.0"' in source.to_json()
+
+
+@pytest.mark.parametrize("change", [{"name":42},{"attributes":[]}])
+def test_physical_owner_metadata_has_strict_python_shape(change):
+    route=make_physical_model().routes[0]
+    for owner in (route,route.joints[0],route.segments[0],route.requirements,route.context.allowed_domain):
+        with pytest.raises(ContractError):replace(owner,**change)
+
+
+@pytest.mark.parametrize("change", [{"source_kind":True},{"source_id":True},{"method":42},{"source_element_id":42},{"attributes":[]}])
+def test_physical_provenance_has_strict_python_shape(change):
+    route=make_physical_model().routes[0]
+    record=replace(route.provenance[0],**change)
+    with pytest.raises(ContractError):replace(route,provenance=(record,))

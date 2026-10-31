@@ -194,3 +194,26 @@ def test_geometry_unspecified_disclosure_limit_is_not_success():
     assert result.status == "resource_limit"
     # Capture may independently reach a stricter declared memory cap first.
     assert result.reason in {"scope_disclosure_limit","capture_node_limit","capture_byte_limit"}
+
+
+def test_limit_receipt_has_bounded_cursor_unknown_remaining_and_no_silent_omission():
+    source,route=obstacle_source(y=1)
+    limits=replace(route.context.execution_limits,total_refinement_cells=1)
+    result=verify_physical_route(source,rebind(route,execution_limits=limits))
+    report=result.to_dict()
+    assert report["algorithm_profile"] == "physical-route-verifier-v1"
+    assert report["remaining_count"] == "unknown"
+    assert report["unfinished_cursor"]["kind"] == "geometry_scope_scan"
+    assert report["diagnostics_total"] == len(report["diagnostics"])+report["diagnostics_omitted"]
+
+
+def test_receipt_counts_omitted_completed_diagnostics_exactly():
+    from oabm.routing.physical_verify import _finish
+    from oabm.routing.physical_verify_types import WorkLedger
+    ledger=WorkLedger(1000)
+    for index in range(300):
+        ledger.record("synthetic_completed_check",(str(index),))
+    report=_finish("verified_route","test_only",ledger,{},{}).to_dict()
+    assert len(report["diagnostics"]) == 256
+    assert report["diagnostics_total"] == 300
+    assert report["diagnostics_omitted"] == 44

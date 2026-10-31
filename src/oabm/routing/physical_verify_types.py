@@ -10,7 +10,7 @@ from typing import Callable, TypeVar
 Point = tuple[Fraction, Fraction, Fraction]
 Box = tuple[tuple[Fraction, Fraction], tuple[Fraction, Fraction], tuple[Fraction, Fraction]]
 ExactFacts = tuple[tuple[str, Fraction], ...]
-PROFILE = "physical-live-verifier-v1"
+PROFILE = "physical-route-verifier-v1"
 MAX_DIAGNOSTICS = 256
 
 
@@ -90,6 +90,13 @@ class WorkLedger:
         self._diagnostics: list[Diagnostic] = []
         self.records = 0
         self._diagnostic_bytes = 0
+        self.cursor = Diagnostic("proof_start", (), ())
+
+    def set_cursor(self, stage: str, ids: tuple[str, ...] = (), *, exact: ExactFacts = ()) -> None:
+        # Fixed bounded operation bookkeeping, not a new geometric check.
+        if len(ids) > 16 or len(exact) > 16:
+            raise VerificationStop("resource_limit", "cursor_size_limit")
+        self.cursor = Diagnostic(stage, tuple(ids), tuple(exact))
 
     def debit(self, kind: str, units: int = 1) -> None:
         if type(units) is not int or units < 0:

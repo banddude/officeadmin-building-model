@@ -77,7 +77,11 @@ control limits and receive no refunds. Equivalent permutations preserve charged
 work/verdict semantics, although normalized source hashes and actual comparison
 counts may differ. Identical snapshots produce identical receipts.
 
-Kernel refinements are 32/64/128 bits, subject to declared refinement depth.
+The algorithm profile is physical-route-verifier-v1. Kernel refinements are
+32/64/128 bits, subject to declared refinement depth. The first 32-bit evaluation
+is included in its root-pair charge; later evaluations each cost one unit.
+Non-success receipts retain a bounded unfinished cursor and unknown remaining
+count, never an invented total. Diagnostics state exact total and omitted counts.
 General self refinement uses bounded depth-first state. Domain cells and primitive
 pairs are streamed, never materialized as full Cartesian products.
 

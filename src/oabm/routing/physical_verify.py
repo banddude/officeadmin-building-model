@@ -51,6 +51,7 @@ def _box(box):
 
 
 def adapt_primitives(route, ledger):
+    ledger.set_cursor("primitive_adaptation")
     ledger.debit("primitive_adaptation", len(route.segments))
     ledger.debit("joint_adaptation", len(route.joints))
     points = {j.id: tuple(Fraction(v, NANO) for v in point_ticks(j.position)) for j in route.joints}
@@ -97,12 +98,21 @@ def _finish(status, reason, ledger, authority, scope, stop=None):
         diagnostics.append(data)
         diagnostic_bytes += size
     document["diagnostics"] = diagnostics
+    total_diagnostics = (0 if ledger is None else ledger.records) + int(stop is not None)
+    document["diagnostics_total"] = total_diagnostics
+    document["diagnostics_omitted"] = total_diagnostics - len(diagnostics)
+    if status != "verified_route":
+        document["unfinished_cursor"] = (ledger.cursor.to_dict() if ledger is not None
+            else {"kind":"input_admission","ids":[],"exact":{}})
+        document["remaining_count"] = "unknown"
     text = _encode(document)
     if len(text) > REPORT_BYTES:
         # Fixed terminal fallback remains possible independently of exhausted
         # proof budget. No geometry is executed on this path.
         document = {"algorithm_profile": PROFILE, "status": "resource_limit",
-                    "reason": "report_byte_limit", "authority": authority}
+                    "reason": "report_byte_limit", "authority": authority,
+                    "remaining_count":"unknown", "diagnostics_total":total_diagnostics,
+                    "diagnostics_omitted":total_diagnostics}
         text = _encode(document)
         status, reason = "resource_limit", "report_byte_limit"
     return PhysicalRouteVerificationResult(status, reason, text)
@@ -150,6 +160,7 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
         inventory = physical_geometry_inventory(base, route.route_type)
         optional_geometry = (base.electrical_equipment, base.electrical_devices,
                              base.fitting_selections)
+        ledger.set_cursor("geometry_scope_scan")
         ledger.debit("geometry_scope_scan", sum(len(items) for items in optional_geometry))
         unspecified = []
         for items in optional_geometry:
@@ -167,6 +178,7 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
         threshold = Fraction(exact_ticks(route.requirements.clearance_m, "route clearance",
                               minimum="0", maximum="100"), NANO) + MARGIN
         for identity in identities:
+            ledger.set_cursor("source_blocker", (identity,))
             item, row = inventory[identity], coverage[identity]
             if row.decision == "outside_proof_scope":
                 ledger.debit("scope_id_retention")
@@ -188,6 +200,7 @@ def verify_physical_route(source: BuildingModel, candidate: PhysicalRoute, *,
                     kind="obstacle")
             ledger.debit("scope_id_retention")
             scope["checked_source_ids"].append(identity)
+        ledger.set_cursor("domain_adaptation")
         ledger.debit("domain_adaptation", len(route.context.allowed_domain.volumes))
         domain = tuple(_box(box) for box in route.context.allowed_domain.volumes)
         verify_domain(primitives, domain, threshold, ledger, max_depth=limits.interval_refinement_depth)

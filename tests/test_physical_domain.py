@@ -71,3 +71,12 @@ def test_actual_obstacle_collision_and_safe_flat_terminal_gap():
     assert error.value.reason == "obstacle_contact_or_overlap"
     check_box(primitive,box(F(202,100),3),F(1,100),WorkLedger(100),
               ids=("route","obstacle"),max_depth=64,kind="obstacle")
+
+
+def test_first_precision_evaluation_is_in_root_pair_charge():
+    primitive,=primitives()
+    ledger=WorkLedger(2)
+    check_box(primitive,box(3,4),F(1,100),ledger,
+        ids=("segment","box"),max_depth=0,kind="obstacle")
+    assert ledger.used == 2 # root pair + trace, no duplicate first refinement
+    assert "distance_refinement" not in dict(ledger.counters)

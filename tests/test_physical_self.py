@@ -232,3 +232,45 @@ def test_failure_witness_and_success_do_not_mutate_primitives():
     with pytest.raises(VerificationStop):
         _cover(a, b, WorkLedger(100), 20)
     assert repr((a, b)) == before
+
+
+def test_resource_limit_preserves_specific_root_pair_cursor():
+    # Three shapes + two (seam debit + record) = seven completed units.
+    ledger = WorkLedger(7)
+    with pytest.raises(WorkLimit):
+        verify_self(elbow(), ledger, max_depth=0)
+    assert ledger.cursor.kind == 'self_root_pair'
+    assert ledger.cursor.ids == ('a', 'b')
+    assert ledger.cursor.exact == ()
+
+
+def test_resource_limit_preserves_exact_pending_child_cell():
+    a = elbow()[1]
+    b = line('hole', point('.02', '.02', '-.001'), point('.02', '.02', '.001'), F(1, 1000))
+    ledger = WorkLedger(1)
+    with pytest.raises(WorkLimit):
+        _cover(a, b, ledger, 24)
+    assert ledger.cursor.kind == 'self_child_cell'
+    assert ledger.cursor.ids == ('m', 'hole')
+    facts = dict(ledger.cursor.exact)
+    assert len(facts) == 13
+    assert facts['depth'] == 1
+    # Arc t is widest in physical contribution and its lower half is first.
+    assert facts['a_0_low_parameter'] == 0
+    assert facts['a_0_high_parameter'] == F(1, 2)
+    assert facts['b_0_low_parameter'] == F(-1, 1000)
+    assert facts['b_0_high_parameter'] == F(1, 1000)
+
+
+def test_shape_and_split_limit_cursors():
+    ledger = WorkLedger(0)
+    with pytest.raises(WorkLimit):
+        verify_self(elbow(), ledger, max_depth=0)
+    assert (ledger.cursor.kind, ledger.cursor.ids) == ('self_shape', ('a',))
+    a = elbow()[1]
+    b = line('hole', point('.02', '.02', '-.001'), point('.02', '.02', '.001'), F(1, 1000))
+    ledger = WorkLedger(0)
+    with pytest.raises(WorkLimit):
+        _cover(a, b, ledger, 24)
+    assert ledger.cursor.kind == 'self_split'
+    assert dict(ledger.cursor.exact)['depth'] == 0

@@ -183,11 +183,23 @@ def _local(a, m, b):
     return None
 
 
+def _cell_cursor(ledger, stage, a, b, ca, cb, depth):
+    # Fixed 13 exact facts capture the pending product before its work debit.
+    ledger.set_cursor(stage, (a.segment_id, b.segment_id), exact=
+                      (("depth", F(depth)),) + tuple(
+                          (f"{name}_{axis}_{edge}_parameter", value)
+                          for name, cell in (("a", ca), ("b", cb))
+                          for axis, interval in enumerate(cell)
+                          for edge, value in zip(("low", "high"), interval)))
+
+
 def _cover(a, b, ledger, max_depth):
     # Root is already charged by caller. Only O(depth) pending products exist.
     stack = [(_root(a), _root(b), 0)]
     while stack:
         ca, cb, depth = stack.pop()
+        _cell_cursor(ledger, "self_child_cell" if depth else "self_root_cell",
+                     a, b, ca, cb, depth)
         if depth:
             ledger.debit("self_child_cell")
         if _outside(a, ca) or _outside(b, cb):
@@ -202,6 +214,7 @@ def _cover(a, b, ledger, max_depth):
             raise VerificationStop("numerically_unresolved", "self_refinement_depth",
                                    (a.segment_id, b.segment_id), (("depth", F(depth)),))
         # Charge BEFORE allocating children. Stable ID then parameter tie order.
+        _cell_cursor(ledger, "self_split", a, b, ca, cb, depth)
         ledger.debit("self_split")
         choice = None
         for body, p, cell in ((0, a, ca), (1, b, cb)):
@@ -232,19 +245,22 @@ def verify_self(primitives: tuple[Primitive, ...], ledger: WorkLedger, *, max_de
     if type(max_depth) is not int or not 0 <= max_depth <= 64:
         raise VerificationStop("invalid_input", "self_invalid_depth")
     for p in primitives:
+        ledger.set_cursor("self_shape", (p.segment_id,))
         ledger.debit("self_shape")
         _shape(p)
     for i in range(len(primitives)-1):
+        a, b = primitives[i], primitives[i+1]
+        ledger.set_cursor("self_adjacent_seam", (a.segment_id, b.segment_id))
         ledger.debit("self_adjacent_seam")
-        a, b = primitives[i:i+2]
         _seam(a, b)
         ledger.record("self_exact_seam_disc", (a.segment_id, b.segment_id),
                       exact=(("tube_radius_m", a.tube_radius),) + tuple(
                           (f"joint_{k}_m", x) for k, x in enumerate(a.end)))
     for i, a in enumerate(primitives):
         for j in range(i+2, len(primitives)):
-            ledger.debit("self_root_pair")
             b = primitives[j]
+            ledger.set_cursor("self_root_pair", (a.segment_id, b.segment_id))
+            ledger.debit("self_root_pair")
             ids = (a.segment_id, b.segment_id)
             if j == i+2:
                 proof = _local(a, primitives[i+1], b)

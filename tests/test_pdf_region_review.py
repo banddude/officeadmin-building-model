@@ -454,3 +454,87 @@ def test_candidate_source_lists_are_copied_and_identity_keys_not_renumbered():
     result = rr.evaluate_region_candidate(p, c)
     assert result.candidate.candidate_key == "persistent-candidate"
     assert result.candidate.identity_support_refs == ((1, "vector", "glyph"),)
+
+
+@pytest.mark.parametrize("kind", ["snapshot", "receipt", "plan"])
+def test_issued_capabilities_reject_normal_attribute_deletion(kind):
+    p, snapshot, receipt = plan()
+    capability = {"snapshot": snapshot, "receipt": receipt, "plan": p}[kind]
+    before = capability._data
+    with pytest.raises(AttributeError, match="immutable"):
+        del capability._data
+    assert capability._data is before
+    assert rr.evaluate_region_candidate(p, support()).action == "reviewed_exclusion"
+
+
+@pytest.mark.parametrize("value", [10**400, -(10**400)])
+@pytest.mark.parametrize("via_json", [False, True])
+def test_out_of_float_range_coordinates_are_typed_schema_errors(value, via_json):
+    snapshot, receipt = issued()
+    data = review(snapshot, receipt)
+    data["regions"][0]["bbox_pt"] = [value, 10, 50, 50]
+    action = (lambda: rr.review_set_from_json(json.dumps(data))) if via_json else (
+        lambda: rr.validate_region_reviews(snapshot, [receipt], data))
+    assert_error("review_schema_invalid", action)
+
+
+@pytest.mark.parametrize("value", ["\ud800", "\udfff"])
+@pytest.mark.parametrize("location", ["note", "source_id", "key"])
+@pytest.mark.parametrize("via_json", [False, True])
+def test_lone_surrogates_are_typed_schema_errors(value, location, via_json):
+    snapshot, receipt = issued()
+    data = review(snapshot, receipt)
+    if location == "note":
+        data["regions"][0]["note"] = value
+    elif location == "source_id":
+        data["source_id"] = value
+    else:
+        data["regions"][0][value] = "invalid key"
+    action = (lambda: rr.review_set_from_json(json.dumps(data))) if via_json else (
+        lambda: rr.validate_region_reviews(snapshot, [receipt], data))
+    assert_error("review_schema_invalid", action)
+
+
+def test_literal_lone_surrogate_json_input_is_typed_schema_error():
+    assert_error("review_schema_invalid", lambda: rr.review_set_from_json('"\ud800"'))
+
+
+def test_valid_non_ascii_and_supplementary_unicode_are_preserved():
+    snapshot, receipt = issued()
+    data = review(snapshot, receipt)
+    data["regions"][0]["note"] = "Café — \U0001f3e0"
+    parsed = rr.review_set_from_json(json.dumps(data))
+    p = rr.validate_region_reviews(snapshot, [receipt], parsed)
+    assert p.review_set["regions"][0]["note"] == data["regions"][0]["note"]
+
+
+@pytest.mark.parametrize("bbox", [
+    (20, 20, 30, 30), (5, 20, 30, 30), (20, 5, 30, 30),
+    (20, 20, 55, 30), (20, 20, 30, 55), (10, 20, 30, 30),
+    (50, 20, 60, 30), (10 + rr.EPSILON_PT, 20, 30, 30),
+])
+def test_complete_explicit_hint_is_retained_across_plan_boundaries(bbox):
+    snapshot, receipt = issued()
+    p = rr.validate_region_reviews(snapshot, [receipt],
+                                   review(snapshot, receipt, [region(receipt, disposition="plan")]))
+    candidate = support(bbox, explicit_hint=True)
+    result = rr.evaluate_region_candidate(p, candidate)
+    assert result.action == "unchanged" and result.reason == "explicit_hint_retained"
+    assert result.candidate is candidate
+
+
+def test_incomplete_explicit_hint_cannot_be_silently_suppressed_at_plan_boundary():
+    snapshot, receipt = issued()
+    p = rr.validate_region_reviews(snapshot, [receipt],
+                                   review(snapshot, receipt, [region(receipt, disposition="plan")]))
+    assert_error("review_adapter_support_incomplete", lambda: rr.evaluate_region_candidate(
+        p, support((5, 20, 30, 30), complete=False, explicit_hint=True)))
+
+
+@pytest.mark.parametrize("disposition", ["non_plan", "unresolved"])
+def test_explicit_hint_crossing_nonplan_boundary_is_still_a_conflict(disposition):
+    snapshot, receipt = issued()
+    p = rr.validate_region_reviews(snapshot, [receipt],
+                                   review(snapshot, receipt, [region(receipt, disposition=disposition)]))
+    assert_error("review_hint_conflict", lambda: rr.evaluate_region_candidate(
+        p, support((5, 20, 30, 30), explicit_hint=True)))

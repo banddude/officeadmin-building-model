@@ -49,7 +49,10 @@ def _freeze(value: Any, _depth: int = 0) -> Any:
     """Copy all JSON data deeply; reject coercions and non-JSON objects."""
     if _depth > 32:
         _fail(detail="JSON nesting exceeds supported depth")
-    if value is None or type(value) in (str, bool, int):
+    if type(value) is str:
+        _utf8(value)
+        return value
+    if value is None or type(value) in (bool, int):
         return value
     if type(value) is float:
         if not math.isfinite(value):
@@ -58,6 +61,8 @@ def _freeze(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, Mapping):
         if any(type(k) is not str for k in value):
             _fail(detail="mapping keys must be strings")
+        for key in value:
+            _utf8(key)
         return MappingProxyType({k: _freeze(v, _depth + 1) for k, v in value.items()})
     if type(value) in (tuple, list):
         return tuple(_freeze(v, _depth + 1) for v in value)
@@ -72,9 +77,19 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def _utf8(value: str) -> bytes:
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError:
+        _fail(detail="invalid Unicode scalar value")
+
+
 def _canonical(value: Any) -> bytes:
-    return json.dumps(_plain(value), sort_keys=True, separators=(",", ":"),
-                      ensure_ascii=False, allow_nan=False).encode("utf-8")
+    try:
+        return _utf8(json.dumps(_plain(value), sort_keys=True, separators=(",", ":"),
+                                ensure_ascii=False, allow_nan=False))
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        _fail(detail="value cannot be represented as canonical JSON")
 
 
 def _digest(value: Any) -> str:
@@ -108,9 +123,15 @@ def _integer(value: Any) -> int:
 def _numbers(value: Any, count: int) -> tuple[float, ...]:
     if type(value) not in (list, tuple) or len(value) != count:
         _fail(detail="invalid numeric tuple")
-    if any(type(v) not in (int, float) or not math.isfinite(v) for v in value):
+    if any(type(v) not in (int, float) for v in value):
         _fail(detail="coordinates must be finite numbers")
-    return tuple(float(v) for v in value)
+    try:
+        converted = tuple(float(v) for v in value)
+    except (OverflowError, ValueError):
+        _fail(detail="coordinates exceed finite numeric range")
+    if not all(math.isfinite(v) for v in converted):
+        _fail(detail="coordinates must be finite numbers")
+    return converted
 
 
 def _bbox(value: Any, *, allow_degenerate: bool = False) -> tuple[float, ...]:
@@ -214,6 +235,9 @@ class _Capability:
         object.__setattr__(self, "_data", data)
 
     def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("issued capabilities are immutable")
+
+    def __delattr__(self, name: str) -> None:
         raise AttributeError("issued capabilities are immutable")
 
     def __copy__(self):
@@ -430,7 +454,7 @@ def _parse_review_set(data: Any) -> Mapping:
 
 def review_set_from_json(text: str) -> Mapping:
     """Parse portable review records, never runtime snapshot/receipt authority."""
-    if type(text) is not str or len(text.encode("utf-8")) > MAX_JSON_BYTES:
+    if type(text) is not str or len(_utf8(text)) > MAX_JSON_BYTES:
         _fail(detail="oversized or invalid JSON input")
 
     def unique_object(pairs):
@@ -593,6 +617,12 @@ def evaluate_region_candidate(plan: ValidatedRegionPlan, candidate: CandidateSup
         raise RegionReviewError("review_hint_conflict", page=candidate.page_number, review_ids=refs)
     if not hits:
         return RegionDecision(candidate, "unchanged", "outside_review", (), (), ())
+    if candidate.explicit_hint:
+        # Plan review only scopes automatic recognition. It must not turn
+        # an explicit caller assertion into an automatic boundary exclusion.
+        if not candidate.complete:
+            _fail("review_adapter_support_incomplete", "hint support is incomplete")
+        return RegionDecision(candidate, "unchanged", "explicit_hint_retained", refs, ids, containing)
     dispositions = {r["disposition"] for r in hits}
     if not candidate.complete:
         return RegionDecision(candidate, "unresolved", "support_not_complete", refs, ids, ())

@@ -102,10 +102,14 @@ raise confidence, assign a circuit or force materialization.
 Non-plan review returns `reviewed_exclusion`; unresolved review returns
 `unresolved`. Neither result deletes an observation or changes a model.
 An explicit hint contacting non-plan or unresolved review raises
-`review_hint_conflict`, rather than silently choosing one assertion.
+`review_hint_conflict`, rather than silently choosing one assertion. A complete
+explicit hint contacting only plan regions remains unchanged even at a plan
+boundary: plan review scopes automatic recognition, not explicit caller intent.
+An incompletely supported hint contacting review cannot silently become an
+unresolved automatic candidate; it raises `review_adapter_support_incomplete`.
 
-An incomplete but safely localized conservative support bbox can only yield
-unresolved when it intersects review. Without safe localization on a reviewed
+An automatic candidate with incomplete but safely localized conservative support
+can only yield unresolved when it intersects review. Without safe localization on a reviewed
 page, evaluation rejects adapter readiness. The completeness flag is an
 adapter assertion, not machine proof. No production support adapters currently
 supply it.

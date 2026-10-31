@@ -282,3 +282,16 @@ outputs; re-encoding the catalog itself changes its raw SHA-256 pin by design.
 This contract intentionally does not claim a public manufacturer SKU fixture:
 fixtures are synthetic until source documents, exact interface/pair claims, and
 any redistributable dimensions are independently curated and cited.
+
+### Replay completion visibility
+
+The replay receipt's `fitting_completion` is derived from the freshly
+regenerated canonical model, not the base inventory or saved expected artifacts.
+It reports selected/unresolved outcome counts, sorted reason counts and
+per-outcome reasons/identities, plus selected dimension-derived-envelope versus
+metadata-only counts. Unresolved choices have no selected geometry basis.
+Metadata-only is a successful product decision without a fitting Body or mesh;
+an envelope is not manufacturer CAD, actual-OD verification or fit proof.
+Existing source-authenticity, fit, code/listing, native-CAD and engineering
+verification disclaimers remain false. These read-only summary fields do not
+change the saved manifest format, canonical schemas or generated artifact bytes.

@@ -239,3 +239,46 @@ def test_ifc_route_port_projection_uses_metric_tolerance_on_short_segment():
     overflow_end = Point3(x=1e308, y=0.0, z=0.0)
     assert not _point_on_segment(start, overflow_start, overflow_end, tolerance=1e-6)
 
+
+
+def test_two_exact_skus_of_one_fitting_type_count_each_physical_fitting_once():
+    from copy import deepcopy
+    model, intent, product = build_model()
+    second_product = replace(product, product_id="coupling-2")
+    second_fitting = replace(model.route_fittings[0], id="fitting:two",
+        pose=replace(model.route_fittings[0].pose, position=Point3(x=6.5, y=0.0, z=0.0)))
+    peer_ids = {value for binding in intent.bindings
+                for value in (binding.fitting_port_id, binding.counterpart_port_id)}
+    rename = {value: value + ":second" for value in peer_ids}
+    second_ports = tuple(replace(port, id=rename[port.id],
+        owner_id=second_fitting.id if port.owner_id == intent.fitting_id else port.owner_id,
+        pose=replace(port.pose, position=replace(port.pose.position, x=port.pose.position.x + 3.0)),
+        connected_port_ids=tuple(rename[value] for value in port.connected_port_ids))
+        for port in model.ports if port.id in peer_ids)
+    model = replace(model,
+        routes=(replace(model.routes[0], fitting_ids=(intent.fitting_id, second_fitting.id)),),
+        route_fittings=(*model.route_fittings, second_fitting),
+        ports=(*model.ports, *second_ports))
+    second_intent = replace(intent, intent_id="fitting-intent:two", fitting_id=second_fitting.id,
+        requested_product=second_product, bindings=tuple(replace(binding,
+            fitting_port_id=rename[binding.fitting_port_id],
+            counterpart_port_id=rename[binding.counterpart_port_id]) for binding in intent.bindings))
+    document = json.loads(catalog_manifest().raw)
+    entry = deepcopy(next(row for row in document["entries"] if row["product_id"] == product.product_id))
+    entry["product_id"] = entry["part_number"] = second_product.product_id
+    for pair in entry["mating_pairs"]:
+        pair["id"] += "-second"
+    document["entries"].append(entry)
+    catalog = CatalogManifest(json.dumps(document).encode())
+    rule = replace(rule_for(product, "coupling"), permitted_products=(product, second_product))
+    selected = select_route_fittings(model, intents=(second_intent, intent), catalog=catalog, rules=(rule,))
+    rows = [row for row in extract_quantities(selected).items if row.category == "fitting"]
+    assert len(rows) == 2
+    assert {(dict(row.variant)["product_id"], row.quantity, row.source_entity_ids)
+            for row in rows} == {
+        ("coupling-1", 1.0, ("fitting:one",)), ("coupling-2", 1.0, ("fitting:two",)),
+    }
+    assert len(selected.fitting_selections) == 2 and len(selected.fitting_interfaces) == 4
+    assert sum(row.quantity for row in rows) == 2.0
+    permuted = select_route_fittings(model, intents=(intent, second_intent), catalog=catalog, rules=(rule,))
+    assert extract_quantities(permuted).to_json() == extract_quantities(selected).to_json()

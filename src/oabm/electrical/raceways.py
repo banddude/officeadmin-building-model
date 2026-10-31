@@ -1,4 +1,5 @@
 """Caller-authored product/rule decisions, not code verification or sizing."""
+from oabm.model import reject_physical_routes
 from dataclasses import asdict, dataclass, replace
 import json
 from typing import Sequence
@@ -84,6 +85,7 @@ class RacewayIntent:
 
 def select_raceways(model: BuildingModel,*,intents: Sequence[RacewayIntent],
                     catalog: Sequence[RacewayCatalogEntry],rules: Sequence[RacewayRule]) -> BuildingModel:
+    reject_physical_routes(model, "select_raceways")
     if model.schema_version not in RACEWAY_SCHEMA_VERSIONS:
         raise ContractError('explicit upgrade_to_v1_2 is required for raceway selection')
     for entity in (*model.raceway_selections,*model.raceway_selection_outcomes):

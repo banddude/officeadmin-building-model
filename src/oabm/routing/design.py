@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
@@ -225,6 +226,7 @@ def propose_architectural_electrical_design(
     requires registered level/space/wall geometry before proposing anything.
     """
 
+    reject_physical_routes(model, "propose_architectural_electrical_design")
     if any(item.equipment_type == "panelboard" for item in model.electrical_equipment):
         raise PlacementError("an existing panelboard needs explicit reconciliation")
     if model.circuits:
@@ -289,6 +291,7 @@ def design_proposed_circuits(
     quantities before the new design is calculated.
     """
 
+    reject_physical_routes(model, "design_proposed_circuits")
     if source_port_id is not None and rules is None:
         raise PlacementError("explicit reviewed source requires supplied rules")
     rules = rules or CircuitDesignRules()

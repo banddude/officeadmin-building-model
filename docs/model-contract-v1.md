@@ -219,3 +219,7 @@ port are supported initially. There is no automatic fitting/port placement,
 actual-OD check, product-fit claim, CAD download, or code/listing compliance
 claim. `upgrade_to_v1_5` is explicit and adds empty fitting collections;
 default remains 1.0.0 and older serialized output remains unchanged.
+
+## Opt-in canonical physical routes (1.7)
+
+See [the physical-route structural contract](physical-route-contract-v1.7.md) for shared-joint cardinal line/quarter-arc records, exact decimal admission, typed source/context binding and explicit unsupported-consumer refusals. This is not a clearance verifier or completed routing section. Default 1.0 and legacy Route serialization remain unchanged.

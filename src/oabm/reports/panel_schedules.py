@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, fields, is_dataclass
 from typing import Any, get_args, get_origin, get_type_hints
 
 from oabm.model import (BuildingModel, ContractError, Entity, CoordinateSystem, Provenance,
+                        Route, reject_physical_routes,
                         FITTING_SCHEMA_VERSION, STRUCTURAL_SCHEMA_VERSION,
                         SUPPORTED_SCHEMA_VERSIONS, validate_model)
 from oabm.model.common import _finite, _validate_id, _validate_json_value
@@ -20,6 +21,9 @@ BINDING_ALGORITHM = "canonical-entity-order-and-scope-sets-v1"
 ENTITY_TYPES = {name: get_args(tp)[0] for name, tp in get_type_hints(BuildingModel).items()
                 if get_origin(tp) is tuple and get_args(tp) and isinstance(get_args(tp)[0], type)
                 and issubclass(get_args(tp)[0], Entity)}
+# Routes now have a tagged union in the canonical model. Keep the legacy
+# source inventory key; unsupported physical snapshots fail explicitly below.
+ENTITY_TYPES["routes"] = Route
 OPTIONAL_FACTS = ("circuit_number", "poles", "phase", "voltage_v", "load_va")
 
 
@@ -136,6 +140,13 @@ class ModelSourceContext:
         return _decode_dataclass(cls,{**header,'content_fingerprint':digest})
 
 
+def _decode_source_entity(collection, data):
+    if (collection == "routes" and isinstance(data, dict)
+            and data.get("geometry_kind") == "line_arc_v1"):
+        raise ContractError("SourceSnapshot does not support physical routes (line_arc_v1)")
+    return _decode_dataclass(ENTITY_TYPES[collection], data)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SourceSnapshot:
     """A canonical owner snapshot; qualifiers stay relative to this owner."""
@@ -147,7 +158,7 @@ class SourceSnapshot:
         if not isinstance(self.collection,str) or self.collection not in ENTITY_TYPES or not isinstance(self.entity, dict):
             raise ContractError("source snapshot requires a registered collection and object")
         _validate_json_value(self.entity)
-        decoded = _decode_dataclass(ENTITY_TYPES[self.collection], self.entity)
+        decoded = _decode_source_entity(self.collection, self.entity)
         data = _portable(decoded)
         if not _faithful_fields(self.entity,data):
             raise ContractError("source snapshot cannot roundtrip its canonical field values")
@@ -171,7 +182,7 @@ class SourceSnapshot:
 
     @classmethod
     def from_source_data(cls,collection,data):
-        normalized=_scopes(_portable(_decode_dataclass(ENTITY_TYPES[collection],data)))
+        normalized=_scopes(_portable(_decode_source_entity(collection,data)))
         digest=hashlib.sha256(_json({'collection':collection,'entity':normalized}).encode()).hexdigest()
         return cls(collection=collection,entity=normalized,content_fingerprint=digest)
 
@@ -384,6 +395,7 @@ def _source_document(model):
 
 def generate_panel_schedule_report(model: BuildingModel) -> PanelScheduleReport:
     """No source mutation, source-owner guessing or engineering calculations."""
+    reject_physical_routes(model, "generate_panel_schedule_report")
     document=_source_document(model)
     fingerprint=hashlib.sha256(_json(document).encode()).hexdigest()
     sources={entity['id']:SourceSnapshot.from_source_data(collection,entity)

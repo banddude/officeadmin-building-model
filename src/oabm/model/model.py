@@ -12,10 +12,14 @@ from .common import (
     PHYSICAL_SCHEMA_VERSIONS, RACEWAY_SCHEMA_VERSIONS, SUPPORTED_SCHEMA_VERSIONS,
     SUPPORT_SCHEMA_VERSIONS, STRUCTURAL_SCHEMA_VERSION, STRUCTURAL_SCHEMA_VERSIONS,
     FITTING_SCHEMA_VERSION, FITTING_SCHEMA_VERSIONS, ASSEMBLY_SCHEMA_VERSION,
-    ASSEMBLY_SCHEMA_VERSIONS,
+    ASSEMBLY_SCHEMA_VERSIONS, PHYSICAL_ROUTE_SCHEMA_VERSION,
     ContractError, CoordinateSystem, Entity, Point3, Provenance,
     UnsupportedSchemaVersion, _distance, _finite, _validate_id, _validate_json_value,
 )
+from .physical_routes import (PhysicalRoute, PhysicalRouteJoint, PhysicalRouteRequirements,
+    LineSegment3D, QuarterArc3D, validate_physical_route_ports, validate_physical_json_numbers)
+from .physical_route_context import (AllowedPhysicalDomain, PhysicalRoutingContext,
+    PhysicalGeometryCoverage, PhysicalRoutingObjective, validate_request_binding)
 from .physical import CatalogProduct, ElectricalBox, BoxSelectionOutcome, box_contains_point
 from .raceway import RacewaySelection, RacewaySelectionOutcome, wiring_method_for_route_type
 from .structural import StructuralMember
@@ -59,7 +63,7 @@ class BuildingModel:
     ports: tuple[Port, ...] = ()
     obstacles: tuple[Obstacle, ...] = ()
     route_constraints: tuple[RouteConstraint, ...] = ()
-    routes: tuple[Route, ...] = ()
+    routes: tuple[Route | PhysicalRoute, ...] = ()
     route_fittings: tuple[RouteFitting, ...] = ()
     circuits: tuple[Circuit, ...] = ()
     conductors: tuple[Conductor, ...] = ()
@@ -98,6 +102,10 @@ class BuildingModel:
             raise ContractError("route-fitting selections require explicit schema_version 1.5.0")
         if self.schema_version not in ASSEMBLY_SCHEMA_VERSIONS and any(getattr(self, name) for name in _ASSEMBLY_FIELDS):
             raise ContractError("building assemblies require explicit schema_version 1.6.0")
+        if not isinstance(self.routes, tuple) or any(not isinstance(route, (Route, PhysicalRoute)) for route in self.routes):
+            raise ContractError("routes must be a typed tuple")
+        if any(isinstance(route, PhysicalRoute) for route in self.routes) and self.schema_version != PHYSICAL_ROUTE_SCHEMA_VERSION:
+            raise ContractError("physical routes require explicit schema_version 1.7.0")
         fitting_types = {
             "fitting_selections": FittingSelection,
             "fitting_interfaces": FittingInterface,
@@ -119,6 +127,11 @@ class BuildingModel:
         validate_model(self)
 
     def to_dict(self) -> dict[str, Any]:
+        # Physical records contain mutable metadata despite frozen dataclasses.
+        # Refuse invalid physical output before serialization or any file write;
+        # leave every legacy-only serializer behavior unchanged.
+        if any(isinstance(route, PhysicalRoute) for route in self.routes):
+            validate_model(self)
         return _encode(self)
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -169,6 +182,10 @@ class BuildingModel:
             return document
 
         try:
+            from .physical_routes import _physical_json_float
+            exact_document = json.loads(payload, object_pairs_hook=unique_pairs, parse_float=_physical_json_float)
+            if isinstance(exact_document, dict) and exact_document.get("schema_version") == PHYSICAL_ROUTE_SCHEMA_VERSION:
+                validate_physical_json_numbers(exact_document)
             document = json.loads(payload, object_pairs_hook=unique_pairs)
         except json.JSONDecodeError as exc:
             raise ContractError(f"invalid JSON: {exc}") from exc
@@ -220,6 +237,11 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Any, ...], ...]:
 
 def validate_model(model: BuildingModel) -> None:
     all_entities = [entity for collection in _entity_collections(model) for entity in collection]
+    nested_owners = []
+    for route in model.routes:
+        if isinstance(route, PhysicalRoute):
+            nested_owners.extend((*route.joints, *route.segments, route.requirements, route.context.allowed_domain))
+    all_entities.extend(nested_owners)
     by_id: dict[str, Entity] = {}
     for entity in all_entities:
         if entity.id == model.model_id:
@@ -241,7 +263,8 @@ def validate_model(model: BuildingModel) -> None:
                 return False
         return True
 
-    for owner in (model, *all_entities):
+    coverage_owners = tuple(row for route in model.routes if isinstance(route, PhysicalRoute) for row in route.context.coverage)
+    for owner in (model, *all_entities, *coverage_owners):
         for record in owner.provenance:
             for path in record.scope_paths or ():
                 if (owner is model and path.split(".", 1)[0] in _FITTING_FIELDS and
@@ -255,7 +278,7 @@ def validate_model(model: BuildingModel) -> None:
                         f"model provenance scope path {path!r} requires schema_version 1.6.0"
                     )
                 if not scope_exists(owner, path):
-                    owner_id = model.model_id if owner is model else owner.id
+                    owner_id = model.model_id if owner is model else getattr(owner, "id", "coverage")
                     raise ContractError(
                         f"{owner_id}.provenance scope path {path!r} does not name a field"
                     )
@@ -271,6 +294,14 @@ def validate_model(model: BuildingModel) -> None:
         if ref is not None and ref not in mapping:
             raise ContractError(f"{label} references missing id {ref!r}")
 
+    physical_ids = {r.id for r in model.routes if isinstance(r, PhysicalRoute)}
+    for item in (*model.route_fittings, *model.raceway_selections, *model.raceway_selection_outcomes,
+                 *model.fitting_selections, *model.fitting_selection_outcomes):
+        if item.route_id in physical_ids:
+            raise ContractError("legacy fitting/selection references to physical routes are unsupported")
+    for item in (*model.support_assemblies, *model.support_selection_outcomes):
+        if physical_ids.intersection(item.supported_object_ids):
+            raise ContractError("legacy support references to physical routes are unsupported")
     selections = {s.id: s for s in model.raceway_selections}
     selected_routes: set[str] = set()
     for selection in model.raceway_selections:
@@ -449,7 +480,8 @@ def validate_model(model: BuildingModel) -> None:
         require(port.owner_id, by_id, f"{port.id}.owner_id")
         if isinstance(by_id.get(port.owner_id),
                       (SupportAssembly, SupportComponent, SupportInterface, SupportSelectionOutcome,
-                       BuildingAssembly, AssemblyComponent)):
+                       BuildingAssembly, AssemblyComponent, PhysicalRouteJoint,
+                       LineSegment3D, QuarterArc3D, PhysicalRouteRequirements, AllowedPhysicalDomain)):
             raise ContractError("non-electrical support/assembly records cannot own electrical ports")
         if port.owner_id in {outcome.id for outcome in (*model.box_selection_outcomes, *model.raceway_selection_outcomes, *model.raceway_selections)}:
             raise ContractError(f"{port.id} cannot be owned by a nonphysical selection outcome")
@@ -473,6 +505,10 @@ def validate_model(model: BuildingModel) -> None:
     for route in model.routes:
         require(route.start_port_id, ports, f"{route.id}.start_port_id")
         require(route.end_port_id, ports, f"{route.id}.end_port_id")
+        if isinstance(route, PhysicalRoute):
+            route.__post_init__()
+            validate_physical_route_ports(route, ports, model.coordinate_system.frame_id)
+            continue
         start = ports[route.start_port_id].pose.position
         end = ports[route.end_port_id].pose.position
         if _distance(route.centerline.points[0], start) > 1e-6:
@@ -1200,6 +1236,8 @@ def _encode(value: Any) -> Any:
 def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
     """Explicit, lossless opt-in to the physical-object contract; never downgrade."""
     from dataclasses import replace
+    if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.6")
     if model.schema_version in RACEWAY_SCHEMA_VERSIONS:
@@ -1210,6 +1248,8 @@ def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in; preserve prior physical box inventory."""
     from dataclasses import replace
+    if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_2 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_2 cannot downgrade version 1.6")
     if model.schema_version == SUPPORT_SCHEMA_VERSION:
@@ -1220,6 +1260,8 @@ def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_3(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to shared supports; preserve previous inventory."""
     from dataclasses import replace
+    if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_3 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_3 cannot downgrade version 1.6")
     return replace(model, schema_version=SUPPORT_SCHEMA_VERSION)
@@ -1228,6 +1270,8 @@ def upgrade_to_v1_3(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_4(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to structural members; preserve prior inventory."""
     from dataclasses import replace
+    if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_4 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_4 cannot downgrade version 1.6")
     return replace(model, schema_version=STRUCTURAL_SCHEMA_VERSION)
@@ -1236,6 +1280,8 @@ def upgrade_to_v1_4(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_5(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to exact-product route-fitting decisions."""
     from dataclasses import replace
+    if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_5 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_5 cannot downgrade version 1.6")
     return replace(model, schema_version=FITTING_SCHEMA_VERSION)
@@ -1249,7 +1295,15 @@ def upgrade_to_v1_6(model: BuildingModel) -> BuildingModel:
     current public consumers are not yet safe for models using its assemblies.
     """
     from dataclasses import replace
+    if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_6 cannot downgrade version 1.7")
     return replace(model, schema_version=ASSEMBLY_SCHEMA_VERSION)
+
+
+def upgrade_to_v1_7(model: BuildingModel) -> BuildingModel:
+    """Explicit opt-in preserving all old routes without inventing physical facts."""
+    from dataclasses import replace
+    return replace(model, schema_version=PHYSICAL_ROUTE_SCHEMA_VERSION)
 
 
 T = TypeVar("T")
@@ -1266,8 +1320,9 @@ def _decode_dataclass(cls: type[T], data: Mapping[str, Any]) -> T:
     kwargs: dict[str, Any] = {}
     for item in fields(cls):
         if not item.init:
-            if item.name == "kind" and item.name not in data:
-                raise ContractError(f"{cls.__name__} is missing required discriminator 'kind'")
+            strict_tags = (PhysicalRoute, LineSegment3D, QuarterArc3D, PhysicalRouteRequirements, PhysicalRoutingContext, PhysicalRoutingObjective)
+            if (item.name == "kind" or cls in strict_tags) and item.name not in data:
+                raise ContractError(f"{cls.__name__} is missing required discriminator {item.name!r}")
             if item.name in data and data[item.name] != item.default:
                 raise ContractError(
                     f"{cls.__name__}.{item.name} must equal {item.default!r}"

@@ -1,6 +1,7 @@
 """Read-only comparison of two completed, same-source saved-review deliveries."""
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import argparse
 from collections import Counter
 from dataclasses import dataclass
@@ -144,6 +145,7 @@ def _load(directory):
         expected = "not_requested" if stage == "ifc" and "ifc" not in kinds else "passed"
         _require(report["stages"][stage]["status"] == expected, "incomplete runner stage")
     model = BuildingModel.from_json(payloads[FILES["canonical_model"]].decode())
+    reject_physical_routes(model, "compare_saved_reviews")
     model_sha = canonical_model_sha256(model)
     _require(model_sha == report["canonical_output_sha256"] == _sha(payloads[FILES["canonical_model"]]),
              "canonical snapshot binding mismatch")

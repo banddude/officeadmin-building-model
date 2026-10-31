@@ -1,6 +1,7 @@
 """Saved review -> canonical inventory and review/export artifacts, without delivery I/O."""
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import hashlib
 import json
 from collections import Counter
@@ -92,6 +93,7 @@ def deliver_reviewed_electrical(
     No dispatch, inference, file writes, upload, routing or code calculation.
     Coverage has no accepted integration contract here yet; explicitly pass None.
     """
+    reject_physical_routes(model, "deliver_reviewed_electrical")
     report={"version":VERSION,"delivery_id":delivery_id if isinstance(delivery_id,str) else None,"delivery_ready":False,
         "stages":{s:{"status":"not_run"} for s in STAGES},
         "source_coverage":{"status":"unavailable","reason":"source_coverage_contract_not_integrated"},

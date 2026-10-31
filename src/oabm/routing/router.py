@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import dataclasses
 import hashlib
 import heapq
@@ -384,6 +385,7 @@ def route_between_ports(
     does not authorize penetrations or make route-domain source IDs permissions.
     """
 
+    reject_physical_routes(model, "route_between_ports")
     if not route_type:
         raise RoutingError("route_type is required")
     options = options or RoutingOptions()

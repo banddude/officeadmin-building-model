@@ -4,6 +4,7 @@ Joins existing geometry and QA APIs. No radius, size, clearance or installation
 policy is inferred, and curved swept clearance is not asserted.
 """
 from __future__ import annotations
+from oabm.model import reject_physical_routes
 from dataclasses import asdict, dataclass, replace
 import math
 from oabm.model import BuildingModel, Route, RouteFitting, validate_model
@@ -42,6 +43,7 @@ def route_checked_assembly(model, start_port_id, end_port_id, route_type, *, ass
     chosen route/fittings. Bend admission is scoped to that new route; the caller
     still connects circuit intent and validates whole-job QA.
     """
+    reject_physical_routes(model, "route_checked_assembly")
     validate_model(model)
     for label,value in (('nominal diameter',nominal_diameter_m),('centerline radius',centerline_radius_m)):
         if type(value) not in (float,int) or not math.isfinite(value) or value<=0:

@@ -7,6 +7,7 @@ immutable derived report suitable for estimating adapters.
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import json
 import math
 from dataclasses import asdict, dataclass, fields, replace
@@ -204,6 +205,7 @@ def extract_quantities(
 
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")
+    reject_physical_routes(model, "extract_quantities")
 
     # Revalidate at the handoff boundary.  This catches missing references even
     # when callers construct or deserialize models outside this workstream.
@@ -959,7 +961,9 @@ def _canonical_entity_collections(model: BuildingModel) -> dict[str, tuple[Entit
     for field in fields(model):
         hint = hints[field.name]
         arguments = get_args(hint)
-        if get_origin(hint) is tuple and arguments and isinstance(arguments[0], type) and issubclass(arguments[0], Entity):
+        if get_origin(hint) is tuple and arguments and (
+            field.name == "routes" or (isinstance(arguments[0], type) and issubclass(arguments[0], Entity))
+        ):
             result[field.name] = getattr(model, field.name)
     unknown = set(result) - _CLASSIFIED_COLLECTIONS
     if unknown:

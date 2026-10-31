@@ -9,10 +9,11 @@ never mutates the model, never invents routes, and never decides a fix.
 
 from __future__ import annotations
 
+from oabm.model import reject_physical_routes
 import math
 from dataclasses import dataclass
 
-from oabm.model import BuildingModel, Point3, Route
+from oabm.model import BuildingModel, ContractError, PhysicalRoute, Point3, Route
 
 #: Two centerline coordinates this close together sit on the same line, and
 #: two spans whose intersection is at most this long only touch, not share.
@@ -169,6 +170,8 @@ def member_coverage_intervals(
     where its own coverage of a shared run starts and stops.
     """
 
+    if isinstance(route, PhysicalRoute):
+        raise ContractError("member_coverage_intervals does not support physical routes (line_arc_v1)")
     coords = (
         (start.x, end.x),
         (start.y, end.y),
@@ -233,6 +236,7 @@ def find_overlapping_route_runs(
     never mutated.
     """
 
+    reject_physical_routes(model, "find_overlapping_route_runs")
     if tolerance_m < 0.0:
         raise ValueError("tolerance_m must be non-negative")
     eligible_routes = tuple(route for route in model.routes if route.id not in excluded_route_ids)

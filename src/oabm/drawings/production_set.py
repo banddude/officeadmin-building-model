@@ -5,6 +5,7 @@ create design facts, a second model, or engineering approval. Single-line and
 multiple-detail slots are optional explicit inputs.
 """
 from __future__ import annotations
+from oabm.model import reject_physical_routes
 import argparse
 import copy
 from dataclasses import asdict
@@ -158,6 +159,7 @@ def create_production_sheet_set(request_path, *, output_directory, map_client=No
     resolved=resolve_company_sheet_set(paths['profile'],paths['job'])
     if resolved.profile_json!=inputs['profile'] or resolved.job_json!=inputs['job']:raise ValueError('profile/job changed during snapshot')
     model=BuildingModel.from_json(inputs['model'])
+    reject_physical_routes(model, "create_production_sheet_set")
     cover=validate_cover(_decode(inputs['cover'])) if 'cover' in inputs else None
     site=_decode(inputs['site']) if 'site' in inputs else None
     detail_request=_decode(inputs['details']) if 'details' in inputs else None

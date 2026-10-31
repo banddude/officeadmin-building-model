@@ -524,3 +524,27 @@ def test_decimal_exponent_admission_precedes_any_fraction_expansion(monkeypatch)
     assert physical.exact_ticks(Decimal("0e-999999999"),"zero")==0
     assert physical.exact_ticks(Decimal("0.3000000000000000000000"),"trailing zeros")==300000000
     assert physical.exact_ticks(Decimal("2E+3"),"bounded maximum",minimum="0",maximum="2000")==2000000000000
+
+
+def test_physical_serializers_refuse_invalid_metadata_before_any_file_write(tmp_path):
+    model=make_physical_model()
+    model.routes[0].joints[0].attributes["centerline"]={"points":[]}
+    with pytest.raises(ContractError,match="shadow"):model.to_dict()
+    with pytest.raises(ContractError,match="shadow"):model.to_json()
+    absent=tmp_path/"absent.json"
+    with pytest.raises(ContractError,match="shadow"):model.dump(absent)
+    assert not absent.exists()
+    existing=tmp_path/"existing.json"
+    existing.write_text("retained sentinel")
+    with pytest.raises(ContractError,match="shadow"):model.dump(existing)
+    assert existing.read_text()=="retained sentinel"
+
+
+def test_legacy_only_serialization_does_not_add_physical_validation(monkeypatch):
+    import oabm.model.model as model_module
+    source=make_physical_source()
+    def forbidden(_):
+        raise AssertionError("legacy-only serialization must not add model revalidation")
+    monkeypatch.setattr(model_module,"validate_model",forbidden)
+    assert source.to_dict()["schema_version"]=="1.7.0"
+    assert '"schema_version": "1.7.0"' in source.to_json()

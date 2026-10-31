@@ -92,6 +92,10 @@ In-memory dataclasses and `from_dict` instead interpret the deterministic
 canonical rendering of the supplied number. They cannot recover a lexeme a
 caller already rounded. Booleans and nonfinite values are not admitted.
 
+Physical-containing model serialization revalidates all physical owners before
+encoding or writing, including mutable metadata. Invalid shadow geometry or
+stale request metadata cannot be dumped as canonical output.
+
 Validation checks that a supplied number can serialize and reparse with
 identical ticks. There is no snapping. Generated-output producers must retain
 this closure; a future search must report unresolved numerics or continue

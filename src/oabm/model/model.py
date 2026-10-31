@@ -127,6 +127,11 @@ class BuildingModel:
         validate_model(self)
 
     def to_dict(self) -> dict[str, Any]:
+        # Physical records contain mutable metadata despite frozen dataclasses.
+        # Refuse invalid physical output before serialization or any file write;
+        # leave every legacy-only serializer behavior unchanged.
+        if any(isinstance(route, PhysicalRoute) for route in self.routes):
+            validate_model(self)
         return _encode(self)
 
     def to_json(self, *, indent: int | None = 2) -> str:

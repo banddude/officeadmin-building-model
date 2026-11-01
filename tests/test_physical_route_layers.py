@@ -263,3 +263,40 @@ def test_nonstandard_legacy_route_id_hides_wire_by_retained_ownership(monkeypatc
     monkeypatch.setattr(gltf,'_group_member_indices',lambda member,nodes,**kwargs: original(member,nodes))
     with pytest.raises(ValueError,match='derived conductor geometry must follow'):
         delivery(model,config,preset='preset:hide')
+
+
+def test_configuration_capture_rejects_oversized_name_before_serialization(monkeypatch):
+    config=config_fixture()
+    config=replace(config,layers=(replace(config.layers[0],name='x'*3_000_000),config.layers[1]))
+    def forbidden(*args,**kwargs):
+        pytest.fail('configuration serialized before bounded admission')
+    monkeypatch.setattr(LayerSelectionConfig,'to_json',forbidden)
+    with pytest.raises(ContractError,match='capture_byte_limit'):
+        delivery(config=config)
+
+
+@pytest.mark.parametrize('field', ['isolate','level_ids'])
+def test_infinite_request_iterables_are_counted_before_deduplication(field):
+    from itertools import repeat
+    from oabm.routing.physical_capture import MAX_NODES
+    consumed=0
+    def repeated():
+        nonlocal consumed
+        for item in repeat('layer:route'):
+            consumed+=1
+            yield item
+    with pytest.raises(ContractError,match='request.*(request_item_limit|capture_node_limit)'):
+        delivery(**{field:repeated()})
+    assert consumed<=MAX_NODES+1
+
+
+@pytest.mark.parametrize('field', ['isolate','level_ids'])
+def test_request_byte_budget_rejects_oversized_reference(field):
+    with pytest.raises(ContractError,match='request.*capture_byte_limit'):
+        delivery(**{field:iter(['x'*3_000_000])})
+
+
+def test_normal_request_generators_preserve_sorted_unique_semantics():
+    expected=delivery(isolate=('layer:route',))
+    assert delivery(isolate=(item for item in ('layer:route','layer:route')),
+                    level_ids=iter(()))==expected

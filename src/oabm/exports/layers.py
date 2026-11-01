@@ -149,6 +149,42 @@ class LayerGlbDelivery:
         return json.loads(self.manifest_json)
 
 
+
+def _bounded_layer_request(preset, unassigned, isolate, level_ids):
+    """Consume finite string iterables with the existing physical resource profile.
+
+    Charge every occurrence before deduplicating so repeated references and
+    infinite generators cannot bypass the item or cumulative byte budget.
+    """
+    from oabm.routing.physical_capture import Capture, SOURCE_BYTES, MAX_NODES
+    from oabm.routing.physical_verify_types import VerificationStop
+
+    budget = Capture(SOURCE_BYTES)
+    count = 0
+    try:
+        for label, value in (("preset", preset), ("unassigned", unassigned)):
+            if type(value) is not str:
+                raise ContractError(f"layer GLB {label} must be a string")
+            budget.copy(value)
+        admitted = []
+        for label, values in (("isolate", isolate), ("level_ids", level_ids)):
+            if isinstance(values, (str, bytes)):
+                raise ContractError(f"layer GLB {label} must be an iterable of strings")
+            members = set()
+            for value in values:
+                count += 1
+                if count > MAX_NODES:
+                    raise VerificationStop("resource_limit", "request_item_limit")
+                if type(value) is not str:
+                    raise ContractError(f"layer GLB {label} entries must be strings")
+                members.add(budget.copy(value))
+            admitted.append(tuple(sorted(members)))
+        return tuple(admitted)
+    except VerificationStop as exc:
+        raise ContractError(f"layer GLB request {exc.status}: {exc.reason}") from exc
+    except TypeError as exc:
+        raise ContractError("layer GLB isolate/level_ids must be iterables of strings") from exc
+
 def build_layer_glb(
     model: BuildingModel,
     config: LayerSelectionConfig,
@@ -173,18 +209,22 @@ def build_layer_glb(
 
     if type(model) is not BuildingModel:
         raise ContractError("layer GLB requires a canonical BuildingModel")
+    if type(config) is not LayerSelectionConfig:
+        raise ContractError("layer GLB requires a canonical LayerSelectionConfig")
     try:
         # Admit mutable metadata before recursive canonical serialization.
         detached = capture(model, byte_limit=SOURCE_BYTES)
+        detached_config = capture(config, byte_limit=SOURCE_BYTES)
         snapshot = BuildingModel.from_json(detached.to_json(indent=None))
         bounded_source_json(snapshot.to_json(indent=None))
+        config_text = detached_config.to_json(indent=None)
+        bounded_source_json(config_text)
+        config = LayerSelectionConfig.from_json(config_text)
     except VerificationStop as exc:
         raise ContractError(f"layer GLB {exc.status}: {exc.reason}") from exc
     except (OverflowError, TypeError, AttributeError, KeyError) as exc:
-        raise ContractError("malformed layer GLB source") from exc
-    config = LayerSelectionConfig.from_json(config.to_json(indent=None))
-    isolate = tuple(sorted(set(isolate)))
-    level_ids = tuple(sorted(set(level_ids)))
+        raise ContractError("malformed layer GLB source/configuration") from exc
+    isolate, level_ids = _bounded_layer_request(preset, unassigned, isolate, level_ids)
     resolution = resolve_preset(config, snapshot, preset=preset, unassigned=unassigned,
                                 isolate=isolate, level_ids=level_ids,
                                 include_obstacles=include_obstacles)

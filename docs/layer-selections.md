@@ -162,9 +162,20 @@ result = build_layer_glb(
 (output / "model.glb").write_bytes(result.glb_bytes)
 ```
 
-The entrypoint first uses the existing bounded physical capture (32 MiB source
-budget, 250,000 captured nodes, depth 64) before model serialization; cyclic,
-oversized or excessively deep mutable metadata refuses with an explicit diagnostic.
+The entrypoint first uses the existing bounded physical capture independently for
+the model and configuration (32 MiB conservative capture budget each, 250,000
+captured nodes, depth 64), before either is serialized. Cyclic, oversized or
+excessively deep mutable metadata and oversized configuration labels refuse with
+an explicit diagnostic. The 32 MiB conservative capture charge can refuse a
+configuration whose final JSON would be smaller.
+
+The saved request has a separate 32 MiB conservative capture budget and 250,000
+scalar-node budget shared by `preset`, `unassigned`, and all `isolate`/`level_ids`
+entries. At most 250,000 iterable entries are consumed, subject to the shared
+node budget (the two scalar arguments also consume nodes). Every occurrence is
+charged before deduplication, so infinite repeating iterables terminate with an
+explicit resource-limit diagnostic. Ordinary finite generators remain supported;
+references must be strings, and bare strings are not accepted as collections.
 It then detaches and validates the model and configuration, resolves the
 saved request immediately before export, and verifies complete, disjoint drawable
 coverage with every canonical ID emitted exactly once and no unmatched group

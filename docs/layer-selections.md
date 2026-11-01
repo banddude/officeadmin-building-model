@@ -164,3 +164,48 @@ The example also proves unknown-level and deliberately unassigned disclosure.
 The earlier `examples/physical_route_layers.py` remains the curved-route and
 obstacle demonstration. No OfficeAdmin expansion, automatic classification,
 private project inputs or issue closure is implied by these synthetic examples.
+
+## Automatic classification from existing canonical facts
+
+`oabm.exports.classify_model_layers(model, include_obstacles=False)` generates
+portable layers automatically, without caller-written member lists. Its detached
+`LayerClassification` retains `source_model_json`, `config_json` and a source-hash
+bound `manifest_json`; `.configuration` decodes the portable configuration.
+The generated `preset:classified-all` is an all-visible reset; callers can add
+saved hide/ghost presets over its stable generated layer IDs.
+
+Trade and category follow canonical collection/kind facts, including actual
+`tbar_main_runner`/`tbar_cross_runner` components in `ceiling_grid`. Explicit
+`ElectricalDevice.system` and `ElectricalEquipment.system` values are retained
+verbatim. Route/fitting categories are raceway, and shared supports are independent
+of the systems they support. Construction-status layers consume only the existing
+validated `attributes.pdf_electrical.scope_status` metadata on devices/equipment,
+using the scope ledger's shared structural evidence validator. There is no
+unmarked-object fallback. Status labels retain the exact source meanings (`new`,
+`existing_to_remain`, `removed`, `relocated`); circuit electrical phase is never
+interpreted as construction status.
+
+Every supported universe ID receives trade/system/status memberships, including
+explicit `unclassified` and `unresolved` buckets. The manifest lists each object's
+source basis, canonical level and missing/contradictory facts. These unknown
+buckets are not inferred systems or assertions that unmodeled site work, low
+voltage, security, fire alarm or construction status exists. Names, prose,
+nearest-object geometry and endpoint systems do not supply missing facts. The
+normal ownership resolver can expand host/assembly membership, so category layers
+can overlap; per-object physical quantities remain unchanged.
+
+```sh
+PYTHONPATH=src python examples/classified_layer_selections.py /tmp/fresh-classified-layers
+```
+
+This independent synthetic example supplies explicit system/status facts for two
+devices, keeps an unknown device, saves/reloads two presets, and exports reset,
+review, per-level and ceiling-grid-isolate GLBs with saved request manifests.
+Automatic membership in this bounded taxonomy does not establish broad plan
+recognition or verified OfficeAdmin controls, and does not close #237.
+
+Native viewer probe: Blender 5.2.2 LTS/Bonsai 0.8.5 imported the synthetic isolate
+GLB and displayed its hidden room geometry. That installed import path does not
+honor the saved `KHR_node_visibility` state. No manual native-object hiding is
+counted as preset consumption. The existing offline renderer is not an interactive
+viewer harness; verified live saved-preset and OA controls remain outstanding.

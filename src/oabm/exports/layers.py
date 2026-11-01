@@ -21,16 +21,20 @@ silently advertising the behaviour as working.
 """
 from __future__ import annotations
 
-from oabm.model import reject_physical_routes
+from collections import Counter
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+import hashlib
+import json
+import struct
+from typing import Any, Iterable
 
-from oabm.model import PresetResolution
+from oabm.model import (
+    BuildingModel, LayerSelectionConfig, PresetResolution, reject_physical_routes, resolve_preset,
+)
+from oabm.model.layers import _universe
+from oabm.assembly_compat import require_no_populated_building_assemblies
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from oabm.model import BuildingModel
-
-__all__ = ["LayerGlbPlan", "layer_glb_plan"]
+__all__ = ["LayerGlbPlan", "layer_glb_plan", "LayerGlbDelivery", "build_layer_glb"]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -54,11 +58,25 @@ class LayerGlbPlan:
 def layer_glb_plan(
     model: "BuildingModel",
     resolution: PresetResolution,
+    *,
+    physical_routes: bool = False,
+    include_obstacles: bool = False,
 ) -> LayerGlbPlan:
-    """Build the GLB export inputs for one resolved preset."""
+    """Build GLB inputs; physical/obstacle opt-ins require complete coverage.
 
-    reject_physical_routes(model, "layer_glb_plan")
+    This lower-level adapter cannot prove that a resolution came from a given
+    configuration or request. Prefer build_layer_glb for source-bound delivery.
+    """
+
+    if type(physical_routes) is not bool or type(include_obstacles) is not bool:
+        raise ValueError("physical_routes and include_obstacles must be booleans")
+    if not physical_routes:
+        reject_physical_routes(model, "layer_glb_plan")
+    if physical_routes or include_obstacles:
+        _validate_partition(model, resolution, include_obstacles=include_obstacles)
     ghost_capable = _ghost_capable_ids(model)
+    if include_obstacles:
+        ghost_capable.update(obstacle.id for obstacle in model.obstacles)
     tag = resolution.preset_id
     groups: dict[str, frozenset[str]] = {}
     if resolution.visible_ids:
@@ -99,3 +117,115 @@ def _ghost_capable_ids(model: "BuildingModel") -> set[str]:
     for route in model.routes:
         capable.add(route.id)
     return capable
+
+
+def _validate_partition(
+    model: BuildingModel, resolution: PresetResolution, *, include_obstacles: bool,
+) -> None:
+    require_no_populated_building_assemblies(model, "physical layer GLB")
+    if model.support_assemblies or model.support_components or model.support_interfaces:
+        raise ValueError("physical layer GLB does not support shared support hierarchy regrouping")
+    universe = set(_universe(model, include_obstacles=include_obstacles))
+    states = (resolution.visible_ids, resolution.hidden_ids, resolution.ghosted_ids)
+    flattened = [item for state in states for item in state]
+    if len(flattened) != len(set(flattened)) or set(flattened) != universe:
+        raise ValueError("layer resolution must be a complete disjoint partition of the drawable universe")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LayerGlbDelivery:
+    """Detached source, configuration, selection manifest and exact GLB bytes.
+
+    JSON strings and bytes retain no mutable caller state. Hidden geometry is
+    retained in the GLB, and remains part of the source model and its quantities.
+    """
+
+    source_model_json: str
+    config_json: str
+    manifest_json: str
+    glb_bytes: bytes
+
+    def to_dict(self) -> dict[str, Any]:
+        return json.loads(self.manifest_json)
+
+
+def build_layer_glb(
+    model: BuildingModel,
+    config: LayerSelectionConfig,
+    *,
+    preset: str,
+    unassigned: str,
+    isolate: Iterable[str] = (),
+    level_ids: Iterable[str] = (),
+    physical_routes: bool = False,
+    include_obstacles: bool = False,
+) -> LayerGlbDelivery:
+    """Resolve a saved preset on a detached snapshot and export immediately.
+
+    Unlike an arbitrary PresetResolution, the retained request proves exactly
+    which configuration and model were used. Both inclusion flags are passed
+    unchanged through resolution, validation and export. No geometry is removed.
+    """
+    from .gltf import build_glb_bytes
+
+    snapshot = BuildingModel.from_json(model.to_json(indent=None))
+    config = LayerSelectionConfig.from_json(config.to_json(indent=None))
+    isolate = tuple(sorted(set(isolate)))
+    level_ids = tuple(sorted(set(level_ids)))
+    resolution = resolve_preset(config, snapshot, preset=preset, unassigned=unassigned,
+                                isolate=isolate, level_ids=level_ids,
+                                include_obstacles=include_obstacles)
+    _validate_partition(snapshot, resolution, include_obstacles=include_obstacles)
+    plan = layer_glb_plan(snapshot, resolution, physical_routes=physical_routes,
+                          include_obstacles=include_obstacles)
+    options = dict(physical_routes=physical_routes, include_obstacles=include_obstacles,
+                   groups=plan.groups, hidden_groups=plan.hidden_groups,
+                   dimmed_ids=plan.dimmed_ids)
+    payload = build_glb_bytes(snapshot, **options)
+    size = struct.unpack_from("<I", payload, 12)[0]
+    document = json.loads(payload[20:20 + size])
+    universe = _universe(snapshot, include_obstacles=include_obstacles)
+    nodes = document.get("nodes", [])
+    names = [node.get("name") for node in nodes]
+    name_counts = Counter(names)
+    if any(name_counts[entity_id] != 1 for entity_id in universe):
+        raise ValueError("layer export must emit each drawable canonical id exactly once")
+    group_nodes = [node for node in nodes if node.get("name", "").startswith("group:")]
+    if {node["name"] for node in group_nodes} != {"group:" + key for key in plan.groups}:
+        raise ValueError("layer export has missing or unexpected display groups")
+    # Conductors are derived child nodes riding a route. Validate canonical
+    # membership directly rather than comparing child counts that include wires.
+    for node in group_nodes:
+        key = node["name"][6:]
+        found = {names[index] for index in node.get("children", [])} & universe.keys()
+        if found != set(plan.groups[key]):
+            raise ValueError("layer export has unmatched canonical group ids")
+    source_json = snapshot.to_json(indent=None)
+    config_json = config.to_json(indent=None)
+    serial_options = dict(physical_routes=physical_routes, include_obstacles=include_obstacles,
+                          groups={key: sorted(value) for key, value in sorted(plan.groups.items())},
+                          hidden_groups=sorted(plan.hidden_groups), dimmed_ids=sorted(plan.dimmed_ids))
+    manifest = {
+        "kind": "oabm.layer-glb-delivery", "version": "1.0.0",
+        "source": {"model_id": snapshot.model_id,
+                   "sha256": hashlib.sha256(source_json.encode("utf-8")).hexdigest()},
+        "configuration": json.loads(config_json),
+        "request": {"preset": preset, "unassigned": unassigned,
+                    "isolate": list(isolate), "level_ids": list(level_ids),
+                    "physical_routes": physical_routes, "include_obstacles": include_obstacles},
+        "resolution": resolution.to_dict(),
+        "export_options": serial_options,
+        "glb_sha256": hashlib.sha256(payload).hexdigest(),
+        "unsupported_ghost_ids": list(plan.unsupported_ghost_ids),
+        "unknown_level_hidden_ids": sorted(i for i, level in universe.items()
+                                            if level is None and level_ids),
+        "unmatched_group_ids": 0,
+        "disclosures": [
+            "Hidden nodes retain geometry; display presets do not change quantities or clearance obligations.",
+            "Hiding requires KHR_node_visibility support; generic viewers may show hidden nodes.",
+            "This display export does not certify route clearance or engineering acceptance.",
+        ],
+    }
+    return LayerGlbDelivery(source_model_json=source_json, config_json=config_json,
+                            manifest_json=json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False),
+                            glb_bytes=payload)

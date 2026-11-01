@@ -77,7 +77,9 @@ See [Bounded proposal ranking](docs/bounded-proposals.md) for strict source-boun
 semantic rankings, configured fake-adapter roles and measured vision gates.
 
 See [Layer selections](docs/layer-selections.md) for portable saved layer
-selections, the explicit membership resolver, and the GLB visibility handoff.
+selections, the explicit membership resolver, and the GLB visibility handoff,
+including an opt-in source-bound saved-preset path for canonical curved routes
+and supplied box obstacles.
 
 See [Branch wall-evidence guard](docs/branch-wall-evidence-guard.md) for the
 source-bound architectural wall evidence handoff and open-chain rejection.

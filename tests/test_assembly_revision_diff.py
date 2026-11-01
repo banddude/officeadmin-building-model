@@ -60,3 +60,19 @@ def test_provenance_record_reordering_does_not_invent_a_revision():
     after = replace(before, walls=(replace(before.walls[0], provenance=tuple(reversed(records))), *before.walls[1:]))
     report = build_revision_diff(before, after)
     assert not report.changes and not report.quantity_deltas
+
+
+def test_rebuilt_moved_rotated_wall_frame_is_geometry_not_generic_attribute():
+    from oabm.building_assemblies import build_wall_assembly, WallAssemblyRequest
+    from oabm.building_assemblies.room_fixtures import synthetic_enclosed_room_source
+    from oabm.model import Point3, Polyline3D
+    source = synthetic_enclosed_room_source()
+    request = WallAssemblyRequest(assembly_id='assembly:back',wall_id='wall:back',selected_by='agent:synthetic')
+    before = build_wall_assembly(source,request)
+    after_source = replace(source,walls=tuple(replace(wall,centerline=Polyline3D(points=(
+        Point3(x=10,y=10,z=0),Point3(x=10,y=14.8,z=0)))) if wall.id == request.wall_id else wall
+        for wall in source.walls))
+    after = build_wall_assembly(after_source,request)
+    change = next(row for row in build_revision_diff(before,after).changes if row.entity_id == request.assembly_id)
+    assert 'geometry' in change.change_classes
+    assert any(field.path == 'wall_frame' and 'geometry' in field.change_classes for field in change.field_changes)

@@ -10,6 +10,21 @@ from oabm.drawings.projection import frame_from_view_direction
 from oabm.model import ElectricalEquipment, Point3, Pose, Size3, Vector3
 
 
+@pytest.mark.parametrize('keep_above,sign', [(True,1),(False,-1)])
+def test_depth_clipping_grazing_edges_never_extrapolate(keep_above,sign):
+    from oabm.drawings.assembly_cuts import _clip_mesh_face_depth
+    # Both are outside the exact plane, even though one is inside the old EPS.
+    face = [(0.,0.,sign*-5e-9),(1.,0.,sign*-2e-8),(0.,1.,sign*-3e-8)]
+    assert _clip_mesh_face_depth(face,0.,keep_above) == []
+    for tiny in (5e-9,1e-20):
+        face = [(0.,0.,sign*tiny),(1.,0.,sign*-tiny),(0.,1.,sign*-tiny)]
+        result = _clip_mesh_face_depth(face,0.,keep_above)
+        assert result
+        assert all(0 <= x <= 1 and 0 <= y <= 1 and x+y <= 1
+                   and (z >= 0 if keep_above else z <= 0) for x,y,z in result)
+        assert any(x == pytest.approx(.5) and y == 0 for x,y,z in result)
+
+
 @pytest.fixture(scope='module')
 def room():
     return synthetic_enclosed_room_assembly()

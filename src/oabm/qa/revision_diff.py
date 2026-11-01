@@ -66,7 +66,7 @@ _CLASS_ATTRIBUTE = "attribute"
 _GEOMETRY_FIELDS = frozenset({
     "centerline", "footprint", "pose", "size", "thickness_m", "height_m",
     "elevation_m", "listed_volume_m3", "nominal_diameter_m", "points",
-    "geometry", "boundary", "host_representation",
+    "geometry", "boundary", "host_representation", "wall_frame",
 })
 _PRODUCT_FIELDS = frozenset({
     "product", "basis", "requested_product", "requested_basis",

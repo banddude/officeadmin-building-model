@@ -103,9 +103,11 @@ def _clip_mesh_face_depth(face, boundary, keep_above):
         return []
     result = []
     previous = face[-1]
-    previous_inside = previous[2] >= boundary-EPS if keep_above else previous[2] <= boundary+EPS
+    # Classify and intersect against the SAME plane. An EPS-expanded inside
+    # half-space with an exact-plane intersection can extrapolate past an edge.
+    previous_inside = previous[2] >= boundary if keep_above else previous[2] <= boundary
     for current in face:
-        inside = current[2] >= boundary-EPS if keep_above else current[2] <= boundary+EPS
+        inside = current[2] >= boundary if keep_above else current[2] <= boundary
         if inside != previous_inside:
             fraction = (boundary-previous[2])/(current[2]-previous[2])
             result.append(tuple(previous[i]+fraction*(current[i]-previous[i]) for i in range(3)))

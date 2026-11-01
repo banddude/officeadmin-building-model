@@ -184,12 +184,11 @@ def test_named_elbow_type_must_agree_with_turn():
     assert codes(report(replace(model,route_fittings=(fitting,)))) == ["elbow_type_mismatch"]
 
 
-def test_valid_consolidated_corner_endpoint_elbow_is_outside_gate_scope():
-    """Pin the limitation: valid cross-route elbows are not interior turns."""
+def consolidated_corner(points=((0,0,0),(2,0,0),(2,2,0))):
     from oabm.model import validate_model
     from oabm.routing import consolidate_bundled_routes
 
-    model = model_for(((0,0,0),(2,0,0),(2,2,0)))
+    model = model_for(points)
     original = model.routes[0]
     second_fitting = replace(model.route_fittings[0],id="fitting:second",
                              route_id="route:second")
@@ -200,16 +199,65 @@ def test_valid_consolidated_corner_endpoint_elbow_is_outside_gate_scope():
 
     consolidated = consolidate_bundled_routes(model).model
     validate_model(consolidated)
-    assert len(consolidated.route_fittings) == 1
+    assert len(consolidated.route_fittings) == len(points)-2
     elbow = consolidated.route_fittings[0]
     owner = next(r for r in consolidated.routes if r.id == elbow.route_id)
     assert elbow.fitting_type == "elbow-90"
     assert len(owner.centerline.points) == 2
     assert elbow.pose.position in owner.centerline.points
+    return consolidated
+
+
+def test_valid_consolidated_corner_charges_both_endpoint_legs():
+    consolidated = consolidated_corner()
     before = consolidated.to_json()
     result = check_route_bends(consolidated,radii_m={r.id:.3 for r in consolidated.routes})
-    assert not result.ready
-    assert result.bends == ()  # No cross-route bend-space claim.
-    assert codes(result) == ["elbow_off_turn"]
-    assert result.diagnostics[0].fitting_ids == (elbow.id,)
+    assert result.ready
+    assert len(result.bends) == 1  # One physical elbow, two charged legs.
+    assert result.bends[0].tangent_setback_m == pytest.approx(.3)
+    assert result.bends[0].angle_radians == pytest.approx(math.pi/2)
     assert consolidated.to_json() == before  # Keep the valid fitting intact.
+
+
+@pytest.mark.parametrize("points", [((0,0,0),(.2,0,0),(.2,2,0)),
+                                   ((0,0,0),(2,0,0),(2,.2,0)),
+                                   ((0,0,0),(.2,0,0),(.2,.2,0))])
+def test_consolidated_corner_checks_short_leg_on_either_side(points):
+    model = consolidated_corner(points)
+    result = check_route_bends(model,radii_m={r.id:.3 for r in model.routes})
+    short = [d for d in result.diagnostics if d.code == "short_straight"]
+    assert len(short) == (2 if points[1][0] == .2 and points[2][1] == .2 else 1)
+    assert all(d.available_m == pytest.approx(.2) and d.required_m == pytest.approx(.3)
+               for d in short)
+    assert not result.ready
+
+
+def test_consolidated_corner_unknown_mismatched_radius_and_angle_refuse():
+    model = consolidated_corner()
+    assert "radius_unknown" in codes(check_route_bends(model,radii_m={model.routes[0].id:.3}))
+    assert "junction_radius_mismatch" in codes(check_route_bends(
+        model,radii_m={r.id:.3+i*.1 for i,r in enumerate(model.routes)}))
+    wrong = replace(model,route_fittings=(replace(model.route_fittings[0],angle_radians=.2),))
+    assert "elbow_angle_mismatch" in codes(check_route_bends(wrong,radii_m={r.id:.3 for r in wrong.routes}))
+    wrong = replace(model,route_fittings=(replace(model.route_fittings[0],fitting_type="elbow-45"),))
+    assert "elbow_type_mismatch" in codes(check_route_bends(wrong,radii_m={r.id:.3 for r in wrong.routes}))
+
+
+def test_consolidated_adjacent_corners_charge_shared_straight_twice():
+    model = consolidated_corner(((0,0,0),(2,0,0),(2,.5,0),(4,.5,0)))
+    result = check_route_bends(model,radii_m={r.id:.3 for r in model.routes})
+    assert len(result.bends) == 2
+    short = [d for d in result.diagnostics if d.code == "short_straight"]
+    assert len(short) == 1
+    assert short[0].available_m == pytest.approx(.5)
+    assert short[0].required_m == pytest.approx(.6)
+
+
+def test_consolidated_corner_third_coincident_leg_is_ambiguous():
+    model = consolidated_corner()
+    original = model.routes[0]
+    duplicate = replace(original,id="route:ambiguous",fitting_ids=())
+    model = replace(model,routes=(*model.routes,duplicate))
+    result = check_route_bends(model,radii_m={r.id:.3 for r in model.routes})
+    assert "junction_ambiguous" in codes(result)
+    assert not result.ready

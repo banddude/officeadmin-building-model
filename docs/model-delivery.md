@@ -76,13 +76,12 @@ preview below changes only the derived GLB geometry.
 - `skip`: explicitly do not evaluate bends. `radii_m` must be empty so assumptions
   cannot be silently ignored. Status is `not_evaluated`, never a passing check.
 
-The gate supports **interior sharp-vertex turns per route**. A valid consolidated
-corner may assign its elbow to a straight trunk endpoint, producing
-`elbow_off_turn`. That means the cross-route junction is outside this check's
-scope, not that the canonical topology is invalid. `report` allows the review
-outputs with that limitation visible; `skip` supports unrelated architectural
-work. `require` refuses such an unresolved case. Do not remove a valid fitting
-to obtain a passing result. There is no automatic junction-fit certification.
+The gate supports interior sharp-vertex turns and explicit, unambiguous
+consolidation elbows connecting two same-type route endpoints. Both routes must
+supply matching radii and both legs are charged for tangent space. Other
+off-turn elbows and ambiguous junctions remain unresolved; `require` refuses
+them. Do not remove a valid fitting to obtain a passing result. There is no
+automatic junction-fit certification.
 Even `passed_bounded_checks` is only a necessary geometric condition, not
 survey, manufacturer, installation, code or engineering approval.
 

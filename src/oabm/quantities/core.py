@@ -272,7 +272,7 @@ def extract_quantities(
                 group=group_owner.get(route.id),
             )
             contributions.append(replace(contribution,
-                confidence=min(route.confidence, *(row.confidence for row in (*route.joints, *route.segments))),
+                confidence=min(route.confidence, *(row.confidence for row in (*route.joints, *route.segments,route.requirements))),
                 provenance=_merge_provenance(route.provenance,
                     *(row.provenance for row in (*route.joints, *route.segments, route.requirements))),
                 quantity_provenance=_physical_length_provenance(route)))

@@ -1,7 +1,7 @@
 """Exact bounded XY centerline presentation, never swept clearance geometry."""
 import math
 from .model import DrawingPrimitive, LineStyle, Point2
-from oabm.model import ContractError, PhysicalRoute, Point3, validate_model, physical_segment_facts
+from oabm.model import ContractError, PhysicalRoute, Point3, validate_model, physical_segment_facts, stable_id
 
 
 def admit_plan_routes(model, mode):
@@ -26,7 +26,7 @@ def quarter_arc_geometry(points):
     a,c,b = points
     ax,ay,bx,by = a.x-c.x,a.y-c.y,b.x-c.x,b.y-c.y
     radius,other = math.hypot(ax,ay),math.hypot(bx,by)
-    if radius <= 0 or abs(radius-other) > 1e-8*max(1,radius) or abs(ax*bx+ay*by) > 1e-8*max(1,radius*radius):
+    if radius <= 0 or other <= 0 or abs(radius-other) > max(1e-12,1e-8*radius) or abs(ax*bx+ay*by)/(radius*other) > 1e-7:
         raise ValueError('quarter_arc requires equal positive radii and perpendicular radial endpoints')
     return radius, 1 if ax*by-ay*bx > 0 else -1
 
@@ -48,7 +48,7 @@ def physical_plan_primitives(route, frame, bounds):
         # refuse instead of returning a chord or dropping part of the curve.
         if any(not (bounds.min_x <= p.x <= bounds.max_x and bounds.min_y <= p.y <= bounds.max_y) for p in points):
             raise ContractError(f'{segment.id}: explicit plan bounds crop physical geometry; enlarge bounds')
-        result.append(DrawingPrimitive(id=f'{segment.id}:xy',kind=kind,layer='electrical:routes',
+        result.append(DrawingPrimitive(id=stable_id('drawing-primitive',f'{segment.id}:xy'),kind=kind,layer='electrical:routes',
             source_ids=(route.id,segment.id,segment.start_joint_id,segment.end_joint_id),points=points,
             style=LineStyle(stroke='route'),metadata=(('geometry_scope','horizontal analytic centerline; OD/clearance not drawn'),)))
     return result

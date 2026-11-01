@@ -153,3 +153,8 @@ See [Trusted-geometry physical route generation](docs/physical-route-generation.
 See [Physical-route 3D review preview](docs/physical-route-preview.md) for explicit canonical curved-conduit/obstacle GLB output and the source-bound viewer bundle.
 
 See [Physical-route geometric schedule](docs/physical-route-schedule.md) for source-bound JSON and CSV route/segment measurements, exact analytic centerline lengths and explicit legacy-route exclusions. This standalone report does not change whole-model takeoff or app consumers.
+
+See [Physical-route XY review drawings](docs/physical-route-plan.md) for the
+explicit scaled SVG adapter with native curved routes, supplied OD, box obstacles,
+height changes and matching source-bound 3D measurements. Existing plan defaults
+and unsupported-consumer safeguards remain unchanged.

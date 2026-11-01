@@ -782,12 +782,12 @@ def test_physical_collections_counted_once() -> None:
     drawable = (
         len(model.walls) + len(model.slabs) + len(model.spaces)
         + len(model.electrical_devices) + len(model.electrical_equipment)
-        + len(model.routes) + len(model.electrical_boxes)
+        + len(model.routes) + len(model.electrical_boxes) + len(model.openings)
     )
     assert len(resolution.visible_ids) == drawable
     assert len({
         *resolution.visible_ids, *resolution.hidden_ids, *resolution.ghosted_ids,
-    }) == drawable
+    }) == drawable + len(model.ceilings)
     assert set(resolution.out_of_scope_member_ids) == {selection_id}
     assert dict(resolution.layer_coverage)["layer:demo"] == 4
 
@@ -863,7 +863,7 @@ def _supports_config() -> LayerSelectionConfig:
                 "id": "layer:arch",
                 "name": "Architecture",
                 "member_ids": [f"wall:{name}" for name in ("south", "east", "north", "west")]
-                + ["space:garage", "slab:garage"],
+                + ["space:garage", "slab:garage", "ceiling:garage", "opening:door"],
             },
         ],
         "presets": [
@@ -898,7 +898,7 @@ def test_support_records_join_the_universe_once_and_group_as_a_tree(tmp_path: Pa
         + len(model.electrical_devices) + len(model.electrical_equipment)
         + len(model.routes) + len(model.electrical_boxes)
         + len(model.support_components) + len(model.support_interfaces)
-        + len(model.support_assemblies)
+        + len(model.support_assemblies) + len(model.openings) + len(model.ceilings)
     )
     assert len(resolution.visible_ids) == drawable
     assert {
@@ -960,15 +960,13 @@ def test_hidden_support_group_hides_the_whole_assembly_subtree(tmp_path: Path) -
     assert "extensionsRequired" not in gltf
 
 
-def test_support_ghosts_are_reported_unsupported(tmp_path: Path) -> None:
+def test_support_ghosts_are_supported(tmp_path: Path) -> None:
     model = _supports_model()
     resolution = resolve_preset(
         _supports_config(), model, preset="preset:ghost-supports", unassigned="hidden",
     )
     plan = layer_glb_plan(model, resolution)
-    assert set(plan.unsupported_ghost_ids) == {
-        "support-assembly:strut", "support-component:strut", "support-interface:base",
-    }
+    assert plan.unsupported_ghost_ids == ()
 
 
 def test_mixed_architecture_and_support_ghosts_are_honest_in_actual_glb(
@@ -986,34 +984,28 @@ def test_mixed_architecture_and_support_ghosts_are_honest_in_actual_glb(
 
     architectural_ids = {
         "wall:south", "wall:east", "wall:north", "wall:west",
-        "slab:garage", "space:garage",
+        "slab:garage", "space:garage", "ceiling:garage", "opening:door",
     }
     unsupported_support_ids = {
         "support-assembly:strut", "support-component:strut", "support-interface:base",
     }
     assert set(plan.dimmed_ids) == architectural_ids | unsupported_support_ids
-    assert set(plan.unsupported_ghost_ids) == unsupported_support_ids
+    assert plan.unsupported_ghost_ids == ()
 
     result = _export(tmp_path, model, plan, "mixed-ghost-supports.glb")
     gltf, summary = result["gltf"], result["summary"]
-    assert summary["dimmed"] == len(architectural_ids)
+    assert summary["dimmed"] == len(architectural_ids) - 2 + 1
     nodes = {node["name"]: node for node in gltf["nodes"]}
-    for node_name in architectural_ids:
+    for node_name in architectural_ids - {"ceiling:garage", "opening:door"}:
         material = _node_material(gltf, node_name)
         assert material["alphaMode"] == "BLEND"
         assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(0.3)
         assert nodes[node_name]["extras"]["display"] == "dimmed (caller-supplied)"
-    for node_name in unsupported_support_ids:
-        assert "display" not in nodes[node_name]["extras"]
-    # The support component has geometry and must retain exactly its normal
-    # material; logical assembly/interface records have no mesh but are still
-    # disclosed as unsupported.
-    baseline_path = tmp_path / "normal-supports.glb"
-    to_glb(model, baseline_path)
-    baseline_gltf = _parse_glb(baseline_path)["gltf"]
-    assert _node_material(gltf, "support-component:strut") == _node_material(
-        baseline_gltf, "support-component:strut",
-    )
+    material = _node_material(gltf, "support-component:strut")
+    assert material["alphaMode"] == "BLEND"
+    assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == pytest.approx(.3)
+    for node_name in {"support-assembly:strut", "support-interface:base"}:
+        assert "mesh" not in nodes[node_name]
 
 
 def test_support_selection_outcomes_are_out_of_scope_members() -> None:
@@ -1314,3 +1306,33 @@ def test_default_export_byte_fingerprint_is_unchanged(tmp_path: Path) -> None:
     assert hashlib.sha256(payload).hexdigest() == (
         "99fe288dff2c7454bf2034dc90414d1ad89ddf11e5ebd659cc57f8fc20ffa755"
     )
+
+
+def test_custom_id_legacy_route_conductors_follow_saved_hidden_and_ghost_groups():
+    from oabm.exports import build_layer_glb
+    model = BuildingModel.load(ROOT / 'fixtures/model/v1/garage-route.json')
+    old = model.routes[0].id
+    custom = 'run:custom-legacy'
+    def refs(ids): return tuple(custom if item == old else item for item in ids)
+    model = replace(model,
+        routes=tuple(replace(r,id=custom) if r.id==old else r for r in model.routes),
+        route_fittings=tuple(replace(f,route_id=custom) if f.route_id==old else f for f in model.route_fittings),
+        circuits=tuple(replace(c,route_ids=refs(c.route_ids)) for c in model.circuits),
+        conductors=tuple(replace(c,route_ids=refs(c.route_ids)) for c in model.conductors))
+    before = model.to_json()
+    config = LayerSelectionConfig(layers=(LayerDefinition(id='layer:custom',name='Custom route',member_ids=(custom,)),),
+        presets=(SavedPreset(id='preset:hidden',name='Hidden',hidden_layer_ids=('layer:custom',)),
+                 SavedPreset(id='preset:ghosted',name='Ghosted',ghosted_layer_ids=('layer:custom',))))
+    for state in ('hidden','ghosted'):
+        delivery = build_layer_glb(model,config,preset=f'preset:{state}',unassigned='visible')
+        size=struct.unpack_from('<I',delivery.glb_bytes,12)[0]
+        doc=json.loads(delivery.glb_bytes[20:20+size]);nodes=doc['nodes']
+        group=next(n for n in nodes if n.get('extras',{}).get('group')==f'layer:preset:{state}:{state}')
+        wires=[i for i,n in enumerate(nodes) if n.get('extras',{}).get('route_id')==custom and
+               n.get('extras',{}).get('canonical_id') in {c.id for c in model.conductors}]
+        assert wires and set(wires)<=set(group['children'])
+        if state=='ghosted':
+            for index in wires:
+                primitive=doc['meshes'][nodes[index]['mesh']]['primitives'][0]
+                assert doc['materials'][primitive['material']]['pbrMetallicRoughness']['baseColorFactor'][3]==.3
+    assert model.to_json()==before

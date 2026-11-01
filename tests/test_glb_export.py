@@ -5,6 +5,7 @@ import json
 import math
 import struct
 from dataclasses import replace
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -1600,12 +1601,49 @@ def test_grouped_export_json_and_bin_chunks_stay_consistent(tmp_path: Path) -> N
             accessor = gltf["accessors"][primitive["attributes"]["POSITION"]]
             assert accessor["count"] >= 3
             assert accessor["bufferView"] < len(gltf["bufferViews"])
-    # Every non-group node keeps exactly one mesh; group parents carry none.
+    # Groups and source-defined semantic records carry no fabricated meshes.
+    # Enumerate the exact allowed semantic IDs instead of skipping meshless nodes.
+    hosts = {entity.id: entity for entity in (*model.walls, *model.slabs, *model.ceilings)}
+    expected_semantics = {entity.id: ("ceiling", entity.level_id) for entity in model.ceilings}
+    expected_semantics.update({entity.id: ("opening", getattr(hosts.get(entity.host_id), "level_id", None))
+                               for entity in model.openings})
+    observed_semantics = set()
     for node in gltf["nodes"]:
-        if node["name"].startswith("group:"):
+        extras = node.get("extras", {})
+        if extras.get("display") == "caller-supplied group":
+            assert node["name"] == "group:ALTERNATES"
             assert "mesh" not in node
-        else:
-            assert "mesh" in node
+            assert extras["members"] == len(node["children"])
+        elif "mesh" not in node:
+            assert node["name"] in expected_semantics
+            kind, level = expected_semantics[node["name"]]
+            assert extras["canonical_id"] == node["name"]
+            assert extras["canonical_type"] == kind
+            assert extras.get("level") == level
+            assert extras["geometry_disclosure"] == "semantic record; no added geometry"
+            observed_semantics.add(node["name"])
+    assert observed_semantics == set(expected_semantics)
+    assert len(gltf["nodes"]) == len({node["name"] for node in gltf["nodes"]})
+
+    # Every physical mesh instance, its node transform/extras, mesh/accessor
+    # records and BIN bytes are identical to the ungrouped physical preview.
+    to_glb(model, tmp_path / "plain.glb")
+    plain = _parse_glb(tmp_path / "plain.glb")
+    assert parsed["bin"] == plain["bin"]
+    for field in ("meshes", "accessors", "bufferViews", "materials"):
+        assert gltf[field] == plain["gltf"][field]
+    assert Counter(node["name"] for node in gltf["nodes"] if "mesh" in node) == Counter(
+        node["name"] for node in plain["gltf"]["nodes"] if "mesh" in node)
+    assert {node["name"]: node for node in gltf["nodes"] if "mesh" in node} == {
+        node["name"]: node for node in plain["gltf"]["nodes"] if "mesh" in node}
+    reached = set()
+    pending = list(gltf["scenes"][gltf.get("scene", 0)]["nodes"])
+    while pending:
+        index = pending.pop()
+        assert index not in reached, "duplicate scene parent or cycle"
+        reached.add(index)
+        pending.extend(gltf["nodes"][index].get("children", ()))
+    assert reached == set(range(len(gltf["nodes"])))
 
 
 def test_grouped_export_is_deterministic(tmp_path: Path) -> None:

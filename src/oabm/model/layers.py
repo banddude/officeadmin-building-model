@@ -362,7 +362,8 @@ def resolve_preset(
     1. Every configured member id must exist in the model; dangling or
        unknown level references are refused with precise diagnostics.
     2. An entity's state is the strictest state of the layers that contain
-       it: ``hidden`` beats ``ghosted`` beats ``visible``.
+       it after canonical ownership expansion: ``hidden`` beats ``ghosted``
+       beats ``visible``. Shared supports are independently classified.
     3. An entity in no layer of the whole configuration is *unassigned*.
        Incomplete coverage is a property of the configuration, so it is
        always reported in ``unassigned_ids``, independent of ``isolate``
@@ -425,9 +426,8 @@ def resolve_preset(
     # Coverage is a whole-configuration property: an entity in no layer is
     # unassigned even when isolate hides it or the level filter would hide
     # it, so incomplete coverage can never disappear behind a display state.
-    assigned_ids: set[str] = {
-        member_id for layer in config.layers for member_id in layer.member_ids
-    }
+    memberships = {layer.id: expand_layer_members(model, layer.member_ids) for layer in config.layers}
+    assigned_ids = set().union(*memberships.values()) if memberships else set()
     unassigned_ids = sorted(entity_id for entity_id in universe if entity_id not in assigned_ids)
     if unassigned_ids and unassigned == UNASSIGNED_ERROR:
         raise ContractError(
@@ -442,7 +442,7 @@ def resolve_preset(
         states = {
             saved.state_of(layer.id)
             for layer in considered
-            if entity_id in layer.member_ids
+            if entity_id in memberships[layer.id]
         }
         states.discard(None)
         if states:
@@ -465,7 +465,7 @@ def resolve_preset(
     ghosted = sorted(i for i, s in entity_state.items() if s == STATE_GHOSTED)
 
     layer_coverage = tuple(
-        (layer.id, len(set(layer.member_ids) & universe.keys()))
+        (layer.id, len(memberships[layer.id] & universe.keys()))
         for layer in sorted(config.layers, key=lambda item: item.id)
     )
     empty_layer_ids = tuple(
@@ -476,7 +476,7 @@ def resolve_preset(
         if layer.system is None:
             continue
         system_members.setdefault(layer.system, set()).update(
-            set(layer.member_ids) & universe.keys()
+            memberships[layer.id] & universe.keys()
         )
     system_coverage = tuple(
         (system, len(members))
@@ -520,13 +520,11 @@ def _universe(
 ) -> dict[str, str | None]:
     """Drawable universe: id to canonical level id, sorted by id.
 
-    These are exactly the canonical node kinds the current GLB exporter
-    draws (walls, slabs, spaces, devices, equipment, routes, physical
-    electrical boxes, structural members, support components/interfaces/assemblies, and the
-    existing route-fitting occurrences in v1.5). Fitting product/interface/
-    outcome rows are nonphysical metadata and are not drawable. Ceilings and
-    openings are outside the universe; conductor wire nodes ride their route,
-    and a support assembly node brings its component and interface children.
+    Physical meshes and addressable semantic parents share one partition.
+    Assembly components include actual framing, inserts, ceiling grid and
+    hangers. Aggregate hosts and unmaterialized ceilings/openings are semantic
+    records only, never duplicate or invented geometry. Product/interface
+    selection outcomes are metadata; conductor wire nodes follow their route.
     """
 
     entries: dict[str, str | None] = {}
@@ -536,6 +534,11 @@ def _universe(
         entries[slab.id] = slab.level_id
     for space in model.spaces:
         entries[space.id] = space.level_id
+    for entity in (*model.ceilings, *model.building_assemblies, *model.assembly_components):
+        entries[entity.id] = entity.level_id
+    hosts = {h.id: h for h in (*model.walls, *model.slabs, *model.ceilings)}
+    for opening in model.openings:
+        entries[opening.id] = getattr(hosts.get(opening.host_id), "level_id", None)
     for device in model.electrical_devices:
         entries[device.id] = device.level_id
     for equipment in model.electrical_equipment:
@@ -563,6 +566,30 @@ def _universe(
         for obstacle in model.obstacles:
             entries[obstacle.id] = None
     return dict(sorted(entries.items()))
+
+
+def expand_layer_members(model: "BuildingModel", member_ids: Iterable[str]) -> set[str]:
+    """Expand canonical ownership, never proximity or inferred classification.
+
+    Assembly/host selections include owned physical children. A child may also
+    occur in a stricter layer. Shared supports never inherit supported routes:
+    one shared assembly can serve several independently selected systems.
+    """
+    edges: dict[str, set[str]] = {}
+    for assembly in model.building_assemblies:
+        edges.setdefault(assembly.host_id, set()).add(assembly.id)
+        edges[assembly.id] = set(assembly.component_ids)
+    for opening in model.openings:
+        edges.setdefault(opening.host_id, set()).add(opening.id)
+    for assembly in model.support_assemblies:
+        edges[assembly.id] = set((*assembly.component_ids, *assembly.interface_ids))
+    result = set(member_ids)
+    pending = list(result)
+    while pending:
+        for child in edges.get(pending.pop(), set()) - result:
+            result.add(child)
+            pending.append(child)
+    return result
 
 
 def _route_level_id(model: "BuildingModel", route: Any) -> str | None:
@@ -593,7 +620,8 @@ def _model_entity_ids(model: "BuildingModel") -> set[str]:
     ids: set[str] = set()
     collections = (
         model.levels, model.spaces, model.walls, model.slabs, model.ceilings,
-        model.openings, model.electrical_equipment, model.electrical_devices,
+        model.openings, model.building_assemblies, model.assembly_components,
+        model.electrical_equipment, model.electrical_devices,
         model.ports, model.obstacles, model.route_constraints, model.routes,
         model.route_fittings, model.circuits, model.conductors,
         model.electrical_boxes, model.box_selection_outcomes,

@@ -148,18 +148,13 @@ def test_overlap_strictest_isolate_and_permutation_are_preserved():
     assert 'obstacle:box' in isolated.to_dict()['resolution']['hidden_ids']
 
 
-def test_support_hierarchy_and_populated_building_assemblies_remain_explicitly_unsupported():
+def test_support_hierarchy_and_populated_building_assemblies_are_supported():
     from test_layer_selections import _supports_model
-    model=_supports_model()
+    from oabm.building_assemblies.room_fixtures import synthetic_enclosed_room_assembly
     config=LayerSelectionConfig(layers=(),presets=(SavedPreset(id='preset:empty',name='Empty'),))
-    with pytest.raises(ValueError,match='shared support hierarchy'):
-        build_layer_glb(model,config,preset='preset:empty',unassigned='visible',**OPTIONS)
-    # Check the compatibility guard at the boundary without inventing a valid
-    # producer input or weakening canonical assembly-source validation.
-    from types import SimpleNamespace
-    from oabm.exports.layers import _validate_partition
-    with pytest.raises(ValueError,match='populated canonical building assemblies'):
-        _validate_partition(SimpleNamespace(building_assemblies=(object(),)),None,include_obstacles=True)
+    for model in (_supports_model(), synthetic_enclosed_room_assembly()):
+        delivery=build_layer_glb(model,config,preset='preset:empty',unassigned='visible',**OPTIONS)
+        assert delivery.to_dict()['unmatched_group_ids']==0
 
 
 def test_connected_example_actual_hidden_nodes_materials_render_and_replay(tmp_path,monkeypatch):

@@ -162,7 +162,10 @@ result = build_layer_glb(
 (output / "model.glb").write_bytes(result.glb_bytes)
 ```
 
-The entrypoint detaches and validates the model and configuration, resolves the
+The entrypoint first uses the existing bounded physical capture (32 MiB source
+budget, 250,000 captured nodes, depth 64) before model serialization; cyclic,
+oversized or excessively deep mutable metadata refuses with an explicit diagnostic.
+It then detaches and validates the model and configuration, resolves the
 saved request immediately before export, and verifies complete, disjoint drawable
 coverage with every canonical ID emitted exactly once and no unmatched group
 members. The manifest retains the model ID/hash, full configuration, request,
@@ -178,7 +181,13 @@ unchanged, including the whole-model quantity limitation for physical routes.
 these meshes and enforces the complete disjoint partition. A standalone resolution
 is still not source-bound: use `build_layer_glb` to bind the configuration and
 request. Both flags default false, preserving the legacy guard and output behavior.
-Pass matching obstacle inclusion to resolver and exporter. Populated building
+Pass matching obstacle inclusion to resolver and exporter. With either explicit
+physical display flag enabled, conductor meshes follow their actual canonical
+route ownership, including route IDs without a `route:` prefix. Delivery checks
+verify those derived meshes are children of the same display group as their route.
+Canonical IDs beginning `group:` remain ordinary canonical IDs; an exact collision
+with a generated display-group name is explicitly refused.
+Populated building
 assemblies and shared support hierarchies are explicitly refused by the new path;
 this slice does not change their producer or regrouping semantics.
 

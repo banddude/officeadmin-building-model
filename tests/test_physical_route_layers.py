@@ -188,3 +188,78 @@ def test_connected_example_actual_hidden_nodes_materials_render_and_replay(tmp_p
     image=Image.open(root/'presets.png')
     assert image.size==(660,1650)
     assert image.getpixel((325,237)) != image.getpixel((325,330+237))
+
+
+def test_canonical_group_prefix_is_not_generated_group_and_exact_collision_refuses():
+    model=replace(model_fixture(),routes=())
+    config=config_fixture()
+    def renamed(obstacle_id):
+        source=replace(model,obstacles=(replace(model.obstacles[0],id=obstacle_id),))
+        selection=replace(config,layers=(config.layers[1],),presets=(SavedPreset(
+            id='preset:box',name='Box',visible_layer_ids=('layer:box',)),))
+        selection=replace(selection,layers=(replace(selection.layers[0],member_ids=(obstacle_id,)),))
+        return source,selection
+    model,config=renamed('group:box')
+    result=delivery(model,config,preset='preset:box')
+    doc,_=unpack(result.glb_bytes)
+    obstacle=next(node for node in doc['nodes'] if node['name']=='group:box')
+    assert 'mesh' in obstacle
+    assert result.to_dict()['unmatched_group_ids']==0
+    model=replace(model,obstacles=(replace(model.obstacles[0],id='group:layer:preset:box:visible'),))
+    config=replace(config,layers=(replace(config.layers[0],member_ids=(model.obstacles[0].id,)),))
+    with pytest.raises(ValueError,match='canonical id collides with generated display group name'):
+        delivery(model,config,preset='preset:box')
+
+
+@pytest.mark.parametrize('mutation,reason', [('cycle','cyclic_input'),('deep','capture_depth_limit')])
+def test_bounded_capture_precedes_canonical_serialization(mutation,reason,monkeypatch):
+    model=model_fixture()
+    if mutation=='cycle':
+        model.attributes['self']=model.attributes
+    else:
+        nested=model.attributes
+        for _ in range(70):
+            nested['child']={};nested=nested['child']
+    # Any serialization of the caller object would leak recursion or admit
+    # excessive depth. Existing bounded capture must reject it first.
+    original=BuildingModel.to_json
+    def guarded(self,**kwargs):
+        assert self is not model, 'caller serialization ran before bounded capture'
+        return original(self,**kwargs)
+    monkeypatch.setattr(BuildingModel,'to_json',guarded)
+    with pytest.raises(ContractError,match=reason):
+        delivery(model)
+
+
+def test_nonstandard_legacy_route_id_hides_wire_by_retained_ownership(monkeypatch):
+    from oabm.model import Circuit, Conductor, Route
+    from physical_route_fixture import make_physical_source
+    source=make_physical_source()
+    route=Route(id='run:one',route_type='emt',start_port_id='port:a',end_port_id='port:b',
+                nominal_diameter_m=.025,centerline=Polyline3D(points=tuple(port.pose.position for port in source.ports)))
+    model=replace(source,routes=(route,),circuits=(Circuit(id='circuit:one',source_port_id='port:a',
+        load_port_ids=('port:b',),route_ids=(route.id,)),),conductors=(Conductor(id='conductor:one',
+        circuit_id='circuit:one',role='phase',route_ids=(route.id,)),))
+    config=LayerSelectionConfig(layers=(LayerDefinition(id='layer:run',name='Run',member_ids=(route.id,)),),
+        presets=(SavedPreset(id='preset:hide',name='Hide',hidden_layer_ids=('layer:run',)),))
+    result=delivery(model,config,preset='preset:hide')
+    doc,_=unpack(result.glb_bytes)
+    wire_index=next(index for index,node in enumerate(doc['nodes']) if node.get('extras',{}).get('canonical_id')=='conductor:one')
+    group=next(node for node in doc['nodes'] if node.get('extensions',{}).get('KHR_node_visibility',{}).get('visible') is False)
+    assert wire_index in group['children']
+    assert wire_index not in doc['scenes'][0]['nodes']
+    assert result.to_dict()['unmatched_group_ids']==0
+    # Existing no-opt-in output path retains its previous grouping bytes.
+    groups=result.to_dict()['export_options']['groups']
+    hidden=result.to_dict()['export_options']['hidden_groups']
+    default=build_glb_bytes(model,groups=groups,hidden_groups=hidden)
+    explicit=build_glb_bytes(model,groups=groups,hidden_groups=hidden,physical_routes=False,include_obstacles=False)
+    assert default==explicit
+
+    # The delivery proof also catches a future exporter regression that leaves
+    # only derived wire geometry outside its route group.
+    import oabm.exports.gltf as gltf
+    original=gltf._group_member_indices
+    monkeypatch.setattr(gltf,'_group_member_indices',lambda member,nodes,**kwargs: original(member,nodes))
+    with pytest.raises(ValueError,match='derived conductor geometry must follow'):
+        delivery(model,config,preset='preset:hide')

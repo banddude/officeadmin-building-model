@@ -29,7 +29,7 @@ import struct
 from typing import Any, Iterable
 
 from oabm.model import (
-    BuildingModel, LayerSelectionConfig, PresetResolution, reject_physical_routes, resolve_preset,
+    BuildingModel, ContractError, LayerSelectionConfig, PresetResolution, reject_physical_routes, resolve_preset,
 )
 from oabm.model.layers import _universe
 from oabm.assembly_compat import require_no_populated_building_assemblies
@@ -168,7 +168,20 @@ def build_layer_glb(
     """
     from .gltf import build_glb_bytes
 
-    snapshot = BuildingModel.from_json(model.to_json(indent=None))
+    from oabm.routing.physical_capture import capture, bounded_source_json, SOURCE_BYTES
+    from oabm.routing.physical_verify_types import VerificationStop
+
+    if type(model) is not BuildingModel:
+        raise ContractError("layer GLB requires a canonical BuildingModel")
+    try:
+        # Admit mutable metadata before recursive canonical serialization.
+        detached = capture(model, byte_limit=SOURCE_BYTES)
+        snapshot = BuildingModel.from_json(detached.to_json(indent=None))
+        bounded_source_json(snapshot.to_json(indent=None))
+    except VerificationStop as exc:
+        raise ContractError(f"layer GLB {exc.status}: {exc.reason}") from exc
+    except (OverflowError, TypeError, AttributeError, KeyError) as exc:
+        raise ContractError("malformed layer GLB source") from exc
     config = LayerSelectionConfig.from_json(config.to_json(indent=None))
     isolate = tuple(sorted(set(isolate)))
     level_ids = tuple(sorted(set(level_ids)))
@@ -181,6 +194,9 @@ def build_layer_glb(
     options = dict(physical_routes=physical_routes, include_obstacles=include_obstacles,
                    groups=plan.groups, hidden_groups=plan.hidden_groups,
                    dimmed_ids=plan.dimmed_ids)
+    generated_names = {"group:" + key for key in plan.groups}
+    if generated_names & _universe(snapshot, include_obstacles=include_obstacles).keys():
+        raise ValueError("canonical id collides with generated display group name")
     payload = build_glb_bytes(snapshot, **options)
     size = struct.unpack_from("<I", payload, 12)[0]
     document = json.loads(payload[20:20 + size])
@@ -190,16 +206,31 @@ def build_layer_glb(
     name_counts = Counter(names)
     if any(name_counts[entity_id] != 1 for entity_id in universe):
         raise ValueError("layer export must emit each drawable canonical id exactly once")
-    group_nodes = [node for node in nodes if node.get("name", "").startswith("group:")]
+    group_nodes = [node for node in nodes
+                   if node.get("extras", {}).get("display") == "caller-supplied group"
+                   and node.get("extras", {}).get("group") in plan.groups]
     if {node["name"] for node in group_nodes} != {"group:" + key for key in plan.groups}:
         raise ValueError("layer export has missing or unexpected display groups")
     # Conductors are derived child nodes riding a route. Validate canonical
     # membership directly rather than comparing child counts that include wires.
     for node in group_nodes:
-        key = node["name"][6:]
+        key = node["extras"]["group"]
         found = {names[index] for index in node.get("children", [])} & universe.keys()
         if found != set(plan.groups[key]):
             raise ValueError("layer export has unmatched canonical group ids")
+    # Wire nodes are derived geometry outside the canonical drawable universe.
+    # Prove they ride their owning route instead of disappearing in an ID-only
+    # coverage intersection (canonical route IDs need not start with route:).
+    memberships = {(conductor.id, route_id) for conductor in snapshot.conductors
+                   for route_id in conductor.route_ids}
+    groups_by_key = {node["extras"]["group"]: node for node in group_nodes}
+    for index, node in enumerate(nodes):
+        extras = node.get("extras", {})
+        owner = extras.get("route_id")
+        if (extras.get("canonical_id"), owner) in memberships:
+            expected_group = next(key for key, ids in plan.groups.items() if owner in ids)
+            if index not in groups_by_key[expected_group].get("children", []):
+                raise ValueError("derived conductor geometry must follow its canonical route display group")
     source_json = snapshot.to_json(indent=None)
     config_json = config.to_json(indent=None)
     serial_options = dict(physical_routes=physical_routes, include_obstacles=include_obstacles,

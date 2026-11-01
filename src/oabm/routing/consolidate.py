@@ -534,6 +534,10 @@ def _eligible_runs_and_specs(
     for item in (*model.fitting_selections, *model.fitting_selection_outcomes):
         skipped.setdefault(item.route_id, "fitting_binding_requires_reselection")
     for route in model.routes:
+        if (model.building_assemblies or model.assembly_components) and route.nominal_diameter_m is None:
+            # A max over only known members cannot bound the unknown member.
+            # Keep its exact path/identity; recompute overlaps without it.
+            skipped.setdefault(route.id, "unknown_collision_diameter")
         # These receipts bind the original path, domain and routing request.
         # Retaining them as current proofs on new trunks would be false; retain
         # the entire source route until an explicit rerouting operation exists.

@@ -32,13 +32,28 @@ def test_room_consolidation_preserves_architecture_and_checks_actual_children():
     assert model.to_json() == frozen
 
 
-def test_room_consolidation_refuses_wall_collision_and_unknown_padding():
+def test_room_consolidation_refuses_wall_collision_and_preserves_unknown_padding():
     with pytest.raises(RoutingError,match='padded hard blockers'):
         consolidate_bundled_routes(room_bundle(((1,1,1),(1,-1,1))))
     model = room_bundle()
     unknown = replace(model,routes=tuple(replace(route,nominal_diameter_m=None) for route in model.routes))
-    with pytest.raises(RoutingError,match='explicit diameter'):
-        consolidate_bundled_routes(unknown)
+    result=consolidate_bundled_routes(unknown)
+    assert result.model is unknown
+    assert dict(result.report.untouched_route_reasons)=={route.id:'unknown_collision_diameter' for route in unknown.routes}
+
+
+@pytest.mark.parametrize('unknown_index',[0,1])
+def test_room_consolidation_never_borrows_a_known_member_diameter(unknown_index):
+    model=room_bundle()
+    model=replace(model,routes=tuple(replace(route,nominal_diameter_m=None) if index==unknown_index else route
+        for index,route in enumerate(model.routes)))
+    before=model.to_json()
+    result=consolidate_bundled_routes(model)
+    assert result.model is model
+    assert result.model.to_json()==before
+    assert result.report.trunk_routes==0
+    assert dict(result.report.untouched_route_reasons)=={model.routes[unknown_index].id:'unknown_collision_diameter'}
+    assert all('consolidation_collision_check' not in route.attributes for route in result.model.routes)
 
 
 def test_room_consolidation_retains_source_bound_paths_instead_of_relabeling_receipts():

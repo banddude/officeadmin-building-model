@@ -103,9 +103,10 @@ discloses that simplification and does not claim complete joint behavior.
 
 The producer refuses a missing or mismatched deck, incomplete source geometry
 evidence, unknown preset/override, invalid geometry/dimensions, too-thin
-observed Ceiling, unsupported boundary policy, active assignment replacement,
-and models with existing electrical routes (dependent-route regeneration is
-not implemented). Component-count and model-wide GLB-vertex costs are checked
+observed Ceiling, unsupported boundary policy, direct append-API assignment replacement,
+and models with existing electrical routes. Explicit preset edits use the
+[regeneration coordinator](building-assembly-regeneration.md) before routing;
+automatic dependent-route regeneration remains unsupported. Component-count and model-wide GLB-vertex costs are checked
 before runner-span or component allocation.
 
 The aggregate Ceiling remains host metadata and the original Slab remains the
@@ -140,3 +141,12 @@ JSON and GLB bytes, GLB node identity, and quantity counts/geometry totals.
 The test file is
 `tests/test_building_assembly_suspended_ceiling.py`; the entire repository
 suite is intentionally left to the integration owner.
+
+## Explicit existing-assignment edits
+
+The append-only producer boundaries described above remain unchanged.
+[Atomic preset regeneration](../docs/building-assembly-regeneration.md) now
+coordinates explicit supported assignment replacements, preserves source facts
+and semantic IDs, and refuses existing routes. Its enclosed synthetic room
+example supersedes the earlier one-wall proof for room composition; it does not
+add joined-corner engineering or automatic route invalidation.

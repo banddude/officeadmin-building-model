@@ -66,3 +66,12 @@ and [wall producer](../docs/building-assembly-wall-producer-v1.md).
 ## Opt-in canonical physical routes (1.7)
 
 See [the physical-route structural contract](../docs/physical-route-contract-v1.7.md) for shared-joint cardinal line/quarter-arc records, exact decimal admission, typed source/context binding and explicit unsupported-consumer refusals. This is not a clearance verifier or completed routing section. Default 1.0 and legacy Route serialization remain unchanged.
+
+## Explicit existing-assignment edits
+
+The append-only producer boundaries described above remain unchanged.
+[Atomic preset regeneration](../docs/building-assembly-regeneration.md) now
+coordinates explicit supported assignment replacements, preserves source facts
+and semantic IDs, and refuses existing routes. Its enclosed synthetic room
+example supersedes the earlier one-wall proof for room composition; it does not
+add joined-corner engineering or automatic route invalidation.

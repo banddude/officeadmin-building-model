@@ -39,10 +39,9 @@ result = build_wall_assembly(
 The returned `BuildingModel` contains a validated `BuildingAssembly` and its
 owned `AssemblyComponent` records. Component IDs derive from the assembly ID
 plus semantic part keys. The source model is immutable; invalid inputs and
-candidate-model validation failures leave it unchanged. An existing
-assignment for the same wall or any pre-existing route requires a fresh
-dependent rebuild and is refused; this API never replaces geometry or claims
-to invalidate routed systems.
+candidate-model validation failures leave it unchanged. The append-only API refuses an existing assignment or any pre-existing route.
+Use [explicit regeneration](building-assembly-regeneration.md) to edit a supported
+existing assignment before routing; routed output requires its upstream checkpoint.
 
 `DEFAULT_PRESET_CATALOG` is a finite, immutable catalog at
 `catalog:oabm-building-assemblies@2.0.0`; the current recipe is
@@ -158,9 +157,10 @@ specifications, evidence, and the full sorted owned component records.
   construction or relevant material evidence is unknown, selection of this
   wood preset is recorded as an explicit preset assumption, not as an observed
   wood fact.
-- Regeneration/replacement of an existing wall assignment, or generation in a
-  model that already contains routes. Dependent rebuild and route invalidation
-  are not implemented.
+- Direct replacement through this append-only producer, or generation in a
+  model that already contains routes. Explicit preset edits use the atomic
+  [regeneration coordinator](building-assembly-regeneration.md); automatic
+  route invalidation remains unsupported.
 - Routing beyond the bounded opt-in slice in
   [3D electrical routing](routing.md): populated assemblies require an explicit
   `AllowedRouteDomain`, supported physical-component blockers, and complete
@@ -180,3 +180,12 @@ The synthetic known-answer helper is
 header build-up/bearing/support values are synthetic modeling choices, not
 engineered sizing recommendations. It is public-safe and contains no
 customer/project data.
+
+## Explicit existing-assignment edits
+
+The append-only producer boundaries described above remain unchanged.
+[Atomic preset regeneration](../docs/building-assembly-regeneration.md) now
+coordinates explicit supported assignment replacements, preserves source facts
+and semantic IDs, and refuses existing routes. Its enclosed synthetic room
+example supersedes the earlier one-wall proof for room composition; it does not
+add joined-corner engineering or automatic route invalidation.

@@ -54,8 +54,9 @@ facts and owned parts. Semantic part keys keep component IDs deterministic.
 The insert must match the source aperture orientation and fit its exact
 width/depth/height; an unsupported opening kind, shape/orientation, invalid
 parameter, or non-fitting recipe is refused. One active insert assignment per
-opening is allowed. Replacing an assignment or generating after routes exist
-requires a dependent rebuild and is refused here. No source wall/opening record
+opening is allowed. Direct replacement or generation after routes exist is refused here.
+The [regeneration coordinator](building-assembly-regeneration.md) supports
+explicit pre-routing assignment edits. No source wall/opening record
 is changed.
 
 The small catalog has strict `to_dict`/`from_dict` encoding and decoding; extra
@@ -83,3 +84,12 @@ quantity consumers operate on these existing canonical 1.6 component records;
 this slice changes neither canonical schema nor those consumers.
 
 Focused public-safe proof: `tests/test_building_assembly_opening_inserts.py`.
+
+## Explicit existing-assignment edits
+
+The append-only producer boundaries described above remain unchanged.
+[Atomic preset regeneration](../docs/building-assembly-regeneration.md) now
+coordinates explicit supported assignment replacements, preserves source facts
+and semantic IDs, and refuses existing routes. Its enclosed synthetic room
+example supersedes the earlier one-wall proof for room composition; it does not
+add joined-corner engineering or automatic route invalidation.

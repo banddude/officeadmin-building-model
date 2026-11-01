@@ -321,7 +321,13 @@ def to_ifc(
     ifc = ifcopenshell.api.project.create_file(version=IFC_SCHEMA)
     project = _create_root(ifc, "IfcProject", model.model_id, model.name)
     metre = ifcopenshell.api.unit.add_si_unit(ifc, unit_type="LENGTHUNIT")
-    ifcopenshell.api.unit.assign_unit(ifc, units=[metre])
+    units=[metre]
+    if any(isinstance(route,PhysicalRoute) for route in model.routes):
+        # IfcCircle parameter trims use the project's angular unit. Without an
+        # explicit radian unit some native kernels interpret pi/2 incorrectly.
+        units.append(ifcopenshell.api.unit.add_si_unit(ifc,unit_type="PLANEANGLEUNIT"))
+    assignment=ifcopenshell.api.unit.assign_unit(ifc, units=units)
+    assignment.Units=tuple(units)  # API aggregate construction uses a set.
     model_context = ifcopenshell.api.context.add_context(ifc, context_type="Model")
     axis_context = ifcopenshell.api.context.add_context(
         ifc,

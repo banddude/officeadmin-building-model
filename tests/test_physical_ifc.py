@@ -25,9 +25,9 @@ def test_actual_native_curves_solids_express_and_roundtrip(two,odd):
     model=model_fixture(two,odd);before=model.to_json()
     native=to_ifc(model,physical_routes=True)
     route=model.routes[0]
-    solids=native.by_type('IfcSweptDiskSolid')
+    solids=[*native.by_type('IfcExtrudedAreaSolid'),*native.by_type('IfcRevolvedAreaSolid')]
     assert len(solids)==len(route.segments)
-    assert all(solid.Radius==.01 for solid in solids)
+    assert all(solid.SweptArea.Radius==.01 for solid in solids)
     circles=native.by_type('IfcCircle')
     assert len(circles)==(2 if two else 1)
     assert all(circle.Radius==route.requirements.centerline_radius_m for circle in circles)
@@ -49,7 +49,7 @@ def test_native_curve_tampering_is_refused_not_resurrected(tamper):
     model=model_fixture();native=to_ifc(model,physical_routes=True)
     route=model.routes[0]
     product=native.by_guid(canonical_id_to_ifc_guid(f'{route.id}#segment:1'))
-    if tamper=='radius':native.by_type('IfcSweptDiskSolid')[0].Radius=.02
+    if tamper=='radius':native.by_type('IfcExtrudedAreaSolid')[0].SweptArea.Radius=.02
     elif tamper=='arc_radius':native.by_type('IfcCircle')[0].Radius=.5
     elif tamper=='trim':native.by_type('IfcTrimmedCurve')[0].Trim2=(native.create_entity('IfcParameterValue',math.pi),)
     elif tamper=='centre':native.by_type('IfcCircle')[0].Position.Location.Coordinates=(20.,20.,20.)
@@ -109,4 +109,33 @@ def test_untagged_duplicate_native_conduit_cannot_disappear_on_readback():
     native.create_entity(product.is_a(),GlobalId=ifcopenshell.guid.new(),
         Representation=product.Representation,ObjectPlacement=product.ObjectPlacement)
     with pytest.raises(IfcAdapterError,match='untagged or unowned'):
+        from_ifc(native)
+
+
+@pytest.mark.parametrize('two,odd',[(False,False),(True,False),(False,True)])
+def test_actual_native_closed_solid_volume_and_arc_bounds(two,odd):
+    import ifcopenshell.geom
+    import numpy as np
+    from oabm.model import physical_segment_facts
+    model=model_fixture(two,odd);native=to_ifc(model,physical_routes=True);route=model.routes[0]
+    settings=ifcopenshell.geom.settings();settings.set('iterator-output',ifcopenshell.ifcopenshell_wrapper.NATIVE)
+    mesh_settings=ifcopenshell.geom.settings();mesh_settings.set(mesh_settings.USE_WORLD_COORDS,True)
+    for index,(segment,fact) in enumerate(zip(route.segments,physical_segment_facts(route))):
+        product=native.by_guid(canonical_id_to_ifc_guid(f'{route.id}#segment:{index}'))
+        shape=ifcopenshell.geom.create_shape(settings,product)
+        length=fact['length_ticks']/1e9 if segment.kind=='line' else fact['radius_ticks']/1e9*math.pi/2
+        assert shape.volume==pytest.approx(math.pi*.01**2*length,rel=1e-8,abs=1e-12)
+        if segment.kind=='quarter_arc':
+            mesh=ifcopenshell.geom.create_shape(mesh_settings,product)
+            vertices=np.asarray(mesh.geometry.verts).reshape(-1,3)
+            endpoints=np.asarray([[getattr(route.joints[i].position,key) for key in 'xyz'] for i in (index,index+1)])
+            assert np.all(vertices.min(axis=0)>=endpoints.min(axis=0)-.01000001)
+            assert np.all(vertices.max(axis=0)<=endpoints.max(axis=0)+.01000001)
+
+
+def test_native_angular_unit_tampering_refuses_wrong_trim_interpretation():
+    model=model_fixture();native=to_ifc(model,physical_routes=True)
+    units=native.by_type('IfcUnitAssignment')[0]
+    units.Units=tuple(unit for unit in units.Units if getattr(unit,'UnitType',None)!='PLANEANGLEUNIT')
+    with pytest.raises(IfcAdapterError,match='radian angular unit'):
         from_ifc(native)

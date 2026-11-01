@@ -7,8 +7,10 @@ joint/segment records, request bindings and quantities are preserved.
 
 Each canonical segment has one native product under its existing route system.
 Its Axis is a two-point `IfcPolyline` or a quarter `IfcTrimmedCurve` over an
-oriented `IfcCircle`. Its Body is an `IfcSweptDiskSolid` using that same actual
-directrix and the supplied OD/2. Curves are never flattened into chords. Existing
+oriented `IfcCircle`. Its closed Body is a circular-profile extrusion for a line
+or a circular-profile quarter revolution for an arc, using the actual supplied
+OD/2 and centerline radius. An explicit radian unit fixes parameter/rotation
+interpretation. Curves are never flattened into chords. Existing
 group/layer adapters select these same products, without additional solids.
 Conductors can carry a derived composite line/arc Axis; the existing route remains
 the only owner of the conduit solid. No purchased elbow/product is inferred.
@@ -36,7 +38,12 @@ binding: analytic point-on-curve ownership needs its own implementation. Existin
 endpoint equipment/device ports and route-system connectivity are retained.
 Actual swept geometry is a derived model view, not surveyed installation fit,
 product compatibility, engineering approval or a live clearance certification.
+These solids describe the supplied outside envelope; their volume is not a
+conduit-wall material takeoff or an inference of inner diameter.
 
 Focused checks cover real STEP-byte reparse, strict IFC4 EXPRESS validation,
 one/two bends, opposite turns, odd-nanometre radii, deterministic exports, exact
 canonical round trips and refusal of native geometry/inventory tampering.
+Actual native kernel evaluation independently checks closed-solid volumes against
+analytic cylinder/quarter-torus volumes and each bend's physical bounds. Schema
+validity and matching metadata alone do not prove rendered geometry is correct.

@@ -36,6 +36,11 @@ def validate_native_inventory(ifc,canonical_items,route_segments):
     physical_ids={identity for identity,(_,data,_,kind) in canonical_items.items()
                   if kind=='route' and data.get('geometry_kind')=='line_arc_v1'}
     if not physical_ids:return
+    project=ifc.by_type('IfcProject')[0]
+    angular=[unit for unit in project.UnitsInContext.Units if getattr(unit,'UnitType',None)=='PLANEANGLEUNIT']
+    if (len(angular)!=1 or not angular[0].is_a('IfcSIUnit')
+            or angular[0].Name!='RADIAN' or angular[0].Prefix is not None):
+        raise IfcAdapterError('physical IFC parameter trims require an explicit radian angular unit')
     route_ids={identity for identity,(_,_,_,kind) in canonical_items.items() if kind=='route'}
     if set(route_segments)-route_ids:
         raise IfcAdapterError('physical IFC inventory has segments for an unknown route')
@@ -107,9 +112,31 @@ def _representation(ifc,product,context,identifier,representation_type,item):
 def assign_segment(ifc,product,axis_context,body_context,route,index):
     curve=segment_curve(ifc,route,index)
     _representation(ifc,product,axis_context,'Axis','Curve3D',curve)
-    solid=ifc.create_entity('IfcSweptDiskSolid',Directrix=curve,
+    segment=route.segments[index];fact=physical_segment_facts(route)[index]
+    a=tuple(getattr(route.joints[index].position,key) for key in 'xyz')
+    tangent=tuple(float(value) for value in fact['start_tangent'])
+    radial=None
+    if segment.kind=='quarter_arc':
+        centre=tuple(float(value/1_000_000_000) for value in fact['centre_ticks'])
+        radius=fact['radius_ticks']/1_000_000_000
+        radial=tuple((value-origin)/radius for value,origin in zip(a,centre))
+    profile_position=ifc.create_entity('IfcAxis2Placement2D',
+        Location=_point(ifc,(radius if radial is not None else 0.,0.)),
+        RefDirection=_direction(ifc,(1.,0.)))
+    profile=ifc.create_entity('IfcCircleProfileDef',ProfileType='AREA',Position=profile_position,
         Radius=route.requirements.outside_diameter_m/2)
-    _representation(ifc,product,body_context,'Body','AdvancedSweptSolid',solid)
+    if segment.kind=='line':
+        ref=(1.,0.,0.) if tangent[0]==0 else (0.,1.,0.)
+        position=ifc.create_entity('IfcAxis2Placement3D',Location=_point(ifc,a),
+            Axis=_direction(ifc,tangent),RefDirection=_direction(ifc,ref))
+        solid=ifc.create_entity('IfcExtrudedAreaSolid',SweptArea=profile,Position=position,
+            ExtrudedDirection=_direction(ifc,(0.,0.,1.)),Depth=fact['length_ticks']/1_000_000_000)
+    else:
+        position=ifc.create_entity('IfcAxis2Placement3D',Location=_point(ifc,centre),
+            Axis=_direction(ifc,tuple(-v for v in tangent)),RefDirection=_direction(ifc,radial))
+        axis=ifc.create_entity('IfcAxis1Placement',Location=_point(ifc,(0.,0.,0.)),Axis=_direction(ifc,(0.,1.,0.)))
+        solid=ifc.create_entity('IfcRevolvedAreaSolid',SweptArea=profile,Position=position,Axis=axis,Angle=math.pi/2)
+    _representation(ifc,product,body_context,'Body','SweptSolid',solid)
 
 
 def assign_conductor_axis(ifc,product,axis_context,route):
@@ -148,18 +175,32 @@ def validate_native_route(data, segments):
                 raise ValueError('native physical segment Axis/Body inventory differs')
             axis=next(rep for rep in reps if rep.RepresentationIdentifier=='Axis')
             body=next(rep for rep in reps if rep.RepresentationIdentifier=='Body')
-            if len(axis.Items)!=1 or len(body.Items)!=1 or axis.RepresentationType!='Curve3D' or body.RepresentationType!='AdvancedSweptSolid':
+            if len(axis.Items)!=1 or len(body.Items)!=1 or axis.RepresentationType!='Curve3D' or body.RepresentationType!='SweptSolid':
                 raise ValueError('native physical representation type differs')
             curve,solid=axis.Items[0],body.Items[0]
-            if not solid.is_a('IfcSweptDiskSolid') or solid.Directrix!=curve or solid.InnerRadius is not None or solid.StartParam is not None or solid.EndParam is not None:
-                raise ValueError('native physical disk sweep differs')
-            if not close((solid.Radius,),(route.requirements.outside_diameter_m/2,)):
+            expected_solid='IfcExtrudedAreaSolid' if segment.kind=='line' else 'IfcRevolvedAreaSolid'
+            if not solid.is_a(expected_solid):
+                raise ValueError('native physical capped round solid differs')
+            profile=solid.SweptArea
+            if not profile.is_a('IfcCircleProfileDef') or profile.ProfileType!='AREA' or not close((profile.Radius,),(route.requirements.outside_diameter_m/2,)):
                 raise ValueError('native physical outside diameter differs')
+            if profile.Position is None or profile.Position.RefDirection is None or not close(profile.Position.RefDirection.DirectionRatios,(1,0)):
+                raise ValueError('native physical round profile placement differs')
             a=tuple(getattr(route.joints[index].position,key) for key in 'xyz')
             b=tuple(getattr(route.joints[index+1].position,key) for key in 'xyz')
             if segment.kind=='line':
                 if not curve.is_a('IfcPolyline') or len(curve.Points)!=2 or not close(curve.Points[0].Coordinates,a) or not close(curve.Points[1].Coordinates,b):
                     raise ValueError('native physical line geometry differs')
+                tangent=tuple(float(v) for v in facts[index]['start_tangent'])
+                ref=(1,0,0) if tangent[0]==0 else (0,1,0)
+                position=solid.Position
+                if (position is None or not close(position.Location.Coordinates,a)
+                        or position.Axis is None or not close(position.Axis.DirectionRatios,tangent)
+                        or position.RefDirection is None or not close(position.RefDirection.DirectionRatios,ref)
+                        or not close(profile.Position.Location.Coordinates,(0,0))
+                        or not close(solid.ExtrudedDirection.DirectionRatios,(0,0,1))
+                        or not close((solid.Depth,),(facts[index]['length_ticks']/1_000_000_000,))):
+                    raise ValueError('native physical line solid differs')
                 continue
             if not curve.is_a('IfcTrimmedCurve') or not curve.BasisCurve.is_a('IfcCircle'):
                 raise ValueError('native physical arc must remain a trimmed circle')
@@ -175,6 +216,16 @@ def validate_native_route(data, segments):
             sign=1 if segment.turn=='positive_quarter' else -1
             normal=tuple(sign*getattr(segment.plane_normal,key) for key in 'xyz')
             radial=tuple((value-origin)/radius for value,origin in zip(a,centre))
+            position=solid.Position
+            tangent=tuple(float(v) for v in fact['start_tangent'])
+            if (not close((solid.Angle,),(math.pi/2,)) or position is None
+                    or not close(position.Location.Coordinates,centre)
+                    or position.Axis is None or not close(position.Axis.DirectionRatios,tuple(-v for v in tangent))
+                    or position.RefDirection is None or not close(position.RefDirection.DirectionRatios,radial)
+                    or not close(profile.Position.Location.Coordinates,(radius,0))
+                    or not close(solid.Axis.Location.Coordinates,(0,0,0))
+                    or solid.Axis.Axis is None or not close(solid.Axis.Axis.DirectionRatios,(0,1,0))):
+                raise ValueError('native physical quarter-revolved solid differs')
             position=circle.Position
             if (not position.is_a('IfcAxis2Placement3D') or not close((circle.Radius,),(radius,))
                 or not close(position.Location.Coordinates,centre)

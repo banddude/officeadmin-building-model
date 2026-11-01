@@ -76,8 +76,7 @@ def test_all_public_consumers_refuse_before_other_work(physical_model, module, n
     assert physical_model.to_json() == before
 
 
-@pytest.mark.parametrize('module,name', [('qa.revision_diff', 'build_revision_diff'),
-                                       ('ifc.comparison', 'round_trip_differences')])
+@pytest.mark.parametrize('module,name', [('qa.revision_diff', 'build_revision_diff')])
 @pytest.mark.parametrize('physical_side', ['before', 'after'])
 def test_comparisons_refuse_either_snapshot(physical_model, module, name, physical_side):
     function = getattr(importlib.import_module('oabm.' + module), name)
@@ -285,7 +284,7 @@ def test_ifc_import_refuses_physical_metadata_before_native_route_interpretation
         pytest.fail('native route geometry was interpreted before physical metadata refusal')
     monkeypatch.setattr(adapter, '_canonical_metadata', physical_metadata)
     monkeypatch.setattr(adapter, '_route_segments', forbidden)
-    with pytest.raises(adapter.IfcAdapterError, match='does not support physical routes'):
+    with pytest.raises(adapter.IfcAdapterError, match='physical route metadata refused'):
         adapter.from_ifc(native)
     assert native.to_string() == before
 

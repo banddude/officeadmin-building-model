@@ -53,6 +53,7 @@ from oabm.model import (
     Quaternion,
     Size3,
     Vector3,
+    PhysicalRoute, physical_segment_facts,
 )
 from oabm.model.entities import (
     WALL_CONSTRUCTION_CONCRETE,
@@ -185,6 +186,7 @@ def to_ifc(
     assembly_geometry: str | None = None,
     layer_resolution: PresetResolution | None = None,
     layer_delivery: Any = None,
+    physical_routes: bool = False,
 ) -> ifcopenshell.file:
     """Materialize a canonical model as IFC4 suitable for Bonsai editing.
 
@@ -277,7 +279,20 @@ def to_ifc(
         model,_,bound_resolution=verify_layer_delivery(model,layer_delivery)
         if layer_resolution is not None and layer_resolution!=bound_resolution:
             raise ValueError("IFC resolution disagrees with source-bound saved request")
-    reject_physical_routes(model, "to_ifc")
+    if type(physical_routes) is not bool:
+        raise IfcAdapterError("physical_routes must be a boolean")
+    if not physical_routes:
+        reject_physical_routes(model, "to_ifc")
+    elif any(isinstance(route,PhysicalRoute) for route in model.routes):
+        from oabm.routing.physical_capture import capture, SOURCE_BYTES
+        from oabm.routing.physical_verify_types import VerificationStop
+        try:
+            model=BuildingModel.from_json(capture(model,byte_limit=SOURCE_BYTES).to_json(indent=None))
+        except (VerificationStop,ValueError,RecursionError) as error:
+            raise IfcAdapterError(f'physical IFC source refused: {error}') from error
+        physical_ids={route.id for route in model.routes if isinstance(route,PhysicalRoute)}
+        if any(port.owner_id in physical_ids for port in model.ports):
+            raise IfcAdapterError("physical route-owned canonical ports require analytic point-on-curve binding; not supported")
     if assembly_geometry not in (None, "tessellated"):
         raise IfcAdapterError("assembly_geometry: use None or explicit 'tessellated'")
     if assembly_geometry is None:
@@ -778,7 +793,9 @@ def to_ifc(
         segments: list[Any] = []
         segment_ports: list[tuple[Any, Any]] = []
         segment_records: list[tuple[Point3, Point3, Any]] = []
-        points = route.centerline.points
+        physical=isinstance(route,PhysicalRoute)
+        points = tuple(joint.position for joint in route.joints) if physical else route.centerline.points
+        facts=physical_segment_facts(route) if physical else ()
         for index, (start, end) in enumerate(zip(points, points[1:])):
             segment_class, predefined = _segment_ifc_type(route.route_type)
             segment_key = f"{route.id}#segment:{index}"
@@ -797,13 +814,20 @@ def to_ifc(
                 SegmentIndex=index,
             )
             _set_pose(ifc, segment, Pose(position=Point3(x=0, y=0, z=0)))
-            _assign_polyline_representation(ifc, segment, axis_context, (start, end))
-            _assign_round_body(ifc, segment, body_context, start, end, route.nominal_diameter_m)
+            if physical:
+                from .physical_routes import assign_segment
+                assign_segment(ifc,segment,axis_context,body_context,route,index)
+                _mark_adapter(ifc,segment,PhysicalSegmentId=route.segments[index].id)
+                entity_ifc[route.segments[index].id]=segment
+            else:
+                _assign_polyline_representation(ifc, segment, axis_context, (start, end))
+                _assign_round_body(ifc, segment, body_context, start, end, route.nominal_diameter_m)
             if selection is not None:
                 _add_raceway_product_pset(ifc, segment, selection)
             if outcome is not None:
                 _add_raceway_outcome_pset(ifc, segment, outcome)
-            direction = _direction(start, end)
+            direction = Vector3(**dict(zip('xyz',map(float,facts[index]['start_tangent'])))) if physical else _direction(start, end)
+            end_direction = Vector3(**dict(zip('xyz',map(float,facts[index]['end_tangent'])))) if physical else direction
             p_start = _add_adapter_port(
                 ifc,
                 segment,
@@ -818,7 +842,7 @@ def to_ifc(
                 segment,
                 f"{segment_key}#port:end",
                 end,
-                direction,
+                end_direction,
                 route_id=route.id,
                 role="segment-end",
             )
@@ -832,7 +856,7 @@ def to_ifc(
 
         route_fittings = [
             next(f for f in model.route_fittings if f.id == fitting_id)
-            for fitting_id in route.fitting_ids
+            for fitting_id in (() if physical else route.fitting_ids)
         ]
         route_products = [*segments, *(fitting_ifc[f.id] for f in route_fittings)]
         if route_products:
@@ -977,7 +1001,11 @@ def to_ifc(
         if conductor.route_ids:
             route = next((r for r in model.routes if r.id == conductor.route_ids[0]), None)
             if route is not None:
-                _assign_polyline_representation(ifc, item, axis_context, route.centerline.points)
+                if isinstance(route,PhysicalRoute):
+                    from .physical_routes import assign_conductor_axis
+                    assign_conductor_axis(ifc,item,axis_context,route)
+                else:
+                    _assign_polyline_representation(ifc, item, axis_context, route.centerline.points)
                 level_id = _route_level_id(model, route)
                 if level_id and level_id in storeys:
                     ifcopenshell.api.spatial.assign_container(
@@ -1425,8 +1453,12 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
         if kind not in _COLLECTION_BY_KIND:
             raise IfcAdapterError(f"unknown OABM canonical kind {kind!r}")
         data = dict(meta["json"])
-        if kind == "route" and data.get("geometry_kind") == "line_arc_v1":
-            raise IfcAdapterError("IFC import does not support physical routes (line_arc_v1)")
+        if kind=='route' and data.get('geometry_kind')=='line_arc_v1':
+            from oabm.model.model import _decode_dataclass
+            try:
+                _decode_dataclass(PhysicalRoute,data)
+            except (ValueError,TypeError,KeyError,AttributeError) as error:
+                raise IfcAdapterError(f'physical route metadata refused: {error}') from error
         canonical_id = data.get("id")
         if not canonical_id:
             raise IfcAdapterError(f"{item.is_a()} {item.GlobalId} has no canonical id")
@@ -1497,13 +1529,14 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
         raise IfcAdapterError(f"IFC edit no longer forms a valid canonical model: {exc}") from exc
 
 
-def round_trip(model: BuildingModel, *, assembly_geometry: str | None = None) -> BuildingModel:
+def round_trip(model: BuildingModel, *, assembly_geometry: str | None = None, physical_routes: bool = False) -> BuildingModel:
     """Convenience in-memory canonical -> IFC -> canonical round trip."""
 
-    reject_physical_routes(model, "round_trip")
+    if not physical_routes:
+        reject_physical_routes(model, "round_trip")
     if assembly_geometry is None:
         require_no_populated_building_assemblies(model, "IFC round trip", error_type=IfcAdapterError)
-    return from_ifc(to_ifc(model, assembly_geometry=assembly_geometry))
+    return from_ifc(to_ifc(model, assembly_geometry=assembly_geometry,physical_routes=physical_routes))
 
 
 def _assign_caller_groups(
@@ -2030,7 +2063,12 @@ def _canonical_metadata(item: Any) -> dict[str, Any] | None:
     if props is None:
         return None
     try:
-        payload = json.loads(str(props["CanonicalJson"]))
+        raw=str(props["CanonicalJson"])
+        if str(props['CanonicalKind'])=='route':
+            from .physical_routes import decode_route_payload
+            payload=decode_route_payload(raw)
+        else:
+            payload = json.loads(raw)
         return {
             "schema_version": str(props["SchemaVersion"]),
             "kind": str(props["CanonicalKind"]),
@@ -3032,6 +3070,10 @@ def _apply_ifc_overrides(
 
     if kind == "route":
         segments = route_segments.get(data["id"], [])
+        if data.get('geometry_kind')=='line_arc_v1':
+            from .physical_routes import validate_native_route
+            validate_native_route(data,segments)
+            return
         if not segments:
             raise IfcAdapterError(
                 f"route {data['id']!r} has no native route segments; "

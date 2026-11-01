@@ -1,0 +1,32 @@
+# Analytic physical-route IFC
+
+`to_ifc(model, physical_routes=True)` and `round_trip(..., physical_routes=True)`
+explicitly admit canonical `line_arc_v1` paths. The default export boundary still
+refuses them. Schema versions, identities, supplied actual OD, centerline radius,
+joint/segment records, request bindings and quantities are preserved.
+
+Each canonical segment has one native product under its existing route system.
+Its Axis is a two-point `IfcPolyline` or a quarter `IfcTrimmedCurve` over an
+oriented `IfcCircle`. Its Body is an `IfcSweptDiskSolid` using that same actual
+directrix and the supplied OD/2. Curves are never flattened into chords. Existing
+group/layer adapters select these same products, without additional solids.
+Conductors can carry a derived composite line/arc Axis; the existing route remains
+the only owner of the conduit solid. No purchased elbow/product is inferred.
+
+Readback requires the complete native segment inventory, stable GUIDs and
+canonical segment identities, expected IFC product type, unchanged placements,
+actual Axis/Body geometry, OD, circle center/radius/orientation and parameter
+trims. Native physical edits refuse rather than resurrecting missing geometry
+from metadata or reusing a stale physical request. Regenerate a fresh canonical
+route for a geometry change. Route JSON admission is bounded before parsing and
+checks original decimal physical numbers before float conversion.
+
+Physical route-owned additional canonical ports remain an explicit unsupported
+binding: analytic point-on-curve ownership needs its own implementation. Existing
+endpoint equipment/device ports and route-system connectivity are retained.
+Actual swept geometry is a derived model view, not surveyed installation fit,
+product compatibility, engineering approval or a live clearance certification.
+
+Focused checks cover real STEP-byte reparse, strict IFC4 EXPRESS validation,
+one/two bends, opposite turns, odd-nanometre radii, deterministic exports, exact
+canonical round trips and refusal of native geometry/inventory tampering.

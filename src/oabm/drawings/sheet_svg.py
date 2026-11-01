@@ -19,7 +19,7 @@ _STROKES = {
     'object': '#000000', 'cut': '#000000', 'opening': '#000000',
     'electrical': '#000000', 'route': '#000000', 'annotation': '#000000',
     'symbol': '#000000', 'space': '#666666', 'obstacle': '#666666',
-    'constraint': '#990000',
+    'constraint': '#990000', 'ghost': '#a6adb8',
 }
 _WEIGHTS = {'normal': 0.25, 'heavy': 0.5, 'thin': 0.13}
 _PATTERNS = {'solid': None, 'dash': '3 1.5', 'dot': '0.25 1'}

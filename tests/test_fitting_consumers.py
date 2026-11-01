@@ -214,7 +214,33 @@ def test_drawing_schedules_and_layer_adapter_use_existing_fitting_envelope():
     ghost_resolution = resolve_preset(ghost_config, model, preset="preset:fittings-ghost",
                                       unassigned="visible")
     ghost_plan = layer_glb_plan(model, ghost_resolution)
-    assert ghost_plan.unsupported_ghost_ids == ("fitting:one",)
+    assert ghost_plan.unsupported_ghost_ids == ()
+    payload = build_glb_bytes(model, groups=ghost_plan.groups, hidden_groups=ghost_plan.hidden_groups,
+        dimmed_ids=ghost_plan.dimmed_ids)
+    document = _glb_document(payload)
+    node = next(n for n in document["nodes"] if n["name"] == "fitting:one")
+    material = document["materials"][document["meshes"][node["mesh"]]["primitives"][0]["material"]]
+    assert material["alphaMode"] == "BLEND"
+    assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == .3
+
+
+def test_ifc_layer_route_hiding_does_not_override_independent_fitting_ghost():
+    model = _selected(envelope=True)
+    route_id = model.routes[0].id
+    config = LayerSelectionConfig(layers=(
+        LayerDefinition(id="layer:route", name="Route", member_ids=(route_id,)),
+        LayerDefinition(id="layer:fitting", name="Fitting", member_ids=("fitting:one",)),
+    ), presets=(SavedPreset(id="preset:independent", name="Independent states",
+        hidden_layer_ids=("layer:route",), ghosted_layer_ids=("layer:fitting",)),))
+    resolution = resolve_preset(config, model, preset="preset:independent", unassigned="visible")
+    native = to_ifc(model, layer_resolution=resolution)
+    layers = {layer.Name.rsplit(":",1)[1]:layer for layer in native.by_type("IfcPresentationLayerWithStyle")}
+    fitting = _native_fitting(native)
+    representations = set(fitting.Representation.Representations)
+    assert representations <= set(layers["ghosted"].AssignedItems)
+    assert not representations.intersection(layers["hidden"].AssignedItems)
+    assert layers["hidden"].LayerOn is False
+    assert from_ifc(native).to_dict() == model.to_dict()
 
 
 def test_review_bundle_node_coverage_accepts_fitting_node():

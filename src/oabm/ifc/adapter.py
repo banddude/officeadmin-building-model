@@ -46,6 +46,7 @@ from oabm.model import (
     SUPPORTED_SCHEMA_VERSIONS,
     Box3D,
     BuildingModel,
+    PresetResolution,
     Point3,
     Polyline3D,
     Pose,
@@ -182,6 +183,7 @@ def to_ifc(
     groups: Mapping[str, Iterable[str]] | None = None,
     element_status: Mapping[str, str] | None = None,
     assembly_geometry: str | None = None,
+    layer_resolution: PresetResolution | None = None,
 ) -> ifcopenshell.file:
     """Materialize a canonical model as IFC4 suitable for Bonsai editing.
 
@@ -1019,6 +1021,9 @@ def to_ifc(
             f"for ports {mismatched!r}"
         )
 
+    if layer_resolution is not None:
+        from oabm.exports.layer_presentation import assign_ifc_layer_selection
+        assign_ifc_layer_selection(ifc, model, layer_resolution, entity_ifc)
     _finalize_deterministic_bytes(ifc)
 
     if destination is not None:

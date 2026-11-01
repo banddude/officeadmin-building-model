@@ -648,6 +648,13 @@ def _build_document(
     entries: list[dict[str, Any]] = []
 
     def add(entry: dict[str, Any]) -> None:
+        nonlocal dimmed_count
+        if entry["name"] in options.dimmed_ids and not entry.get("meshless"):
+            key = entry["material_key"]
+            if key[0] != "dimmed":
+                dimmed_count += 1
+                entry["material_key"] = ("dimmed", key[0])
+                entry["extras"]["display"] = _DIMMED_DISPLAY
         entries.append(entry)
 
     dimmed_count = 0
@@ -1217,6 +1224,29 @@ def _build_document(
                       "revision":assembly.basis.revision,"rule_id":assembly.basis.rule_id},code_verification_performed=False)
         scene_root=[i for i in scene_root if i not in children]
         scene_root.append(len(nodes));nodes.append({"name":assembly.id,"children":children,"extras":extras})
+    if options.groups:
+        # Semantic parents remain selectable without duplicating their owned solids.
+        from oabm.model.layers import _universe
+        present = {node["name"] for node in nodes}
+        semantic = {entity.id: (entity, kind) for kind, entities in (
+            ("wall", model.walls), ("ceiling", model.ceilings),
+            ("opening", model.openings), ("building_assembly", model.building_assemblies),
+        ) for entity in entities}
+        for entity_id, level_id in _universe(model).items():
+            if entity_id not in present:
+                entity, kind = semantic[entity_id]
+                extras = _extras(entity, kind, level_id, include_canonical_id=True)
+                _add_name(extras, entity)
+                extras["geometry_disclosure"] = "semantic record; no added geometry"
+                if hasattr(entity, "component_ids"):
+                    extras.update(component_ids=list(entity.component_ids), host_id=entity.host_id,
+                                  assembly_kind=entity.assembly_kind,
+                                  host_representation=entity.host_representation)
+                if hasattr(entity, "host_id"):
+                    extras["host_id"] = entity.host_id
+                nodes.append({"name": entity_id, "extras": extras})
+                scene_root.append(len(nodes)-1)
+    explicit_members = {member for _, members in options.groups for member in members}
     group_nodes: list[dict[str, Any]] = []
     group_counts: dict[str, int] = {}
     unmatched_group_ids = 0
@@ -1230,7 +1260,7 @@ def _build_document(
             for member_id in sorted(member_ids):
                 found = _group_member_indices(
                     member_id, nodes,
-                    wire_memberships=wire_memberships,
+                    wire_memberships=wire_memberships, explicit_members=explicit_members,
                 )
                 if found:
                     indices.extend(found)
@@ -1373,6 +1403,7 @@ def _build_document(
 def _group_member_indices(
     member_id: str, nodes: list[dict[str, Any]], *,
     wire_memberships: frozenset[tuple[str, str]] | None = None,
+    explicit_members: set[str] | None = None,
 ) -> list[int]:
     """The node indices one group member id claims.
 
@@ -1389,7 +1420,8 @@ def _group_member_indices(
     for index, node in enumerate(nodes):
         extras = node.get("extras", {})
         component_of_member = (
-            extras.get("canonical_type") == "building_assembly_component"
+            node["name"] not in (explicit_members or set())
+            and extras.get("canonical_type") == "building_assembly_component"
             and member_id in {
                 extras.get("owner_id"), extras.get("host_id"), extras.get("parent_host_id")
             }

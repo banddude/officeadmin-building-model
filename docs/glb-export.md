@@ -290,15 +290,16 @@ panel data from a synthetic room.
 
 ### Saved layer selections
 
-`oabm.exports.layers.layer_glb_plan(model, resolution)` turns a resolved
-saved layer preset (see [Layer selections](layer-selections.md)) into this
-exporter's existing caller-supplied inputs: one group per nonempty state
-with the hidden state's group in `hidden_groups` (starting hidden through
-`KHR_node_visibility`), ghosted ids passed as `dimmed_ids` so supported
-kinds (walls, slabs, spaces, devices, equipment and routes; glazed walls
-alpha-only) render translucent, and `unsupported_ghost_ids` naming ghosted
-physical boxes and the 1.3 support components, interfaces and assemblies,
-which draw at normal appearance until a ghost style exists for them. A
-dimmed route dims the conductor wires drawn inside it, so a ghosted conduit
-ghosts whole. The adapter adds no exporter features: with no plan passed,
-output bytes are unchanged.
+`layer_glb_plan(model, resolution)` maps a complete saved selection to one
+nonempty group per state, with hidden groups using `KHR_node_visibility` and
+ghosts using translucent materials. Physical boxes, fitting envelopes,
+structural members, support components and building assembly components now
+support ghosts alongside architecture, devices, equipment and routes/wires.
+Meshless semantic parents retain canonical identity and ownership facts without
+duplicate geometry. State grouping preserves a single scene-tree owner per node.
+
+Prefer `build_layer_glb` for detached, source-bound delivery with saved requests,
+coverage and unknown-level disclosure. The same resolution can drive drawings,
+DXF and IFC presentation; see [Layer selections](layer-selections.md) for APIs,
+consumer boundaries and the enclosed synthetic room demonstration. Interactive
+OfficeAdmin controls and external viewer compatibility remain unverified.

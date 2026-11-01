@@ -1,23 +1,8 @@
-"""Adapter from a resolved layer preset to the existing GLB visibility boundary.
+"""Saved-preset GLB delivery over canonical physical and semantic objects.
 
-The GLB exporter already owns grouping and default visibility: ``groups``
-reparents member nodes under ``group:<name>`` parents and ``hidden_groups``
-marks a group hidden through the ratified ``KHR_node_visibility`` extension,
-while ``dimmed_ids`` renders a translucent style where the geometry supports
-one. This adapter translates a :class:`~oabm.model.PresetResolution` into
-exactly those caller-supplied inputs, and nothing else: it never mutates the
-model, changes default export bytes, or invents new GLB features.
-
-Ghosting is disclosed honestly. The exporter can render a ghost (dimmed,
-translucent) style for architectural walls, slabs and spaces, electrical
-devices, electrical equipment and routes, including the conductor wires
-drawn inside a dimmed route, so a ghosted route ghosts whole. A glazed wall
-takes the dim only as a lower alpha. Physical boxes, support components,
-interfaces and assemblies, structural members, and v1.5 route-fitting
-occurrences still have no caller-ghost style today, so those ids stay in the
-ghosted group but retain their normal/envelope appearance, and
-:attr:`LayerGlbPlan.unsupported_ghost_ids` names them explicitly rather than
-silently advertising the behaviour as working.
+Every resolved ID is emitted once. Logical ownership is retained in extras;
+state groups flatten the display tree so independently selected children do
+not acquire a second parent or inherit accidental hidden state.
 """
 from __future__ import annotations
 
@@ -32,7 +17,6 @@ from oabm.model import (
     BuildingModel, ContractError, LayerSelectionConfig, PresetResolution, reject_physical_routes, resolve_preset,
 )
 from oabm.model.layers import _universe
-from oabm.assembly_compat import require_no_populated_building_assemblies
 
 __all__ = ["LayerGlbPlan", "layer_glb_plan", "LayerGlbDelivery", "build_layer_glb"]
 
@@ -49,9 +33,8 @@ class LayerGlbPlan:
     groups: dict[str, frozenset[str]]
     hidden_groups: frozenset[str]
     dimmed_ids: frozenset[str]
-    #: Ghosted ids whose GLB kind has no ghost style today. They stay in the
-    #: ghosted group but draw normally; the caller must surface this report
-    #: instead of presenting them as ghosted.
+    #: Unsupported ghost geometry, empty for all current drawable kinds.
+    #: Meshless semantic records have no surface to dim.
     unsupported_ghost_ids: tuple[str, ...]
 
 
@@ -72,8 +55,7 @@ def layer_glb_plan(
         raise ValueError("physical_routes and include_obstacles must be booleans")
     if not physical_routes:
         reject_physical_routes(model, "layer_glb_plan")
-    if physical_routes or include_obstacles:
-        _validate_partition(model, resolution, include_obstacles=include_obstacles)
+    _validate_partition(model, resolution, include_obstacles=include_obstacles)
     ghost_capable = _ghost_capable_ids(model)
     if include_obstacles:
         ghost_capable.update(obstacle.id for obstacle in model.obstacles)
@@ -101,30 +83,12 @@ def layer_glb_plan(
 def _ghost_capable_ids(model: "BuildingModel") -> set[str]:
     """Ids the current GLB exporter can actually draw in a ghost style."""
 
-    capable: set[str] = set()
-    for wall in model.walls:
-        # Opaque walls use the common grey BLEND style; glazing keeps its
-        # material and gets only the lower caller alpha in the GLB exporter.
-        capable.add(wall.id)
-    for slab in model.slabs:
-        capable.add(slab.id)
-    for space in model.spaces:
-        capable.add(space.id)
-    for device in model.electrical_devices:
-        capable.add(device.id)
-    for equipment in model.electrical_equipment:
-        capable.add(equipment.id)
-    for route in model.routes:
-        capable.add(route.id)
-    return capable
+    return set(_universe(model))
 
 
 def _validate_partition(
     model: BuildingModel, resolution: PresetResolution, *, include_obstacles: bool,
 ) -> None:
-    require_no_populated_building_assemblies(model, "physical layer GLB")
-    if model.support_assemblies or model.support_components or model.support_interfaces:
-        raise ValueError("physical layer GLB does not support shared support hierarchy regrouping")
     universe = set(_universe(model, include_obstacles=include_obstacles))
     states = (resolution.visible_ids, resolution.hidden_ids, resolution.ghosted_ids)
     flattened = [item for state in states for item in state]
@@ -271,6 +235,16 @@ def build_layer_glb(
             expected_group = next(key for key, ids in plan.groups.items() if owner in ids)
             if index not in groups_by_key[expected_group].get("children", []):
                 raise ValueError("derived conductor geometry must follow its canonical route display group")
+    reached: set[int] = set()
+    pending = list(document["scenes"][document.get("scene", 0)]["nodes"])
+    while pending:
+        index = pending.pop()
+        if index in reached:
+            raise ValueError("layer display hierarchy must be a tree with one owner per node")
+        reached.add(index)
+        pending.extend(nodes[index].get("children", ()))
+    if reached != set(range(len(nodes))):
+        raise ValueError("layer display hierarchy has orphan nodes")
     source_json = snapshot.to_json(indent=None)
     config_json = config.to_json(indent=None)
     serial_options = dict(physical_routes=physical_routes, include_obstacles=include_obstacles,

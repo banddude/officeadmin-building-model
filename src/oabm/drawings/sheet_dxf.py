@@ -16,9 +16,9 @@ from .model import DrawingSet
 from .sheets import SheetSpec, ViewPlacement, compose_blank_sheet, compose_sheet
 
 _WEIGHTS = {"normal": 25, "heavy": 50, "thin": 13}
-_STROKES = {"object", "cut", "space", "opening", "electrical", "route", "obstacle", "constraint", "annotation"}
+_STROKES = {"object", "cut", "space", "opening", "electrical", "route", "obstacle", "constraint", "annotation", "ghost"}
 _PATTERNS = {"solid": "CONTINUOUS", "dash": "OABM_DASH", "dot": "OABM_DOT"}
-_COLORS = {"space": 0x666666, "obstacle": 0x666666, "constraint": 0x990000}
+_COLORS = {"ghost": 0xA6ADB8, "space": 0x666666, "obstacle": 0x666666, "constraint": 0x990000}
 _FONT = "DejaVuSansMono.ttf"
 _TEXT_HEIGHT = 2.5
 _EXPORT_VERSION = "1.0.1"

@@ -1,226 +1,166 @@
-# Layer selections: portable saved selections and explicit membership
+# Saved model layers and presentation
 
-Bounded first implementation under issues #237 and #227. This adds portable
-backend layer selections and a deterministic resolver over explicit canonical
-entity membership. It does not add the OA production control panel, automatic
-system recognition, IFC layer presentation, or CAD export integration, and it
-does not close the parents.
+`oabm.model.layers` resolves portable saved selections over explicit canonical
+membership. `contracts/oabm-layers-v1.schema.json` remains unchanged. A layer has
+an ID, name, explicit member IDs and optional supplied system, trade and phase
+labels. Labels do not infer membership or claim that an unmodeled system exists.
+An assistant may supply membership using known canonical IDs.
 
-## What it is
+A saved preset assigns every configured layer exactly one state: visible, hidden
+or ghosted. Unknown fields, duplicate IDs/names/members, missing preset states,
+dangling members and unknown level/isolate references refuse. Configuration JSON
+round trips deterministically with `LayerSelectionConfig.dump/load`.
 
-`oabm.model.layers` (with the schema at `contracts/oabm-layers-v1.schema.json`)
-defines a versioned JSON configuration of:
-
-- **Layers**: a named `LayerDefinition` with an explicit `member_ids` list of
-  canonical entity ids and optional `system`, `trade` and `phase` labels.
-  Membership is exactly what the configuration states. Nothing is classified
-  from prose, geometry, or nearest-object proximity, and a label is carried
-  data, never an inference.
-- **Saved presets**: a named `SavedPreset` that assigns every layer of the
-  configuration exactly one display state: `visible`, `hidden` or `ghosted`.
-  A preset is a total function over the layers; a layer with no state is a
-  decode error, so resolution never guesses a default state.
-
-Decoding is strict: unknown fields are rejected at every level, ids must be
-canonical ids, duplicate layer or preset ids and names are rejected, a member
-listed twice in one layer is rejected, and a layer named in two states of one
-preset is rejected. Future schema versions are refused rather than guessed at.
-
-## Resolution
-
-`resolve_preset(config, model, preset=..., isolate=..., level_ids=...,
-unassigned=...)` resolves one saved preset against a concrete
-`BuildingModel` and returns a `PresetResolution`: sorted, explicit
-`visible_ids`, `hidden_ids` and `ghosted_ids`, plus coverage reports. The
-semantics, applied in this order:
-
-1. Every configured member id must exist in the model; dangling members,
-   unknown levels in the level filter, and unknown isolate references are
-   refused with diagnostics naming the offender.
-2. An entity in several layers takes the **strictest** state among them:
-   `hidden` beats `ghosted` beats `visible`. This is the documented rule for
-   overlapping layers; it is independent of layer order.
-3. An entity in no layer is **unassigned**. Incomplete coverage is a
-   property of the whole configuration, so `unassigned_ids` always reports
-   it, independent of `isolate` and of the level filter; isolate can hide
-   an unassigned entity but can never make the coverage gap disappear. The
-   caller's `unassigned` policy is a required argument, so there is no
-   silent default: it decides where unassigned entities land (`visible`
-   keeps today's everything-shown behaviour, `hidden` and `ghosted` tuck
-   them away) or refuses incomplete coverage outright (`error`, also under
-   isolate).
-4. A nonempty `isolate` restricts the considered layers to the named ones.
-   Their members keep the strictest state among those layers under the
-   preset, and every other drawable entity is hidden. Isolating an empty
-   layer is legal and renders nothing.
-5. A nonempty `level_ids` filter keeps entities whose canonical level is in
-   the filter and hides the rest. A route resolves its level from its start
-   port's owner, the same documented rule the GLB exporter uses for
-   reference planes. An entity with no resolvable level is outside the
-   filter and hidden.
-
-The three id sets are always a disjoint, complete partition of the drawable
-universe: the entities the current GLB exporter draws as canonical nodes
-(walls, slabs, spaces, electrical devices, electrical equipment, routes,
-physical electrical boxes, and the 1.3 shared support components,
-interfaces and assemblies). Ceilings and openings are not drawn by the GLB
-exporter yet, so they are outside the universe; a member that exists in the
-model but outside the universe (a port, a raceway selection, a support
-selection outcome) is reported in `out_of_scope_member_ids` and never
-enters the partition. Conductor wire nodes are counted once, through their
-route id, and a support assembly brings its component and interface
-children with it exactly once.
-
-## What resolution never claims
-
-- The canonical model and its quantities are unchanged: the configuration is
-  not part of `BuildingModel`, and resolving it mutates nothing. Default GLB
-  and drawing bytes are unchanged unless a caller explicitly passes the
-  derived plan to an exporter.
-- A layer named `fire_alarm` with zero drawable members does **not** mean
-  fire alarm is modeled. `empty_layer_ids` and `system_coverage` (system
-  label to drawable member count) say so numerically; consumers must read
-  coverage from the report, never from a layer name's existence.
-
-## GLB handoff
-
-`oabm.exports.layers.layer_glb_plan(model, resolution)` adapts a resolution
-to the exporter's existing caller-supplied grouping and visibility boundary:
-
-- one group per nonempty state (`layer:<preset id>:visible|ghosted:hidden`),
-  with the hidden state's group in `hidden_groups`, so it starts hidden
-  through the ratified `KHR_node_visibility` extension (used, never
-  required);
-- ghosted ids passed as `dimmed_ids`, so supported kinds actually render
-  ghosted (translucent): walls, slabs, spaces, electrical devices,
-  electrical equipment and routes. A dimmed route dims the conductor wires
-  drawn inside it too, so the conduit ghosts whole; glazed walls keep their
-  glass colour and take only the lower caller alpha;
-- `unsupported_ghost_ids` names every ghosted id whose kind has no ghost
-  style today (physical boxes, support components, interfaces and
-  assemblies). They stay in the ghosted group but draw at normal appearance,
-  and the caller must surface the report instead of presenting them as
-  ghosted.
-
-The adapter adds no new exporter features and does not change the exporter;
-with no plan passed, `to_glb` output is byte-identical to its previous
-behaviour. Pass the plan straight through:
+## Shared resolution
 
 ```python
-from oabm.exports import layer_glb_plan, to_glb
+from oabm.model import resolve_preset
 
-resolution = resolve_preset(config, model, preset="preset:phase-1", unassigned="visible")
-plan = layer_glb_plan(model, resolution)
-summary = to_glb(model, path, groups=plan.groups,
-                 hidden_groups=plan.hidden_groups, dimmed_ids=plan.dimmed_ids)
+selection = resolve_preset(config, model, preset="preset:review",
+    isolate=(), level_ids=("level:one",), unassigned="error")
 ```
 
-`PresetResolution.to_dict()` is the derived selection/visibility manifest for
-other export consumers: sorted id lists plus the coverage reports above.
+The resolver is the single state decision for all consumers:
 
-## Determinism
+1. Expand explicit host/assembly membership through canonical ownership. Building
+   assembly parents include their physical components; walls include hosted
+   openings and their selected inserts; ceiling hosts include their selected grid,
+   tile and hanger children. A shared-support parent includes its components and
+   interfaces. Shared supports **do not** inherit the systems of supported loads
+   or routes: classify the shared assembly explicitly, once.
+2. Overlapping layer membership uses strictest state: hidden, then ghosted, then
+   visible. A separately classified child can therefore be hidden while its parent
+   is visible. Layer ordering does not change the result.
+3. `unassigned_ids` reports whole-configuration coverage, even under isolate or a
+   level filter. Required `unassigned` policy is visible, hidden, ghosted or error.
+4. Isolate considers only the selected layers and hides every other object.
+5. A level filter hides objects outside the requested levels, including objects
+   with unknown levels. Opening levels come from their canonical host; route
+   levels come from the start-port owner. No level is inferred from coordinates.
 
-Resolution is a pure function of the configuration and the model. Permuting
-the order of layers, members, or presets in the configuration cannot change
-a resolution, and exporting the same plan is byte-identical. Tests cover the
-permutation property directly, on the resolver and on actual GLB bytes.
+The universe includes walls, slabs, spaces, ceilings, openings, building assembly
+parents and components, equipment/devices, routes, boxes, structural members,
+shared support parents/components/interfaces and fitting occurrences. Ports,
+product selections, outcomes and physical-route joints/segments remain metadata;
+explicit membership in these is reported as `out_of_scope_member_ids`. Conductor
+meshes follow their owning route rather than becoming a second quantity.
 
-## Remaining gaps
+Ceilings and openings without physical components remain addressable semantic
+records in GLB; selection adds no invented ceiling thickness, opening solid or
+hardware. Aggregate hosts have no duplicate body. Physical assembly components
+are the actual canonical meshes. Empty layers and per-system coverage are always
+reported. Selection never changes canonical schemas, identity, provenance,
+geometry or whole-model quantities.
 
-Not delivered here, by scope: the OA production viewer control panel,
-automatic system/trade recognition from a plan, IFC presentation of layers,
-per-layer CAD export, ghost styles for physical boxes and support records, and
-any real panel-recognition gate change. File follow-ups per slice against
-#237/#227.
-
-## Opt-in physical routes and supplied obstacles
-
-This bounded continuation of #237 adds a saved-preset-to-GLB path for canonical
-1.7 line/quarter-arc routes and supplied identity-rotation box obstacles. It does
-not close #237 or add OfficeAdmin controls, IFC layers or CAD layers.
-
-`resolve_preset(..., include_obstacles=True)` includes **every** obstacle in the
-coverage universe, including unassigned and hidden obstacles. The default remains
-false. Obstacles have no canonical level: an explicit level filter hides them,
-without inferring levels from Z. Physical joints, segments, requirements and allowed
-domains can be explicit configuration members but remain non-drawable metadata;
-the route owns its one mesh. Existing strictest-state and isolate rules apply.
-
-Prefer the source-bound entrypoint over retaining a resolution across model edits:
+## GLB and retained saved requests
 
 ```python
 from oabm.exports import build_layer_glb
 
-result = build_layer_glb(
-    model, config, preset="preset:review", unassigned="visible",
-    physical_routes=True, include_obstacles=True,
-)
-# Prepare all bytes before writing; use a fresh caller-owned delivery directory.
-(output / "model.json").write_text(result.source_model_json, encoding="utf-8")
-(output / "layers.json").write_text(result.config_json, encoding="utf-8")
-(output / "selection.json").write_text(result.manifest_json, encoding="utf-8")
-(output / "model.glb").write_bytes(result.glb_bytes)
+delivery = build_layer_glb(model, config, preset="preset:review",
+    unassigned="error", isolate=(), level_ids=("level:one",),
+    physical_routes=False, include_obstacles=False)
 ```
 
-The entrypoint first uses the existing bounded physical capture independently for
-the model and configuration (32 MiB conservative capture budget each, 250,000
-captured nodes, depth 64), before either is serialized. Cyclic, oversized or
-excessively deep mutable metadata and oversized configuration labels refuse with
-an explicit diagnostic. The 32 MiB conservative capture charge can refuse a
-configuration whose final JSON would be smaller.
+This source-bound entrypoint captures and validates detached model/configuration
+snapshots, resolves the saved request immediately before export, and returns
+`source_model_json`, `config_json`, `manifest_json` and exact `glb_bytes`.
+The manifest retains source/configuration, preset/isolate/level selection, complete
+resolution, source/GLB hashes, replayable `export_options`, unassigned coverage and
+`unknown_level_hidden_ids`. Saved per-level requests are retained here, without
+changing the portable preset schema. Decode the retained source for downstream
+consumers; integer normalization during canonical decoding can affect source hashes.
 
-The saved request has a separate 32 MiB conservative capture budget and 250,000
-scalar-node budget shared by `preset`, `unassigned`, and all `isolate`/`level_ids`
-entries. At most 250,000 iterable entries are consumed, subject to the shared
-node budget (the two scalar arguments also consume nodes). Every occurrence is
-charged before deduplication, so infinite repeating iterables terminate with an
-explicit resource-limit diagnostic. Ordinary finite generators remain supported;
-references must be strings, and bare strings are not accepted as collections.
-It then detaches and validates the model and configuration, resolves the
-saved request immediately before export, and verifies complete, disjoint drawable
-coverage with every canonical ID emitted exactly once and no unmatched group
-members. The manifest retains the model ID/hash, full configuration, request,
-resolution, exact GLB hash, replayable `export_options`, unsupported ghost IDs and
-`unknown_level_hidden_ids`. The retained model snapshot is the authoritative input
-for subsequent review-bundle generation; decode it and use the manifest's same
-`export_options`. Canonical decoding may normalize caller-authored integer numeric
-representations, so use this retained snapshot rather than hashing a previous
-in-memory object. Existing review-bundle schema and exact re-export checks remain
-unchanged, including the whole-model quantity limitation for physical routes.
+Every canonical universe ID appears once. State groups form a verified tree with
+no orphan nodes or duplicate parents. Canonical assembly ownership stays in node
+extras while display groups flatten the scene hierarchy, allowing independent
+child states. Ghost meshes use real translucent materials for architecture,
+assembly components, devices/equipment, routes/wires, boxes, fitting envelopes,
+structural members, supports and supplied box obstacles. Meshless semantic records
+have no surface to dim. `unsupported_ghost_ids` is empty for current supported kinds.
 
-`layer_glb_plan(..., physical_routes=True, include_obstacles=True)` also supports
-these meshes and enforces the complete disjoint partition. A standalone resolution
-is still not source-bound: use `build_layer_glb` to bind the configuration and
-request. Both flags default false, preserving the legacy guard and output behavior.
-Pass matching obstacle inclusion to resolver and exporter. With either explicit
-physical display flag enabled, conductor meshes follow their actual canonical
-route ownership, including route IDs without a `route:` prefix. Delivery checks
-verify those derived meshes are children of the same display group as their route.
-Canonical IDs beginning `group:` remain ordinary canonical IDs; an exact collision
-with a generated display-group name is explicitly refused.
-Populated building
-assemblies and shared support hierarchies are explicitly refused by the new path;
-this slice does not change their producer or regrouping semantics.
+Hidden geometry remains in the GLB under `KHR_node_visibility`. Viewers must honor
+that extension; a generic viewer may show hidden nodes. No interactive OfficeAdmin
+controls or third-party viewer compatibility is established by this backend.
 
-Routes and obstacle boxes support actual translucent materials. Hidden means
-**retained geometry** under `KHR_node_visibility`, never deletion or exemption
-from clearance obligations. Unsupported obstacle geometry refuses even if hidden.
-Generic viewers may ignore the extension and show hidden nodes. No display preset
-changes the source geometry, stable IDs, provenance or analytic route measurements,
-and this export makes no engineering or clearance certification.
+`physical_routes=True` explicitly enables canonical curved routes.
+`include_obstacles=True` includes all supplied obstacles in coverage, even hidden
+or unassigned ones. Obstacles have unknown canonical level and are hidden by a
+level filter. Unsupported obstacle geometry refuses even when hidden. Both flags
+still default false. No routing, clearance or engineering approval is implied.
 
-Run the connected synthetic example with a fresh output directory:
+Existing finite-capture safeguards remain: independent model/configuration capture
+budgets of 32 MiB, 250,000 nodes and depth 64; a separate 32 MiB/250,000 scalar-node
+request budget; occurrence charging before deduplication. Cyclic, oversized/deep
+metadata and infinite request iterables terminate with explicit diagnostics.
+
+For lower-level use, `layer_glb_plan(model, selection, ...)` returns groups,
+hidden_groups and dimmed_ids for `to_glb`. Arbitrary resolutions cannot prove
+source freshness; prefer the source-bound entrypoint for delivery.
+
+## Drawings and CAD/DXF
+
+```python
+from oabm.exports import apply_layer_selection
+
+selected_view = apply_layer_selection(base_view, model, selection)
+```
+
+Generate a normal canonical drawing view first (use `assembly_geometry="cut"`
+for populated assemblies), then apply the same resolution. The adapter removes
+hidden primitives and annotations, renders ghosts with the explicit light-grey
+thin `ghost` stroke and omits dimensions whose sources are hidden or ghosted.
+Assembly-cut geometry belongs to its first source ID (the physical child), whose
+resolved state already includes inherited membership. This avoids applying a
+parent's state a second time. Support attachments become explicit paper-sized
+cross/label vector marks; they do not claim hardware geometry. Other unsupported
+symbol tokens still refuse in the existing bounded DXF adapter.
+
+The selected DrawingView goes unchanged to `view_to_svg`, physical sheet SVG/PDF,
+and `sheet_to_dxf`. DXF uses actual light-grey CAD entities for ghosts; hidden
+objects are absent from this derived plotted view. Canonical model/quantities and
+retained source remain complete. Current assembly drawings are exact plane cuts,
+not hidden-line elevations or a promise to draw parts outside the view cut/depth.
+Structural members use their canonical oriented envelopes in plans/sections.
+
+## IFC
+
+```python
+from oabm.ifc import to_ifc
+
+native = to_ifc(model, assembly_geometry="tessellated",
+    layer_resolution=selection)
+```
+
+The same complete resolution assigns actual native shape representations to
+`IfcPresentationLayerWithStyle` states. Hidden sets `LayerOn=False` and
+`LayerFrozen=True`; visible/ghosted layers remain on. Ghost Body items receive
+an actual `IfcSurfaceStyleRendering` with transparency 0.82. All products and
+geometry remain in the IFC, including hidden objects, so canonical round trips
+and stable GlobalIds are preserved. Derived route segments follow the route;
+canonical fittings keep their independently resolved states. Logical parents
+have no duplicate representation. No selection means existing IFC bytes remain
+unchanged. Viewers must honor native presentation-layer flags for initial hiding;
+external viewer controls have not been verified here. Existing IFC consumer
+boundaries, including refusal of canonical physical curved routes, remain intact.
+
+## Reproducible synthetic demonstration
 
 ```sh
-PYTHONPATH=src python examples/physical_route_layers.py /tmp/fresh-route-layer-example
+PYTHONPATH=src python examples/assembly_layer_selections.py /tmp/fresh-layer-room
 ```
 
-It generates a curved detour around a supplied box, a source-bound schedule,
-portable configurations, five GLBs/manifests and `presets.png`. Panels show routes
-visible/boxes ghosted, routes hidden/boxes visible, routes ghosted, isolated route,
-and isolated route with honestly unassigned obstacle coverage. The narrow offline
-renderer reads actual indexed GLB buffers, translations, alphas and inherited
-visibility; it does not approximate the route from its centreline. It supports
-only the example's identity rotations and shares a fixed frame across panels.
-Tests compare identical binary mesh buffers and schedule measurements across
-presets and replay their exact options through the existing review bundle.
+The completed enclosed synthetic room includes wall framing/drywall, door/window
+inserts, ceiling runners/tiles/hangers, explicit electrical power/lighting, a box,
+route, shared support and structural member. Two saved presets reload from disk.
+Five deliveries demonstrate reset, hidden/ghosted review, isolated power and two
+level filters. Every delivery includes GLB, selection manifest, actual plan and
+ceiling-cut SVG/DXF with companions, and IFC. `REPORT.json`, `quantities.json`,
+`SHA256SUMS` and a fixed-camera `presets.png` retain evidence. The PNG reads actual
+indexed GLB buffers, material alphas and inherited visibility using the existing
+offline example decoder. It is display evidence, not an interactive viewer claim.
+The example also proves unknown-level and deliberately unassigned disclosure.
+
+The earlier `examples/physical_route_layers.py` remains the curved-route and
+obstacle demonstration. No OfficeAdmin expansion, automatic classification,
+private project inputs or issue closure is implied by these synthetic examples.

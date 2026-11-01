@@ -1221,11 +1221,17 @@ def _build_document(
     group_counts: dict[str, int] = {}
     unmatched_group_ids = 0
     if options.groups:
+        wire_memberships = (frozenset((conductor.id, route_id)
+            for conductor in model.conductors for route_id in conductor.route_ids)
+            if options.physical_routes or options.include_obstacles else None)
         moved: set[int] = set()
         for group_name, member_ids in options.groups:
             indices: list[int] = []
             for member_id in sorted(member_ids):
-                found = _group_member_indices(member_id, nodes)
+                found = _group_member_indices(
+                    member_id, nodes,
+                    wire_memberships=wire_memberships,
+                )
                 if found:
                     indices.extend(found)
                 else:
@@ -1365,7 +1371,8 @@ def _build_document(
 
 
 def _group_member_indices(
-    member_id: str, nodes: list[dict[str, Any]]
+    member_id: str, nodes: list[dict[str, Any]], *,
+    wire_memberships: frozenset[tuple[str, str]] | None = None,
 ) -> list[int]:
     """The node indices one group member id claims.
 
@@ -1389,6 +1396,11 @@ def _group_member_indices(
         )
         if node["name"] == member_id or node["name"] == outline_name or component_of_member:
             indices.append(index)
+        elif wire_memberships is not None:
+            # Opt-in physical display uses retained canonical ownership, never
+            # an assumed route ID prefix or a derived wire-name convention.
+            if (extras.get("canonical_id"), member_id) in wire_memberships and extras.get("route_id") == member_id:
+                indices.append(index)
         elif route_key is not None and _wire_route_segment(node["name"]) == route_key:
             indices.append(index)
     return indices

@@ -109,7 +109,7 @@ behaviour. Pass the plan straight through:
 ```python
 from oabm.exports import layer_glb_plan, to_glb
 
-resolution = resolve_preset(config, model, preset="preset:phase-1")
+resolution = resolve_preset(config, model, preset="preset:phase-1", unassigned="visible")
 plan = layer_glb_plan(model, resolution)
 summary = to_glb(model, path, groups=plan.groups,
                  hidden_groups=plan.hidden_groups, dimmed_ids=plan.dimmed_ids)
@@ -132,3 +132,95 @@ automatic system/trade recognition from a plan, IFC presentation of layers,
 per-layer CAD export, ghost styles for physical boxes and support records, and
 any real panel-recognition gate change. File follow-ups per slice against
 #237/#227.
+
+## Opt-in physical routes and supplied obstacles
+
+This bounded continuation of #237 adds a saved-preset-to-GLB path for canonical
+1.7 line/quarter-arc routes and supplied identity-rotation box obstacles. It does
+not close #237 or add OfficeAdmin controls, IFC layers or CAD layers.
+
+`resolve_preset(..., include_obstacles=True)` includes **every** obstacle in the
+coverage universe, including unassigned and hidden obstacles. The default remains
+false. Obstacles have no canonical level: an explicit level filter hides them,
+without inferring levels from Z. Physical joints, segments, requirements and allowed
+domains can be explicit configuration members but remain non-drawable metadata;
+the route owns its one mesh. Existing strictest-state and isolate rules apply.
+
+Prefer the source-bound entrypoint over retaining a resolution across model edits:
+
+```python
+from oabm.exports import build_layer_glb
+
+result = build_layer_glb(
+    model, config, preset="preset:review", unassigned="visible",
+    physical_routes=True, include_obstacles=True,
+)
+# Prepare all bytes before writing; use a fresh caller-owned delivery directory.
+(output / "model.json").write_text(result.source_model_json, encoding="utf-8")
+(output / "layers.json").write_text(result.config_json, encoding="utf-8")
+(output / "selection.json").write_text(result.manifest_json, encoding="utf-8")
+(output / "model.glb").write_bytes(result.glb_bytes)
+```
+
+The entrypoint first uses the existing bounded physical capture independently for
+the model and configuration (32 MiB conservative capture budget each, 250,000
+captured nodes, depth 64), before either is serialized. Cyclic, oversized or
+excessively deep mutable metadata and oversized configuration labels refuse with
+an explicit diagnostic. The 32 MiB conservative capture charge can refuse a
+configuration whose final JSON would be smaller.
+
+The saved request has a separate 32 MiB conservative capture budget and 250,000
+scalar-node budget shared by `preset`, `unassigned`, and all `isolate`/`level_ids`
+entries. At most 250,000 iterable entries are consumed, subject to the shared
+node budget (the two scalar arguments also consume nodes). Every occurrence is
+charged before deduplication, so infinite repeating iterables terminate with an
+explicit resource-limit diagnostic. Ordinary finite generators remain supported;
+references must be strings, and bare strings are not accepted as collections.
+It then detaches and validates the model and configuration, resolves the
+saved request immediately before export, and verifies complete, disjoint drawable
+coverage with every canonical ID emitted exactly once and no unmatched group
+members. The manifest retains the model ID/hash, full configuration, request,
+resolution, exact GLB hash, replayable `export_options`, unsupported ghost IDs and
+`unknown_level_hidden_ids`. The retained model snapshot is the authoritative input
+for subsequent review-bundle generation; decode it and use the manifest's same
+`export_options`. Canonical decoding may normalize caller-authored integer numeric
+representations, so use this retained snapshot rather than hashing a previous
+in-memory object. Existing review-bundle schema and exact re-export checks remain
+unchanged, including the whole-model quantity limitation for physical routes.
+
+`layer_glb_plan(..., physical_routes=True, include_obstacles=True)` also supports
+these meshes and enforces the complete disjoint partition. A standalone resolution
+is still not source-bound: use `build_layer_glb` to bind the configuration and
+request. Both flags default false, preserving the legacy guard and output behavior.
+Pass matching obstacle inclusion to resolver and exporter. With either explicit
+physical display flag enabled, conductor meshes follow their actual canonical
+route ownership, including route IDs without a `route:` prefix. Delivery checks
+verify those derived meshes are children of the same display group as their route.
+Canonical IDs beginning `group:` remain ordinary canonical IDs; an exact collision
+with a generated display-group name is explicitly refused.
+Populated building
+assemblies and shared support hierarchies are explicitly refused by the new path;
+this slice does not change their producer or regrouping semantics.
+
+Routes and obstacle boxes support actual translucent materials. Hidden means
+**retained geometry** under `KHR_node_visibility`, never deletion or exemption
+from clearance obligations. Unsupported obstacle geometry refuses even if hidden.
+Generic viewers may ignore the extension and show hidden nodes. No display preset
+changes the source geometry, stable IDs, provenance or analytic route measurements,
+and this export makes no engineering or clearance certification.
+
+Run the connected synthetic example with a fresh output directory:
+
+```sh
+PYTHONPATH=src python examples/physical_route_layers.py /tmp/fresh-route-layer-example
+```
+
+It generates a curved detour around a supplied box, a source-bound schedule,
+portable configurations, five GLBs/manifests and `presets.png`. Panels show routes
+visible/boxes ghosted, routes hidden/boxes visible, routes ghosted, isolated route,
+and isolated route with honestly unassigned obstacle coverage. The narrow offline
+renderer reads actual indexed GLB buffers, translations, alphas and inherited
+visibility; it does not approximate the route from its centreline. It supports
+only the example's identity rotations and shares a fixed frame across panels.
+Tests compare identical binary mesh buffers and schedule measurements across
+presets and replay their exact options through the existing review bundle.

@@ -353,6 +353,7 @@ def resolve_preset(
     isolate: Iterable[str] = (),
     level_ids: Iterable[str] = (),
     unassigned: str,
+    include_obstacles: bool = False,
 ) -> PresetResolution:
     """Resolve one saved preset against ``model`` deterministically.
 
@@ -379,11 +380,17 @@ def resolve_preset(
        uses for reference planes); an entity with no resolvable level is
        outside the filter and hidden.
 
+    ``include_obstacles=True`` explicitly includes every supplied obstacle in
+    coverage. Obstacles have no canonical level and are hidden by a level
+    filter; no level is inferred from geometry. Default coverage is unchanged.
+
     The result never duplicates an id across states, and permuting the
     order of layers, members or presets in the configuration cannot change
     it.
     """
 
+    if type(include_obstacles) is not bool:
+        raise ContractError("include_obstacles must be a boolean")
     if unassigned not in UNASSIGNED_POLICIES:
         raise ContractError(
             f"unassigned policy must be one of {sorted(UNASSIGNED_POLICIES)!r}, "
@@ -414,7 +421,7 @@ def resolve_preset(
         except ContractError:
             raise ContractError(f"isolate references unknown layer {ref!r}") from None
 
-    universe = _universe(model)
+    universe = _universe(model, include_obstacles=include_obstacles)
     # Coverage is a whole-configuration property: an entity in no layer is
     # unassigned even when isolate hides it or the level filter would hide
     # it, so incomplete coverage can never disappear behind a display state.
@@ -508,7 +515,9 @@ def _strictest(states: set[str]) -> str:
     return STATE_VISIBLE
 
 
-def _universe(model: "BuildingModel") -> dict[str, str | None]:
+def _universe(
+    model: "BuildingModel", *, include_obstacles: bool = False,
+) -> dict[str, str | None]:
     """Drawable universe: id to canonical level id, sorted by id.
 
     These are exactly the canonical node kinds the current GLB exporter
@@ -549,6 +558,10 @@ def _universe(model: "BuildingModel") -> dict[str, str | None]:
         for fitting in model.route_fittings:
             route = routes.get(fitting.route_id)
             entries[fitting.id] = None if route is None else _route_level_id(model, route)
+    if include_obstacles:
+        # Obstacles carry no canonical level. Never infer one from their Z.
+        for obstacle in model.obstacles:
+            entries[obstacle.id] = None
     return dict(sorted(entries.items()))
 
 
@@ -593,6 +606,11 @@ def _model_entity_ids(model: "BuildingModel") -> set[str]:
     for collection in collections:
         for entity in collection:
             ids.add(entity.id)
+    from .physical_routes import PhysicalRoute
+    for route in model.routes:
+        if isinstance(route, PhysicalRoute):
+            ids.update(item.id for item in (*route.joints, *route.segments))
+            ids.update((route.requirements.id, route.context.allowed_domain.id))
     return ids
 
 

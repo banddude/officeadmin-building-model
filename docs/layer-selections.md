@@ -80,8 +80,9 @@ structural members, supports and supplied box obstacles. Meshless semantic recor
 have no surface to dim. `unsupported_ghost_ids` is empty for current supported kinds.
 
 Hidden geometry remains in the GLB under `KHR_node_visibility`. Viewers must honor
-that extension; a generic viewer may show hidden nodes. No interactive OfficeAdmin
-controls or third-party viewer compatibility is established by this backend.
+that extension; a generic viewer may show hidden nodes. The backend alone does
+not establish generic viewer compatibility. The specific verified local
+OfficeAdmin GLB integration is described below.
 
 `physical_routes=True` explicitly enables canonical curved routes.
 `include_obstacles=True` includes all supplied obstacles in coverage, even hidden
@@ -140,9 +141,11 @@ geometry remain in the IFC, including hidden objects, so canonical round trips
 and stable GlobalIds are preserved. Derived route segments follow the route;
 canonical fittings keep their independently resolved states. Logical parents
 have no duplicate representation. No selection means existing IFC bytes remain
-unchanged. Viewers must honor native presentation-layer flags for initial hiding;
-external viewer controls have not been verified here. Existing IFC consumer
-boundaries, including refusal of canonical physical curved routes, remain intact.
+unchanged. IFC viewers must honor native presentation-layer flags for initial
+hiding; interactive IFC viewer controls have not been verified here. The local
+OfficeAdmin GLB acceptance below does not establish IFC viewer compatibility.
+Existing IFC boundaries, including refusal of canonical physical curved routes,
+remain intact.
 
 ## Reproducible synthetic demonstration
 
@@ -162,8 +165,10 @@ offline example decoder. It is display evidence, not an interactive viewer claim
 The example also proves unknown-level and deliberately unassigned disclosure.
 
 The earlier `examples/physical_route_layers.py` remains the curved-route and
-obstacle demonstration. No OfficeAdmin expansion, automatic classification,
-private project inputs or issue closure is implied by these synthetic examples.
+obstacle demonstration. The enclosed-room example uses explicit supplied
+memberships; automatic classification is a separate supported entrypoint below.
+Both examples use synthetic inputs. Artifact generation alone does not decide
+issue closure.
 
 ## Automatic classification from existing canonical facts
 
@@ -201,14 +206,18 @@ PYTHONPATH=src python examples/classified_layer_selections.py /tmp/fresh-classif
 This independent synthetic example supplies explicit system/status facts for two
 devices, keeps an unknown device, saves/reloads two presets, and exports reset,
 review, per-level and ceiling-grid-isolate GLBs with saved request manifests.
-Automatic membership in this bounded taxonomy does not establish broad plan
-recognition or verified OfficeAdmin controls, and does not close #237.
+Automatic membership in this bounded taxonomy is implemented and verified from
+explicit canonical facts. It does not establish broad plan recognition or invent
+missing system/status facts. Interactive OfficeAdmin acceptance is a separate
+verified local integration below; final issue acceptance remains a review/gate
+decision.
 
 Native viewer probe: Blender 5.2.2 LTS/Bonsai 0.8.5 imported the synthetic isolate
 GLB and displayed its hidden room geometry. That installed import path does not
 honor the saved `KHR_node_visibility` state. No manual native-object hiding is
-counted as preset consumption. The existing offline renderer is not an interactive
-viewer harness; verified live saved-preset and OA controls remain outstanding.
+counted as preset consumption. This remains a consumer-specific compatibility
+failure. The offline renderer is not interactive; the separate actual Chrome
+OfficeAdmin harness below establishes the bounded live-control acceptance.
 
 ## Native named memberships and assembly-aware review delivery
 
@@ -267,7 +276,43 @@ size. Duplicate keys remain refused, and resource/recursion failures return expl
 
 The enclosed-room example now retains native membership readbacks and
 `model.oabm-review.txt` plus `selection.json` for every preset/level delivery.
-This truthful BIM payload does **not** change the current OfficeAdmin reader:
-its 1.6 assembly admission and saved-preset/per-level/live-ghost controls remain
-outstanding. A compatible viewer must consume the selection sidecar rather than
-silently substituting separate layer logic. #237 remains open for that acceptance.
+The payload keeps the existing transport contract. Its matching selection
+sidecar is consumed by the verified local OfficeAdmin integration below.
+
+## Verified local OfficeAdmin integration
+
+The separate `banddude/officeadmin-books` branch `feat/bim-saved-layer-viewer` at
+`dd5653a22cd2d1210513950001858973dcc0177c` admits the existing 1.6/1.7 assembly
+review records and the matching source/GLB-bound selection sidecar. It checks
+host/assembly level agreement, unique active host claims, nonempty owned children,
+rendered component ownership and meshless semantic parents. ID lookup precedes
+exact-name lookup even for legal cross-ID/name collisions. New file choices and
+reset invalidate stale asynchronous sidecar successes and failures.
+
+Actual Chrome/WebGL acceptance used the existing OfficeAdmin review components
+and synthetic 168-object enclosed-room/electrical delivery, two persisted presets,
+per-level selection, hide, isolate, ghost and reset controls. Reset and preset
+reload restore identical viewport pixels; source model, bundle and GLB bytes stay
+unchanged. Unknown-level/unassigned coverage stays disclosed, and shared supports
+retain independent membership. The authorized MCP reader uses the same browser
+resolver for read-only inspection. This TypeScript implementation follows the
+engine 1.0.0 resolver contract and is pinned against five actual engine-generated
+resolution manifests; it does not execute Python in the browser or classify facts
+from names or geometry.
+
+The reproducible OfficeAdmin harness is `scripts/bim-review/inspect-assembly.mjs`,
+with `?fixture=assembly` and `?fixture=assembly-ghost`. Local external evidence is
+retained in `oa-layer-viewer-evidence/REPORT.json`, `SHA256SUMS`, and screenshots
+`01-reset.png` through `08-loaded-ghost-made-visible.png`. These synthetic receipts
+are outside this engine repository. The initially ghosted delivery demonstrably
+becomes visible when all-visible is selected, and review/reset restore its exact
+ghost pixels. The final OA repair passed 84 focused tests, targeted typecheck/lint,
+actual browser acceptance and independent source review at the head above.
+
+This is a locally verified implementation, **not production deployed**. Local
+viewer edits do not overwrite persisted engine presets. Exported ghost materials
+may already have lost original colours: the viewer retains those grey colours
+when restoring visible opacity and does not fabricate original materials. Glass
+remains translucent. The existing unsupported canonical curved-route IFC boundary
+and physical-route whole-model quantity limitation remain unchanged. Generic
+viewers, including the Blender path above, are not certified by this acceptance.

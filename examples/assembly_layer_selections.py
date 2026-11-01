@@ -5,6 +5,7 @@ No OfficeAdmin application, automatic classification or engineering claim.
 """
 from dataclasses import replace, fields
 from pathlib import Path
+import gc
 import hashlib
 import json
 import sys
@@ -117,6 +118,64 @@ def render_presets(output, requests):
     canvas.save(output/'presets.png')
 
 
+def _write_view(snapshot,config,resolution,sources,delivery,folder,view_name,cut):
+    """Keep all native DXF author/readback lifetimes inside one view."""
+    base=generate_plan(snapshot,PlanSpec(id=view_name,level_id='level:proof',cut_height_m=cut,view_depth_above_m=2.5,
+        visibility=VisibilityPolicy(labels=False,dimensions=False)),assembly_geometry='cut',
+        symbol_provider=lambda entity, view_type: None)
+    view=apply_layer_selection(base,snapshot,resolution)
+    (folder/f'{view_name}.svg').write_text(view_to_svg(view))
+    drawing=DrawingSet(snapshot.model_id,(base,),(),sources)
+    dxf=sheet_to_dxf(drawing,SheetSpec('L-1',300,220,titleblock_height_mm=25,title='Synthetic layer review'),
+        (ViewPlacement('main',view.id,15,15),),layer_model=snapshot,layer_delivery=delivery)
+    named_dxf=read_dxf_layer_memberships(dxf.dxf,snapshot)
+    assert named_dxf['memberships']['selection']['configuration']==config.to_dict()
+    (folder/f'{view_name}.dxf').write_bytes(dxf.dxf)
+    (folder/f'{view_name}-dxf-manifest.json').write_text(dxf.manifest_json)
+    return len(view.primitives)
+
+
+def _run_state(model,config,quantities,output,request):
+    """Return only JSON report data, retaining no native IFC/DXF objects."""
+    label,preset,isolate,levels=request
+    folder=output/label;folder.mkdir()
+    delivery=build_layer_glb(model,config,preset=preset,unassigned='error',isolate=isolate,level_ids=levels)
+    (folder/'model.glb').write_bytes(delivery.glb_bytes)
+    (folder/'selection.json').write_text(delivery.manifest_json)
+    # Every consumer uses the retained exact source and same saved request.
+    snapshot=BuildingModel.from_json(delivery.source_model_json)
+    resolution=resolve_preset(config,snapshot,preset=preset,unassigned='error',isolate=isolate,level_ids=levels)
+    sources=tuple(_source_reference(e) for f in fields(snapshot)
+        for e in (getattr(snapshot,f.name) if isinstance(getattr(snapshot,f.name),tuple) else ())
+        if hasattr(e,"id"))
+    view_counts={}
+    for view_name,cut in (('plan',1.2),('ceiling-cut',2.28)):
+        try:
+            view_counts[view_name]=_write_view(snapshot,config,resolution,sources,delivery,folder,view_name,cut)
+        finally:
+            # ezdxf documents own entities which refer back to their document.
+            # Collect only after the helper frame releases both author/readbacks.
+            gc.collect()
+    native=to_ifc(snapshot,assembly_geometry='tessellated',layer_delivery=delivery)
+    named_ifc=read_ifc_layer_memberships(native)
+    assert named_ifc['memberships']['selection']['configuration']==config.to_dict()
+    (folder/'ifc-memberships.json').write_text(json.dumps(named_ifc,sort_keys=True,indent=2))
+    assert from_ifc(native).to_dict()==snapshot.to_dict()
+    native.write(str(folder/'model.ifc'))
+    confidence=build_confidence_review(snapshot,ReviewConfig(.9),building_assemblies=True)
+    entities={e.id:e for rows in _entity_collections(snapshot).values() for e in rows}
+    source_refs={(p.source_kind,p.source_id):'synthetic:'+p.source_kind+':'+p.source_id
+        for item in confidence.items for identity in item.entity_ids for p in entities[identity].provenance}
+    review=build_layer_review(delivery,review_config=ReviewConfig(.9),source_references=source_refs)
+    read_model,read_delivery,_=read_layer_review(review.review_file_json,review.selection_manifest_json)
+    assert read_model.to_dict()==snapshot.to_dict() and read_delivery==delivery
+    (folder/'model.oabm-review.txt').write_text(review.review_file_json)
+    assert extract_quantities(snapshot).to_json()==quantities
+    return {'name':label,'resolution':resolution.to_dict(),
+        'named_ifc_groups':len(named_ifc['native_groups']),'review_transport_verified':True,
+        'ifc_layers':len(native.by_type('IfcPresentationLayerWithStyle')),'drawing_primitives':view_counts}
+
+
 def run(output):
     output=Path(output);output.mkdir(exist_ok=False)
     model=synthetic_model();config=saved_config(model)
@@ -126,50 +185,13 @@ def run(output):
     requests=(('reset','preset:all',(),()),('review','preset:review',(),()),
         ('isolate','preset:all',('layer:power',),()),
         ('level','preset:review',(),('level:proof',)),('other-level','preset:all',(),('level:other',)))
-    for label,preset,isolate,levels in requests:
-        folder=output/label;folder.mkdir()
-        delivery=build_layer_glb(model,config,preset=preset,unassigned='error',isolate=isolate,level_ids=levels)
-        (folder/'model.glb').write_bytes(delivery.glb_bytes)
-        (folder/'selection.json').write_text(delivery.manifest_json)
-        # Every consumer uses the retained exact source and same saved request.
-        snapshot=BuildingModel.from_json(delivery.source_model_json)
-        resolution=resolve_preset(config,snapshot,preset=preset,unassigned='error',isolate=isolate,level_ids=levels)
-        sources=tuple(_source_reference(e) for f in fields(snapshot)
-            for e in (getattr(snapshot,f.name) if isinstance(getattr(snapshot,f.name),tuple) else ())
-            if hasattr(e,"id"))
-        view_counts={}
-        for view_name,cut in (('plan',1.2),('ceiling-cut',2.28)):
-            base=generate_plan(snapshot,PlanSpec(id=view_name,level_id='level:proof',cut_height_m=cut,view_depth_above_m=2.5,
-                visibility=VisibilityPolicy(labels=False,dimensions=False)),assembly_geometry='cut',
-                symbol_provider=lambda entity, view_type: None)
-            view=apply_layer_selection(base,snapshot,resolution)
-            (folder/f'{view_name}.svg').write_text(view_to_svg(view))
-            drawing=DrawingSet(snapshot.model_id,(base,),(),sources)
-            dxf=sheet_to_dxf(drawing,SheetSpec('L-1',300,220,titleblock_height_mm=25,title='Synthetic layer review'),
-                (ViewPlacement('main',view.id,15,15),),layer_model=snapshot,layer_delivery=delivery)
-            named_dxf=read_dxf_layer_memberships(dxf.dxf,snapshot)
-            assert named_dxf['memberships']['selection']['configuration']==config.to_dict()
-            (folder/f'{view_name}.dxf').write_bytes(dxf.dxf)
-            (folder/f'{view_name}-dxf-manifest.json').write_text(dxf.manifest_json)
-            view_counts[view_name]=len(view.primitives)
-        native=to_ifc(snapshot,assembly_geometry='tessellated',layer_delivery=delivery)
-        named_ifc=read_ifc_layer_memberships(native)
-        assert named_ifc['memberships']['selection']['configuration']==config.to_dict()
-        (folder/'ifc-memberships.json').write_text(json.dumps(named_ifc,sort_keys=True,indent=2))
-        assert from_ifc(native).to_dict()==snapshot.to_dict()
-        native.write(str(folder/'model.ifc'))
-        confidence=build_confidence_review(snapshot,ReviewConfig(.9),building_assemblies=True)
-        entities={e.id:e for rows in _entity_collections(snapshot).values() for e in rows}
-        source_refs={(p.source_kind,p.source_id):'synthetic:'+p.source_kind+':'+p.source_id
-            for item in confidence.items for identity in item.entity_ids for p in entities[identity].provenance}
-        review=build_layer_review(delivery,review_config=ReviewConfig(.9),source_references=source_refs)
-        read_model,read_delivery,_=read_layer_review(review.review_file_json,review.selection_manifest_json)
-        assert read_model.to_dict()==snapshot.to_dict() and read_delivery==delivery
-        (folder/'model.oabm-review.txt').write_text(review.review_file_json)
-        assert extract_quantities(snapshot).to_json()==quantities
-        reports.append({'name':label,'resolution':resolution.to_dict(),
-            'named_ifc_groups':len(named_ifc['native_groups']),'review_transport_verified':True,
-            'ifc_layers':len(native.by_type('IfcPresentationLayerWithStyle')),'drawing_primitives':view_counts})
+    for request in requests:
+        try:
+            reports.append(_run_state(model,config,quantities,output,request))
+        finally:
+            # Native entity wrappers and DXF databases can form cycles. Do not
+            # accumulate unreachable documents through the five-state example.
+            gc.collect()
     assert model.to_json()==source
     (output/'model.json').write_text(source);(output/'quantities.json').write_text(quantities)
     # Deliberately incomplete configuration still discloses coverage under isolate.

@@ -160,3 +160,7 @@ See [Physical-route XY review drawings](docs/physical-route-plan.md) for the
 explicit scaled SVG adapter with native curved routes, supplied OD, box obstacles,
 height changes and matching source-bound 3D measurements. Existing plan defaults
 and unsupported-consumer safeguards remain unchanged.
+
+See [Physical-route revision comparisons](docs/physical-route-revisions.md) for
+standalone source-bound before/after evidence, exact signed length/bend deltas,
+gross physical replacements and explicitly excluded legacy scope.

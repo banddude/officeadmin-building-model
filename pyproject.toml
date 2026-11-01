@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
+oabm-physical-route-compare = "oabm.reports.physical_route_revisions:main"
 oabm-physical-route-plan = "oabm.drawings.physical_routes:main"
 oabm-physical-route-schedule = "oabm.reports.physical_routes:main"
 oabm-route-checked = "oabm.routing.checked_delivery:main"

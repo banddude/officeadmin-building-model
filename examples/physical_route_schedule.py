@@ -21,8 +21,8 @@ def supplied(*fields):
                        derivation='user', scope_paths=tuple(fields) or None),)
 
 
-def create_example(output):
-    a,b=Point3(x=0,y=0,z=1),Point3(x=4,y=0,z=1)
+def create_example(output, *, endpoint_x=4):
+    a,b=Point3(x=0,y=0,z=1),Point3(x=endpoint_x,y=0,z=1)
     obstacle=Obstacle(id='obstacle:demo',name='Synthetic supplied obstruction',
         geometry=Box3D(pose=Pose(position=Point3(x=2,y=0,z=1)),size=Size3(x=.7,y=.7,z=.7)),
         provenance=supplied())

@@ -13,6 +13,12 @@ legacy sets retain `1.0.0`. Ordinary view SVG, physical sheet SVG, native DXF AR
 and `render_drawing_sheet_pdf` preserve curves. PDF conversion accepts only the
 existing bounded internal sheet renderer, with page/text/vector readback.
 
+The PDF converter removes the SVG white text halo because CairoSVG does not
+implement SVG `paint-order` and otherwise can erase visible glyphs while leaving
+extractable text. PDF text remains black editable fill; the manifest discloses
+this rendering limit. Poppler raster acceptance checks actual titleblock pixels
+as well as text extraction.
+
 This bounded mode draws centerlines, not actual OD envelopes, hidden lines or
 clearance proofs. Vertical/oblique route projections and XY bounds cropping a
 physical path refuse; they never become chords or silently truncated geometry.

@@ -85,3 +85,20 @@ def test_admission_and_crop_refuse_instead_of_flattening_or_omitting():
         generate_drawing_set(model,plans=(replace(plan,bounds=Bounds2(.1,-.1,1,1)),),physical_geometry='xy-centerline')
     hidden=replace(plan,visibility=replace(plan.visibility,routes=False))
     assert not generate_drawing_set(model,plans=(hidden,),physical_geometry='xy-centerline').views[0].primitives
+
+
+def test_actual_pdf_titleblock_glyphs_remain_visible(tmp_path):
+    import shutil,subprocess
+    from PIL import Image
+    renderer=shutil.which('pdftoppm')
+    if renderer is None:pytest.skip('Poppler unavailable; actual glyph raster acceptance requires pdftoppm')
+    model,plan,drawing,sheet,placements=drawing_inputs()
+    result=render_drawing_sheet_pdf(drawing,sheet,placements)
+    path=tmp_path/'sheet.pdf';path.write_bytes(result.pdf)
+    prefix=tmp_path/'page'
+    subprocess.run([renderer,'-singlefile','-r','96','-png',str(path),str(prefix)],check=True,capture_output=True)
+    image=Image.open(prefix.with_suffix('.png')).convert('L')
+    factor=96/25.4
+    # Interior titleblock text region excludes all frame/divider strokes.
+    crop=image.crop(tuple(round(value*factor) for value in (12,178,110,189)))
+    assert sum(value<150 for value in crop.tobytes())>50

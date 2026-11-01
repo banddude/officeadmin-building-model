@@ -43,7 +43,15 @@ def render_drawing_sheet_pdf(drawing_set, spec, placements, *, options=None, sym
     from .sheet_svg import render_sheet_svg
     rendered=render_sheet_svg(drawing_set,spec,placements,options=options,symbols=symbols)
     cairosvg,cairo,pypdf=_dependencies()
-    data=cairosvg.svg2pdf(bytestring=rendered.svg.encode('utf-8'),dpi=96,unsafe=False)
+    # CairoSVG ignores paint-order; a halo stroke painted after a glyph can
+    # erase visible text while leaving it extractable. Match the existing blank
+    # PDF policy: retain editable black text, disclose loss of the SVG halo.
+    conversion_root=ET.fromstring(rendered.svg)
+    for text in conversion_root.iter('{http://www.w3.org/2000/svg}text'):
+        for attr in ('paint-order','stroke','stroke-width','stroke-linejoin'):
+            text.attrib.pop(attr,None)
+    conversion_svg=ET.tostring(conversion_root)
+    data=cairosvg.svg2pdf(bytestring=conversion_svg,dpi=96,unsafe=False)
     reader=pypdf.PdfReader(io.BytesIO(data),strict=True)
     if len(reader.pages) != 1:
         raise ValueError('drawing sheet PDF must contain exactly one page')
@@ -53,7 +61,9 @@ def render_drawing_sheet_pdf(drawing_set, spec, placements, *, options=None, sym
         'sheet_svg_sha256':hashlib.sha256(rendered.svg.encode()).hexdigest(),
         'drawing_set_sha256':hashlib.sha256(drawing_set.to_json(indent=None).encode()).hexdigest(),
         'drawing_output_version':drawing_set.output_version,'page':inspection,
-        'limitations':['Derived vector presentation only; no canonical writeback or clearance approval.']}
+        'conversion_svg_sha256':hashlib.sha256(conversion_svg).hexdigest(),
+        'limitations':['Derived vector presentation only; no canonical writeback or clearance approval.',
+                        'PDF text uses black fill without the SVG white halo because CairoSVG does not implement paint-order.']}
     return DrawingSheetPdf(data,json.dumps(manifest,sort_keys=True,allow_nan=False))
 
 

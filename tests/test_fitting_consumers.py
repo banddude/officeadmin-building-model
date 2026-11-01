@@ -13,7 +13,7 @@ from oabm.electrical.fittings import select_route_fittings
 from oabm.exports.gltf import build_glb_bytes
 from oabm.exports.review_bundle import _parse_glb_document, _canonical_entity_index, _node_index, _verify_expected_rendered_nodes
 from oabm.ifc.adapter import (CANONICAL_PSET, IfcAdapterError, _point_on_segment,
-    _placement_3d, _property_set, from_ifc, to_ifc)
+    _placement_3d, _property_set, canonical_id_to_ifc_guid, from_ifc, to_ifc)
 from oabm.model import BuildingModel, Level, Point3, Size3
 from oabm.model.layers import LayerDefinition, LayerSelectionConfig, SavedPreset, resolve_preset
 from oabm.exports.layers import layer_glb_plan
@@ -236,10 +236,25 @@ def test_ifc_layer_route_hiding_does_not_override_independent_fitting_ghost():
     native = to_ifc(model, layer_resolution=resolution)
     layers = {layer.Name.rsplit(":",1)[1]:layer for layer in native.by_type("IfcPresentationLayerWithStyle")}
     fitting = _native_fitting(native)
-    representations = set(fitting.Representation.Representations)
-    assert representations <= set(layers["ghosted"].AssignedItems)
-    assert not representations.intersection(layers["hidden"].AssignedItems)
+    fitting_items = {item for rep in fitting.Representation.Representations for item in rep.Items}
+    assert fitting_items
+    assert fitting_items <= set(layers["ghosted"].AssignedItems)
+    assert not fitting_items.intersection(layers["hidden"].AssignedItems)
+    route_items = {
+        item
+        for index in range(len(model.routes[0].centerline.points) - 1)
+        for rep in native.by_guid(canonical_id_to_ifc_guid(f"{route_id}#segment:{index}")).Representation.Representations
+        for item in rep.Items
+    }
+    assert route_items
+    assert route_items <= set(layers["hidden"].AssignedItems)
+    assert not route_items.intersection(layers["ghosted"].AssignedItems)
+    assert all(item.is_a("IfcGeometricRepresentationItem") or item.is_a("IfcMappedItem")
+               for layer in layers.values() for item in layer.AssignedItems)
     assert layers["hidden"].LayerOn is False
+    assert layers["hidden"].LayerFrozen is True
+    assert layers["ghosted"].LayerOn is True
+    assert layers["ghosted"].LayerStyles[0].Styles[0].Transparency == pytest.approx(.82)
     assert from_ifc(native).to_dict() == model.to_dict()
 
 

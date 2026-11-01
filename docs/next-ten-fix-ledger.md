@@ -15,8 +15,8 @@ open; no new issues, production inputs or financial data are introduced.
 | 6 | Unambiguous consolidated-corner bend preflight ([#228](https://github.com/banddude/officeadmin-building-model/issues/228)) | Valid cross-route corner elbow reports `elbow_off_turn`. | Implemented locally with passing actual consolidation checks: shared canonical endpoint, same-type two-leg admission; both endpoint setbacks charged, including two corners sharing one straight; short, ambiguous, unknown/mismatched radius and incorrect angle/type remain diagnostics. | `qa/route_bends.py`, `test_route_bend_preflight.py`, bend/delivery docs |
 | 7 | Panel facts with physical-route context ([#233](https://github.com/banddude/officeadmin-building-model/issues/233), existing #282 API) | Whole report and route snapshots refused physical routes. | Implemented locally: an actual quarter-arc route retains the same supplied 120 VA panel subtotal and unknown-load row as legacy geometry; whole-model bindings differ. Mixed route order is invariant and cannot multiply loads. Typed route snapshots preserve discriminator/geometry and reject forged bindings. | `reports/panel_schedules.py`, `test_physical_panel_report.py`, physical consumer guard regression |
 | 8 | Analytic whole-model physical-route quantities ([#228](https://github.com/banddude/officeadmin-building-model/issues/228)) | Quantity extraction rejects physical routes. | Implemented locally with passing known-answer quarter-arc, odd-nanometre radius, two-bend and mixed/grouped route checks. Exact analytic line/pi coefficients feed final approximate metres, nested measurement evidence retained, supplied OD distinct from unknown trade size/product, overlap-check scope explicit. | `quantities/core.py`, internal legacy overlap subset, `test_physical_model_quantities.py` |
-| 9 | Physical routes in ordinary DrawingViews/sheets ([#233](https://github.com/banddude/officeadmin-building-model/issues/233)) | Normal drawing entrypoints refuse physical routes. | Not implemented. Reuse bounded projection with explicit view limits and saved selection semantics; SVG/DXF/PDF behavior must be demonstrated. | Planned: `drawings/generator.py` and existing physical adapters |
-| 10 | Native curved-route IFC and source-bound readback ([#228](https://github.com/banddude/officeadmin-building-model/issues/228)) | IFC export/reimport rejects physical routes. | Not implemented. Actual line/arc solids and strict readback must retain identity, supplied OD/radius and geometry; no polyline flattening. | Planned: `ifc/adapter.py` |
+| 9 | Physical routes in ordinary DrawingViews/sheets ([#233](https://github.com/banddude/officeadmin-building-model/issues/233)) | Normal drawing entrypoints refuse physical routes. | Implemented locally: explicit horizontal XY centerlines retain quarter-circle primitives through ordinary DrawingViews, sheet SVG, native DXF ARC and vector PDF with page/curve readback. Saved resolver hide/ghost/reset applies. Vertical/oblique projections and partial XY crops refuse. Additive drawing output version 1.1.0; legacy output remains 1.0.0. | `drawings/generator.py`, `route_arcs.py`, model/SVG/sheet adapters, `test_physical_drawing_sheets.py`, dedicated docs |
+| 10 | Native curved-route IFC and source-bound readback ([#228](https://github.com/banddude/officeadmin-building-model/issues/228)) | IFC export/reimport rejects physical routes. | Implemented locally: explicit physical-route admission writes actual line/circle-trimmed swept-disk solids. Strict IFC4 EXPRESS validation and real STEP-byte reparse preserve canonical IDs/geometry/OD/radius/quantities; tampered or missing native geometry refuses. Extra route-owned canonical ports remain unsupported. | `ifc/adapter.py`, `ifc/physical_routes.py`, exact physical comparison, `test_physical_ifc.py`, dedicated docs |
 
 ## First checkpoint
 
@@ -35,6 +35,31 @@ classification and grazing depth-clip defects; both source repairs and new
 regressions passed in the preceding focused run (42 passed, four fixture failures
 subsequently corrected in the 62-pass run). Full aggregate and independent review
 of these later changes remain pending.
+
+## Third checkpoint
+
+All **ten** outcomes now have bounded local implementations and focused passing
+working-output checks. This means ten functional outcomes, not ten independently
+accepted fixes or closed issues. In addition to the 62-test second checkpoint,
+81 drawing/SVG/CAD checks passed, including actual native ARC and vector PDF
+readback. A subsequent final-source 23-test run passed the physical IFC, curved
+sheet and analytic quantity cases, including strict EXPRESS validation, STEP-byte
+round trips, native tamper refusals and bounded exact-decimal route JSON intake.
+These runs overlap; they are not a unique aggregate test count.
+
+Remaining acceptance work: independent source review of later commits, broader
+compatibility/full gates, visual inspection of the actual curved sheet, and an
+external retained artifact packet for outcomes 5/6/8/9/10. The external packet
+script was prepared but its guarded run did not start at 26.97 GiB free. No
+artifact packet pass, interactive acceptance, deployment or publication is
+claimed. Existing published BIM/OA heads are unchanged.
+
+Boundaries remain explicit: consolidation preserves paths with original bounded
+routing/product/support bindings instead of transferring their proofs; its fresh
+collision receipt checks new path hard-blocker envelopes only. Physical drawings
+admit horizontal analytic XY centerlines only. IFC extra physical route-owned
+canonical port binding remains refused. None of these derived consumers supplies
+new engineering, product compatibility or live-clearance approval.
 
 Local external synthetic receipts in `next-ten-proof-first-five` retain before /
 after models, revision JSON, drawing set with schedules, actual plan/elevation /

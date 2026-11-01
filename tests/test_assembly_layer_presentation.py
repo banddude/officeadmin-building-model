@@ -80,9 +80,9 @@ def test_native_ifc_selection_retains_geometry_roundtrip_and_deterministic_bytes
     assert layers['visible'].LayerOn is True
     assert layers['ghosted'].LayerStyles[0].Styles[0].Transparency==pytest.approx(.82)
     hidden=native.by_guid(canonical_id_to_ifc_guid('device:lighting'))
-    assert set(hidden.Representation.Representations)<=set(layers['hidden'].AssignedItems)
+    assert {item for rep in hidden.Representation.Representations for item in rep.Items} <= set(layers['hidden'].AssignedItems)
     ghost=native.by_guid(canonical_id_to_ifc_guid('support:part'))
-    assert set(ghost.Representation.Representations)<=set(layers['ghosted'].AssignedItems)
+    assert {item for rep in ghost.Representation.Representations for item in rep.Items} <= set(layers['ghosted'].AssignedItems)
     assert from_ifc(native).to_dict()==model.to_dict()
     assert to_ifc(model,assembly_geometry='tessellated',layer_resolution=resolution).to_string()==native.to_string()
 
@@ -98,7 +98,18 @@ def test_actual_saved_room_delivery_drawings_dxf_ifc_and_unknown_disclosure(tmp_
     report={r['name']:r for r in reports}
     assert report['other-level']['drawing_primitives']=={'plan':0,'ceiling-cut':0}
     assert json.loads((output/'level'/'selection.json').read_text())['unknown_level_hidden_ids']==['device:unknown']
+    import ifcopenshell
+    import ifcopenshell.validate
     for label in ('reset','review','isolate','level','other-level'):
+        native = ifcopenshell.open(str(output/label/'model.ifc'))
+        for layer in native.by_type('IfcPresentationLayerWithStyle'):
+            assert layer.AssignedItems
+            assert all(item.is_a('IfcGeometricRepresentationItem') or item.is_a('IfcMappedItem')
+                for item in layer.AssignedItems)
+            assert len({item.id() for item in layer.AssignedItems}) == len(layer.AssignedItems)
+        logger = ifcopenshell.validate.json_logger()
+        ifcopenshell.validate.validate(native, logger, express_rules=True)
+        assert not logger.statements, (label, logger.statements)
         manifest=json.loads((output/label/'selection.json').read_text())
         hidden=set(manifest['resolution']['hidden_ids'])
         for name in ('plan','ceiling-cut'):

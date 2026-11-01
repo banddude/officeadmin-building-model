@@ -133,8 +133,10 @@ native = to_ifc(model, assembly_geometry="tessellated",
     layer_resolution=selection)
 ```
 
-The same complete resolution assigns actual native shape representations to
-`IfcPresentationLayerWithStyle` states. Hidden sets `LayerOn=False` and
+The same complete resolution assigns actual native geometric or mapped
+representation items to `IfcPresentationLayerWithStyle` states, satisfying
+IFC4's `ApplicableOnlyToItems` rule rather than assigning shape containers.
+Hidden sets `LayerOn=False` and
 `LayerFrozen=True`; visible/ghosted layers remain on. Ghost Body items receive
 an actual `IfcSurfaceStyleRendering` with transparency 0.82. All products and
 geometry remain in the IFC, including hidden objects, so canonical round trips

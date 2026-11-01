@@ -82,19 +82,28 @@ def assign_ifc_layer_selection(ifc, model, resolution, entity_ifc):
                 if key not in canonical and key.startswith(entity_id+'#segment:'))
         for item in products:
             products_by_state[state][item.id()] = item
+    claimed_items = {}
     for state, products in products_by_state.items():
-        representations = []
+        representation_items = {}
         for product in products.values():
             shape = getattr(product, 'Representation', None)
             for rep in shape.Representations if shape else ():
-                representations.append(rep)
-                if state == 'ghosted' and rep.RepresentationIdentifier == 'Body':
-                    for item in rep.Items:
+                # IFC4 ApplicableOnlyToItems forbids assigning a whole
+                # IfcShapeRepresentation to IfcPresentationLayerWithStyle.
+                # Assign its actual eligible items without copying geometry.
+                for item in rep.Items:
+                    if not (item.is_a('IfcGeometricRepresentationItem') or item.is_a('IfcMappedItem')):
+                        raise ValueError(f'IFC styled layer cannot assign {item.is_a()}')
+                    previous = claimed_items.setdefault(item.id(), state)
+                    if previous != state:
+                        raise ValueError('IFC geometry item shared by conflicting layer states')
+                    representation_items[item.id()] = item
+                    if state == 'ghosted' and rep.RepresentationIdentifier == 'Body':
                         ifcopenshell.api.style.assign_item_style(ifc, item=item, style=ghost)
-        if representations:
+        if representation_items:
             ifc.create_entity('IfcPresentationLayerWithStyle',
                 Name=f'layer:{resolution.preset_id}:{state}',
                 Description='Saved OABM selection; geometry and quantities retained',
-                AssignedItems=representations, LayerOn=state!='hidden',
+                AssignedItems=list(representation_items.values()), LayerOn=state!='hidden',
                 LayerFrozen=state=='hidden', LayerBlocked=False,
                 LayerStyles=[ghost] if state=='ghosted' else [])

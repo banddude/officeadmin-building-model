@@ -45,6 +45,10 @@ def _path(route):
 
 
 def _category(path):
+    # Attribute dictionaries are opaque user metadata. Their keys do not acquire
+    # canonical meaning when named confidence, provenance, id or route_id.
+    if 'attributes' in path:
+        return 'metadata'
     if 'provenance' in path or 'confidence' in path:
         return 'provenance'
     if path[-1] == 'id' or (path[0] in ('joints', 'segments', 'requirements') and
@@ -57,14 +61,24 @@ def _category(path):
     if path[:2] == ('requirements', 'outside_diameter_m'):
         return 'outside_diameter'
     if path[0] == 'requirements':
-        return 'requirements'
-    if path[0] in ('joints', 'segments') and 'attributes' not in path:
-        return 'path_geometry'
+        return 'metadata' if path[1:2] == ('name',) else 'requirements'
+    if path[0] in ('joints', 'segments'):
+        if len(path) <= 2:
+            return 'path_geometry'  # added/removed ordered geometry record
+        geometry_fields = {'position'} if path[0] == 'joints' else {'kind', 'plane_normal', 'turn'}
+        return 'path_geometry' if path[2] in geometry_fields else 'metadata'
     return 'metadata'
 
 
+def _canonical_equal(before, after):
+    # Python container equality conflates false/0 and true/1 recursively.
+    # Canonical JSON preserves those source types, including inside metadata.
+    # Spatial path/OD comparison intentionally retains numeric equality below.
+    return _json(before) == _json(after)
+
+
 def _changes(before, after, path=()):
-    if before == after:
+    if _canonical_equal(before, after):
         return []
     if isinstance(before, dict) and isinstance(after, dict):
         result = []
@@ -140,7 +154,7 @@ def generate_physical_route_comparison(before, after):
         old_kind, new_kind = kind(old), kind(new)
         old_measure, new_measure = (measure.get(route_id) for measure in measures)
         status = ('added' if old is None else 'removed' if new is None else
-                  'unchanged' if old == new else 'changed')
+                  'unchanged' if _canonical_equal(old, new) else 'changed')
         comparable = old_kind == new_kind == 'physical'
         path_changed = _path(old) != _path(new) if comparable else None
         od_changed = old['requirements']['outside_diameter_m'] != new['requirements']['outside_diameter_m'] if comparable else None

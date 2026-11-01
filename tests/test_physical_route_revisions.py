@@ -197,3 +197,52 @@ def test_provenance_and_unrelated_obstacle_do_not_claim_path_change():
     assert report.to_dict()['counts']['unchanged']==1
     assert report.to_dict()['sources']['before']['sha256']!=report.to_dict()['sources']['after']['sha256']
     assert validate(report.to_json()).to_json()==report.to_json()
+
+
+@pytest.mark.parametrize('before_value,after_value', [
+    (False,0), (True,1), ({'nested':[False,{'flag':True}]},{'nested':[0,{'flag':1}]}),
+])
+def test_metadata_boolean_number_changes_retain_json_types(before_value,after_value):
+    model=make_physical_model();route=model.routes[0]
+    before=replace(model,routes=(replace(route,attributes={'flag':before_value}),))
+    after=replace(model,routes=(replace(route,attributes={'flag':after_value}),))
+    report=compare(before,after);document=report.to_dict();row=document['routes'][0]
+    assert row['status']=='changed'
+    assert row['field_changes'] and row['field_change_categories']==['metadata']
+    assert row['path_changed'] is False and row['outside_diameter_changed'] is False
+    assert document['physical_inventory']['gross_added_route_ids']==[]
+    assert validate(report.to_json()).to_json()==report.to_json()
+    for field in row['field_changes']:
+        assert type(field['before']) is bool and type(field['after']) is int
+
+
+@pytest.mark.parametrize('owner', ['route','joint','segment','requirements'])
+def test_opaque_attributes_never_acquire_canonical_field_categories(owner):
+    model=make_physical_model();route=model.routes[0]
+    attributes={'user':{'confidence':False,'provenance':{'id':'before'},'id':'before','route_id':'before'}}
+    changed={'user':{'confidence':0,'provenance':{'id':'after'},'id':'after','route_id':'after'}}
+    def update(values):
+        if owner=='route': return replace(route,attributes=values)
+        if owner=='joint': return replace(route,joints=(replace(route.joints[0],attributes=values),*route.joints[1:]))
+        if owner=='segment': return replace(route,segments=(replace(route.segments[0],attributes=values),))
+        return refresh(route,requirements=replace(route.requirements,attributes=values))
+    row=compare(replace(model,routes=(update(attributes),)),replace(model,routes=(update(changed),))).to_dict()['routes'][0]
+    # Requirement attributes are request-bound, so the hash changes as context.
+    assert set(row['field_change_categories'])==({'metadata','context'} if owner=='requirements' else {'metadata'})
+    assert all(change['category']=='metadata' for change in row['field_changes'] if 'attributes' in change['path'])
+    assert row['path_changed'] is False
+
+
+@pytest.mark.parametrize('owner', ['joint','segment','requirements'])
+def test_physical_child_name_is_metadata_not_geometry(owner):
+    model=make_physical_model();route=model.routes[0]
+    if owner=='joint':
+        changed=replace(route,joints=(replace(route.joints[0],name='Revised joint label'),*route.joints[1:]))
+    elif owner=='segment':
+        changed=replace(route,segments=(replace(route.segments[0],name='Revised segment label'),))
+    else:
+        changed=refresh(route,requirements=replace(route.requirements,name='Revised requirement label'))
+    data=compare(model,replace(model,routes=(changed,))).to_dict();row=data['routes'][0]
+    assert row['status']=='changed' and row['path_changed'] is False
+    assert set(row['field_change_categories'])==({'metadata','context'} if owner=='requirements' else {'metadata'})
+    assert data['physical_inventory']['gross_added_route_ids']==[]

@@ -36,6 +36,12 @@ a completed zero takeoff.
 Physical path equality uses ordered segment kinds, endpoint positions, arc
 normal and turn; child IDs, provenance and requirement identity do not define
 the path. OD is compared separately. Equal length does not imply equal path.
+Whole-route status and recursive field changes compare canonical JSON values,
+so metadata booleans remain distinct from numbers (including nested values).
+Physical path and OD equality keep their numeric spatial semantics. Opaque
+`attributes` keys remain metadata even when named `confidence`, `provenance`,
+`id` or other canonical field names.
+
 Field changes carry presence flags, full before/after values and explicit
 categories: path geometry, outside diameter, requirements, child identity,
 connectivity, provenance, retained context and metadata. A changed request or

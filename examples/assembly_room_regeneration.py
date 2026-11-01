@@ -42,12 +42,14 @@ def checked_room_route(model, domain=None):
     return replace(model, routes=(route,), route_fittings=fittings), domain
 
 
-def room_review_svg(model):
+def room_review_svg(model, *, revision):
     """Demo-only isometric projection of the shared physical meshes.
 
     Category colors/translucency aid review; they are not material claims.
     The existing source deck is an explicit top/underside wireframe.
     """
+    if revision not in {"BEFORE", "AFTER"}:
+        raise ValueError("revision must explicitly be BEFORE or AFTER")
     from oabm.assembly_mesh import assembly_component_mesh
     def project(point):
         x,y,z=point
@@ -79,7 +81,7 @@ def room_review_svg(model):
         lines.append(f'<path d="M {a[0]:.3f} {a[1]:.3f} L {b[0]:.3f} {b[1]:.3f}"/>')
     return ('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1100" viewBox="0 0 1200 1100">'
         '<rect width="1200" height="1100" fill="white"/>'
-        '<g font-family="sans-serif" fill="#18293b"><text x="35" y="40" font-size="24">Synthetic enclosed room — canonical mesh review</text>'
+        f'<g font-family="sans-serif" fill="#18293b"><text x="35" y="40" font-size="24">{revision}: Synthetic enclosed room — canonical mesh review</text>'
         '<text x="35" y="68" font-size="15">Translucent drywall/tiles; category colors only. Blue wireframe = existing deck top and underside.</text></g>'
         + ''.join(face for _,face in sorted(faces,key=lambda row:row[0]))
         + '<g fill="none" stroke="#3978a5" stroke-width="1">'+''.join(lines)+'</g></svg>')
@@ -114,7 +116,7 @@ def run(output, render=False):
             if render:
                 import cairosvg
                 cairosvg.svg2png(bytestring=svg.encode(),write_to=str(folder/f"{view.id}.png"),output_width=1400,background_color="white")
-        review_svg = room_review_svg(model)
+        review_svg = room_review_svg(model, revision=label.upper())
         (folder/"room-review.svg").write_text(review_svg)
         if render:
             cairosvg.svg2png(bytestring=review_svg.encode(),write_to=str(folder/"room-review.png"),background_color="white")

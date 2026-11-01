@@ -7,7 +7,11 @@ this is their explicit atomic replacement coordinator, not another model.
 
 Supply a nonempty tuple of **complete typed producer requests**, using each
 existing assembly ID and host ID. Omitted assignments and all unrelated records
-retain their exact canonical content and collection order. Regeneration removes
+retain their exact canonical content and collection order. Before serialization or removing any records, bounded capture detaches the
+complete source graph, rejects cyclic/excessively deep metadata and validates
+all current digests and references. Invalid selected parts cannot be discarded
+and replaced to conceal stale input. Returned models share no mutable metadata
+with the caller. Regeneration removes
 only the selected owned parts in a private candidate, executes wall producers
 before insert producers, and validates every intermediate/final model. Failure
 returns no candidate and never mutates the input. Requests in any order produce

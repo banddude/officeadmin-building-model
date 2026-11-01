@@ -125,3 +125,62 @@ def test_custom_catalog_is_not_silently_replaced_with_builtin_recipe():
     assert model.to_json() == frozen
 
     assert regenerate_building_assemblies(model,(request,),wall_catalog=custom).to_json() == frozen
+
+
+def test_stale_selected_child_is_rejected_before_replacement():
+    from oabm.model import ContractError
+    model = synthetic_enclosed_room_assembly()
+    component = next(part for part in model.assembly_components
+                     if part.assembly_id == "assembly:ceiling-proof")
+    component.attributes["caller_change"] = "stale"
+    invalid_source = model.to_dict()
+    with pytest.raises(ContractError, match="output_digest"):
+        BuildingModel.from_dict(invalid_source)
+    with pytest.raises(AssemblyRegenerationError, match="source model refused.*output_digest"):
+        regenerate_building_assemblies(model, (edited_room_requests()[-1],))
+    assert model.to_dict() == invalid_source
+
+
+@pytest.mark.parametrize("location", ("model", "selected_component", "unselected_component"))
+@pytest.mark.parametrize("unsafe", ("cycle", "depth"))
+def test_unsafe_metadata_refuses_before_serialization(monkeypatch, location, unsafe):
+    from oabm.routing.physical_capture import MAX_DEPTH
+    model = synthetic_enclosed_room_assembly()
+    owner = model if location == "model" else next(part for part in model.assembly_components
+        if (part.assembly_id == "assembly:ceiling-proof") == (location == "selected_component"))
+    metadata = {}
+    if unsafe == "cycle":
+        metadata["self"] = metadata
+        reason = "cyclic_input"
+    else:
+        child = metadata
+        for _ in range(MAX_DEPTH + 1):
+            child["next"] = {}
+            child = child["next"]
+        reason = "capture_depth_limit"
+    owner.attributes["unsafe"] = metadata
+    def unexpected_serialization(*args, **kwargs):
+        pytest.fail("unsafe metadata reached canonical serialization")
+    monkeypatch.setattr(BuildingModel, "to_json", unexpected_serialization)
+    with pytest.raises(AssemblyRegenerationError, match=reason):
+        regenerate_building_assemblies(model, (edited_room_requests()[-1],))
+    assert owner.attributes["unsafe"] is metadata
+    if unsafe == "cycle":
+        assert metadata["self"] is metadata
+
+
+def test_successful_regeneration_detaches_unrelated_mutable_metadata():
+    # Include mutable host metadata before initial generation, so the stored
+    # input digest is valid and the wall is unrelated to the edited assignment.
+    from oabm.building_assemblies import build_wall_assembly
+    source = synthetic_enclosed_room_source()
+    source.attributes["caller_notes"] = {"items": ["unchanged"]}
+    source.walls[-1].attributes["notes"] = {"items": ["source"]}
+    request = synthetic_room_requests()[1]
+    model = build_wall_assembly(source, request)
+    frozen = model.to_json()
+    after = regenerate_building_assemblies(model, (request,))
+    assert after.to_json() == frozen
+    after.attributes["caller_notes"]["items"].append("output only")
+    after.walls[-1].attributes["notes"]["items"].append("output only")
+    assert model.to_json() == frozen

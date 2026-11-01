@@ -6,6 +6,8 @@ assignments retain their exact canonical records. Source facts are never edited.
 from dataclasses import replace
 
 from oabm.model import BuildingModel, ContractError
+from oabm.routing.physical_capture import capture, SOURCE_BYTES
+from oabm.routing.physical_verify_types import VerificationStop
 from .catalog import DEFAULT_PRESET_CATALOG
 from .opening_insert_presets import DEFAULT_OPENING_INSERT_CATALOG
 from .suspended_ceiling_catalog import DEFAULT_SUSPENDED_CEILING_PRESET_CATALOG
@@ -34,6 +36,20 @@ def regenerate_building_assemblies(
     """
     if not isinstance(model, BuildingModel):
         raise AssemblyRegenerationError("model must be a canonical BuildingModel")
+    # Frozen records can still contain caller-mutated dictionaries. Capture the
+    # complete graph before removing anything: digest-invalid owned children
+    # must not disappear into replacement, and unsafe metadata must never reach
+    # recursive canonical serialization. The returned candidate shares no
+    # mutable source metadata with the caller.
+    try:
+        detached = capture(model, byte_limit=SOURCE_BYTES)
+        model = BuildingModel.from_json(detached.to_json(indent=None))
+    except VerificationStop as error:
+        raise AssemblyRegenerationError(
+            f"source model refused before regeneration: {error.status}: {error.reason}") from error
+    except (ContractError, OverflowError, TypeError, AttributeError, KeyError) as error:
+        raise AssemblyRegenerationError(
+            f"source model refused before regeneration: {error}") from error
     if not isinstance(requests, tuple) or not requests:
         raise AssemblyRegenerationError("requests must be a nonempty tuple of typed complete replacement selections")
     if len(requests) > len(model.building_assemblies):

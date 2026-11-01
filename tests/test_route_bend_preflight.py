@@ -190,12 +190,12 @@ def consolidated_corner(points=((0,0,0),(2,0,0),(2,2,0))):
 
     model = model_for(points)
     original = model.routes[0]
-    second_fitting = replace(model.route_fittings[0],id="fitting:second",
-                             route_id="route:second")
-    second_route = replace(original,id="route:second",fitting_ids=(second_fitting.id,))
+    second_fittings = tuple(replace(fitting,id=f"{fitting.id}:second",route_id="route:second")
+                            for fitting in model.route_fittings)
+    second_route = replace(original,id="route:second",fitting_ids=tuple(f.id for f in second_fittings))
     model = replace(model,routes=(original,second_route),
-                    route_fittings=(*model.route_fittings,second_fitting))
-    assert check_route_bends(model,radii_m={r.id:.3 for r in model.routes}).ready
+                    route_fittings=(*model.route_fittings,*second_fittings))
+    assert check_route_bends(model,radii_m={r.id:.01 for r in model.routes}).ready
 
     consolidated = consolidate_bundled_routes(model).model
     validate_model(consolidated)

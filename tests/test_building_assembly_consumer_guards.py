@@ -180,12 +180,11 @@ def test_each_public_drawing_entry_refuses_populated_assemblies(populated_model,
         invoke(populated_model)
 
 
-def test_routing_requires_domain_but_consolidation_still_refuses_and_model_is_unchanged(populated_model):
+def test_routing_requires_domain_but_noop_consolidation_preserves_model(populated_model):
     before = populated_model.to_dict()
     with pytest.raises(RoutingError, match="requires an explicit AllowedRouteDomain"):
         route_between_ports(populated_model, "missing:start", "missing:end", "emt")
-    with pytest.raises(RoutingError, match="consolidate_bundled_routes does not support populated canonical building assemblies"):
-        consolidate_bundled_routes(populated_model)
+    assert consolidate_bundled_routes(populated_model).model is populated_model
     assert populated_model.to_dict() == before
 
 

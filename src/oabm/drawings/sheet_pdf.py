@@ -25,6 +25,38 @@ class BlankSheetPdf:
         return json.loads(self.manifest_json)
 
 
+@dataclass(frozen=True)
+class DrawingSheetPdf:
+    pdf: bytes
+    manifest_json: str
+
+    def manifest(self):
+        return json.loads(self.manifest_json)
+
+
+def render_drawing_sheet_pdf(drawing_set, spec, placements, *, options=None, symbols=None):
+    """Convert only the existing bounded sheet renderer's vector output.
+
+    No caller SVG, external resource or second drawing representation enters
+    this handoff. Selection must already be applied to the supplied views.
+    """
+    from .sheet_svg import render_sheet_svg
+    rendered=render_sheet_svg(drawing_set,spec,placements,options=options,symbols=symbols)
+    cairosvg,cairo,pypdf=_dependencies()
+    data=cairosvg.svg2pdf(bytestring=rendered.svg.encode('utf-8'),dpi=96,unsafe=False)
+    reader=pypdf.PdfReader(io.BytesIO(data),strict=True)
+    if len(reader.pages) != 1:
+        raise ValueError('drawing sheet PDF must contain exactly one page')
+    inspection=_check_page(reader.pages[0],spec)
+    manifest={'kind':'oabm.drawing-sheet-pdf','version':'1.0.0',
+        'pdf_sha256':hashlib.sha256(data).hexdigest(),
+        'sheet_svg_sha256':hashlib.sha256(rendered.svg.encode()).hexdigest(),
+        'drawing_set_sha256':hashlib.sha256(drawing_set.to_json(indent=None).encode()).hexdigest(),
+        'drawing_output_version':drawing_set.output_version,'page':inspection,
+        'limitations':['Derived vector presentation only; no canonical writeback or clearance approval.']}
+    return DrawingSheetPdf(data,json.dumps(manifest,sort_keys=True,allow_nan=False))
+
+
 def _dependencies():
     try:
         import cairosvg

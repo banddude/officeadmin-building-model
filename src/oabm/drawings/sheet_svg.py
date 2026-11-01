@@ -180,6 +180,13 @@ def _render_composed_sheet_svg(composed: ComposedSheet, spec: SheetSpec, *,
                 tag = 'polygon' if p['closed'] or kind == 'polygon' else 'polyline'
                 vertices = ' '.join(f'{_fmt(pt["x"])},{_fmt(pt["y"])}' for pt in points)
                 fragments.append(f'<{tag} points="{vertices}" {attrs} {provenance}/>')
+            elif kind == 'quarter_arc':
+                from .model import Point2
+                from .route_arcs import quarter_arc_geometry
+                radius,turn=quarter_arc_geometry(tuple(Point2(**point) for point in points))
+                check_points(points,bounds,pad=width/2)
+                a,c,b=points
+                fragments.append(f'<path d="M {_fmt(a["x"])} {_fmt(a["y"])} A {_fmt(radius)} {_fmt(radius)} 0 0 {int(turn>0)} {_fmt(b["x"])} {_fmt(b["y"])}" {attrs} {provenance}/>')
             elif kind == 'text':
                 if p['text'] is None:
                     raise ValueError('text primitive is missing text')

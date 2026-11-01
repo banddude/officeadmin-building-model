@@ -30,6 +30,7 @@ from oabm.model import (
     Polygon3D,
     Polyline3D,
     Route,
+    PhysicalRoute,
     RouteConstraint,
     RouteFitting,
     PHYSICAL_SCHEMA_VERSIONS,
@@ -284,6 +285,7 @@ def generate_drawing_set(
     label_overlap: str = "keep",
     dimension_overlap: str = "keep",
     assembly_geometry: str | None = None,
+    physical_geometry: str | None = None,
 ) -> DrawingSet:
     """Generate immutable drawing output from canonical model semantics.
 
@@ -295,7 +297,8 @@ def generate_drawing_set(
     opt-in presentation options shared by every generated view; see
     :func:`generate_plan`.
     """
-    reject_physical_routes(model, "generate_drawing_set")
+    from .route_arcs import admit_plan_routes
+    admit_plan_routes(model,physical_geometry)
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     elevations = tuple(elevations)
@@ -316,6 +319,7 @@ def generate_drawing_set(
                 label_overlap=overlap,
                 dimension_overlap=dimension_mode,
                 assembly_geometry=assembly_geometry,
+                physical_geometry=physical_geometry,
             )
         )
     for spec in sorted(tuple(elevations), key=lambda item: item.id):
@@ -356,6 +360,7 @@ def generate_drawing_set(
         views=tuple(sorted(views, key=lambda item: (item.view_type, item.id))),
         schedules=tuple(sorted(schedules, key=lambda item: item.id)),
         source_index=source_index,
+        output_version="1.1.0" if any(isinstance(route,PhysicalRoute) for route in model.routes) else "1.0.0",
     )
 
 
@@ -369,6 +374,7 @@ def generate_plan(
     label_overlap: str = "keep",
     dimension_overlap: str = "keep",
     assembly_geometry: str | None = None,
+    physical_geometry: str | None = None,
 ) -> DrawingView:
     """Generate one plan view.
 
@@ -394,7 +400,8 @@ def generate_plan(
     before labels, so ``"skip_with_dimensions"`` only sees the dimensions that
     survived this pass.
     """
-    reject_physical_routes(model, "generate_plan")
+    from .route_arcs import admit_plan_routes
+    admit_plan_routes(model,physical_geometry)
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     if assembly_geometry == "cut":
@@ -477,6 +484,12 @@ def _generate_plan_base(
         ("cut_elevation_m", _fmt_number(cut_z)),
         ("source_frame_id", model.coordinate_system.frame_id),
     )
+    if any(isinstance(route,PhysicalRoute) for route in model.routes):
+        from oabm.model.layers import _route_level_id
+        unknown = sorted(route.id for route in model.routes if isinstance(route,PhysicalRoute)
+                         and _route_level_id(model,route) is None)
+        metadata += (("physical_geometry","horizontal analytic XY centerline; no OD or clearance envelope; no partial XY crop"),
+                     ("physical_routes_unknown_level",",".join(unknown)))
     if overlap != "keep":
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
     if overlap == "skip_with_dimensions":
@@ -692,8 +705,7 @@ def _generate_section_base(
 
 
 def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
-    reject_physical_routes(model, "generate_schedules")
-    if model.building_assemblies or model.assembly_components:
+    if model.building_assemblies or model.assembly_components or any(isinstance(route,PhysicalRoute) for route in model.routes):
         validate_model(model)
     schedules = (
         _room_schedule(model),
@@ -1088,6 +1100,11 @@ def _entity_primitives(
         symbol = symbol_provider(entity, view_type)
         if symbol is not None:
             result.extend(_symbol_primitive(entity, frame, bounds, symbol, "symbols:electrical"))
+    elif isinstance(entity, PhysicalRoute):
+        from .route_arcs import physical_plan_primitives
+        if view_type != "plan":
+            raise ValueError("physical route DrawingViews support explicit horizontal XY plans only")
+        result.extend(physical_plan_primitives(entity,frame,bounds))
     elif isinstance(entity, Route):
         fragments3 = (
             clip_polyline_depth(
@@ -1365,7 +1382,10 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
             if (item.level_id in {None, level_id}) and _entity_z_overlap(item, min_z, max_z)
         )
     if visibility.routes:
-        result.extend(item for item in model.routes if _polyline_z_overlap(item.centerline, min_z, max_z))
+        from oabm.model.layers import _route_level_id
+        result.extend(item for item in model.routes if
+            (min_z <= item.joints[0].position.z <= max_z and _route_level_id(model,item) in {None,level_id} if isinstance(item,PhysicalRoute)
+             else _polyline_z_overlap(item.centerline,min_z,max_z)))
         route_ids = {item.id for item in result if isinstance(item, Route)}
         result.extend(item for item in model.route_fittings if item.route_id in route_ids and
                       _entity_z_overlap(item, min_z, max_z,
@@ -1444,6 +1464,7 @@ def _entity_points(entity: Entity, *, fitting_selection_by_id: Mapping[str, Enti
         if entity.size is None: return (entity.pose.position,)
         return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
     if isinstance(entity, Route): return entity.centerline.points
+    if isinstance(entity, PhysicalRoute): return tuple(joint.position for joint in entity.joints)
     if isinstance(entity, RouteFitting):
         selection = (fitting_selection_by_id or {}).get(entity.id)
         if selection is not None and getattr(selection, "geometry_basis", None) == "dimension_derived_envelope" and selection.size is not None:
@@ -1485,6 +1506,8 @@ def _label_anchor(
     *,
     depth_interval: tuple[float, float] | None = None,
 ) -> Point2 | None:
+    if isinstance(entity, PhysicalRoute):
+        return frame.project(entity.joints[0].position)[0]
     if isinstance(entity, Wall):
         points, _ = project_points(frame, entity.centerline.points)
     elif isinstance(entity, (Slab, Ceiling, Space)):
@@ -1704,6 +1727,8 @@ def _entities(model: BuildingModel) -> tuple[Entity, ...]:
         *model.raceway_selections, *model.raceway_selection_outcomes,
         *model.support_assemblies, *model.support_components, *model.support_interfaces, *model.support_selection_outcomes,
         *model.fitting_selections, *model.fitting_interfaces, *model.fitting_selection_outcomes,
+        *(nested for route in model.routes if isinstance(route,PhysicalRoute)
+          for nested in (*route.joints,*route.segments,route.requirements)),
     )
 
 

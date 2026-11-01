@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .generator import _offset_point
-from .model import OUTPUT_VERSION, DrawingSet, Point2, _finite
+from .model import OUTPUT_VERSION, CURVED_OUTPUT_VERSION, DrawingSet, Point2, _finite
 
 
 def _number(value: float, label: str, *, positive: bool = False) -> float:
@@ -114,7 +114,7 @@ def compose_sheet(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vi
     anchors are checked, not text extents; this is not print-readiness approval.
     The digest binds exact DrawingSet serialization, not the canonical model.
     """
-    if drawing_set.output_version != OUTPUT_VERSION:
+    if drawing_set.output_version not in {OUTPUT_VERSION,CURVED_OUTPUT_VERSION}:
         raise ValueError("unsupported drawing output version")
     placements = tuple(placements)
     if not placements:
@@ -189,8 +189,10 @@ def compose_sheet(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vi
         originals = {p["id"]: p for p in source_views[view.id]["primitives"]}
         for primitive in sorted(view.primitives, key=lambda p: p.id):
             references(primitive.source_ids)
-            if primitive.kind not in {"line", "polyline", "polygon", "text", "symbol"}:
+            if primitive.kind not in {"line", "polyline", "polygon", "text", "symbol", "quarter_arc"}:
                 raise ValueError(f"unsupported primitive kind {primitive.kind!r}")
+            if primitive.kind == "quarter_arc" and drawing_set.output_version != CURVED_OUTPUT_VERSION:
+                raise ValueError("quarter_arc requires drawing output 1.1.0")
             record = dict(originals[primitive.id])
             del record["points"]
             record["points_mm"] = [paper(p) for p in primitive.points]

@@ -13,7 +13,7 @@ from physical_route_fixture import make_physical_model
 
 
 CONSUMERS = {
-    'drawings.generator': 'generate_drawing_set generate_plan generate_elevation generate_section generate_schedules',
+    'drawings.generator': 'generate_drawing_set generate_plan generate_elevation generate_section',
     'drawings.details': 'generate_detail generate_details company_detail_bodies',
     'exports.gltf': 'to_glb build_glb_bytes',
     'exports.layers': 'layer_glb_plan',

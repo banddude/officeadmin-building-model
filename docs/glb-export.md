@@ -166,6 +166,11 @@ aggregate host now contributes its own meshless canonical node alongside its
 owned physical components. For example, four component meshes plus their wall
 host produce five group members; this is not five physical parts or quantities.
 Grouping does not add a host body or duplicate component mesh instances.
+Addressable ceilings and openings also appear as meshless canonical records in
+grouped exports even when no physical assembly is selected. They disclose
+`geometry_disclosure="semantic record; no added geometry"`; their presence does
+not invent ceiling thickness, opening solids or additional material quantities.
+Consumers must distinguish these records and display groups from mesh nodes.
 
 An id may belong to at most one group; a duplicate raises `ValueError`. Ids
 that match nothing are ignored and counted in the summary as

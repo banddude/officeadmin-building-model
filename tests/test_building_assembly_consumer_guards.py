@@ -173,7 +173,6 @@ def test_ifc_export_and_round_trip_refuse_before_writing_or_returning(populated_
         ("generate_section", lambda m: generate_section(m, SectionSpec(
             id="section:test", origin=Point3(x=0, y=0, z=0), direction=Vector3(x=1, y=0, z=0),
         ))),
-        ("generate_schedules", lambda m: generate_schedules(m)),
     ],
 )
 def test_each_public_drawing_entry_refuses_populated_assemblies(populated_model, consumer, invoke):
@@ -191,11 +190,15 @@ def test_routing_requires_domain_but_consolidation_still_refuses_and_model_is_un
 
 
 @pytest.mark.parametrize("populated_side", ["base", "target"])
-def test_revision_diff_refuses_either_populated_snapshot(populated_model, populated_side):
+def test_revision_diff_reports_either_populated_snapshot(populated_model, populated_side):
     empty = _empty_assembly_model(populated_model)
     base, target = ((populated_model, empty) if populated_side == "base" else (empty, populated_model))
-    with pytest.raises(ValueError, match=f"build_revision_diff {populated_side} snapshot does not support populated canonical building assemblies"):
-        build_revision_diff(base, target)
+    before = (base.to_json(), target.to_json())
+    report = build_revision_diff(base, target)
+    expected = "removed" if populated_side == "base" else "added"
+    assert any(row.collection == "building_assemblies" and row.change == expected for row in report.changes)
+    assert any(row.collection == "assembly_components" and row.change == expected for row in report.changes)
+    assert (base.to_json(), target.to_json()) == before
 
 
 def test_confidence_review_and_review_bundle_fail_closed_before_partial_manifest(populated_model):

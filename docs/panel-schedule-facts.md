@@ -96,3 +96,16 @@ versions and actual legacy garage omissions; opaque conflicts/missing/zero loads
 source/context confidence and scopes; revisions/permutations; strict malformed
 inputs; mutation/overflow refusal; and unchanged default model/drawing/IFC/GLB/
 quantity bytes after generating the opt-in report.
+
+
+## Physical routes as source context
+
+Validated 1.7 models containing canonical `line_arc_v1` routes now generate the
+same supplied panel/circuit facts and connected-load arithmetic as legacy route
+models. Route variants use the canonical discriminator and typed physical reader;
+source snapshots retain actual joints, arcs, requirements, provenance and request
+context rather than flattening them into polylines. Whole-model fingerprints
+include those source changes, so equal panel rows do not authorize stale report
+reuse across changed routes. Portable physical owner snapshots enforce the 1.7
+source-version floor and original-JSON nanometre admission. This does not measure
+routes, establish complete takeoff, calculate demand or verify electrical code.

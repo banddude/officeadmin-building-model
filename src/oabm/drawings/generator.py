@@ -12,6 +12,7 @@ from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import (
     Box3D,
     BuildingModel,
+    validate_model,
     Ceiling,
     Circuit,
     Conductor,
@@ -298,11 +299,8 @@ def generate_drawing_set(
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
     elevations = tuple(elevations)
-    populated = bool(model.building_assemblies or model.assembly_components)
     if assembly_geometry is None:
         require_no_populated_building_assemblies(model, "generate_drawing_set")
-    elif populated and (elevations or include_schedules):
-        raise ValueError("assembly cut drawing sets support plans/sections only; omit elevations and set include_schedules=False")
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -330,6 +328,7 @@ def generate_drawing_set(
                 dimension_decimals=decimals,
                 label_overlap=overlap,
                 dimension_overlap=dimension_mode,
+                assembly_geometry="projection" if assembly_geometry == "cut" else None,
             )
         )
     for spec in sorted(tuple(sections), key=lambda item: item.id):
@@ -498,6 +497,27 @@ def _generate_plan_base(
 
 
 def generate_elevation(
+    model: BuildingModel, spec: ElevationSpec, *,
+    symbol_provider: SymbolProvider = default_symbol_provider,
+    label_provider: LabelProvider = default_label_provider,
+    dimension_decimals: int | None = None, label_overlap: str = "keep",
+    dimension_overlap: str = "keep", assembly_geometry: str | None = None,
+) -> DrawingView:
+    """Project physical child meshes only through explicit projection admission."""
+    reject_physical_routes(model, "generate_elevation")
+    if assembly_geometry not in (None, "projection"):
+        raise ValueError("assembly_geometry: use None or explicit 'projection'")
+    kwargs = dict(symbol_provider=symbol_provider, label_provider=label_provider,
+                  dimension_decimals=dimension_decimals, label_overlap=label_overlap,
+                  dimension_overlap=dimension_overlap)
+    if assembly_geometry is None:
+        require_no_populated_building_assemblies(model, "generate_elevation")
+        return _generate_elevation_legacy(model, spec, **kwargs)
+    from .assembly_cuts import physical_projection_view
+    return physical_projection_view(model, spec, _generate_elevation_legacy, kwargs)
+
+
+def _generate_elevation_legacy(
     model: BuildingModel,
     spec: ElevationSpec,
     *,
@@ -509,7 +529,6 @@ def generate_elevation(
 ) -> DrawingView:
     """Generate one elevation view; see :func:`generate_plan` for the options."""
     reject_physical_routes(model, "generate_elevation")
-    require_no_populated_building_assemblies(model, "generate_elevation")
     decimals = _validated_dimension_decimals(dimension_decimals)
     overlap = _validated_label_overlap(label_overlap)
     dimension_mode = _validated_dimension_overlap(dimension_overlap)
@@ -674,7 +693,8 @@ def _generate_section_base(
 
 def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
     reject_physical_routes(model, "generate_schedules")
-    require_no_populated_building_assemblies(model, "generate_schedules")
+    if model.building_assemblies or model.assembly_components:
+        validate_model(model)
     schedules = (
         _room_schedule(model),
         _opening_schedule(model),
@@ -692,7 +712,29 @@ def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
     if model.schema_version in FITTING_SCHEMA_VERSIONS:
         schedules += (_route_fitting_schedule(model), _fitting_interface_schedule(model),
                       _fitting_outcome_schedule(model))
+    if model.building_assemblies or model.assembly_components:
+        schedules += (_building_assembly_schedule(model), _assembly_component_schedule(model))
     return tuple(schedule for schedule in schedules if schedule.rows)
+
+
+def _building_assembly_schedule(model: BuildingModel) -> DrawingSchedule:
+    columns = tuple(ScheduleColumn(key, title) for key, title in (
+        ("id", "Assignment ID"), ("kind", "Kind"), ("host", "Source host"),
+        ("level", "Level"), ("preset", "Catalog / preset revision"), ("children", "Owned component records")))
+    rows = tuple(ScheduleRow(source_id=a.id, cells=(a.id, a.assembly_kind, a.host_id, a.level_id,
+        f"{a.catalog_id}/{a.catalog_revision}: {a.preset_id}/{a.preset_revision}", str(len(a.component_ids))))
+        for a in sorted(model.building_assemblies, key=lambda a: a.id))
+    return DrawingSchedule(id="schedule:building-assemblies", title="Building Assembly Assignments (parent records, not takeoff)", columns=columns, rows=rows)
+
+
+def _assembly_component_schedule(model: BuildingModel) -> DrawingSchedule:
+    columns = tuple(ScheduleColumn(key, title) for key, title in (
+        ("id", "Physical component ID"), ("owner", "Assignment"), ("kind", "Component kind"),
+        ("level", "Level"), ("geometry", "Geometry basis"), ("material", "Material"), ("basis", "Material basis")))
+    rows = tuple(ScheduleRow(source_id=c.id, cells=(c.id, c.assembly_id, c.component_kind, c.level_id,
+        c.geometry_basis, c.material_id or "unknown", c.material_basis))
+        for c in sorted(model.assembly_components, key=lambda c: c.id))
+    return DrawingSchedule(id="schedule:assembly-components", title="Physical Assembly Component Inventory", columns=columns, rows=rows)
 
 
 def _box_schedule(model: BuildingModel) -> DrawingSchedule:

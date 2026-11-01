@@ -21,7 +21,6 @@ CONSUMERS = {
     'ifc.adapter': 'to_ifc round_trip',
     'quantities.core': 'extract_quantities',
     'reports.support_coverage': 'report_support_coverage',
-    'reports.panel_schedules': 'generate_panel_schedule_report',
     'qa.route_bends': 'check_route_bends',
     'qa.confidence_review': 'build_confidence_review',
     'routing.router': 'route_between_ports',
@@ -348,18 +347,17 @@ def test_version_alone_is_not_a_physical_geometry_ban():
     assert extract_quantities(model).to_json()
 
 
-def test_source_snapshots_refuse_physical_rows_explicitly(physical_model):
+def test_source_snapshots_preserve_physical_rows_and_reject_forged_bindings(physical_model):
     from oabm.model import PhysicalRoute
     from oabm.reports.panel_schedules import SourceSnapshot
     physical = next(r for r in physical_model.routes if isinstance(r, PhysicalRoute))
     row = next(r for r in physical_model.to_dict()['routes'] if r.get('geometry_kind') == 'line_arc_v1')
-    for action in (
-        lambda: SourceSnapshot.capture('routes', physical),
-        lambda: SourceSnapshot.from_source_data('routes', row),
-        lambda: SourceSnapshot(collection='routes', entity=row, content_fingerprint='0' * 64),
-    ):
-        with pytest.raises(ContractError, match='does not support physical routes'):
-            action()
+    captured = SourceSnapshot.capture('routes', physical)
+    assert captured.entity['geometry_kind'] == 'line_arc_v1'
+    assert captured == SourceSnapshot.from_source_data('routes', row)
+    with pytest.raises(ContractError, match='content binding'):
+        SourceSnapshot(collection='routes', entity=row, content_fingerprint='0' * 64)
+
 
 
 def test_pure_source_identity_coverage_keeps_physical_routes(physical_model):

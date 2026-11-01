@@ -1306,3 +1306,33 @@ def test_default_export_byte_fingerprint_is_unchanged(tmp_path: Path) -> None:
     assert hashlib.sha256(payload).hexdigest() == (
         "99fe288dff2c7454bf2034dc90414d1ad89ddf11e5ebd659cc57f8fc20ffa755"
     )
+
+
+def test_custom_id_legacy_route_conductors_follow_saved_hidden_and_ghost_groups():
+    from oabm.exports import build_layer_glb
+    model = BuildingModel.load(ROOT / 'fixtures/model/v1/garage-route.json')
+    old = model.routes[0].id
+    custom = 'run:custom-legacy'
+    def refs(ids): return tuple(custom if item == old else item for item in ids)
+    model = replace(model,
+        routes=tuple(replace(r,id=custom) if r.id==old else r for r in model.routes),
+        route_fittings=tuple(replace(f,route_id=custom) if f.route_id==old else f for f in model.route_fittings),
+        circuits=tuple(replace(c,route_ids=refs(c.route_ids)) for c in model.circuits),
+        conductors=tuple(replace(c,route_ids=refs(c.route_ids)) for c in model.conductors))
+    before = model.to_json()
+    config = LayerSelectionConfig(layers=(LayerDefinition(id='layer:custom',name='Custom route',member_ids=(custom,)),),
+        presets=(SavedPreset(id='preset:hidden',name='Hidden',hidden_layer_ids=('layer:custom',)),
+                 SavedPreset(id='preset:ghosted',name='Ghosted',ghosted_layer_ids=('layer:custom',))))
+    for state in ('hidden','ghosted'):
+        delivery = build_layer_glb(model,config,preset=f'preset:{state}',unassigned='visible')
+        size=struct.unpack_from('<I',delivery.glb_bytes,12)[0]
+        doc=json.loads(delivery.glb_bytes[20:20+size]);nodes=doc['nodes']
+        group=next(n for n in nodes if n.get('extras',{}).get('group')==f'layer:preset:{state}:{state}')
+        wires=[i for i,n in enumerate(nodes) if n.get('extras',{}).get('route_id')==custom and
+               n.get('extras',{}).get('canonical_id') in {c.id for c in model.conductors}]
+        assert wires and set(wires)<=set(group['children'])
+        if state=='ghosted':
+            for index in wires:
+                primitive=doc['meshes'][nodes[index]['mesh']]['primitives'][0]
+                assert doc['materials'][primitive['material']]['pbrMetallicRoughness']['baseColorFactor'][3]==.3
+    assert model.to_json()==before

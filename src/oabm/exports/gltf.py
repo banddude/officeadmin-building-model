@@ -1251,9 +1251,8 @@ def _build_document(
     group_counts: dict[str, int] = {}
     unmatched_group_ids = 0
     if options.groups:
-        wire_memberships = (frozenset((conductor.id, route_id)
+        wire_memberships = frozenset((conductor.id, route_id)
             for conductor in model.conductors for route_id in conductor.route_ids)
-            if options.physical_routes or options.include_obstacles else None)
         moved: set[int] = set()
         for group_name, member_ids in options.groups:
             indices: list[int] = []

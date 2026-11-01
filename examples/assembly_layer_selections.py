@@ -15,7 +15,9 @@ from oabm.model import (ElectricalDevice, ElectricalBox, BoxSelectionOutcome, Ca
     Point3, Pose, Size3, Port, Vector3, Route, Polyline3D, Level,
     LayerDefinition, LayerSelectionConfig, SavedPreset, BuildingModel, resolve_preset, validate_model)
 from oabm.model.layers import _universe
-from oabm.exports import build_layer_glb
+from oabm.exports import (build_layer_glb,read_ifc_layer_memberships,read_dxf_layer_memberships,
+    build_layer_review,read_layer_review)
+from oabm.qa.confidence_review import ReviewConfig,build_confidence_review,_entity_collections
 from oabm.exports.layer_presentation import apply_layer_selection
 from oabm.drawings import PlanSpec, VisibilityPolicy, generate_plan, view_to_svg
 from oabm.drawings.model import DrawingSet
@@ -142,17 +144,31 @@ def run(output):
                 symbol_provider=lambda entity, view_type: None)
             view=apply_layer_selection(base,snapshot,resolution)
             (folder/f'{view_name}.svg').write_text(view_to_svg(view))
-            drawing=DrawingSet(snapshot.model_id,(view,),(),sources)
+            drawing=DrawingSet(snapshot.model_id,(base,),(),sources)
             dxf=sheet_to_dxf(drawing,SheetSpec('L-1',300,220,titleblock_height_mm=25,title='Synthetic layer review'),
-                (ViewPlacement('main',view.id,15,15),))
+                (ViewPlacement('main',view.id,15,15),),layer_model=snapshot,layer_delivery=delivery)
+            named_dxf=read_dxf_layer_memberships(dxf.dxf,snapshot)
+            assert named_dxf['memberships']['selection']['configuration']==config.to_dict()
             (folder/f'{view_name}.dxf').write_bytes(dxf.dxf)
             (folder/f'{view_name}-dxf-manifest.json').write_text(dxf.manifest_json)
             view_counts[view_name]=len(view.primitives)
-        native=to_ifc(snapshot,assembly_geometry='tessellated',layer_resolution=resolution)
+        native=to_ifc(snapshot,assembly_geometry='tessellated',layer_delivery=delivery)
+        named_ifc=read_ifc_layer_memberships(native)
+        assert named_ifc['memberships']['selection']['configuration']==config.to_dict()
+        (folder/'ifc-memberships.json').write_text(json.dumps(named_ifc,sort_keys=True,indent=2))
         assert from_ifc(native).to_dict()==snapshot.to_dict()
         native.write(str(folder/'model.ifc'))
+        confidence=build_confidence_review(snapshot,ReviewConfig(.9),building_assemblies=True)
+        entities={e.id:e for rows in _entity_collections(snapshot).values() for e in rows}
+        source_refs={(p.source_kind,p.source_id):'synthetic:'+p.source_kind+':'+p.source_id
+            for item in confidence.items for identity in item.entity_ids for p in entities[identity].provenance}
+        review=build_layer_review(delivery,review_config=ReviewConfig(.9),source_references=source_refs)
+        read_model,read_delivery,_=read_layer_review(review.review_file_json,review.selection_manifest_json)
+        assert read_model.to_dict()==snapshot.to_dict() and read_delivery==delivery
+        (folder/'model.oabm-review.txt').write_text(review.review_file_json)
         assert extract_quantities(snapshot).to_json()==quantities
         reports.append({'name':label,'resolution':resolution.to_dict(),
+            'named_ifc_groups':len(named_ifc['native_groups']),'review_transport_verified':True,
             'ifc_layers':len(native.by_type('IfcPresentationLayerWithStyle')),'drawing_primitives':view_counts})
     assert model.to_json()==source
     (output/'model.json').write_text(source);(output/'quantities.json').write_text(quantities)

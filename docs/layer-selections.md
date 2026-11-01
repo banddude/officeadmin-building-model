@@ -209,3 +209,65 @@ GLB and displayed its hidden room geometry. That installed import path does not
 honor the saved `KHR_node_visibility` state. No manual native-object hiding is
 counted as preset consumption. The existing offline renderer is not an interactive
 viewer harness; verified live saved-preset and OA controls remain outstanding.
+
+## Native named memberships and assembly-aware review delivery
+
+`to_ifc(..., layer_delivery=delivery)` accepts the existing source-bound
+`LayerGlbDelivery`. It replays the retained model/configuration/request/GLB,
+uses the verified resolution for presentation states, and writes one standard
+`IfcGroup` per original named layer. Membership expands only canonical ownership;
+a product can belong to several groups, without copying geometry. Empty layers
+remain named empty groups. `OABM_LayerSelections` on the project retains the full
+portable configuration, saved request, resolution, explicit/expanded/out-of-scope
+IDs and native group identities. Names exceeding IFC's 255-character label
+capacity refuse; no silent truncation changes their meaning.
+`read_ifc_layer_memberships(native)` checks canonical round-trip/source identity,
+regenerated layer metadata and actual native group membership. Default exports
+without this option retain their previous behavior.
+
+`sheet_to_dxf(drawing_set, spec, placements, layer_model=model,
+layer_delivery=delivery)` verifies the same retained source and automatically
+applies its resolution to the derived views. It writes native DXF `GROUP`s over
+existing plotted handles, preserving each entity's primitive CAD layer. Shared
+membership shares handles rather than duplicating linework. Empty/non-plotted
+layers remain in the `OABM_LAYER_SELECTIONS` XRECORD and companion manifest;
+empty native groups are omitted because DXF readback audits remove them.
+The metadata preserves full original names and IDs alongside stable native names.
+`read_dxf_layer_memberships(bytes, model)` verifies retained source/configuration,
+group memberships, canonical source IDs and handle existence. **It does not
+verify CAD coordinates, canonical geometry freshness, or coordinate-tamper
+resistance.** CAD remains editable derived output. Its membership can remain
+valid after coordinates change; geometric/quantity claims still come from the
+canonical model.
+
+`build_layer_review(delivery, review_config=ReviewConfig(...),
+source_references=..., evidence=...)` builds the existing four-artifact
+`officeadmin.bim-review-file` version 1.0.0 and returns its JSON together with the
+existing saved-selection manifest sidecar. No canonical, review-bundle or review-file
+schema is relabeled. `read_layer_review(review_json, selection_json)` checks
+artifact hashes, strict canonical decoding/validation, exact GLB regeneration,
+complete canonical rendered-node coverage, confidence/provenance/crop/source-map
+joins and the same saved configuration/request/resolution. It retains the original
+model version, including 1.6 assemblies. Configuration and request remain explicit
+in the companion selection artifact, bound to the source/GLB; hashes identify
+content and do not authenticate who supplied it.
+
+The existing `build_confidence_review` and `build_review_bundle` APIs require
+explicit `building_assemblies=True` for populated assemblies. Their inventories
+then include canonical assembly parents and physical components, with source
+provenance and actual quantity warnings. Existing defaults still refuse populated
+assemblies. Physical curved routes retain their whole-model quantity limitation.
+
+All new review JSON inputs (outer wrapper, canonical model, confidence review,
+source mapping and selection sidecar) receive existing bounded UTF-8/depth/node
+admission before parsing: 32 MiB per JSON input, depth 64 and 250,000 tokens/nodes,
+with the review-file wrapper additionally limited to the existing 20 MiB transport
+size. Duplicate keys remain refused, and resource/recursion failures return explicit
+`ValueError` diagnostics instead of raw recursion failures.
+
+The enclosed-room example now retains native membership readbacks and
+`model.oabm-review.txt` plus `selection.json` for every preset/level delivery.
+This truthful BIM payload does **not** change the current OfficeAdmin reader:
+its 1.6 assembly admission and saved-preset/per-level/live-ghost controls remain
+outstanding. A compatible viewer must consume the selection sidecar rather than
+silently substituting separate layer logic. #237 remains open for that acceptance.

@@ -97,7 +97,7 @@ def _stable_metadata(raw: str, doc: Any, version: str, digest: str) -> bytes:
     return ("\n".join(pairs) + "\n").encode("utf-8")
 
 
-def sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[ViewPlacement, ...]) -> SheetDxf:
+def sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[ViewPlacement, ...], *, layer_model=None, layer_delivery=None) -> SheetDxf:
     """Export a complete bounded composition, or raise without returning output.
 
     Supports line/polyline/unfilled polygon/plain ASCII text, nonassociative
@@ -105,6 +105,23 @@ def sheet_to_dxf(drawing_set: DrawingSet, spec: SheetSpec, placements: tuple[Vie
     Title/revision require a reserved titleblock; arbitrary metadata remains in
     the lossless companion snapshot, not silently rendered as annotations.
     """
+    if layer_delivery is not None:
+        from dataclasses import replace
+        from oabm.exports.layer_memberships import verify_layer_delivery, membership_payload
+        from oabm.exports.layer_presentation import apply_layer_selection
+        from oabm.model.layers import _model_entity_ids
+        snapshot,_,resolution=verify_layer_delivery(layer_model,layer_delivery)
+        if drawing_set.model_id!=snapshot.model_id:raise ValueError("DXF layer model identity mismatch")
+        canonical=_model_entity_ids(snapshot)
+        for view in drawing_set.views:
+            for primitive in (*view.primitives,*view.dimensions):
+                if not set(primitive.source_ids)<=canonical:raise ValueError("DXF layer view has unknown canonical sources")
+        selected=replace(drawing_set,views=tuple(apply_layer_selection(view,snapshot,resolution,
+            include_obstacles=layer_delivery.to_dict()['request']['include_obstacles']) for view in drawing_set.views))
+        payload=membership_payload(snapshot,layer_delivery)
+        return _composed_sheet_to_dxf(compose_sheet(selected,spec,placements).to_dict(),spec,
+            version=_EXPORT_VERSION,layer_memberships=payload)
+    if layer_model is not None:raise ValueError("DXF layer_model requires a layer delivery")
     return _sheet_to_dxf(drawing_set, spec, placements, version=_EXPORT_VERSION)
 
 
@@ -120,7 +137,7 @@ def blank_sheet_to_dxf(spec: SheetSpec) -> SheetDxf:
     return _composed_sheet_to_dxf(compose_blank_sheet(spec).to_dict(),spec,version=_EXPORT_VERSION)
 
 
-def _composed_sheet_to_dxf(sheet: dict, spec: SheetSpec, *, version: str) -> SheetDxf:
+def _composed_sheet_to_dxf(sheet: dict, spec: SheetSpec, *, version: str, layer_memberships=None) -> SheetDxf:
     if (spec.title or spec.revision) and not spec.titleblock_height_mm:
         raise ValueError("sheet title/revision require a reserved titleblock")
     try:
@@ -265,6 +282,10 @@ def _composed_sheet_to_dxf(sheet: dict, spec: SheetSpec, *, version: str) -> She
     auditor = doc.audit()
     if auditor.errors or auditor.fixes:
         raise ValueError("DXF audit required repairs before serialization")
+    named_layers=None
+    if layer_memberships is not None:
+        from oabm.exports.layer_memberships import assign_dxf_named_layers
+        named_layers=assign_dxf_named_layers(doc,entries,layer_memberships)
     stream = io.StringIO()
     doc.write(stream)
     sheet_json = json.dumps(sheet, sort_keys=True, allow_nan=False)
@@ -284,4 +305,6 @@ def _composed_sheet_to_dxf(sheet: dict, spec: SheetSpec, *, version: str) -> She
                                 "Symbols and non-ASCII/CAD-formatted text are unsupported.",
                                 "Font is referenced, not embedded; substitution and annotation collisions require visual QA.",
                                 "No printer driver, permit approval, native DWG, or production print-readiness is claimed."]}
+    if named_layers is not None:
+        manifest["named_layers"]=named_layers
     return SheetDxf(dxf, json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False))

@@ -13,15 +13,13 @@ from physical_route_fixture import make_physical_model
 
 
 CONSUMERS = {
-    'drawings.generator': 'generate_drawing_set generate_plan generate_elevation generate_section generate_schedules',
+    'drawings.generator': 'generate_drawing_set generate_plan generate_elevation generate_section',
     'drawings.details': 'generate_detail generate_details company_detail_bodies',
     'exports.gltf': 'to_glb build_glb_bytes',
     'exports.layers': 'layer_glb_plan',
     'exports.review_bundle': 'build_review_bundle',
     'ifc.adapter': 'to_ifc round_trip',
-    'quantities.core': 'extract_quantities',
     'reports.support_coverage': 'report_support_coverage',
-    'reports.panel_schedules': 'generate_panel_schedule_report',
     'qa.route_bends': 'check_route_bends',
     'qa.confidence_review': 'build_confidence_review',
     'routing.router': 'route_between_ports',
@@ -78,8 +76,7 @@ def test_all_public_consumers_refuse_before_other_work(physical_model, module, n
     assert physical_model.to_json() == before
 
 
-@pytest.mark.parametrize('module,name', [('qa.revision_diff', 'build_revision_diff'),
-                                       ('ifc.comparison', 'round_trip_differences')])
+@pytest.mark.parametrize('module,name', [('qa.revision_diff', 'build_revision_diff')])
 @pytest.mark.parametrize('physical_side', ['before', 'after'])
 def test_comparisons_refuse_either_snapshot(physical_model, module, name, physical_side):
     function = getattr(importlib.import_module('oabm.' + module), name)
@@ -95,14 +92,12 @@ def test_filters_and_empty_requests_do_not_hide_physical_routes(physical_model):
     from oabm.routing.overlap import find_overlapping_route_runs
     from oabm.drawings.generator import generate_drawing_set
     from oabm.electrical.raceways import select_raceways
-    from oabm.quantities.core import extract_quantities
     def forbidden(*args, **kwargs):
         pytest.fail('consumer invoked callback before rejecting physical geometry')
     for action in (
         lambda: find_overlapping_route_runs(physical_model, excluded_route_ids=frozenset(r.id for r in physical_model.routes)),
         lambda: generate_drawing_set(physical_model, plans=(), include_schedules=False, symbol_provider=forbidden, label_provider=forbidden),
         lambda: select_raceways(physical_model, intents=(), catalog=(), rules=()),
-        lambda: extract_quantities(physical_model, groups={}, assembly_resolver=forbidden),
     ):
         with pytest.raises(ContractError, match='does not support physical routes'):
             action()
@@ -289,7 +284,7 @@ def test_ifc_import_refuses_physical_metadata_before_native_route_interpretation
         pytest.fail('native route geometry was interpreted before physical metadata refusal')
     monkeypatch.setattr(adapter, '_canonical_metadata', physical_metadata)
     monkeypatch.setattr(adapter, '_route_segments', forbidden)
-    with pytest.raises(adapter.IfcAdapterError, match='does not support physical routes'):
+    with pytest.raises(adapter.IfcAdapterError, match='physical route metadata refused'):
         adapter.from_ifc(native)
     assert native.to_string() == before
 
@@ -348,18 +343,17 @@ def test_version_alone_is_not_a_physical_geometry_ban():
     assert extract_quantities(model).to_json()
 
 
-def test_source_snapshots_refuse_physical_rows_explicitly(physical_model):
+def test_source_snapshots_preserve_physical_rows_and_reject_forged_bindings(physical_model):
     from oabm.model import PhysicalRoute
     from oabm.reports.panel_schedules import SourceSnapshot
     physical = next(r for r in physical_model.routes if isinstance(r, PhysicalRoute))
     row = next(r for r in physical_model.to_dict()['routes'] if r.get('geometry_kind') == 'line_arc_v1')
-    for action in (
-        lambda: SourceSnapshot.capture('routes', physical),
-        lambda: SourceSnapshot.from_source_data('routes', row),
-        lambda: SourceSnapshot(collection='routes', entity=row, content_fingerprint='0' * 64),
-    ):
-        with pytest.raises(ContractError, match='does not support physical routes'):
-            action()
+    captured = SourceSnapshot.capture('routes', physical)
+    assert captured.entity['geometry_kind'] == 'line_arc_v1'
+    assert captured == SourceSnapshot.from_source_data('routes', row)
+    with pytest.raises(ContractError, match='content binding'):
+        SourceSnapshot(collection='routes', entity=row, content_fingerprint='0' * 64)
+
 
 
 def test_pure_source_identity_coverage_keeps_physical_routes(physical_model):
@@ -383,6 +377,28 @@ def test_proposal_snapshot_refuses_before_candidate_callback(physical_model, mon
     monkeypatch.setattr(contracts, '_candidates', forbidden)
     with pytest.raises(ContractError, match='does not support physical routes'):
         contracts.PlacementContext.capture(physical_model, options)
+
+
+def test_saved_proposal_context_refuses_before_recomputing_candidates(physical_model,monkeypatch):
+    from oabm.proposals import contracts
+    from oabm.model import Vector3
+    from oabm.routing.placement import PlacementCandidate
+    options=contracts.PlacementOptions(identity_key='synthetic',equipment_type='panelboard',
+        name=None,level_id='level:unused',served_device_ids=(),mounting_height_m=1.,
+        working_depth_m=1.,working_width_m=1.)
+    document=contracts._source_document(physical_model)
+    sources=tuple(sorted((contracts.SourceSnapshot.from_source_data(collection,entity)
+        for collection in contracts.ENTITY_TYPES for entity in document.get(collection,[])),key=lambda row:row.id))
+    candidate=contracts.CandidateReference.capture(PlacementCandidate(position=Point3(x=0,y=0,z=0),
+        wall_id='wall:synthetic',space_id='space:synthetic',direction=Vector3(x=1,y=0,z=0),
+        score=0.,confidence=1.,reasons=(),valid=True))
+    payload=contracts._portable(dict(model_source_context=contracts.ModelSourceContext.capture(document),
+        sources=sources,source_model_fingerprint=contracts.digest(document),options=options,candidates=(candidate,)))
+    def forbidden(*args,**kwargs):
+        pytest.fail('saved unsupported proposal invoked candidate callback')
+    monkeypatch.setattr(contracts,'_candidates',forbidden)
+    with pytest.raises(ContractError,match='PlacementContext does not support physical routes'):
+        contracts._decode_dataclass(contracts.PlacementContext,payload)
 
 
 @pytest.mark.parametrize('module,name', [

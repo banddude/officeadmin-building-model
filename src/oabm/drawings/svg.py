@@ -76,6 +76,11 @@ def _primitive_svg(primitive: DrawingPrimitive, view: DrawingView, ppu: float, f
         tag = "polygon" if primitive.closed or primitive.kind == "polygon" else "polyline"
         fill = "none"
         return f'<{tag} id="{primitive.id}" points="{points}" fill="{fill}" stroke="currentColor" {attrs}/>'
+    if primitive.kind == "quarter_arc":
+        from .route_arcs import quarter_arc_geometry
+        radius,turn = quarter_arc_geometry(primitive.points)
+        start,end = (_svg_point(primitive.points[i],view,ppu) for i in (0,2))
+        return f'<path id="{primitive.id}" d="M {start} A {_fmt(radius*ppu)} {_fmt(radius*ppu)} 0 0 {int(turn<0)} {end}" fill="none" stroke="currentColor" {attrs}/>'
     anchor = _svg_point(primitive.points[0], view, ppu)
     x, y = anchor.split(",")
     if primitive.kind == "text":

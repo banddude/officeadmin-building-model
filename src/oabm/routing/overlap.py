@@ -240,6 +240,11 @@ def find_overlapping_route_runs(
     if tolerance_m < 0.0:
         raise ValueError("tolerance_m must be non-negative")
     eligible_routes = tuple(route for route in model.routes if route.id not in excluded_route_ids)
+    return _legacy_route_overlaps(eligible_routes, tolerance_m)
+
+
+def _legacy_route_overlaps(eligible_routes: tuple[Route, ...], tolerance_m: float = _DEFAULT_TOLERANCE_M) -> tuple[RouteOverlap, ...]:
+    """Internal measured subset; callers disclose any unexamined route kinds."""
     spans_by_route = {route.id: _axis_spans(route) for route in eligible_routes}
     routes_by_id = {route.id: route for route in eligible_routes}
     by_type: dict[str, list[Route]] = {}

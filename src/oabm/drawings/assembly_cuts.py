@@ -95,3 +95,69 @@ def physical_cut_view(model,spec,base_generator,kwargs):
         metadata=base.metadata+(("assembly_mode","cut-plane-only"),("assembly_component_count",str(len(components))),
             ("assembly_cut_component_count",str(len({c.id for c,s in outlines}))),
             ("assembly_projection_limitation","no assembly beyond-cut projection or hidden-line elevations")))
+
+
+def _clip_mesh_face_depth(face, boundary, keep_above):
+    """Clip projected (x,y,depth) triangle surfaces without inventing a solid."""
+    if not face:
+        return []
+    result = []
+    previous = face[-1]
+    # Classify and intersect against the SAME plane. An EPS-expanded inside
+    # half-space with an exact-plane intersection can extrapolate past an edge.
+    previous_inside = previous[2] >= boundary if keep_above else previous[2] <= boundary
+    for current in face:
+        inside = current[2] >= boundary if keep_above else current[2] <= boundary
+        if inside != previous_inside:
+            fraction = (boundary-previous[2])/(current[2]-previous[2])
+            result.append(tuple(previous[i]+fraction*(current[i]-previous[i]) for i in range(3)))
+        if inside:
+            result.append(current)
+        previous, previous_inside = current, inside
+    return result
+
+
+def physical_projection_view(model, spec, base_generator, kwargs):
+    """Actual depth-clipped child mesh wireframe; no hidden-line/occlusion claim."""
+    validate_model(model)
+    frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
+    base = base_generator(model, spec, **kwargs)
+    if not spec.visibility.architecture:
+        return replace(base, metadata=base.metadata+(("assembly_mode", "mesh-projection; architecture hidden"),))
+    levels = set(spec.level_ids)
+    components = [c for c in sorted(model.assembly_components, key=lambda c:c.id) if not levels or c.level_id in levels]
+    projected = []
+    for component in components:
+        vertices, indices = assembly_component_mesh(component)
+        points = []
+        for x,y,z in vertices:
+            point, depth = frame.project(Point3(x=x,y=y,z=z))
+            points.append((point.x,point.y,depth))
+        segments = set()
+        for offset in range(0,len(indices),3):
+            face = [points[indices[offset+j]] for j in range(3)]
+            face = _clip_mesh_face_depth(face, spec.near_m, True)
+            face = _clip_mesh_face_depth(face, spec.far_m, False)
+            for i in range(len(face)):
+                a,b = face[i][:2],face[(i+1)%len(face)][:2]
+                if abs(a[0]-b[0])+abs(a[1]-b[1]) > EPS:
+                    segments.add(_key(a,b))
+        projected.extend((component,segment) for segment in sorted(segments))
+    bounds = base.bounds
+    if spec.bounds is None and projected:
+        points = [p for c,segment in projected for p in segment]
+        bounds = Bounds2(min(bounds.min_x,min(p[0] for p in points)-.1), min(bounds.min_y,min(p[1] for p in points)-.1),
+                         max(bounds.max_x,max(p[0] for p in points)+.1), max(bounds.max_y,max(p[1] for p in points)+.1))
+    assignments = {c.assembly_id for c in components}
+    replaced = {a.host_id for a in model.building_assemblies if a.id in assignments and a.host_representation == 'aggregate_host'}
+    primitives = [p for p in base.primitives if not set(p.source_ids)&replaced]
+    for index,(component,segment) in enumerate(projected):
+        for clipped in clip_polyline(tuple(Point2(x=x,y=y) for x,y in segment), bounds):
+            primitives.append(DrawingPrimitive(id=f'{spec.id}:{component.id}:projected:{index}', kind='line',
+                layer='architecture:assembly-projection', source_ids=(component.id,component.assembly_id),
+                points=clipped, style=LineStyle(weight='thin'),
+                metadata=(("geometry_basis",component.geometry_basis),("assembly_id",component.assembly_id))))
+    return replace(base, bounds=bounds, primitives=tuple(sorted(primitives,key=lambda p:p.id)),
+        dimensions=tuple(d for d in base.dimensions if not set(d.source_ids)&replaced),
+        metadata=base.metadata+(("assembly_mode","depth-clipped physical mesh wireframe"),
+            ("assembly_projection_limitation","triangulation edges retained; no hidden-line removal or occlusion calculation")))

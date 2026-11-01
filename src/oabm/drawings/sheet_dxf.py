@@ -212,7 +212,7 @@ def _composed_sheet_to_dxf(sheet: dict, spec: SheetSpec, *, version: str, layer_
         base = {"placement_id": view["placement_id"], "view_id": view["view_id"]}
         for primitive in view["primitives"]:
             kind = primitive["kind"]
-            if kind not in {"line", "polyline", "polygon", "text"} or primitive["symbol"] is not None:
+            if kind not in {"line", "polyline", "polygon", "text", "quarter_arc"} or primitive["symbol"] is not None:
                 raise ValueError(f"unsupported DXF primitive {primitive['id']!r}: {kind}/symbol")
             style = primitive["style"]
             if style["stroke"] not in _STROKES or style["weight"] not in _WEIGHTS or style["pattern"] not in _PATTERNS:
@@ -229,7 +229,15 @@ def _composed_sheet_to_dxf(sheet: dict, spec: SheetSpec, *, version: str, layer_
                     raise ValueError("geometry carrying text is unsupported")
                 if any(a == b for a, b in zip(points, points[1:])):
                     raise ValueError("degenerate DXF segment")
-                if kind == "line":
+                if kind == "quarter_arc":
+                    from .model import Point2
+                    from .route_arcs import quarter_arc_geometry
+                    radius,turn=quarter_arc_geometry(tuple(Point2(x=x,y=y) for x,y in points))
+                    a,c,b=points
+                    angles=[math.degrees(math.atan2(p[1]-c[1],p[0]-c[0])) % 360 for p in (a,b)]
+                    if turn < 0: angles.reverse()
+                    record(layout.add_arc(c,radius,angles[0],angles[1],dxfattribs=attrs),'primitive',context)
+                elif kind == "line":
                     if len(points) != 2 or primitive["closed"]:
                         raise ValueError("DXF line requires exactly two points and no closure")
                     line(*points, attrs, "primitive", context)

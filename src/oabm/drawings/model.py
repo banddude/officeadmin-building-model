@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, Iterable
 
 OUTPUT_VERSION = "1.0.0"
+CURVED_OUTPUT_VERSION = "1.1.0"
 
 
 def _finite(value: float, label: str) -> float:
@@ -105,6 +106,11 @@ class DrawingPrimitive:
             raise ValueError("primitive id, kind, and layer are required")
         if not self.source_ids:
             raise ValueError("derived primitives must reference canonical source IDs")
+        if self.kind == "quarter_arc":
+            from .route_arcs import quarter_arc_geometry
+            quarter_arc_geometry(self.points)
+            if self.closed or self.text is not None or self.symbol is not None:
+                raise ValueError("quarter_arc is open geometry without text/symbol")
         if self.kind in {"line", "polyline", "polygon"} and len(self.points) < 2:
             raise ValueError(f"{self.kind} requires at least two points")
         if self.kind in {"symbol", "text"} and len(self.points) != 1:

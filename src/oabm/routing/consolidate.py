@@ -22,13 +22,13 @@ from __future__ import annotations
 
 from oabm.model import reject_physical_routes
 import math
+import hashlib
 from dataclasses import dataclass, replace
 
-from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import (
     BuildingModel, DERIVATION_INFERRED,
     Point3, Polyline3D, Port, Pose, Provenance, Route, RouteFitting, Vector3,
-    stable_id,
+    stable_id, validate_model,
 )
 
 from .overlap import (
@@ -533,6 +533,20 @@ def _eligible_runs_and_specs(
     # re-selection workflow is available.
     for item in (*model.fitting_selections, *model.fitting_selection_outcomes):
         skipped.setdefault(item.route_id, "fitting_binding_requires_reselection")
+    for route in model.routes:
+        if (model.building_assemblies or model.assembly_components) and route.nominal_diameter_m is None:
+            # A max over only known members cannot bound the unknown member.
+            # Keep its exact path/identity; recompute overlaps without it.
+            skipped.setdefault(route.id, "unknown_collision_diameter")
+        # These receipts bind the original path, domain and routing request.
+        # Retaining them as current proofs on new trunks would be false; retain
+        # the entire source route until an explicit rerouting operation exists.
+        if (model.building_assemblies or model.assembly_components) and ("geometry_check" in route.attributes or any(
+            "bounded_routing_context" in record.attributes
+            or "assembly_routing_context" in record.attributes
+            for record in route.provenance
+        )):
+            skipped.setdefault(route.id, "bounded_routing_binding_requires_regeneration")
     while True:
         runs = find_overlapping_route_runs(
             model, tolerance_m=tolerance_m, excluded_route_ids=frozenset(skipped),
@@ -647,6 +661,7 @@ def consolidate_bundled_routes(
     model: BuildingModel,
     *,
     tolerance_m: float = 0.025,
+    clearance_m: float = 0.0,
 ) -> ConsolidationResult:
     """Merge overlapping same-type routes into shared trunk raceways.
 
@@ -674,9 +689,9 @@ def consolidate_bundled_routes(
     """
 
     reject_physical_routes(model, "consolidate_bundled_routes")
-    require_no_populated_building_assemblies(
-        model, "consolidate_bundled_routes", error_type=RoutingError,
-    )
+    validate_model(model)
+    if type(clearance_m) not in (int,float) or not math.isfinite(clearance_m) or clearance_m < 0:
+        raise RoutingError("consolidation clearance_m must be finite and non-negative")
     if tolerance_m < 0.0:
         raise ValueError("tolerance_m must be non-negative")
     runs, specs, skipped = _eligible_runs_and_specs(model, tolerance_m)
@@ -1123,6 +1138,9 @@ def consolidate_bundled_routes(
         circuits=circuits,
         conductors=conductors,
     )
+    if model.building_assemblies or model.assembly_components:
+        consolidated = _check_assembly_consolidation(model, consolidated, clearance_m)
+    validate_model(consolidated)
     snap_added = math.fsum(
         adjustment["length_delta_m"]
         for piece in branch_pieces for adjustment in piece.adjustments
@@ -1186,3 +1204,40 @@ def consolidate_bundled_routes(
             f"double_counted={report.double_counted_length_m:.6f}"
         )
     return ConsolidationResult(model=consolidated, report=report)
+
+
+def _check_assembly_consolidation(source, result, clearance_m):
+    """Check every newly minted path against existing padded hard blockers.
+
+    Reuses router component/deck envelopes; never treats host surfaces as
+    physical parts. This is a fresh bounded collision check, not a transfer of
+    source route/domain/product certification or a check of untouched paths.
+    """
+    from .router import _collect_routing_geometry, _segment_blocker_ids, RoutingOptions
+    from oabm.model.assembly_validation import assembly_routing_context_receipt
+    original_ids = {route.id for route in source.routes}
+    source_hash = hashlib.sha256(source.to_json(indent=None).encode()).hexdigest()
+    context = assembly_routing_context_receipt(source)
+    routes = []
+    for route in result.routes:
+        if route.id in original_ids:
+            routes.append(route)
+            continue
+        diameter = route.nominal_diameter_m
+        if diameter is None:
+            raise RoutingError(f"{route.id}: assembly consolidation requires an explicit diameter for collision padding")
+        geometry = _collect_routing_geometry(source,route.route_type,diameter/2,
+            RoutingOptions(clearance_m=clearance_m),assembly_context=context)
+        blockers = set()
+        for start,end in zip(route.centerline.points,route.centerline.points[1:]):
+            blockers.update(_segment_blocker_ids(start,end,geometry.hard_blockers))
+        if blockers:
+            raise RoutingError(f"{route.id}: consolidated path intersects padded hard blockers: {', '.join(sorted(blockers))}")
+        receipt = {"source_model_sha256":source_hash,"clearance_m":clearance_m,
+            "route_radius_m":diameter/2,"radius_basis":"legacy nominal diameter; no actual OD inferred",
+            "assembly_context":context,
+            "checked_blocker_ids":sorted(rule.id for rule in geometry.hard_blockers),
+            "scope":"new path hard-blocker envelopes only; no domain/corridor or engineering approval"}
+        routes.append(replace(route,attributes={**route.attributes,
+            "consolidation_collision_check":receipt}))
+    return replace(result,routes=tuple(routes))

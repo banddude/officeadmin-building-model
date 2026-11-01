@@ -75,10 +75,10 @@ def test_body_determinism_overflow_and_complete_preflight():
     with pytest.raises(ValueError,match="exactly"): company_detail_bodies(model(),(spec(id="other"),),sheets)
 
 
-def test_building_assembly_guard_unchanged():
+def test_missing_selected_source_refuses_even_with_assembly_context():
     from oabm.building_assemblies.fixtures import synthetic_two_opening_wall_assembly
     assembled = synthetic_two_opening_wall_assembly()
-    with pytest.raises(ValueError, match="assembl"):
+    with pytest.raises(ValueError, match="missing or unsupported detail source"):
         generate_detail(assembled, spec())
 
 

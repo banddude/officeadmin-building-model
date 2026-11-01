@@ -78,6 +78,17 @@ change must not be described as a finished building-material takeoff.
 
 ## Explicit building assemblies (schema 1.6)
 
+Physical `line_arc_v1` routes also contribute geometric centerline length in a
+whole-model takeoff. Measurements add exact nanometre line lengths and rational
+quarter-circle radius coefficients before the final floating approximation of
+pi. Supplied actual OD remains distinct from unknown nominal trade size and
+product selection. Nested segment/joint measurement provenance is retained;
+arc geometry never creates purchased elbow counts. Existing explicit conductor
+traversals use the same analytic length. Slack, stock cuts, waste, supports,
+product compatibility and live clearance are not inferred. Legacy overlap
+diagnostics retain their scope; a separate warning identifies physical routes
+whose overlap/shared-run deduplication has not been evaluated.
+
 For a validated 1.6 model, `extract_quantities` consumes each owned
 `AssemblyComponent` record once. It reports component counts by role, basis,
 material identity and supported dimensions, with each physical line retaining

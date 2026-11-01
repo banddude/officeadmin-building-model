@@ -427,8 +427,10 @@ def extract_quantities(
                 )
             if isinstance(route, PhysicalRoute):
                 contribution = replace(contribution,
+                    confidence=min(contribution.confidence,
+                        *(row.confidence for row in (*route.joints,*route.segments,route.requirements))),
                     provenance=_merge_provenance(contribution.provenance,
-                        *(row.provenance for row in (*route.joints, *route.segments))),
+                        *(row.provenance for row in (*route.joints, *route.segments,route.requirements))),
                     quantity_provenance=_merge_provenance(conductor.provenance,
                         _physical_length_provenance(route)))
             contributions.append(contribution)
@@ -946,6 +948,9 @@ def _physical_length_provenance(route: PhysicalRoute) -> tuple[Provenance, ...]:
     return _merge_provenance(
         (record for record in route.provenance if provenance_applies_to(record, ("joints", "segments"))),
         *(row.provenance for row in (*route.joints, *route.segments)),
+        (record for record in route.requirements.provenance
+         if any(segment.kind=='quarter_arc' for segment in route.segments)
+         and provenance_applies_to(record,('centerline_radius_m',))),
     )
 
 

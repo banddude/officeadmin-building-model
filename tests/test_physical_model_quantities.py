@@ -49,3 +49,27 @@ def test_mixed_routes_have_separate_analytic_basis_and_explicit_groups():
     assert next(row for row in rows if row.group == "review").quantity == pytest.approx(3+.125*math.pi)
     assert next(row for row in rows if row.group is None).quantity == pytest.approx(math.hypot(1.25,2.25))
     assert extract_quantities(replace(model,routes=(legacy,physical)),groups={"review":(physical.id,)}).to_json() == report.to_json()
+
+
+@pytest.mark.parametrize('owner',['joint','segment','requirements'])
+def test_physical_conductor_confidence_includes_nested_geometry_evidence(owner):
+    from oabm.model import Circuit,Conductor,compute_physical_request_sha256
+    model=measured_model();route=model.routes[0]
+    if owner=='joint':route=replace(route,joints=(replace(route.joints[0],confidence=.2),*route.joints[1:]))
+    elif owner=='segment':route=replace(route,segments=(replace(route.segments[0],confidence=.2),*route.segments[1:]))
+    else:
+        requirements=replace(route.requirements,confidence=.2)
+        context=replace(route.context,request_sha256=compute_physical_request_sha256(route.context,requirements))
+        route=replace(route,requirements=requirements,context=context)
+    route=replace(route,context=replace(route.context,
+        request_sha256=compute_physical_request_sha256(route.context,route.requirements)))
+    circuit=Circuit(id='circuit:measured',source_port_id=route.start_port_id,
+        load_port_ids=(route.end_port_id,),route_ids=(route.id,))
+    conductor=Conductor(id='conductor:measured',circuit_id=circuit.id,role='circuit',count=2,route_ids=(route.id,))
+    model=replace(model,routes=(route,),circuits=(circuit,),conductors=(conductor,))
+    report=extract_quantities(model)
+    line=next(row for row in report.items if row.category=='conductor_length')
+    path=next(row for row in report.items if row.category=='route_length')
+    assert line.confidence==path.confidence==.2
+    assert line.quantity==pytest.approx(2*(3+.125*math.pi))
+    assert all(record in line.provenance for part in (*route.joints,*route.segments,route.requirements) for record in part.provenance)

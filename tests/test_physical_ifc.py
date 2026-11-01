@@ -139,3 +139,34 @@ def test_native_angular_unit_tampering_refuses_wrong_trim_interpretation():
     units.Units=tuple(unit for unit in units.Units if getattr(unit,'UnitType',None)!='PLANEANGLEUNIT')
     with pytest.raises(IfcAdapterError,match='radian angular unit'):
         from_ifc(native)
+
+
+@pytest.mark.parametrize('edit',['milli','missing','duplicate','conversion','wrong_name','missing_assignment'])
+def test_native_length_units_cannot_rescale_physical_geometry_behind_metadata(edit):
+    model=model_fixture();native=to_ifc(model,physical_routes=True)
+    project=native.by_type('IfcProject')[0];assignment=project.UnitsInContext
+    length=next(unit for unit in assignment.Units if unit.UnitType=='LENGTHUNIT')
+    if edit=='milli':length.Prefix='MILLI'
+    elif edit=='missing':assignment.Units=tuple(unit for unit in assignment.Units if unit!=length)
+    elif edit=='duplicate':
+        duplicate=native.create_entity('IfcSIUnit',UnitType='LENGTHUNIT',Name='METRE')
+        assignment.Units=(*assignment.Units,duplicate)
+    elif edit=='wrong_name':length.Name='SECOND'
+    elif edit=='missing_assignment':project.UnitsInContext=None
+    else:
+        dimensions=native.create_entity('IfcDimensionalExponents',1,0,0,0,0,0,0)
+        factor=native.create_entity('IfcMeasureWithUnit',
+            ValueComponent=native.create_entity('IfcLengthMeasure',.3048),UnitComponent=length)
+        converted=native.create_entity('IfcConversionBasedUnit',Dimensions=dimensions,
+            UnitType='LENGTHUNIT',Name='foot',ConversionFactor=factor)
+        assignment.Units=tuple(converted if unit==length else unit for unit in assignment.Units)
+    with pytest.raises(IfcAdapterError,match='exactly one unprefixed SI METRE length unit'):
+        from_ifc(native)
+
+
+def test_valid_physical_length_and_angle_units_preserve_exact_readback():
+    model=model_fixture();native=to_ifc(model,physical_routes=True)
+    units=native.by_type('IfcProject')[0].UnitsInContext.Units
+    assert {(unit.UnitType,unit.Name,unit.Prefix) for unit in units}=={
+        ('LENGTHUNIT','METRE',None),('PLANEANGLEUNIT','RADIAN',None)}
+    assert from_ifc(ifcopenshell.file.from_string(native.to_string())).to_dict()==model.to_dict()

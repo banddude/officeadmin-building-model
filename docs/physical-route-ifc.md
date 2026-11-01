@@ -20,7 +20,11 @@ are refused by this bounded source profile rather than being stripped.
 Readback requires the complete native segment inventory, stable GUIDs and
 canonical segment identities, expected IFC product type, unchanged placements,
 actual Axis/Body geometry, OD, circle center/radius/orientation and parameter
-trims. Native physical edits refuse rather than resurrecting missing geometry
+trims. Physical-containing imports require exactly one unprefixed SI METRE length
+unit and one unprefixed SI RADIAN angular unit. Missing, duplicate, prefixed or
+conversion-based length units refuse rather than silently rescaling geometry
+behind unchanged canonical metadata. Native physical edits refuse rather than
+resurrecting missing geometry
 from metadata or reusing a stale physical request. Regenerate a fresh canonical
 route for a geometry change. Route JSON admission is bounded before parsing and
 checks original decimal physical numbers before float conversion.

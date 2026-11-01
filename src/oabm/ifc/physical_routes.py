@@ -37,7 +37,12 @@ def validate_native_inventory(ifc,canonical_items,route_segments):
                   if kind=='route' and data.get('geometry_kind')=='line_arc_v1'}
     if not physical_ids:return
     project=ifc.by_type('IfcProject')[0]
-    angular=[unit for unit in project.UnitsInContext.Units if getattr(unit,'UnitType',None)=='PLANEANGLEUNIT']
+    units=project.UnitsInContext.Units if project.UnitsInContext is not None else ()
+    lengths=[unit for unit in units if getattr(unit,'UnitType',None)=='LENGTHUNIT']
+    if (len(lengths)!=1 or not lengths[0].is_a('IfcSIUnit')
+            or lengths[0].Name!='METRE' or lengths[0].Prefix is not None):
+        raise IfcAdapterError('physical IFC requires exactly one unprefixed SI METRE length unit')
+    angular=[unit for unit in units if getattr(unit,'UnitType',None)=='PLANEANGLEUNIT']
     if (len(angular)!=1 or not angular[0].is_a('IfcSIUnit')
             or angular[0].Name!='RADIAN' or angular[0].Prefix is not None):
         raise IfcAdapterError('physical IFC parameter trims require an explicit radian angular unit')

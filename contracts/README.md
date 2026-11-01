@@ -54,7 +54,10 @@ physical quantity claims. Populated assemblies are refused by unsupported
 routing, IFC, drawing, revision-diff, confidence-review and review-bundle
 entrypoints. Empty upgraded models remain usable, including IFC round trip.
 
-Full-room corners/joins, metal-stud presets, generated-deck production,
+New deck-assignment generation is outside this operation; the existing canonical
+deck is physically exported in GLB/IFC and reused by ceiling/routing consumers.
+
+Full-room corners/joins, metal-stud presets,
 assembly-aware routing, regeneration and dependent route invalidation remain
 unimplemented. Unmodeled items include boundary trim, tee joint hardware and
 deck fasteners. The basic shapes do not certify loads, installation or

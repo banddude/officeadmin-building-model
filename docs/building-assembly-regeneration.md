@@ -104,6 +104,8 @@ These are synthetic illustrative dimensions, not manufacturer parts, structural
 sizing, installation approval, code certification, other trades or recognition.
 
 Issue #356 acceptance remains with the parent reviewer. The finite presets and
-existing deck fulfill the supported composition; joined corner systems, generated
-decks, source-geometry editors and general dependency invalidation are outside
+existing deck fulfill the supported composition. New deck-assignment generation
+is outside this operation; the existing canonical deck is physically exported in
+GLB/IFC and reused by ceiling/routing consumers. Joined corner systems,
+source-geometry editors and general dependency invalidation remain outside
 this bounded implementation.

@@ -153,7 +153,7 @@ before mesh creation and rejects coordinates that cannot preserve the supported
 geometry within its declared float32 precision tolerance.
 
 Not implemented: plan/importer/AI recognition; full-room corners/joins;
-metal-stud presets or a generated-deck producer; route invalidation or routing
+metal-stud presets; route invalidation or routing
 beyond the bounded assembly-aware slice in `routing.md`; component-aware IFC,
 drawings, revision-diff, confidence-review or review bundles; automatic
 penetration logic or construction/engineering approval. Unsupported output
@@ -161,6 +161,9 @@ entrypoints fail closed on populated assembly collections. Canonical
 serialization, explicitly electrical-only reports, and empty upgraded models
 remain available. This slice does not claim a complete building or electrical
 system, and issue #356 remains broader than this first proof.
+
+New deck-assignment generation is outside this operation; the existing canonical
+deck is physically exported in GLB/IFC and reused by ceiling/routing consumers.
 
 ## Explicit existing-assignment edits
 

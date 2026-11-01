@@ -12,8 +12,10 @@ or a circular-profile quarter revolution for an arc, using the actual supplied
 OD/2 and centerline radius. An explicit radian unit fixes parameter/rotation
 interpretation. Curves are never flattened into chords. Existing
 group/layer adapters select these same products, without additional solids.
-Conductors can carry a derived composite line/arc Axis; the existing route remains
-the only owner of the conduit solid. No purchased elbow/product is inferred.
+The existing route remains the only owner of the conduit envelope. No purchased
+elbow/product is inferred. Physical conductor traversals can be quantified, but
+their post-routing graph bindings require retained-source transport for IFC and
+are refused by this bounded source profile rather than being stripped.
 
 Readback requires the complete native segment inventory, stable GUIDs and
 canonical segment identities, expected IFC product type, unchanged placements,

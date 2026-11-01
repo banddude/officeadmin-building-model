@@ -163,3 +163,12 @@ cut-plan SVGs, quantity counts and a GLB through the existing delivery command.
 The endpoints are explicit synthetic plenum connection points. This does not
 create wall penetrations, select manufacturer fittings or prove a whole building.
 The retained bend report remains a separate check and can require review.
+
+## Explicit existing-assignment edits
+
+The append-only producer boundaries described above remain unchanged.
+[Atomic preset regeneration](../docs/building-assembly-regeneration.md) now
+coordinates explicit supported assignment replacements, preserves source facts
+and semantic IDs, and refuses existing routes. Its enclosed synthetic room
+example supersedes the earlier one-wall proof for room composition; it does not
+add joined-corner engineering or automatic route invalidation.

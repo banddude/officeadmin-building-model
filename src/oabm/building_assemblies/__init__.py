@@ -68,3 +68,6 @@ __all__ = [
     "SuspendedCeilingPresetError", "SuspendedCeilingPresetResolution",
     "resolve_suspended_ceiling_preset", "build_suspended_ceiling_assembly",
 ]
+
+from .regeneration import AssemblyRegenerationError, regenerate_building_assemblies
+__all__ += ["AssemblyRegenerationError", "regenerate_building_assemblies"]

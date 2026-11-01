@@ -125,9 +125,10 @@ provenance, preset identity/revision, generator version, frame, selection
 evidence, and sorted resolved parameters. Output digests cover the sorted full
 owned component records. Model construction/load recomputes each digest and
 rejects stale source facts or children. Immutable candidate construction is
-all-or-nothing at the model boundary. Regeneration, route invalidation, and a general dependency engine remain
-unsupported. The first wall producer refuses replacement or a source model
-with existing routes; it does not silently regenerate dependent geometry.
+all-or-nothing at the model boundary. The [regeneration coordinator](building-assembly-regeneration.md) supports
+explicit finite preset edits over existing assignments, preserving these
+checks. Append-only producers refuse direct replacement. Route invalidation and
+a general dependency engine remain unsupported; existing routed output refuses.
 
 ## Boundedness and deferred work
 
@@ -152,7 +153,7 @@ before mesh creation and rejects coordinates that cannot preserve the supported
 geometry within its declared float32 precision tolerance.
 
 Not implemented: plan/importer/AI recognition; full-room corners/joins;
-metal-stud presets or a generated-deck producer; route invalidation or routing
+metal-stud presets; route invalidation or routing
 beyond the bounded assembly-aware slice in `routing.md`; component-aware IFC,
 drawings, revision-diff, confidence-review or review bundles; automatic
 penetration logic or construction/engineering approval. Unsupported output
@@ -160,3 +161,15 @@ entrypoints fail closed on populated assembly collections. Canonical
 serialization, explicitly electrical-only reports, and empty upgraded models
 remain available. This slice does not claim a complete building or electrical
 system, and issue #356 remains broader than this first proof.
+
+New deck-assignment generation is outside this operation; the existing canonical
+deck is physically exported in GLB/IFC and reused by ceiling/routing consumers.
+
+## Explicit existing-assignment edits
+
+The append-only producer boundaries described above remain unchanged.
+[Atomic preset regeneration](../docs/building-assembly-regeneration.md) now
+coordinates explicit supported assignment replacements, preserves source facts
+and semantic IDs, and refuses existing routes. Its enclosed synthetic room
+example supersedes the earlier one-wall proof for room composition; it does not
+add joined-corner engineering or automatic route invalidation.

@@ -59,7 +59,8 @@ for the supported rectangular suspended-ceiling case documented in
 assemblies. [Physical assembly consumers](docs/physical-assembly-consumers.md)
 provide explicit opt-in IFC tessellation and plan/section cut outlines; assembly
 elevations remain unsupported. Explicit cut-only drawing sets and versioned
-model/physical-sheet deliveries use the supported plan/section adapters. This is not full-room framing,
+model/physical-sheet deliveries use the supported plan/section adapters. The [explicit edit/regeneration workflow](docs/building-assembly-regeneration.md)
+adds atomic existing-preset edits and an enclosed synthetic room proof. This is not joined-corner framing,
 does not authorize penetrations, and does not automate engineering decisions.
 See [Layered raceway policy](docs/layered-raceway-policy.md) for portable caller
 baseline/company/job permissions compiled into existing explicit selection rules.

@@ -161,7 +161,11 @@ one group hides the alternate devices *and their conduit with the wires
 inside*. The exporter never decides what belongs together — it only draws
 the grouping the caller names, and the group node says so in its `extras`:
 `group` (the name), `display` = `"caller-supplied group"`, and `members`
-(the child count).
+(the direct child-node count, including meshless semantic records). A selected
+aggregate host now contributes its own meshless canonical node alongside its
+owned physical components. For example, four component meshes plus their wall
+host produce five group members; this is not five physical parts or quantities.
+Grouping does not add a host body or duplicate component mesh instances.
 
 An id may belong to at most one group; a duplicate raises `ValueError`. Ids
 that match nothing are ignored and counted in the summary as

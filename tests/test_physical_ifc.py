@@ -84,3 +84,29 @@ def test_ifc_physical_route_json_admission_is_bounded_and_exact():
     text=json.dumps(raw).replace('0.02','0.0200000000000000000001',1)
     with pytest.raises(IfcAdapterError,match='nanometre'):
         decode_route_payload(text)
+
+
+@pytest.mark.parametrize('edit',['name','pose'])
+def test_native_source_edits_without_endpoint_change_refuse_stale_binding(edit):
+    from oabm.ifc.adapter import _set_pose
+    from oabm.model import Point3,Pose
+    model=model_fixture();native=to_ifc(model,physical_routes=True)
+    device=native.by_guid(canonical_id_to_ifc_guid(model.electrical_devices[0].id))
+    if edit=='name':device.Name='Changed source device'
+    else:
+        _set_pose(native,device,Pose(position=Point3(x=.1,y=.1,z=0)))
+        # Keep the endpoint port at its original absolute position: this is
+        # specifically a source-context edit, not a joint/port mismatch.
+        port=native.by_guid(canonical_id_to_ifc_guid(model.ports[0].id))
+        _set_pose(native,port,model.ports[0].pose)
+    with pytest.raises(IfcAdapterError,match='physical IFC source binding refused'):
+        from_ifc(native)
+
+
+def test_untagged_duplicate_native_conduit_cannot_disappear_on_readback():
+    model=model_fixture();native=to_ifc(model,physical_routes=True)
+    product=native.by_type('IfcCableCarrierSegment')[0]
+    native.create_entity(product.is_a(),GlobalId=ifcopenshell.guid.new(),
+        Representation=product.Representation,ObjectPlacement=product.ObjectPlacement)
+    with pytest.raises(IfcAdapterError,match='untagged or unowned'):
+        from_ifc(native)

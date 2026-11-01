@@ -291,6 +291,8 @@ def to_ifc(
         except (VerificationStop,ValueError,RecursionError) as error:
             raise IfcAdapterError(f'physical IFC source refused: {error}') from error
         physical_ids={route.id for route in model.routes if isinstance(route,PhysicalRoute)}
+        from .physical_routes import validate_current_source
+        validate_current_source(model)
         if any(port.owner_id in physical_ids for port in model.ports):
             raise IfcAdapterError("physical route-owned canonical ports require analytic point-on-curve binding; not supported")
     if assembly_geometry not in (None, "tessellated"):
@@ -1472,6 +1474,8 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
         canonical_items[canonical_id] = (item, data, meta["ordinal"], kind)
 
     route_segments = _route_segments(ifc)
+    from .physical_routes import validate_native_inventory
+    validate_native_inventory(ifc,canonical_items,route_segments)
     if header["schema_version"] in SUPPORT_SCHEMA_VERSIONS:
         _validate_native_support_inventory(ifc,canonical_items)
     if header["schema_version"] in FITTING_SCHEMA_VERSIONS:
@@ -1521,6 +1525,8 @@ def _from_ifc_canonical_subset(source: str | Path | ifcopenshell.file) -> Buildi
 
     try:
         result = BuildingModel.from_dict(document)
+        from .physical_routes import validate_current_source
+        validate_current_source(result)
         if result.building_assemblies or result.assembly_components:
             from .assembly_consumer import validate_native_assemblies
             validate_native_assemblies(result, canonical_items, IfcAdapterError)

@@ -21,6 +21,16 @@ from metadata or reusing a stale physical request. Regenerate a fresh canonical
 route for a geometry change. Route JSON admission is bounded before parsing and
 checks original decimal physical numbers before float conversion.
 
+For this bounded IFC profile, physical routes must bind the unchanged shared
+pre-routing source. Only the known generated physical routes are excluded to
+reconstruct it; all legacy routes and other canonical facts stay present. Source
+Name/pose edits refuse even if endpoint ports stay fixed. Source models with
+post-routing dependent changes or differing/sequential source snapshots require
+an explicit retained-source transport and remain unsupported here; the importer
+does not strip dependent facts or rewrite bindings to make them pass. A
+physical-containing native file also refuses untagged/unowned conduit or cable
+products rather than dropping extra solids during reconstruction.
+
 Physical route-owned additional canonical ports remain an explicit unsupported
 binding: analytic point-on-curve ownership needs its own implementation. Existing
 endpoint equipment/device ports and route-system connectivity are retained.

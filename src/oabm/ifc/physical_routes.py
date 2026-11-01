@@ -5,9 +5,45 @@ disk sweep and placement must agree with the canonical line/arc contract.
 """
 import math
 import json
+from dataclasses import replace
 import ifcopenshell.api.geometry
 import ifcopenshell.util.placement
 from oabm.model import PhysicalRoute, physical_segment_facts
+
+
+def validate_current_source(model):
+    """Bounded IFC profile: all physical routes share the retained source.
+
+    Only these known generated routes are removed for source reconstruction;
+    every legacy route, architectural object and caller fact stays present.
+    Dependent post-routing edits cannot be silently stripped to match a hash.
+    """
+    from .adapter import IfcAdapterError
+    from oabm.model import compute_physical_source_sha256
+    physical=tuple(route for route in model.routes if isinstance(route,PhysicalRoute))
+    if not physical:return
+    try:
+        source=replace(model,routes=tuple(route for route in model.routes if not isinstance(route,PhysicalRoute)))
+        digest=compute_physical_source_sha256(source)
+        if any(route.context.source_model_sha256!=digest for route in physical):
+            raise ValueError('current reconstructed source differs from retained physical route binding')
+    except (ValueError,TypeError,AttributeError,KeyError) as error:
+        raise IfcAdapterError(f'physical IFC source binding refused: {error}; requires unchanged shared pre-routing source') from error
+
+
+def validate_native_inventory(ifc,canonical_items,route_segments):
+    from .adapter import IfcAdapterError
+    physical_ids={identity for identity,(_,data,_,kind) in canonical_items.items()
+                  if kind=='route' and data.get('geometry_kind')=='line_arc_v1'}
+    if not physical_ids:return
+    route_ids={identity for identity,(_,_,_,kind) in canonical_items.items() if kind=='route'}
+    if set(route_segments)-route_ids:
+        raise IfcAdapterError('physical IFC inventory has segments for an unknown route')
+    allowed={product for pairs in route_segments.values() for _,product in pairs}
+    allowed.update(product for product,_,_,kind in canonical_items.values() if kind=='conductor')
+    for product in (*ifc.by_type('IfcCableCarrierSegment'),*ifc.by_type('IfcCableSegment')):
+        if product not in allowed:
+            raise IfcAdapterError('physical IFC inventory contains an untagged or unowned conduit/cable product')
 
 
 def decode_route_payload(raw):

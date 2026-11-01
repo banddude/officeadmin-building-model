@@ -7,9 +7,9 @@ immutable derived report suitable for estimating adapters.
 
 from __future__ import annotations
 
-from oabm.model import reject_physical_routes
 import json
 import math
+from fractions import Fraction
 from dataclasses import asdict, dataclass, fields, replace
 from typing import Callable, Iterable, Mapping, get_args, get_origin, get_type_hints
 
@@ -31,8 +31,10 @@ from oabm.model import (
     FITTING_SCHEMA_VERSION,
     ProfileExtrusion,
     ProfileOutline2D,
+    PhysicalRoute,
+    physical_segment_facts,
 )
-from oabm.routing.overlap import RouteOverlap, find_overlapping_route_runs
+from oabm.routing.overlap import RouteOverlap, _legacy_route_overlaps
 
 LENGTH_UNIT = "m"
 COUNT_UNIT = "ea"
@@ -205,7 +207,6 @@ def extract_quantities(
 
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")
-    reject_physical_routes(model, "extract_quantities")
 
     # Revalidate at the handoff boundary.  This catches missing references even
     # when callers construct or deserialize models outside this workstream.
@@ -259,6 +260,28 @@ def extract_quantities(
             tuple(sorted(ai_scopes))))
 
     for route in sorted(model.routes, key=lambda item: item.id):
+        if isinstance(route, PhysicalRoute):
+            contribution = _contribution(
+                category="route_length", item_type=route.route_type,
+                quantity=_polyline_length(route), unit=LENGTH_UNIT,
+                variant=(("geometry_kind", route.geometry_kind),
+                         ("outside_diameter_m", route.requirements.outside_diameter_m),
+                         ("nominal_diameter_m", None),
+                         ("measurement_basis", "analytic-line-quarter-arc")),
+                entities=(route,), assembly_resolver=assembly_resolver,
+                group=group_owner.get(route.id),
+            )
+            contributions.append(replace(contribution,
+                confidence=min(route.confidence, *(row.confidence for row in (*route.joints, *route.segments))),
+                provenance=_merge_provenance(route.provenance,
+                    *(row.provenance for row in (*route.joints, *route.segments, route.requirements))),
+                quantity_provenance=_physical_length_provenance(route)))
+            warnings.append(QuantityWarning("physical_route_geometric_length_only",
+                "Analytic 3D centerline length uses exact nanometre lines plus quarter-circle radius*pi/2. "
+                "The numeric total approximates pi; no product, nominal trade size, purchased elbows, "
+                "slack, stock lengths, waste or live clearance approval is inferred from supplied OD/radius.",
+                (route.id,)))
+            continue
         selection = next((s for s in model.raceway_selections if s.route_id == route.id), None)
         variant = (("nominal_diameter_m", route.nominal_diameter_m),)
         evidence_entities = (route,)
@@ -387,8 +410,7 @@ def extract_quantities(
                 if conductor_group is not None
                 else group_owner.get(route_id)
             )
-            contributions.append(
-                _contribution(
+            contribution = _contribution(
                     category="conductor_length",
                     item_type=conductor.role,
                     quantity=_polyline_length(route) * conductor.count,
@@ -403,7 +425,13 @@ def extract_quantities(
                     assembly_entity=conductor,
                     group=group,
                 )
-            )
+            if isinstance(route, PhysicalRoute):
+                contribution = replace(contribution,
+                    provenance=_merge_provenance(contribution.provenance,
+                        *(row.provenance for row in (*route.joints, *route.segments))),
+                    quantity_provenance=_merge_provenance(conductor.provenance,
+                        _physical_length_provenance(route)))
+            contributions.append(contribution)
 
     for device in sorted(model.electrical_devices, key=lambda item: item.id):
         contributions.append(
@@ -610,12 +638,17 @@ def _overlap_warnings(model: BuildingModel) -> list[QuantityWarning]:
     says by how much they could be double-counted.
     """
 
-    runs = find_overlapping_route_runs(model)
+    runs = _legacy_route_overlaps(tuple(route for route in model.routes if isinstance(route, Route)))
     by_type: dict[str, list[RouteOverlap]] = {}
     for run in runs:
         by_type.setdefault(run.route_type, []).append(run)
 
     result: list[QuantityWarning] = []
+    physical_ids = tuple(sorted(route.id for route in model.routes if isinstance(route, PhysicalRoute)))
+    if physical_ids:
+        result.append(QuantityWarning("physical_route_overlap_not_evaluated",
+            "Overlap/deduplication diagnostics examine legacy polylines only. Physical route lengths "
+            "are counted once per canonical route, without asserting distinct or shared physical runs.", physical_ids))
     for route_type in sorted(by_type):
         type_runs = by_type[route_type]
         shared_total = math.fsum(run.shared_length_m for run in type_runs)
@@ -909,7 +942,19 @@ def _provenance_statuses(
     return design_status, geometry_status, placement_status
 
 
-def _polyline_length(route: Route) -> float:
+def _physical_length_provenance(route: PhysicalRoute) -> tuple[Provenance, ...]:
+    return _merge_provenance(
+        (record for record in route.provenance if provenance_applies_to(record, ("joints", "segments"))),
+        *(row.provenance for row in (*route.joints, *route.segments)),
+    )
+
+
+def _polyline_length(route: Route | PhysicalRoute) -> float:
+    if isinstance(route, PhysicalRoute):
+        facts = physical_segment_facts(route)
+        straight = sum(fact.get("length_ticks", 0) for fact in facts)
+        pi_ticks = sum((Fraction(fact.get("radius_ticks", 0), 2) for fact in facts), Fraction(0))
+        return math.fsum((straight / 1_000_000_000, float(pi_ticks / 1_000_000_000) * math.pi))
     points = route.centerline.points
     return math.fsum(
         math.sqrt((end.x - start.x) ** 2 + (end.y - start.y) ** 2 + (end.z - start.z) ** 2)
@@ -932,7 +977,7 @@ def _validate_no_duplicate_references(model: BuildingModel) -> None:
         if "member_route_ids" in route.attributes.get("consolidation", {})
     }
     checks: list[tuple[str, tuple[str, ...]]] = []
-    checks.extend((f"{route.id}.fitting_ids", route.fitting_ids) for route in model.routes)
+    checks.extend((f"{route.id}.fitting_ids", route.fitting_ids) for route in model.routes if isinstance(route, Route))
     checks.extend((f"{circuit.id}.load_port_ids", circuit.load_port_ids) for circuit in model.circuits)
     for label, refs in checks:
         if len(refs) != len(set(refs)):

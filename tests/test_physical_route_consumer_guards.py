@@ -19,7 +19,6 @@ CONSUMERS = {
     'exports.layers': 'layer_glb_plan',
     'exports.review_bundle': 'build_review_bundle',
     'ifc.adapter': 'to_ifc round_trip',
-    'quantities.core': 'extract_quantities',
     'reports.support_coverage': 'report_support_coverage',
     'qa.route_bends': 'check_route_bends',
     'qa.confidence_review': 'build_confidence_review',
@@ -94,14 +93,12 @@ def test_filters_and_empty_requests_do_not_hide_physical_routes(physical_model):
     from oabm.routing.overlap import find_overlapping_route_runs
     from oabm.drawings.generator import generate_drawing_set
     from oabm.electrical.raceways import select_raceways
-    from oabm.quantities.core import extract_quantities
     def forbidden(*args, **kwargs):
         pytest.fail('consumer invoked callback before rejecting physical geometry')
     for action in (
         lambda: find_overlapping_route_runs(physical_model, excluded_route_ids=frozenset(r.id for r in physical_model.routes)),
         lambda: generate_drawing_set(physical_model, plans=(), include_schedules=False, symbol_provider=forbidden, label_provider=forbidden),
         lambda: select_raceways(physical_model, intents=(), catalog=(), rules=()),
-        lambda: extract_quantities(physical_model, groups={}, assembly_resolver=forbidden),
     ):
         with pytest.raises(ContractError, match='does not support physical routes'):
             action()

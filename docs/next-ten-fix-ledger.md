@@ -48,11 +48,16 @@ round trips, native tamper refusals and bounded exact-decimal route JSON intake.
 These runs overlap; they are not a unique aggregate test count.
 
 Remaining acceptance work: independent source review of later commits, broader
-compatibility/full gates, visual inspection of the actual curved sheet, and an
-external retained artifact packet for outcomes 5/6/8/9/10. The external packet
-script was prepared but its guarded run did not start at 26.97 GiB free. No
-artifact packet pass, interactive acceptance, deployment or publication is
-claimed. Existing published BIM/OA heads are unchanged.
+compatibility/full gates and visual inspection of the actual curved sheet.
+The first external artifact run did not start at 26.97 GiB free; that blocked
+receipt is retained. A later fresh preflight admitted the run at 27.20 GiB and
+finished at 26.66 GiB, retaining 15 synthetic files (1,011,153 bytes) outside the
+repository in `next-ten-proof-remaining-five`: actual room/bend outputs, analytic
+takeoff, ordinary drawing JSON/SVG, sheet SVG/DXF/PDF and native IFC. STEP-file
+readback had zero strict EXPRESS errors and exact canonical round-trip equality.
+`REPORT.json` and `SHA256SUMS` retain the outcome. No raster/interactive visual
+acceptance, deployment or publication is claimed. Existing published BIM/OA
+heads are unchanged.
 
 Boundaries remain explicit: consolidation preserves paths with original bounded
 routing/product/support bindings instead of transferring their proofs; its fresh

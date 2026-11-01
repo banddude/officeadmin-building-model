@@ -379,6 +379,28 @@ def test_proposal_snapshot_refuses_before_candidate_callback(physical_model, mon
         contracts.PlacementContext.capture(physical_model, options)
 
 
+def test_saved_proposal_context_refuses_before_recomputing_candidates(physical_model,monkeypatch):
+    from oabm.proposals import contracts
+    from oabm.model import Vector3
+    from oabm.routing.placement import PlacementCandidate
+    options=contracts.PlacementOptions(identity_key='synthetic',equipment_type='panelboard',
+        name=None,level_id='level:unused',served_device_ids=(),mounting_height_m=1.,
+        working_depth_m=1.,working_width_m=1.)
+    document=contracts._source_document(physical_model)
+    sources=tuple(sorted((contracts.SourceSnapshot.from_source_data(collection,entity)
+        for collection in contracts.ENTITY_TYPES for entity in document.get(collection,[])),key=lambda row:row.id))
+    candidate=contracts.CandidateReference.capture(PlacementCandidate(position=Point3(x=0,y=0,z=0),
+        wall_id='wall:synthetic',space_id='space:synthetic',direction=Vector3(x=1,y=0,z=0),
+        score=0.,confidence=1.,reasons=(),valid=True))
+    payload=contracts._portable(dict(model_source_context=contracts.ModelSourceContext.capture(document),
+        sources=sources,source_model_fingerprint=contracts.digest(document),options=options,candidates=(candidate,)))
+    def forbidden(*args,**kwargs):
+        pytest.fail('saved unsupported proposal invoked candidate callback')
+    monkeypatch.setattr(contracts,'_candidates',forbidden)
+    with pytest.raises(ContractError,match='PlacementContext does not support physical routes'):
+        contracts._decode_dataclass(contracts.PlacementContext,payload)
+
+
 @pytest.mark.parametrize('module,name', [
     ('quantities.core', '_canonical_entity_collections'),
     ('qa.revision_diff', '_entity_collections'),

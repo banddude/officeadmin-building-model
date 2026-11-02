@@ -57,14 +57,25 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
     # Actual shared renderer verifies finite page bounds and measured ink.
     import xml.etree.ElementTree as ET
     rendered=render_company_sheet_svg(sheet,body_svg=body)
-    # SVG serialization sorts hashed/lexical IDs, not reading order. Use the
-    # source-mapped legend text nodes and actual paper-space baseline positions.
-    nodes={node.get('id'):node for node in ET.fromstring(rendered).iter() if node.get('id')}
-    legend_ids=[row['svg_id'] for row in receipt['source_map']['items']
-                if row['source_item_id'].startswith('legend:')]
-    assert legend_ids and all(identity in nodes for identity in legend_ids)
-    legend_nodes=[nodes[identity] for identity in legend_ids]
-    assert all(node.tag.endswith('}text') for node in legend_nodes)
+    # site_plan._company_body_node intentionally strips IDs/data attributes;
+    # its exact separate map points to child paths in the normalized body.
+    # company_sheets._body_group preserves text coordinates/content while
+    # validating ink and normalizing fonts. Match that actual public contract.
+    body_root=ET.fromstring(body)
+    rendered_text=[node for node in ET.fromstring(rendered).iter() if node.tag.endswith('}text')]
+    legend_items=[row for row in receipt['source_map']['items'] if row['source_item_id'].startswith('legend:')]
+    assert legend_items
+    legend_nodes=[]
+    for item in legend_items:
+        expected=body_root
+        for index in receipt['source_map']['renderer_svg_id_to_body_child_path'][item['svg_id']]:
+            expected=expected[index]
+        assert expected.tag.endswith('}text')
+        matches=[node for node in rendered_text
+                 if (float(node.get('x')),float(node.get('y')),''.join(node.itertext()))==
+                    (float(expected.get('x')),float(expected.get('y')),''.join(expected.itertext()))]
+        assert len(matches)==1
+        legend_nodes.append(matches[0])
     ordered=sorted(legend_nodes,key=lambda node:(float(node.get('y')),float(node.get('x'))))
     assert len({(node.get('x'),node.get('y')) for node in ordered})==len(ordered)
     visible=' '.join(' '.join(''.join(node.itertext()) for node in ordered).split())

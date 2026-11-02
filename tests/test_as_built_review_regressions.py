@@ -32,6 +32,40 @@ def edit(model, collection, identity, record):
             "record": record, "evidence_ids": ["field:note"]}
 
 
+def test_three_story_reaffirmation_hashes_retained_typed_parent_and_still_rejects_stale_records():
+    spec = importlib.util.spec_from_file_location("as_built_typed_parent_example", ROOT / "examples/as_built_quick_edit.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    history, request = module.synthetic_three_story_inputs()
+    original_history = deepcopy(history)
+    parent = replay_history(history)
+    record = parent.to_dict()["routes"][0]
+    # The real example deliberately constructs Point3(x=2, ...). Construction
+    # accepts an int; retained typed JSON admission stores the coordinate as a
+    # float. Their JSON hashes differ even though Python numeric equality holds.
+    direct = Point3(x=2, y=0, z=0)
+    assert type(direct.x) is int
+    assert record["centerline"]["points"][2]["x"] == direct.x
+    assert type(record["centerline"]["points"][2]["x"]) is float
+    proposal = request["edits"][0]
+    assert proposal["expected_sha256"] == record_sha256(record)
+    assert record_sha256(proposal["record"]) == record_sha256(record)
+    assert request["parent_sha256"] == _sha(snapshot(parent))
+    revised = apply_transaction(history, request)
+    current = replay_history(revised)
+    assert current.routes[0].id == parent.routes[0].id
+    assert current.routes[0].centerline == parent.routes[0].centerline
+    assert revised["design_json"] == history["design_json"]
+    assert history == original_history
+    stale_record = deepcopy(record)
+    stale_record["centerline"]["points"][2]["x"] += .25
+    stale_request = deepcopy(request)
+    stale_request["edits"][0]["expected_sha256"] = record_sha256(stale_record)
+    with pytest.raises(ContractError, match="stale entity or unexpected new ID"):
+        apply_transaction(history, stale_request)
+    assert history == original_history
+
+
 def test_cycles_and_deep_mutable_inputs_are_controlled_before_serialization():
     history, request = inputs()
     model = replay_history(history)

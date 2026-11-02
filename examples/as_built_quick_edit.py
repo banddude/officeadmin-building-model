@@ -125,15 +125,19 @@ def synthetic_three_story_inputs():
         levels=(*base.levels, middle, top), electrical_devices=(device,), ports=ports,
         routes=(route,), route_fittings=())
     history = start_history(model)
-    record = model.to_dict()["routes"][0]
+    # The retained baseline has passed typed canonical JSON admission. Direct
+    # constructors can still hold integer-valued coordinates where that reader
+    # stores floats, so hash and reaffirm the actual parent, never the raw input.
+    parent = replay_history(history)
+    record = parent.to_dict()["routes"][0]
     statement = ("Synthetic three-story geometric projection only. Reaffirm supplied route geometry; "
                  "no field installation, product selection, engineering or visual acceptance is asserted.")
     request = {"version": VERSION, "transaction_id": "field:synthetic-three-story-projection",
         "actor": "synthetic-projection-example", "reason": statement,
-        "design_sha256": history["design_sha256"], "parent_sha256": _sha(snapshot(model)),
+        "design_sha256": history["design_sha256"], "parent_sha256": _sha(snapshot(parent)),
         "evidence": [{"id": "field:projection-note", "kind": "quick_edit", "reference": "synthetic-inline-note",
                       "sha256": _sha(statement), "statement": statement}],
-        "edits": [{"collection": "routes", "id": route.id, "expected_sha256": record_sha256(record),
+        "edits": [{"collection": "routes", "id": record["id"], "expected_sha256": record_sha256(record),
                    "record": record, "evidence_ids": ["field:projection-note"]}],
         "method_reconciliations": [], "installed_assertions": []}
     return history, request

@@ -42,6 +42,13 @@ testimony to those exact record hashes. `apply_transaction()` returns a new
 history. `replay_history()` verifies every parent, transaction and result.
 JSON save/reload retains the complete requests, snapshots and history.
 
+Derive edit records, expected entity hashes and parent hashes from
+`replay_history(history)` or the typed canonical model loaded from the retained
+`design_json`. A directly constructed `Point3(x=2, ...)` can still hold an
+integer while typed JSON admission stores `2.0`; hashing the pre-admission
+constructor object does not identify the retained parent. The example follows
+the retained parent. Entity hash equality and stale-record refusal remain exact.
+
 Existing provenance and source attributes cannot be rewritten by a quick edit.
 The transaction appends user-derived provenance scoped to the actual changed
 canonical fields, retaining actor, reason and supplied evidence. Explicit
@@ -211,6 +218,14 @@ quantity row into two one-unit rows and the shared revision mapper kept only
 one. This repair totals original measured contributions once, without mixing variants, units or bases,
 and adds the separate retained three-story example. The old packet remains
 immutable evidence; green tests did not establish artifact correctness.
+
+Repair run [41491309497](https://github.com/banddude/officeadmin-building-model/actions/runs/41491309497)
+at `4038c26` was terminal **cancelled**, but its completed full-suite step failed:
+1 failed, 6,220 passed, 13 skipped and 1 xfailed. The three-story example's raw
+constructor record hash differed from its retained typed parent; its factory
+now derives the proposal from replay of that parent. The stale-input guard is
+unchanged. Packet generation and retention were skipped, so regenerated repair
+visuals and multilevel artifact acceptance remain unverified.
 
 No local Python import, test, render or build has been performed. Runtime,
 hosted CI and visual acceptance of this repair head remain pending. After the

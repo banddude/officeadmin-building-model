@@ -491,3 +491,57 @@ def test_bounded_local_export_reader_rejects_duplicate_keys(tmp_path):
     from oabm.labor import read_labor_json
     path = tmp_path / 'fictional-export.json'; path.write_text('{"version":1,"version":2}')
     with pytest.raises(ContractError, match='duplicate'): read_labor_json(path)
+
+
+def test_export_reader_rejects_fifo_nonblocking_before_stream_read(tmp_path, monkeypatch):
+    import os
+    from oabm.pipeline import as_built_admission as admission
+    from oabm.labor import read_labor_json
+    if not hasattr(os, 'mkfifo'):
+        pytest.skip('FIFO admission case requires POSIX')
+    path = tmp_path / 'receipt.pipe'; os.mkfifo(path)
+    opened, closed = [], []
+    real_open, real_close = admission.os.open, admission.os.close
+    def checked_open(path, flags):
+        assert flags & os.O_NONBLOCK
+        descriptor = real_open(path, flags); opened.append(descriptor)
+        return descriptor
+    def checked_close(descriptor):
+        closed.append(descriptor); return real_close(descriptor)
+    def must_not_read(*args, **kwargs):
+        raise AssertionError('special file reached stream read')
+    monkeypatch.setattr(admission.os, 'open', checked_open)
+    monkeypatch.setattr(admission.os, 'close', checked_close)
+    monkeypatch.setattr(admission.os, 'fdopen', must_not_read)
+    with pytest.raises(ContractError, match='regular bounded input file'): read_labor_json(path)
+    assert opened and closed == opened
+
+
+def test_export_reader_rejects_device_descriptor_before_stream_read(tmp_path, monkeypatch):
+    import stat
+    from types import SimpleNamespace
+    from oabm.pipeline import as_built_admission as admission
+    from oabm.labor import read_labor_json
+    path = tmp_path / 'fictional.json'; path.write_text('{}')
+    # Exercise descriptor admission without opening an actual device.
+    monkeypatch.setattr(admission.os, 'fstat', lambda descriptor: SimpleNamespace(st_mode=stat.S_IFCHR, st_size=0))
+    def must_not_read(*args, **kwargs):
+        raise AssertionError('device descriptor reached stream read')
+    monkeypatch.setattr(admission.os, 'fdopen', must_not_read)
+    with pytest.raises(ContractError, match='regular bounded input file'): read_labor_json(path)
+
+
+def test_export_reader_shared_structure_scan_runs_before_json_parser(tmp_path, monkeypatch):
+    from oabm.labor import read_labor_json
+    import oabm.labor.receipts as receipts
+    from oabm.routing.physical_capture import MAX_DEPTH, MAX_NODES
+    from oabm.pipeline import as_built_admission  # Load shared reader before parser guard.
+    def must_not_parse(*args, **kwargs):
+        raise AssertionError('over-budget export reached JSON parser')
+    monkeypatch.setattr(receipts.json, 'loads', must_not_parse)
+    path = tmp_path / 'over-structure.json'
+    for raw in ('[' * (MAX_DEPTH + 1) + ']' * (MAX_DEPTH + 1),
+                '[' + ','.join('0' for _ in range(MAX_NODES + 1)) + ']',
+                '{"number":' + '1' * 129 + '}'):
+        path.write_text(raw)
+        with pytest.raises(ContractError, match='admission'): read_labor_json(path)

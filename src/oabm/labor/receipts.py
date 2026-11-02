@@ -301,13 +301,11 @@ def generate_receipted_labor_report(model, request, receipts):
 
 
 def read_labor_json(path):
-    """Read a local request/export with a byte cap and duplicate-key refusal."""
-    from pathlib import Path
+    """Reuse nonblocking regular-file and pre-parser structural admission."""
+    from oabm.pipeline.as_built_admission import read_bytes, json_text
     from .core import MAX_BYTES
-    with Path(path).open('rb') as stream:
-        data = stream.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
-        raise ContractError('labor export file exceeds input byte limit')
+    raw = read_bytes(path, byte_limit=MAX_BYTES)
+    text = json_text(raw, byte_limit=MAX_BYTES)
     def pairs(items):
         result = {}
         for key, value in items:
@@ -318,7 +316,7 @@ def read_labor_json(path):
     def constant(value):
         raise ContractError('nonfinite labor export JSON constant')
     try:
-        result = json.loads(data.decode('utf-8'), object_pairs_hook=pairs, parse_constant=constant)
+        result = json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
     except ContractError:
         raise
     except (UnicodeError, ValueError, RecursionError) as exc:

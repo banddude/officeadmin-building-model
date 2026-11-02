@@ -120,3 +120,11 @@ No real company/vendor/statutory rates, private production data or private sourc
 implementation were copied. Independent source re-review, executed synthetic
 outputs, authenticated read-only exporting and real-job acceptance remain pending.
 This work does not close #234.
+
+The local file entry point reuses `pipeline.as_built_admission.read_bytes` for
+nonblocking descriptor opening, `fstat` regular-file/size admission, bounded read
+and descriptor cleanup. Its shared `json_text` scanner bounds depth, node count
+and scalar token length **before** JSON parsing allocates containers. Labor's
+stricter detached request budget then applies to the decoded value. Duplicate-key
+and nonfinite-value refusals remain in place. FIFO/device and parser-order cases
+are added in source only; no local execution was performed.

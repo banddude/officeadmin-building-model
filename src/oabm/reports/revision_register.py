@@ -108,7 +108,7 @@ def _html(document):
         out.write('</details>')
     if not diff['changes']:
         out.write('<p>No object changes.</p>')
-    out.write('<h2 id="physical">Physical route measurement evidence</h2><p>Exact length = straight ticks × 10⁻⁹ m + (π coefficient numerator / denominator) × 10⁻⁹ π m. These explain route measurements; they are not additional takeoff rows. Legacy route deltas remain in the canonical quantity table.</p>')
+    out.write('<h2 id="physical">Physical route measurement evidence</h2><p>Exact length = straight ticks × 10⁻⁹ m + (π coefficient numerator / denominator) × 10⁻⁹ π m. These explain route measurements; they are not additional takeoff rows. Legacy route deltas remain in the canonical quantity table.</p><p>Canonical status uses the same semantic diff as the object register. Ordered snapshot status and comparison categories retain the physical comparison evidence separately: provenance order alone can change an ordered snapshot while its canonical status remains unchanged. Source hashes bind each retained snapshot independently.</p>')
     for row in document['physical_measurements']:
         if row['delta']:
             length = row['delta']['length']
@@ -121,10 +121,11 @@ def _html(document):
         for row in document['physical_measurements']:
             delta = row['delta']
             length = delta['length'] if delta else None
-            yield [row['route_id'], row['status'], row['path_changed'],
+            yield [row['route_id'], row['status'], ', '.join(row['change_classes']),
+                   row['snapshot_status'], ', '.join(row['snapshot_field_change_categories']), row['path_changed'],
                    _json(row['before_measurement']), _json(row['after_measurement']),
                    _json(length)]
-    table(['Canonical route ID','Status','Path changed','Before measurement','After measurement','Exact delta length'], measurements())
+    table(['Canonical route ID','Canonical status','Canonical classes','Ordered snapshot status','Snapshot comparison categories','Path changed','Before measurement','After measurement','Exact delta length'], measurements())
     out.write('</body></html>')
     return out.getvalue()
 
@@ -160,6 +161,22 @@ def generate_revision_register(before: BuildingModel, after: BuildingModel) -> R
     pairs = [_snapshot(model) for model in (before, after)]
     diff = build_revision_diff(pairs[0][0], pairs[1][0]).to_dict()
     physical = generate_physical_route_comparison(pairs[0][0], pairs[1][0]).to_dict()
+    # The physical comparison intentionally compares ordered source records.
+    # Its status is evidence, not the canonical semantic change classification.
+    route_changes = {row['entity_id']: row for row in diff['changes'] if row['collection'] == 'routes'}
+    physical_measurements = []
+    for row in physical['routes']:
+        if row['before_kind'] != 'physical' and row['after_kind'] != 'physical':
+            continue
+        canonical_change = route_changes.get(row['route_id'])
+        physical_measurements.append({
+            **{key: row[key] for key in
+               ('route_id','path_changed','before_measurement','after_measurement','delta')},
+            'status': canonical_change['change'] if canonical_change else 'unchanged',
+            'change_classes': canonical_change['change_classes'] if canonical_change else [],
+            'snapshot_status': row['status'],
+            'snapshot_field_change_categories': row['field_change_categories'],
+        })
     document = {
         'kind': 'canonical_revision_register', 'version': '1.0.0',
         'sources': {side: {'binding_profile': 'normalized-canonical-model-json-v1',
@@ -167,9 +184,7 @@ def generate_revision_register(before: BuildingModel, after: BuildingModel) -> R
                            'snapshot': model.to_dict()}
                     for side, (model, raw) in zip(('before','after'), pairs)},
         'diff': diff,
-        'physical_measurements': [{key: row[key] for key in
-            ('route_id','status','path_changed','before_measurement','after_measurement','delta')}
-            for row in physical['routes'] if row['before_kind'] == 'physical' or row['after_kind'] == 'physical'],
+        'physical_measurements': physical_measurements,
         'limitations': list(LIMITATIONS),
     }
     raw = _json(document)

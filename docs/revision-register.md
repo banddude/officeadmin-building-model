@@ -24,6 +24,11 @@ Physical route measurements retain exact straight ticks and rational π ticks.
 They explain the existing canonical quantity deltas and must not be added to
 them again. Legacy route quantities remain separate canonical variants. These
 are geometric quantities, not stock orders, prices or engineering verification.
+The physical table's canonical status/classes come from the same canonical diff
+as the object register. Separately labeled ordered-snapshot status and comparison
+categories retain the existing physical comparison's evidence. Reordering equal
+provenance facts changes source hashes and ordered snapshot status but does not
+become a canonical semantic revision. The underlying comparison is unchanged.
 
 HTML contains escaped source text, inline CSS and relative local download links;
 it needs no network or scripts. CSV text uses the existing spreadsheet formula

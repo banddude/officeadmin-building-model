@@ -13,6 +13,7 @@ from oabm.reports.revision_register import (
 )
 from test_physical_canonical_revisions import mixed_snapshots
 from test_physical_route_revisions import detour
+from physical_route_fixture import make_physical_model
 
 
 def rows(report, name):
@@ -55,6 +56,37 @@ def test_equal_length_moved_path_remains_visible_without_quantity_change():
     assert not rows(report,'quantity-deltas.csv')
     assert report.to_dict()['physical_measurements'][0]['path_changed'] is True
     assert 'No changes in this section.' in report.files()['index.html']
+
+
+@pytest.mark.parametrize('owner', ['route','joint','segment'])
+def test_provenance_order_only_has_consistent_canonical_status_and_explicit_snapshot_evidence(owner):
+    model = make_physical_model()
+    route = model.routes[0]
+    entity = route if owner == 'route' else route.joints[0] if owner == 'joint' else route.segments[0]
+    records = (entity.provenance[0],replace(entity.provenance[0],method='second source'))
+    def snapshot(provenance):
+        revised = replace(entity,provenance=provenance)
+        physical = revised if owner == 'route' else (
+            replace(route,joints=(revised,*route.joints[1:])) if owner == 'joint' else
+            replace(route,segments=(revised,*route.segments[1:])))
+        return replace(model,routes=(physical,))
+    before,after = snapshot(records),snapshot(tuple(reversed(records)))
+    report = generate_revision_register(before,after)
+    data = report.to_dict()
+    assert data['diff']['changes'] == [] and data['diff']['quantity_deltas'] == []
+    assert not rows(report,'changes.csv') and not rows(report,'quantity-deltas.csv')
+    measured, = data['physical_measurements']
+    assert measured['status'] == 'unchanged' and measured['change_classes'] == []
+    assert measured['snapshot_status'] == 'changed'
+    assert measured['snapshot_field_change_categories'] == ['provenance']
+    assert measured['path_changed'] is False
+    assert measured['delta']['length']['total_m_approx'] == 0
+    assert data['sources']['before']['sha256'] != data['sources']['after']['sha256']
+    html = report.files()['index.html']
+    assert '0 changed objects' in html
+    assert 'Canonical status' in html and 'Ordered snapshot status' in html
+    assert 'provenance order alone' in html
+    assert validate_revision_register(report.to_json()).to_json() == report.to_json()
 
 
 def test_unchanged_and_negative_deltas_and_external_source_binding():

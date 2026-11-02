@@ -106,9 +106,10 @@ def _drawings(model, revision):
     """Actual scaled vector plan sheets and paginated panel schedule sheets."""
     from oabm.drawings import (DrawingSet, PlanSpec, SheetSpec, ViewPlacement,
                                Bounds2, Point2, Symbol, generate_drawing_set)
-    from oabm.drawings.sheet_svg import SheetSymbol, render_sheet_svg
+    from oabm.drawings.sheet_svg import SheetSymbol, SheetSvgOptions, render_sheet_svg
     from oabm.drawings.schedule_set import panel_schedule_drawing_set
-    from oabm.drawings.schedule_layout import paginate_schedules
+    from oabm.drawings.schedule_layout import ScheduleLayout, draft_panel_schedule_pages
+    from .as_built_presentation import prepare_plan, FONT, TEXT_MM, ROUTE_COLOR
     _require(bool(model.levels), "plan delivery requires a supplied canonical level")
     # A declared location marker is a review convention, never manufacturer CAD
     # or an invented device envelope. Canonical supplied sizes are drawn too.
@@ -130,22 +131,33 @@ def _drawings(model, revision):
     plan = generate_drawing_set(model, plans=tuple(plans), include_schedules=False,
         symbol_provider=lambda entity, view_type: Symbol("as-built-location"),
         physical_geometry="xy-centerline", assembly_geometry="cut")
-    outputs = {"drawings/plans.json": plan.to_json()}
-    for ordinal, view in enumerate(plan.views, 1):
-        spec = SheetSpec(f"AB-{ordinal}", 1189, 841, titleblock_height_mm=35,
-                         title="As-built field review plan", revision=revision)
+    prepared=[prepare_plan(model,view,ordinal,revision) for ordinal,view in enumerate(plan.views,1)]
+    plan=replace(plan,views=tuple(view for view,spec,audit in prepared))
+    outputs = {"drawings/plans.json": plan.to_json(),
+               "drawings/plan-layout.json":_json({"model_sha256":_sha(snapshot(model)),
+                    "plans":[{"view_id":view.id,**audit} for view,spec,audit in prepared]})}
+    options=SheetSvgOptions(font_family=FONT,text_height_mm=TEXT_MM,dimension_text_height_mm=TEXT_MM,text_halo_mm=0)
+    for ordinal, (view,spec,audit) in enumerate(prepared, 1):
         sheet = render_sheet_svg(plan, spec, (ViewPlacement(
-            f"placement-{ordinal}", view.id, 15, 15),), symbols=symbols)
+            f"placement-{ordinal}", view.id, 12, 12),), symbols=symbols,options=options,
+            stroke_colors={"route":ROUTE_COLOR})
         outputs[f"drawings/plan-{ordinal}.svg"] = sheet.svg
+        outputs[f"drawings/plan-{ordinal}.manifest.json"] = sheet.manifest_json
     report, schedules = panel_schedule_drawing_set(model)
     _require(bool(report.panels), "panel delivery requires a supplied panelboard")
-    template = SheetSpec("AB-P", 1189, 841, titleblock_height_mm=35,
+    template = SheetSpec("AB-P", 420, 297, titleblock_height_mm=30,
                          title="As-built supplied panel facts", revision=revision)
-    pages = paginate_schedules(schedules, template, empty_schedule_sources={
-        stable_id("schedule", f"panel-facts:{panel.panel.id}"): panel.panel.id
-        for panel in report.panels if not panel.circuits})
+    pages = draft_panel_schedule_pages(report,schedules,template,
+        layout=ScheduleLayout(text_height_mm=TEXT_MM,line_height_mm=4.5,packing='compact'),table_width_mm=360)
+    expected=sorted((schedule.id,index,row.source_id) for schedule in schedules.schedules
+                    for index,row in enumerate(schedule.rows))
+    actual=sorted((row['schedule_id'],row['row_index'],row['source_id']) for page in pages for row in page.row_map)
+    _require(actual==expected,'as-built panel presentation lost or duplicated source rows')
+    outputs['drawings/panel-layout.json']=_json({'model_sha256':_sha(snapshot(model)),
+        'text_height_mm':TEXT_MM,'paper_mm':[420,297],
+        'rows':[row for page in pages for row in page.row_map]})
     for ordinal, page in enumerate(pages, 1):
-        spec = replace(page.spec, titleblock_height_mm=35,
+        spec = replace(page.spec, titleblock_height_mm=30,
                        title="As-built supplied panel facts", revision=revision)
         # Schedule borders sit on their model-view boundary; reserve stroke
         # extents explicitly for the strict physical-sheet SVG consumer.
@@ -153,8 +165,9 @@ def _drawings(model, revision):
             view.bounds.min_y - .001, view.bounds.max_x + .001, view.bounds.max_y + .001))
             for view in page.drawing_set.views)
         projected = replace(page.drawing_set, views=views)
-        outputs[f"drawings/panel-{ordinal}.svg"] = render_sheet_svg(
-            projected, spec, (page.placement,)).svg
+        rendered=render_sheet_svg(projected, spec, (page.placement,),options=options,text_styles=True)
+        outputs[f"drawings/panel-{ordinal}.svg"] = rendered.svg
+        outputs[f"drawings/panel-{ordinal}.manifest.json"] = rendered.manifest_json
     outputs["drawings/panel-facts.json"] = report.to_json()
     outputs["drawings/panel-schedules.json"] = schedules.to_json()
     return outputs

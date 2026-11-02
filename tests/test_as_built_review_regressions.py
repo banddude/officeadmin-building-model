@@ -330,7 +330,11 @@ def test_actual_three_story_riser_is_present_and_clipped_on_intermediate_plan():
     metadata = dict(middle_markers[0]["metadata"])
     assert float(metadata["min_z_m"]) == pytest.approx(3)
     assert float(metadata["max_z_m"]) == pytest.approx(5.8)
-    assert any(primitive.get("text") == "Vertical route" for primitive in by_level[middle.id]["primitives"])
+    assert any("Vertical route" in (primitive.get("text") or '') for primitive in by_level[middle.id]["primitives"])
+    layout=json.loads(outputs['drawings/plan-layout.json'])
+    middle_layout=next(row for row in layout['plans'] if row['view_id']==by_level[middle.id]['id'])
+    route_entry=next(row for row in middle_layout['entries'] if row['owner_id']==route.id)
+    assert "Vertical route" in route_entry['labels']
     assert len([name for name in outputs if name.startswith("drawings/plan-") and name.endswith(".svg")]) == 3
 
 

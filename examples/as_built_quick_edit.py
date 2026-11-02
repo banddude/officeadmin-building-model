@@ -6,9 +6,13 @@ Run only when the coordinated execution window opens:
 from copy import deepcopy
 from dataclasses import replace
 import json
+import hashlib
+import os
 from pathlib import Path
+import struct
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 
 from oabm.model import (BuildingModel, CatalogProduct, ElectricalBox, Point3,
                         Provenance, RuleReference, Size3, upgrade_to_v1_2)
@@ -143,29 +147,74 @@ def synthetic_three_story_inputs():
     return history, request
 
 
-def _create_example_delivery(history, request, output_directory):
+def _retain_sheet_images(output_directory, manifest):
+    """Full-sheet previews of exact retained SVG bytes; no crop or geometry edit.
+
+    Optional normal example output uses the already configured CairoSVG extra.
+    Its receipts stay separate from the sealed canonical delivery manifest.
+    """
+    import cairosvg
+    root=Path(output_directory)
+    delivery=root/'delivery'
+    preview=root/'preview-images'
+    if preview.exists():
+        raise FileExistsError('preview attempt already exists')
+    rows=[]
+    with tempfile.TemporaryDirectory(prefix='.preview-',dir=root) as temporary:
+        temporary=Path(temporary);pending=temporary/'images';pending.mkdir()
+        for path in sorted((delivery/'drawings').glob('*.svg')):
+            name=path.relative_to(delivery).as_posix()
+            raw=path.read_bytes()
+            digest=hashlib.sha256(raw).hexdigest()
+            if digest!=manifest['files'][name]['sha256']:
+                raise ValueError('retained SVG changed before preview generation')
+            svg=ET.fromstring(raw)
+            width_mm=float(svg.attrib['width'].removesuffix('mm'))
+            height_mm=float(svg.attrib['height'].removesuffix('mm'))
+            width,height=round(width_mm*96/25.4*1.5),round(height_mm*96/25.4*1.5)
+            if not (0<width<=7000 and 0<height<=7000 and width*height<=36_000_000):
+                raise ValueError('preview pixel budget exceeded')
+            image=cairosvg.svg2png(bytestring=raw,output_width=width,output_height=height)
+            if len(image)<24 or image[:8]!=b'\x89PNG\r\n\x1a\n' or struct.unpack('>II',image[16:24])!=(width,height):
+                raise ValueError('actual full-sheet preview dimensions mismatch')
+            filename=path.stem+'.png';(pending/filename).write_bytes(image)
+            rows.append({'image':filename,'sha256':hashlib.sha256(image).hexdigest(),
+                'source_svg':name,'source_svg_sha256':digest,'width':width,'height':height})
+        if not rows:
+            raise ValueError('no actual sheets available for preview')
+        (pending/'PREVIEW-MANIFEST.json').write_text(json.dumps({
+            'version':'as-built-preview-images-v1','source_manifest_sha256':hashlib.sha256((delivery/'MANIFEST.json').read_bytes()).hexdigest(),
+            'model_sha256':manifest['revised_model_sha256'],'images':rows,'scale':1.5,'dpi':96,
+            'visual_review_status':'unreviewed','qualification':'Full generated sheets; no crop, model edit or visual acceptance.'},sort_keys=True))
+        os.rename(pending,preview)
+
+
+def _create_example_delivery(history, request, output_directory, *, preview_images=False):
     with tempfile.TemporaryDirectory(prefix="as-built-inputs-") as temporary:
         temporary = Path(temporary)
         (temporary / "history.json").write_text(json.dumps(history))
         (temporary / "transaction.json").write_text(json.dumps(request))
-        return create_as_built_delivery(temporary / "history.json", temporary / "transaction.json",
-                                        output_directory=output_directory)
+        manifest=create_as_built_delivery(temporary / "history.json", temporary / "transaction.json",
+                                           output_directory=output_directory)
+    if preview_images:
+        _retain_sheet_images(output_directory,manifest)
+    return manifest
 
 
-def create_synthetic_delivery(output_directory):
+def create_synthetic_delivery(output_directory, *, preview_images=False):
     """Generate this independent public synthetic model's receipted delivery.
 
     The reference production example can retain it as a companion. Its model,
     quantities and evidence never become part of that other example's model.
     """
     history, request = synthetic_inputs()
-    return _create_example_delivery(history, request, output_directory)
+    return _create_example_delivery(history, request, output_directory,preview_images=preview_images)
 
 
-def create_three_story_delivery(output_directory):
+def create_three_story_delivery(output_directory, *, preview_images=False):
     """Retain actual per-story SVGs and their independent geometric-only model."""
     history, request = synthetic_three_story_inputs()
-    return _create_example_delivery(history, request, output_directory)
+    return _create_example_delivery(history, request, output_directory,preview_images=preview_images)
 
 
 def main():

@@ -21,6 +21,10 @@ The model is the source of truth. A floor plan is a derived view of that model.
 
 ## Workstreams
 
+See the [as-built quick-edit source checkpoint](docs/as-built-quick-edit.md) for
+explicit field transactions and atomic review deliveries. Runtime acceptance is
+pending; #238 remains open.
+
 - `src/oabm/model`: canonical model and contracts
 - `src/oabm/electrical`: explicit physical-product intent/catalog producers
 - `src/oabm/building_assemblies`: explicit preset-driven physical building parts

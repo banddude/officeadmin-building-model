@@ -71,6 +71,24 @@ def test_repeatability_source_bytes_and_detached_manifest():
     assert a.manifest()['items']
 
 
+def test_opt_in_palette_and_measured_text_styles_preserve_unrelated_defaults():
+    normal=render()
+    assert render(stroke_colors=None,text_styles=False)==normal
+    colored=render(stroke_colors={'object':'#0064a8'})
+    assert ET.fromstring(colored.svg).find('s:polyline',NS).get('stroke')=='#0064a8'
+    assert colored.manifest()['styles']['stroke_colors']['object']=='#0064a8'
+    d,s,p=inputs()
+    label=replace(d.views[0].primitives[1],metadata=(('font_size_mm','4.2'),('font_weight','600')))
+    styled=replace(d,views=(replace(d.views[0],primitives=(d.views[0].primitives[0],label)),))
+    old=ET.fromstring(render_sheet_svg(styled,s,p).svg).find('.//s:text',NS)
+    new=ET.fromstring(render_sheet_svg(styled,s,p,text_styles=True).svg).find('.//s:text',NS)
+    assert old.get('font-size')=='2.5' and old.get('font-weight') is None
+    assert new.get('font-size')=='4.2' and new.get('font-weight')=='600'
+    for palette in ({'unknown':'#123456'},{'route':'url(https://invalid.test/style)'},{'route':'#fff'}):
+        with pytest.raises(ValueError,match='stroke palette'):
+            render(stroke_colors=palette)
+
+
 def test_xml_escaping_prevents_markup_or_resource_injection():
     d, s, p = inputs()
     value = '<script src="https://invalid.test/">&evil</script>'

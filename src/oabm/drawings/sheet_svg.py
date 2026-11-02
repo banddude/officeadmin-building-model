@@ -9,6 +9,7 @@ import hashlib
 import html
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -104,6 +105,8 @@ def render_sheet_svg(
     *,
     options: SheetSvgOptions | None = None,
     symbols: Mapping[str, SheetSymbol] | None = None,
+    stroke_colors: Mapping[str, str] | None = None,
+    text_styles: bool = False,
 ) -> RenderedSheetSvg:
     """Compose and render existing views; neither fetches assets nor writes files.
 
@@ -112,7 +115,8 @@ def render_sheet_svg(
     A titleblock is required so sheet identity/revision are visibly printed.
     """
     return _render_composed_sheet_svg(compose_sheet(drawing_set,spec,placements),spec,
-                                      options=options,symbols=symbols,drawing_set=drawing_set)
+                                      options=options,symbols=symbols,drawing_set=drawing_set,
+                                      stroke_colors=stroke_colors,text_styles=text_styles)
 
 
 def render_blank_sheet_svg(spec: SheetSpec, *, options: SheetSvgOptions | None = None) -> RenderedSheetSvg:
@@ -122,7 +126,18 @@ def render_blank_sheet_svg(spec: SheetSpec, *, options: SheetSvgOptions | None =
 
 def _render_composed_sheet_svg(composed: ComposedSheet, spec: SheetSpec, *,
         options: SheetSvgOptions | None = None, symbols: Mapping[str, SheetSymbol] | None = None,
-        drawing_set: DrawingSet | None = None) -> RenderedSheetSvg:
+        drawing_set: DrawingSet | None = None,
+        stroke_colors: Mapping[str, str] | None = None,
+        text_styles: bool = False) -> RenderedSheetSvg:
+    if type(text_styles) is not bool:
+        raise ValueError('text_styles must be bool')
+    colors = dict(_STROKES)
+    if stroke_colors is not None:
+        if not isinstance(stroke_colors, Mapping) or any(
+                key not in _STROKES or not isinstance(value, str) or
+                re.fullmatch(r"#[0-9a-fA-F]{6}", value) is None for key, value in stroke_colors.items()):
+            raise ValueError('stroke palette requires known semantic keys and exact hex colors')
+        colors.update(stroke_colors)
     options = options or SheetSvgOptions()
     symbols = dict(symbols or {})
     for token, symbol in symbols.items():
@@ -171,7 +186,7 @@ def _render_composed_sheet_svg(composed: ComposedSheet, spec: SheetSpec, *,
             if style['stroke'] not in _STROKES or style['weight'] not in _WEIGHTS or style['pattern'] not in _PATTERNS:
                 raise ValueError(f'unsupported semantic line style: {style!r}')
             width = _WEIGHTS[style['weight']]
-            attrs = f'stroke="{_STROKES[style["stroke"]]}" stroke-width="{_fmt(width)}" fill="none" stroke-linecap="butt" stroke-linejoin="round"'
+            attrs = f'stroke="{colors[style["stroke"]]}" stroke-width="{_fmt(width)}" fill="none" stroke-linecap="butt" stroke-linejoin="round"'
             if _PATTERNS[style['pattern']]:
                 attrs += f' stroke-dasharray="{_PATTERNS[style["pattern"]]}"'
             kind, points = p['kind'], p['points_mm']
@@ -190,7 +205,15 @@ def _render_composed_sheet_svg(composed: ComposedSheet, spec: SheetSpec, *,
             elif kind == 'text':
                 if p['text'] is None:
                     raise ValueError('text primitive is missing text')
-                annotations.append(text(p['text'], points[0], options.text_height_mm, attrs=provenance))
+                size,attrs=options.text_height_mm,provenance
+                if text_styles:
+                    meta=dict(p.get('metadata',[]))
+                    size=_finite(float(meta.get('font_size_mm',size)),'text font size')
+                    weight=int(meta.get('font_weight',400))
+                    if size<=0 or size>20 or weight not in {300,400,500,600,700}:
+                        raise ValueError('unsupported measured text style')
+                    attrs+=f' font-weight="{weight}"'
+                annotations.append(text(p['text'], points[0], size, attrs=attrs))
             elif kind == 'symbol':
                 token = p['symbol']
                 if token not in symbols:
@@ -282,11 +305,13 @@ def _render_composed_sheet_svg(composed: ComposedSheet, spec: SheetSpec, *,
         'unrendered_schedule_ids': sorted(schedule.id for schedule in drawing_set.schedules) if drawing_set is not None else [],
         'render_options': {key: getattr(options, key) for key in options.__dataclass_fields__},
         'symbol_geometry_mm': {token: [[[p.x, p.y] for p in segment] for segment in symbols[token].segments] for token in sorted(used_symbols)},
-        'styles': {'stroke_colors': _STROKES, 'lineweights_mm': _WEIGHTS, 'dash_patterns_mm': _PATTERNS},
+        'styles': {'stroke_colors': colors, 'lineweights_mm': _WEIGHTS, 'dash_patterns_mm': _PATTERNS},
         'limitations': ['SVG bytes are deterministic; pixel rendering depends on installed fonts and renderer.',
                         'Text anchors are positioned; glyph extents/collisions require visual QA.',
                         'Configured white text halos mask underlying strokes locally for readability.',
                         'View titles and schedules are metadata, not automatically laid-out graphics.',
                         'No canonical writeback, engineering approval or permit-readiness claim.'],
     }
+    if text_styles:
+        manifest['text_styles']='explicit bounded primitive font_size_mm/font_weight'
     return RenderedSheetSvg(svg, json.dumps(manifest, sort_keys=True, allow_nan=False))

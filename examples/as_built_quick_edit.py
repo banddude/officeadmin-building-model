@@ -108,6 +108,46 @@ def synthetic_inputs():
     return history, request
 
 
+def synthetic_three_story_inputs():
+    """Explicit projection-only geometry, not evidence of field installation."""
+    base = BuildingModel.load(ROOT / "fixtures/model/v1/garage-route.json")
+    middle = replace(base.levels[0], id="level:middle", name="Middle", elevation_m=3)
+    top = replace(base.levels[0], id="level:third", name="Third", elevation_m=6)
+    device = replace(base.electrical_devices[0], level_id=top.id, host_id=None, space_id=None,
+        pose=replace(base.electrical_devices[0].pose, position=Point3(x=5.2, y=.2, z=7.2)))
+    ports = tuple(replace(port, pose=device.pose) if port.owner_id == device.id else port for port in base.ports)
+    route = replace(base.routes[0], fitting_ids=(), name=None,
+        centerline=replace(base.routes[0].centerline, points=(base.routes[0].centerline.points[0],
+            Point3(x=.2, y=.2, z=2.5), Point3(x=2, y=.2, z=2.5), Point3(x=2, y=.2, z=6.5),
+            Point3(x=5.2, y=.2, z=6.5), device.pose.position)))
+    model = replace(base, model_id="model:synthetic-three-story-projection",
+        name="Synthetic three-story projection only; not field installation",
+        levels=(*base.levels, middle, top), electrical_devices=(device,), ports=ports,
+        routes=(route,), route_fittings=())
+    history = start_history(model)
+    record = model.to_dict()["routes"][0]
+    statement = ("Synthetic three-story geometric projection only. Reaffirm supplied route geometry; "
+                 "no field installation, product selection, engineering or visual acceptance is asserted.")
+    request = {"version": VERSION, "transaction_id": "field:synthetic-three-story-projection",
+        "actor": "synthetic-projection-example", "reason": statement,
+        "design_sha256": history["design_sha256"], "parent_sha256": _sha(snapshot(model)),
+        "evidence": [{"id": "field:projection-note", "kind": "quick_edit", "reference": "synthetic-inline-note",
+                      "sha256": _sha(statement), "statement": statement}],
+        "edits": [{"collection": "routes", "id": route.id, "expected_sha256": record_sha256(record),
+                   "record": record, "evidence_ids": ["field:projection-note"]}],
+        "method_reconciliations": [], "installed_assertions": []}
+    return history, request
+
+
+def _create_example_delivery(history, request, output_directory):
+    with tempfile.TemporaryDirectory(prefix="as-built-inputs-") as temporary:
+        temporary = Path(temporary)
+        (temporary / "history.json").write_text(json.dumps(history))
+        (temporary / "transaction.json").write_text(json.dumps(request))
+        return create_as_built_delivery(temporary / "history.json", temporary / "transaction.json",
+                                        output_directory=output_directory)
+
+
 def create_synthetic_delivery(output_directory):
     """Generate this independent public synthetic model's receipted delivery.
 
@@ -115,12 +155,13 @@ def create_synthetic_delivery(output_directory):
     quantities and evidence never become part of that other example's model.
     """
     history, request = synthetic_inputs()
-    with tempfile.TemporaryDirectory(prefix="as-built-inputs-") as temporary:
-        temporary = Path(temporary)
-        (temporary / "history.json").write_text(json.dumps(history))
-        (temporary / "transaction.json").write_text(json.dumps(request))
-        return create_as_built_delivery(temporary / "history.json", temporary / "transaction.json",
-                                        output_directory=output_directory)
+    return _create_example_delivery(history, request, output_directory)
+
+
+def create_three_story_delivery(output_directory):
+    """Retain actual per-story SVGs and their independent geometric-only model."""
+    history, request = synthetic_three_story_inputs()
+    return _create_example_delivery(history, request, output_directory)
 
 
 def main():

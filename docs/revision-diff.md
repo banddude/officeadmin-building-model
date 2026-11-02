@@ -43,6 +43,17 @@ scope under #235.
   lines are explicit `added`/`removed` with nulls on the absent side.
   Nothing prices anything.
 
+The takeoff can split an otherwise identical numeric item into several rows
+because their field/design provenance differs. Revision quantities sum all
+comparable rows for the same category, type, unit and complete variant using a
+deterministic finite scalar total. A provenance-only split of two EVSEs into two
+one-unit rows therefore remains two EVSEs, with no invented credit. Provenance
+changes remain explicit in the entity audit; they are not physical removals.
+Product, work-scope, geometry/material and measurement bases carried in variants
+remain distinct, as do units. Incompatible bid-group or assembly ownership is
+refused rather than silently combined into a portable delta that cannot express
+that distinction. The portable report schema is unchanged.
+
 ## Completed physical assembly revisions
 
 Comparable 1.6/1.7 snapshots include canonical building-assignment parents and

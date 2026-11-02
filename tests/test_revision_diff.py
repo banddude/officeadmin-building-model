@@ -268,6 +268,58 @@ def test_provenance_only_change_does_not_read_as_geometry() -> None:
     assert {change.path for change in entry.field_changes} == {"provenance"}
 
 
+def test_provenance_split_rows_preserve_all_devices_and_distinct_variants():
+    model = _routed_garage()
+    original = model.electrical_devices[0]
+    peer = replace(original, id="device:identical-peer")
+    other_variant = replace(original, id="device:different-size",
+                            size=replace(original.size, x=original.size.x + .1))
+    before = replace(model, electrical_devices=(original, peer, other_variant))
+    field = Provenance(source_kind="as-built-field-edit", source_id="field:count-confirmation",
+                       derivation="user", scope_paths=("pose",))
+    after = replace(before, electrical_devices=(
+        replace(original, provenance=(*original.provenance, field)), peer, other_variant))
+    before_rows = [row for row in extract_quantities(before).items if row.category == "device"]
+    after_rows = [row for row in extract_quantities(after).items if row.category == "device"]
+    assert sorted(row.quantity for row in before_rows) == [1, 2]
+    assert sorted(row.quantity for row in after_rows) == [1, 1, 1]
+    assert {row.unit for row in after_rows} == {"ea"}
+    assert len({row.variant for row in after_rows}) == 2
+    diff = build_revision_diff(before, after)
+    assert not diff.quantity_deltas
+    assert len(diff.changes) == 1 and diff.changes[0].change_classes == ("provenance",)
+    assert not build_revision_diff(after, before).quantity_deltas
+    # A real one-device removal must still be exactly -1, in its own size
+    # variant, even when the remaining evidence rows are split differently.
+    removed = replace(after, electrical_devices=(after.electrical_devices[0], other_variant))
+    line, = _delta(build_revision_diff(before, removed), "device", original.device_type)
+    assert (line.before, line.after, line.delta, line.unit) == (2, 1, -1, "ea")
+    assert dict(line.variant)["size_x_m"] == original.size.x
+    reordered = replace(after, electrical_devices=tuple(reversed(after.electrical_devices)))
+    assert build_revision_diff(before, reordered).to_json() == diff.to_json()
+
+
+def test_provenance_split_lengths_areas_and_volumes_keep_their_own_units():
+    model = _routed_garage()
+    wall = model.walls[0]
+    peer = replace(wall, id="wall:quantity-peer", centerline=replace(wall.centerline,
+        points=tuple(replace(point, x=point.x + 10) for point in wall.centerline.points)))
+    before = replace(model, walls=(wall, peer))
+    field = Provenance(source_kind="as-built-field-edit", source_id="field:wall-confirmation",
+                       derivation="user", scope_paths=("centerline", "height_m", "thickness_m"))
+    after = replace(before, walls=(replace(wall, provenance=(*wall.provenance, field)), peer))
+    assert len([row for row in extract_quantities(before).items if row.category == "wall_length"]) == 1
+    assert len([row for row in extract_quantities(after).items if row.category == "wall_length"]) == 2
+    assert not build_revision_diff(before, after).quantity_deltas
+    removed = replace(after, walls=(after.walls[0],))
+    lines = [row for row in build_revision_diff(before, removed).quantity_deltas
+             if row.category in {"wall_length", "wall_face_area", "wall_volume"}]
+    assert {row.unit for row in lines} == {"m", "m2", "m3"}
+    for row in lines:
+        assert row.status == "changed" and row.before == pytest.approx(2 * row.after)
+        assert row.delta == pytest.approx(-row.after)
+
+
 def test_collection_ordering_is_not_a_change_but_geometry_order_is() -> None:
     model = _routed_garage()
     reordered = _garage_with(

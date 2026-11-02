@@ -94,12 +94,51 @@ def test_reference_example_retains_independent_as_built_under_existing_checksum_
                for row in materials['installed_items'])
     differences=json.loads((companion/'design-differences.json').read_bytes())
     assert differences['changed_count'] and differences['quantity_deltas']
+    # Actual artifact inspection of run 41479090133 found a false -1 EVSE
+    # credit here: the shared diff kept only the first provenance-split row.
+    # Load the retained canonical snapshots, not a mocked quantity report.
+    design=BuildingModel.from_json((companion/'design-model.json').read_bytes())
+    assert {row.id for row in design.electrical_devices} == {row.id for row in as_built.electrical_devices}
+    assert len(design.electrical_devices)==len(as_built.electrical_devices)==2
+    assert not [row for row in differences['quantity_deltas'] if row['category']=='device']
+    parent_differences=json.loads((companion/'parent-differences.json').read_bytes())
+    assert not [row for row in parent_differences['quantity_deltas'] if row['category']=='device']
+    assert sum(row['quantity'] for row in materials['installed_items'] if row['category']=='device')==2
+    from oabm.qa import build_revision_diff
+    assert build_revision_diff(design,as_built).to_dict()==differences
+    assert not [row for row in build_revision_diff(as_built,design).quantity_deltas if row.category=='device']
     for name in ('drawings/plan-1.svg','drawings/panel-1.svg'):
         svg=ET.fromstring((companion/name).read_bytes())
         assert svg.findall('.//{http://www.w3.org/2000/svg}text')
     note=(root/'attempt/AS-BUILT-COMPANION.txt').read_text()
     assert 'Do not combine quantities, totals or source claims' in note
     assert 'Actual visual acceptance: PENDING' in note
+    # Retained multi-story evidence is a third, explicitly separate model.
+    three_story=root/'attempt/as-built-example/three-story-views/delivery'
+    three_manifest=json.loads((three_story/'MANIFEST.json').read_bytes())
+    three_model=BuildingModel.from_json((three_story/'canonical-model.json').read_bytes())
+    assert len({reference.model_id,as_built.model_id,three_model.model_id})==3
+    assert three_manifest['status']=='complete' and three_manifest['review_status']=='unreviewed'
+    for name,receipt in three_manifest['files'].items():
+        raw=(three_story/name).read_bytes()
+        assert len(raw)==receipt['bytes'] and hashlib.sha256(raw).hexdigest()==receipt['sha256']
+        assert (three_story/name).is_relative_to(root/'attempt')
+    views=json.loads((three_story/'drawings/plans.json').read_bytes())['views']
+    assert len(views)==3
+    middle=next(view for view in views if dict(view['metadata'])['level_id']=='level:middle')
+    marker,=[primitive for primitive in middle['primitives']
+             if primitive['kind']=='symbol' and primitive['symbol']=='route-vertical-projection']
+    assert marker['source_ids']==[three_model.routes[0].id]
+    assert float(dict(marker['metadata'])['min_z_m'])==pytest.approx(3)
+    assert float(dict(marker['metadata'])['max_z_m'])==pytest.approx(5.8)
+    three_svgs=list((three_story/'drawings').glob('plan-*.svg'))
+    assert len(three_svgs)==3
+    for path in three_svgs:
+        assert ET.fromstring(path.read_bytes()).findall('.//{http://www.w3.org/2000/svg}text')
+    three_materials=json.loads((three_story/'materials.json').read_bytes())
+    assert not three_materials['installed_items'] and three_materials['unresolved_items']
+    three_differences=json.loads((three_story/'design-differences.json').read_bytes())
+    assert not three_differences['quantity_deltas']
     with pytest.raises(FileExistsError):
         generate(root,variant='reference',pdf=False)
 

@@ -149,14 +149,18 @@ def generate(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fa
         adaptive_layout=adaptive_layout,reference_cover=reference_cover)
     delivery=create_production_sheet_set(request,output_directory=root/'attempt')
     if variant=='reference':
-        from as_built_quick_edit import create_synthetic_delivery
+        from as_built_quick_edit import create_synthetic_delivery, create_three_story_delivery
         companion=create_synthetic_delivery(root/'attempt'/'as-built-example')
+        three_story=create_three_story_delivery(root/'attempt'/'as-built-example'/'three-story-views')
         (root/'attempt'/'AS-BUILT-COMPANION.txt').write_text(
             'INDEPENDENT PUBLIC SYNTHETIC EXAMPLES\n'
             'These examples do not share a canonical model. Do not combine quantities, totals or source claims.\n'
             'Reference production receipt: delivery/PRODUCTION-MANIFEST.json\n'
             'As-built quick-edit receipt: as-built-example/delivery/MANIFEST.json\n'
             f'As-built revised snapshot SHA256: {companion["revised_model_sha256"]}\n'
+            'Separate three-story projection receipt: as-built-example/three-story-views/delivery/MANIFEST.json\n'
+            f'Three-story projection snapshot SHA256: {three_story["revised_model_sha256"]}\n'
+            'The three-story example is geometric-only; all installed materials remain unconfirmed. Do not combine its quantities with either other example.\n'
             'Actual visual acceptance: PENDING. Retained SVGs are not a visual pass or engineering approval.\n'
             'As-built scope: explicit legacy quick edits; supported-object edits refused; physical products unresolved; nonhorizontal physical-route plans refused.\n',
             encoding='utf-8')

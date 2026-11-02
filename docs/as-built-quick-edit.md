@@ -165,6 +165,16 @@ request, receipts and sealed delivery remain separate. The outer
 actual visual acceptance pending. The companion's `MANIFEST.json` binds its
 own snapshots, history, actual SVG plans/panels, materials and differences.
 
+A third, separate geometric-only model is retained under
+`attempt/as-built-example/three-story-views/delivery/`, with its own complete
+manifest, three actual per-story SVG plans and source snapshots. The middle
+story has neither route endpoint: its vertical projection marker retains the
+actual clipped 3–5.8 m source-Z range. All installation assertions are empty and
+materials stay unresolved; these quantities are not added to either other
+example. This exposes the multi-story rendering to actual artifact inspection
+rather than keeping its only output in a test temporary directory. Generation
+and visual inspection of the new proof remain pending for the repair head.
+
 The existing CI reference-example invocation already creates this review tree.
 Its existing `SHA256SUMS.txt` covers all files below `attempt`, including the
 companion manifest, and the existing `synthetic-production-review` artifact
@@ -194,8 +204,17 @@ from this lane without parent coordination.
 
 ## Pending verification
 
-No Python import, test, render, build or CI execution has been performed for this
-checkpoint. After the coordinated opening: run the synthetic command; inspect
+Hosted run [41479090133](https://github.com/banddude/officeadmin-building-model/actions/runs/41479090133)
+passed at head `b38f75d` and retained its original synthetic packet. Independent
+inspection then found a real false EVSE credit: provenance split a two-unit
+quantity row into two one-unit rows and the shared revision mapper kept only
+one. This repair sums comparable rows without mixing variants, units or bases,
+and adds the separate retained three-story example. The old packet remains
+immutable evidence; green tests did not establish artifact correctness.
+
+No local Python import, test, render or build has been performed. Runtime,
+hosted CI and visual acceptance of this repair head remain pending. After the
+coordinated opening: run the synthetic command; inspect
 actual plans/panel sheets/materials/differences; run `tests/test_as_built.py`,
 `tests/test_as_built_review_regressions.py` and
 CI-equivalent checks; add and run physical-route and adversarial HTML/CSV cases;

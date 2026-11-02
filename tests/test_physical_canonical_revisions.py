@@ -9,7 +9,7 @@ import pytest
 
 from oabm.model import (
     BuildingModel, ContractError, Obstacle, Route, Polyline3D, Point3, Pose, Box3D, Size3,
-    Level, compute_physical_request_sha256,
+    Level, compute_physical_request_sha256, compute_physical_source_sha256,
 )
 from oabm.qa.revision_diff import build_revision_diff, RevisionDiff
 from oabm.reports.physical_route_revisions import generate_physical_route_comparison
@@ -98,6 +98,40 @@ def test_child_identity_changes_are_graph_not_path_or_replacement_quantities():
     physical = generate_physical_route_comparison(before,after).to_dict()
     assert physical["routes"][0]["path_changed"] is False
     assert not physical["physical_inventory"]["gross_added_route_ids"]
+
+
+def test_domain_identity_is_retained_context_without_graph_or_path_change():
+    before = make_physical_model(); original = before.routes[0]
+    context = replace(original.context,allowed_domain=replace(original.context.allowed_domain,id="domain:renamed"))
+    route = fresh_request(original,context=context)
+    after = changed_route(before,route)
+    report = build_revision_diff(before,after)
+    row = route_change(report)
+    assert row.change_classes == ("provenance",)
+    assert {field.path for field in row.field_changes} == {"context.allowed_domain.id","context.request_sha256"}
+    assert all(field.change_classes == ("provenance",) for field in row.field_changes)
+    assert not report.quantity_deltas
+    physical = generate_physical_route_comparison(before,after).to_dict()
+    assert physical["routes"][0]["path_changed"] is False
+    assert physical["routes"][0]["field_change_categories"] == ["context","identity"]
+    assert not physical["physical_inventory"]["gross_added_route_ids"]
+
+
+@pytest.mark.parametrize("field", ["start_port_id","end_port_id"])
+def test_context_endpoint_references_keep_the_explicit_graph_class(field):
+    before = make_physical_model(); original = before.routes[0]
+    old_id = getattr(original,field); new_id = old_id + ":renamed"
+    source = replace(before,routes=(),ports=tuple(replace(port,id=new_id) if port.id == old_id else port for port in before.ports))
+    context = replace(original.context,**{field:new_id},source_model_sha256=compute_physical_source_sha256(source))
+    route = fresh_request(original,**{field:new_id},context=context)
+    after = replace(source,routes=(route,))
+    report = build_revision_diff(before,after)
+    row = route_change(report)
+    assert set(row.change_classes) == {"graph","provenance"}
+    fields = {change.path:change.change_classes for change in row.field_changes}
+    assert fields[field] == fields[f"context.{field}"] == ("graph",)
+    assert not report.quantity_deltas
+    assert generate_physical_route_comparison(before,after).to_dict()["routes"][0]["path_changed"] is False
 
 
 def test_same_id_physical_to_legacy_keeps_measurement_bases_separate():

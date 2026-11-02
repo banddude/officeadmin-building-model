@@ -163,14 +163,14 @@ def _physical_classes(path):
         return (_CLASS_PROVENANCE,)
     if opaque < len(path):
         return (_CLASS_ATTRIBUTE,)
-    if category in {"identity", "connectivity"}:
-        return (_CLASS_GRAPH,)
     if path[0] == "context":
         if path[1:2] in (("start_port_id",), ("end_port_id",)):
             return (_CLASS_GRAPH,)
         if path[1:2] == ("route_type",):
             return (_CLASS_PRODUCT,)
         return (_CLASS_PROVENANCE,)  # retained source/request identity and hashes
+    if category in {"identity", "connectivity"}:
+        return (_CLASS_GRAPH,)
     if path[0] == "requirements":
         if path[1:2] == ("name",):
             return (_CLASS_ATTRIBUTE,)

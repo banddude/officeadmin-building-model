@@ -44,7 +44,7 @@ from typing import Any, Iterable, Mapping, get_args, get_origin, get_type_hints
 
 from oabm.model.assemblies import AssemblyRecord
 from oabm.model import BuildingModel, Entity, PhysicalRoute
-from oabm.quantities import extract_quantities
+from oabm.quantities import QuantityItem, extract_quantities
 
 #: Version of the portable diff document. Bump on breaking changes to its
 #: key sets or semantics; strict decoding rejects other versions.
@@ -543,16 +543,48 @@ class RevisionDiff:
         return built
 
 
-def _quantity_map(model: BuildingModel) -> dict[tuple, Any]:
-    """Complete-identity map of one snapshot's real takeoff lines."""
+@dataclass(frozen=True, slots=True)
+class _QuantityTotal:
+    quantity: float
+    group: str | None
+    assembly_key: str | None
 
-    report = extract_quantities(model)
-    result: dict[tuple, Any] = {}
-    for item in report.items:
+
+def _quantity_map(model: BuildingModel) -> dict[tuple, _QuantityTotal]:
+    """Sum original measured contributions once, before evidence bucketing.
+
+    The takeoff legitimately splits the same commercial/measurement identity
+    by evidence status. A later field confirmation can therefore turn a single
+    two-device row into two one-device rows without changing installed scope.
+    Count every original scalar rather than retaining a representative or
+    summing already-rounded status-bucket subtotals. Keep
+    units and the complete variant (including work scope and measurement or
+    product/material basis) distinct. Never merge incompatible bid/assembly
+    ownership that the current portable delta cannot represent.
+    """
+
+    grouped: dict[tuple, list[QuantityItem]] = {}
+    def collect(item: QuantityItem) -> bool:
         key = (item.category, item.item_type, item.unit, _variant_key(item.variant))
-        # Identical identity lines cannot occur within one report; if a
-        # producer ever emits them, keep the first deterministically.
-        result.setdefault(key, item)
+        grouped.setdefault(key, []).append(item)
+        # The existing contribution filter receives a singleton view of each
+        # original measured contribution before takeoff status aggregation.
+        # Retain those scalars here, not unused rounded report subtotals.
+        return False
+    extract_quantities(model, contribution_filter=collect)
+    result: dict[tuple, _QuantityTotal] = {}
+    for key, parts in grouped.items():
+        bases = {(part.group, part.assembly_key) for part in parts}
+        if len(bases) != 1:
+            raise ValueError("revision quantity identity has incompatible group/assembly bases")
+        try:
+            quantity = math.fsum(sorted(part.quantity for part in parts))
+        except OverflowError as exc:
+            raise ValueError("revision quantity total is not finite") from exc
+        if not math.isfinite(quantity):
+            raise ValueError("revision quantity total is not finite")
+        group, assembly_key = next(iter(bases))
+        result[key] = _QuantityTotal(quantity, group, assembly_key)
     return result
 
 
@@ -653,6 +685,8 @@ def build_revision_diff(base: BuildingModel, target: BuildingModel) -> RevisionD
         category, item_type, unit, variant_json = key
         variant = tuple((pair[0], pair[1]) for pair in json.loads(variant_json))
         if before_item is not None and after_item is not None:
+            if (before_item.group, before_item.assembly_key) != (after_item.group, after_item.assembly_key):
+                raise ValueError("revision quantity comparison has incompatible group/assembly bases")
             if before_item.quantity == after_item.quantity:
                 # Unchanged original scope: zero delta, never counted twice,
                 # and never emitted as a line at all.

@@ -107,6 +107,7 @@ class PlanSpec:
     bounds: Bounds2 | None = None
     scale: float = 50.0
     visibility: VisibilityPolicy = VisibilityPolicy()
+    route_level_policy: str = "z_overlap"
 
     def __post_init__(self) -> None:
         if not self.id or not self.level_id:
@@ -115,6 +116,8 @@ class PlanSpec:
             raise ValueError("plan cut/depth distances must be >= 0")
         if self.scale <= 0:
             raise ValueError("plan scale must be > 0")
+        if self.route_level_policy not in {"z_overlap", "traversed_stories"}:
+            raise ValueError("route_level_policy: use z_overlap or traversed_stories")
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,7 +453,8 @@ def _generate_plan_base(
         normal=Vector3(x=0, y=0, z=1),
     )
     entities = _plan_entities(model, spec.level_id, min_z=min_z, max_z=max_z,
-                              visibility=spec.visibility, fitting_selection_by_id=fitting_selections)
+                              visibility=spec.visibility, fitting_selection_by_id=fitting_selections,
+                              route_level_policy=spec.route_level_policy)
     depth_interval = (min_z - level.elevation_m, max_z - level.elevation_m)
     bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval,
                                          fitting_selection_by_id=fitting_selections)
@@ -469,6 +473,7 @@ def _generate_plan_base(
                 cut_depth=cut_z - level.elevation_m,
                 depth_interval=depth_interval,
                 fitting_selection_by_id=_fitting_selection_by_id(model),
+                vertical_route_markers=spec.route_level_policy == "traversed_stories",
             )
         )
         if spec.visibility.dimensions and isinstance(entity, Wall):
@@ -488,11 +493,17 @@ def _generate_plan_base(
         ("cut_elevation_m", _fmt_number(cut_z)),
         ("source_frame_id", model.coordinate_system.frame_id),
     )
+    if spec.route_level_policy == "traversed_stories":
+        metadata += (("route_level_policy", "traversed_stories"),
+                     ("vertical_route_projection", "explicit XY location marker; not diameter or fitting"))
     if any(isinstance(route,PhysicalRoute) for route in model.routes):
         from oabm.model.layers import _route_level_id
         unknown = sorted(route.id for route in model.routes if isinstance(route,PhysicalRoute)
                          and _route_level_id(model,route) is None)
-        metadata += (("physical_geometry","horizontal analytic XY centerline; no OD or clearance envelope; no partial XY crop"),
+        physical_scope=("analytic XY centerline; nonhorizontal segments are finite-story projections only; no OD or clearance envelope; no partial XY crop"
+            if any(isinstance(route,PhysicalRoute) and len({joint.position.z for joint in route.joints})>1 for route in entities)
+            else "horizontal analytic XY centerline; no OD or clearance envelope; no partial XY crop")
+        metadata += (("physical_geometry",physical_scope),
                      ("physical_routes_unknown_level",",".join(unknown)))
     if overlap != "keep":
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
@@ -985,6 +996,7 @@ def _entity_primitives(
     cut_depth: float | None = None,
     depth_interval: tuple[float, float] | None = None,
     fitting_selection_by_id: Mapping[str, Entity] | None = None,
+    vertical_route_markers: bool = False,
 ) -> list[DrawingPrimitive]:
     result: list[DrawingPrimitive] = []
     if isinstance(entity, Wall):
@@ -1110,8 +1122,8 @@ def _entity_primitives(
     elif isinstance(entity, PhysicalRoute):
         from .route_arcs import physical_plan_primitives
         if view_type != "plan":
-            raise ValueError("physical route DrawingViews support explicit horizontal XY plans only")
-        result.extend(physical_plan_primitives(entity,frame,bounds))
+            raise ValueError("physical route DrawingViews support explicit XY plans only")
+        result.extend(physical_plan_primitives(entity,frame,bounds,depth_interval=depth_interval))
     elif isinstance(entity, Route):
         fragments3 = (
             clip_polyline_depth(
@@ -1125,6 +1137,22 @@ def _entity_primitives(
         )
         for index, fragment3 in enumerate(fragments3):
             points, depths = project_points(frame, fragment3)
+            if (vertical_route_markers and view_type == "plan" and len(set(points)) == 1
+                    and max(point.z for point in fragment3) > min(point.z for point in fragment3)):
+                # A clipped vertical riser has real 3D length but no XY line.
+                # Retain its location explicitly rather than silently dropping
+                # it from an intermediate story's otherwise complete plan.
+                anchor = points[0]
+                if _inside(anchor, bounds):
+                    result.append(_primitive(entity.id, "symbol", "electrical:routes", (anchor,),
+                        symbol="route-vertical-projection", suffix=f"vertical:{index}",
+                        metadata=(("geometry_scope", "vertical route XY location; not diameter or fitting"),
+                            ("min_z_m", _fmt_number(min(point.z for point in fragment3))),
+                            ("max_z_m", _fmt_number(max(point.z for point in fragment3))))))
+                    if label_provider is not None:
+                        result.append(_primitive(entity.id, "text", "annotations:routes",
+                            (Point2(anchor.x + .15, anchor.y),), text="Vertical route",
+                            suffix=f"vertical-label:{index}", style=LineStyle(stroke="annotation")))
             is_cut = view_type == "section" and _depth_spans(depths, 0.0)
             suffix_prefix = "frag" if len(fragments3) == 1 else f"depth:{index}"
             result.extend(
@@ -1372,7 +1400,8 @@ def _opening_dimensions(opening: Opening, frame: ProjectionFrame, bounds: Bounds
 
 def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: float,
                    visibility: VisibilityPolicy,
-                   fitting_selection_by_id: Mapping[str, Entity] | None = None) -> tuple[Entity, ...]:
+                   fitting_selection_by_id: Mapping[str, Entity] | None = None,
+                   route_level_policy: str = "z_overlap") -> tuple[Entity, ...]:
     result: list[Entity] = []
     if visibility.architecture:
         result.extend(
@@ -1390,8 +1419,26 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
         )
     if visibility.routes:
         from oabm.model.layers import _route_level_id
+        ports = {port.id: port for port in model.ports}
+        owners = {owner.id: owner for owner in (*model.electrical_equipment,
+            *model.electrical_devices, *model.electrical_boxes)}
+        def level_admitted(route):
+            if route_level_policy == "z_overlap":
+                return True
+            levels = {getattr(owners.get(ports[identity].owner_id), "level_id", None)
+                      for identity in (route.start_port_id, route.end_port_id)}
+            if None in levels:
+                raise ValueError("traversed_stories plan requires known levels for both route endpoint owners")
+            # Owner levels establish endpoint identity, not the complete path.
+            # Real clipping below admits every traversed story, including an
+            # intermediate story with neither endpoint and an out-and-back run.
+            return True
+        from .route_arcs import physical_story_segments
         result.extend(item for item in model.routes if
-            (min_z <= item.joints[0].position.z <= max_z and _route_level_id(model,item) in {None,level_id} if isinstance(item,PhysicalRoute)
+            level_admitted(item) and
+            (bool(physical_story_segments(item,min_z,max_z)) and
+             (route_level_policy=='traversed_stories' or len({joint.position.z for joint in item.joints})>1 or
+              _route_level_id(model,item) in {None,level_id}) if isinstance(item,PhysicalRoute)
              else _polyline_z_overlap(item.centerline,min_z,max_z)))
         route_ids = {item.id for item in result if isinstance(item, Route)}
         result.extend(item for item in model.route_fittings if item.route_id in route_ids and
@@ -1490,6 +1537,15 @@ def _auto_bounds(
 ) -> Bounds2:
     points: list[Point2] = []
     for entity in entities:
+        if isinstance(entity, PhysicalRoute) and depth_interval is not None:
+            from .route_arcs import physical_story_segments
+            fragments=physical_story_segments(entity,depth_interval[0]+frame.origin.z,depth_interval[1]+frame.origin.z)
+            # Cardinal quarter arcs are monotone in each varying coordinate;
+            # their clipped endpoints are their exact projected extrema. Never
+            # inherit joints belonging exclusively to another story.
+            for segment,fact,start,end,center in fragments:
+                points.extend((frame.project(start)[0],frame.project(end)[0]))
+            continue
         if isinstance(entity, Route) and depth_interval is not None:
             fragments = clip_polyline_depth(
                 entity.centerline.points,
@@ -1514,6 +1570,10 @@ def _label_anchor(
     depth_interval: tuple[float, float] | None = None,
 ) -> Point2 | None:
     if isinstance(entity, PhysicalRoute):
+        if depth_interval is not None:
+            from .route_arcs import physical_story_segments
+            fragments=physical_story_segments(entity,depth_interval[0]+frame.origin.z,depth_interval[1]+frame.origin.z)
+            return frame.project(fragments[0][2])[0] if fragments else None
         return frame.project(entity.joints[0].position)[0]
     if isinstance(entity, Wall):
         points, _ = project_points(frame, entity.centerline.points)

@@ -6,6 +6,15 @@ source-mapping manifest; it does not fetch images, fonts or evidence, write
 files, upload artifacts or change a model. Existing drawing/SVG default APIs
 and OfficeAdmin's strict review-bundle contract are unchanged.
 
+Optional `stroke_colors` maps existing semantic stroke keys to exact `#RRGGBB`
+colors; unknown keys and CSS/resource expressions are refused. The returned
+manifest records the palette actually used. Optional `text_styles=True` honors
+explicit primitive metadata `font_size_mm` (positive, at most 20 mm) and
+`font_weight` (300/400/500/600/700), matching the existing drafted schedule
+layout's measured fonts. Both options are disabled by default; unrelated
+renderings retain their prior palette and global text size. The as-built adapter
+opts in without rewriting canonical model geometry or quantities.
+
 ```python
 from oabm.drawings.sheet_svg import render_sheet_svg
 

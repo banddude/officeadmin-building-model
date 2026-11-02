@@ -14,6 +14,9 @@ from oabm.model import (
     ContractError,
     Point3,
     Provenance,
+    Level,
+    Polyline3D,
+    Wall,
 )
 from oabm.qa import (
     REVISION_DIFF_VERSION,
@@ -266,6 +269,95 @@ def test_provenance_only_change_does_not_read_as_geometry() -> None:
     entry = _entries(diff, "changed")[0]
     assert entry.change_classes == ("provenance",)
     assert {change.path for change in entry.field_changes} == {"provenance"}
+
+
+def test_provenance_split_rows_preserve_all_devices_and_distinct_variants():
+    model = _routed_garage()
+    original = model.electrical_devices[0]
+    peer = replace(original, id="device:identical-peer")
+    other_variant = replace(original, id="device:different-size",
+                            size=replace(original.size, x=original.size.x + .1))
+    before = replace(model, electrical_devices=(original, peer, other_variant))
+    field = Provenance(source_kind="as-built-field-edit", source_id="field:count-confirmation",
+                       derivation="user", scope_paths=("pose",))
+    after = replace(before, electrical_devices=(
+        replace(original, provenance=(*original.provenance, field)), peer, other_variant))
+    before_rows = [row for row in extract_quantities(before).items if row.category == "device"]
+    after_rows = [row for row in extract_quantities(after).items if row.category == "device"]
+    assert sorted(row.quantity for row in before_rows) == [1, 2]
+    assert sorted(row.quantity for row in after_rows) == [1, 1, 1]
+    assert {row.unit for row in after_rows} == {"ea"}
+    assert len({row.variant for row in after_rows}) == 2
+    diff = build_revision_diff(before, after)
+    assert not diff.quantity_deltas
+    assert len(diff.changes) == 1 and diff.changes[0].change_classes == ("provenance",)
+    assert not build_revision_diff(after, before).quantity_deltas
+    # A real one-device removal must still be exactly -1, in its own size
+    # variant, even when the remaining evidence rows are split differently.
+    removed = replace(after, electrical_devices=(after.electrical_devices[0], other_variant))
+    line, = _delta(build_revision_diff(before, removed), "device", original.device_type)
+    assert (line.before, line.after, line.delta, line.unit) == (2, 1, -1, "ea")
+    assert dict(line.variant)["size_x_m"] == original.size.x
+    reordered = replace(after, electrical_devices=tuple(reversed(after.electrical_devices)))
+    assert build_revision_diff(before, reordered).to_json() == diff.to_json()
+
+
+def test_provenance_split_lengths_areas_and_volumes_keep_their_own_units():
+    model = _routed_garage()
+    wall = model.walls[0]
+    peer = replace(wall, id="wall:quantity-peer", centerline=replace(wall.centerline,
+        points=tuple(replace(point, x=point.x + 10) for point in wall.centerline.points)))
+    before = replace(model, walls=(wall, peer))
+    field = Provenance(source_kind="as-built-field-edit", source_id="field:wall-confirmation",
+                       derivation="user", scope_paths=("centerline", "height_m", "thickness_m"))
+    after = replace(before, walls=(replace(wall, provenance=(*wall.provenance, field)), peer))
+    assert len([row for row in extract_quantities(before).items if row.category == "wall_length"]) == 1
+    assert len([row for row in extract_quantities(after).items if row.category == "wall_length"]) == 2
+    assert not build_revision_diff(before, after).quantity_deltas
+    removed = replace(after, walls=(after.walls[0],))
+    lines = [row for row in build_revision_diff(before, removed).quantity_deltas
+             if row.category in {"wall_length", "wall_face_area", "wall_volume"}]
+    assert {row.unit for row in lines} == {"m", "m2", "m3"}
+    for row in lines:
+        assert row.status == "changed" and row.before == pytest.approx(2 * row.after)
+        assert row.delta == pytest.approx(-row.after)
+
+
+def test_fractional_provenance_regrouping_sums_original_measurements_once():
+    lengths = (.1, .2, .3)
+    level = Level(id="level:fractions", elevation_m=0, height_m=3)
+    observed = (Provenance(source_kind="synthetic", source_id="fixture:fractions", derivation="observed"),)
+    walls = tuple(Wall(id=f"wall:fraction-{index}", level_id=level.id,
+        centerline=Polyline3D(points=(Point3(x=0, y=index, z=0), Point3(x=length, y=index, z=0))),
+        thickness_m=.1, height_m=1, provenance=observed) for index, length in enumerate(lengths))
+    before = BuildingModel(model_id="model:fractional-provenance", levels=(level,), walls=walls)
+    field = Provenance(source_kind="as-built-field-edit", source_id="field:fraction-confirmation",
+                       derivation="user", scope_paths=("centerline",))
+    after = replace(before, walls=tuple(replace(wall, provenance=(*wall.provenance, field))
+                                        if index < 2 else wall for index, wall in enumerate(walls)))
+    before_rows = [row for row in extract_quantities(before).items if row.category == "wall_length"]
+    after_rows = [row for row in extract_quantities(after).items if row.category == "wall_length"]
+    assert len(before_rows) == 1 and len(after_rows) == 2
+    expected = math.fsum(lengths)
+    assert before_rows[0].quantity == expected
+    # This is the arithmetic counterexample: summing already rounded evidence
+    # buckets differs from summing their original measurements once.
+    assert math.fsum(row.quantity for row in after_rows) != expected
+    diff = build_revision_diff(before, after)
+    assert not diff.quantity_deltas
+    assert not build_revision_diff(after, before).quantity_deltas
+    assert len(diff.changes) == 2 and all(row.change_classes == ("provenance",) for row in diff.changes)
+    reordered = replace(after, walls=tuple(reversed(after.walls)))
+    assert build_revision_diff(before, reordered).to_json() == diff.to_json()
+    # No tolerance/rounding workaround: a genuine sub-nanometre scalar change
+    # remains visible when the measured total changes at float precision.
+    longer = replace(after.walls[0], centerline=replace(after.walls[0].centerline,
+        points=(after.walls[0].centerline.points[0], Point3(x=lengths[0] + 1e-12, y=0, z=0))))
+    changed = replace(after, walls=(longer, *after.walls[1:]))
+    line, = _delta(build_revision_diff(before, changed), "wall_length", "wall")
+    assert line.before == expected
+    assert line.after == math.fsum((lengths[0] + 1e-12, *lengths[1:]))
+    assert line.delta == line.after - expected and line.delta > 0
 
 
 def test_collection_ordering_is_not_a_change_but_geometry_order_is() -> None:

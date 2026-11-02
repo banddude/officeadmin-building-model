@@ -139,10 +139,19 @@ def test_companion_receipt_checks_bindings_and_retains_identity(tmp_path,monkeyp
 def test_reference_cli_hook_order_and_success_output(tmp_path,monkeypatch,capsys,variant):
     import reference_production_set as command
     import utility_service_set as utility
+    import as_built_quick_edit as as_built
+    import as_built_physical_route as physical
+    stub=lambda *args,**kwargs:{'revised_model_sha256':'a'*64}
+    monkeypatch.setattr(as_built,'create_synthetic_delivery',stub)
+    monkeypatch.setattr(as_built,'create_three_story_delivery',stub)
+    monkeypatch.setattr(physical,'create_physical_field_delivery',stub)
     events=[]
     root=tmp_path/'review';delivery=root/'attempt'/'delivery'
     monkeypatch.setattr(command,'prepare',lambda path,**kw: events.append(('prepare',path)) or 'request')
-    monkeypatch.setattr(command,'create_production_sheet_set',lambda request,**kw: events.append(('primary',request)) or delivery)
+    def primary(request,**kw):
+        kw['output_directory'].mkdir(parents=True)
+        events.append(('primary',request));return delivery
+    monkeypatch.setattr(command,'create_production_sheet_set',primary)
     def companion(path):
         assert capsys.readouterr().out==''
         events.append(('companion',path))
@@ -157,11 +166,18 @@ def test_reference_cli_hook_order_and_success_output(tmp_path,monkeypatch,capsys
 def test_reference_cli_propagates_failure_without_success_path(tmp_path,monkeypatch,capsys,failure):
     import reference_production_set as command
     import utility_service_set as utility
+    import as_built_quick_edit as as_built
+    import as_built_physical_route as physical
+    stub=lambda *args,**kwargs:{'revised_model_sha256':'a'*64}
+    monkeypatch.setattr(as_built,'create_synthetic_delivery',stub)
+    monkeypatch.setattr(as_built,'create_three_story_delivery',stub)
+    monkeypatch.setattr(physical,'create_physical_field_delivery',stub)
     events=[]
     monkeypatch.setattr(command,'prepare',lambda *args,**kwargs:'request')
     def primary(*args,**kwargs):
         events.append('primary')
         if failure=='primary':raise ValueError('primary failed')
+        kwargs['output_directory'].mkdir(parents=True)
         return tmp_path/'delivery'
     def companion(*args,**kwargs):
         events.append('companion');raise ValueError('companion failed')

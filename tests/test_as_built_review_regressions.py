@@ -89,6 +89,19 @@ def test_retained_nested_json_and_cumulative_work_are_preflighted(monkeypatch):
         replay_history(history)
 
 
+@pytest.mark.parametrize("identity", [[], {}, 1, True, None, "", "   "])
+def test_malformed_transaction_ids_are_controlled_in_requests_and_history(identity):
+    history, request = inputs()
+    retained = apply_transaction(history, request)
+    malformed = deepcopy(request)
+    malformed["transaction_id"] = deepcopy(identity)
+    with pytest.raises(ContractError, match="transaction_id must be a nonempty string"):
+        apply_transaction(history, malformed)
+    retained["transactions"][0]["request"]["transaction_id"] = deepcopy(identity)
+    with pytest.raises(ContractError, match="transaction_id must be a nonempty string"):
+        replay_history(retained)
+
+
 def test_unchanged_port_and_route_cannot_validate_translated_device():
     history, request = inputs()
     baseline = replay_history(history)
@@ -255,6 +268,36 @@ def test_actual_two_level_drawings_do_not_repeat_routes_or_fittings():
     assert set(model.routes[1].fitting_ids) <= upper
     assert not set(model.routes[1].fitting_ids) & ground
     assert "drawings/plan-1.svg" in outputs and "drawings/plan-2.svg" in outputs
+
+
+def test_actual_three_story_riser_is_present_and_clipped_on_intermediate_plan():
+    base = BuildingModel.load(ROOT / "fixtures/model/v1/garage-route.json")
+    middle = replace(base.levels[0], id="level:middle", name="Middle", elevation_m=3)
+    top = replace(base.levels[0], id="level:third", name="Third", elevation_m=6)
+    device = replace(base.electrical_devices[0], level_id=top.id, host_id=None, space_id=None,
+        pose=replace(base.electrical_devices[0].pose, position=Point3(x=5.2, y=.2, z=7.2)))
+    ports = tuple(replace(port, pose=device.pose) if port.owner_id == device.id else port for port in base.ports)
+    route = replace(base.routes[0], fitting_ids=(), name=None,
+        centerline=replace(base.routes[0].centerline, points=(
+            base.routes[0].centerline.points[0], Point3(x=.2, y=.2, z=2.5),
+            Point3(x=2, y=.2, z=2.5), Point3(x=2, y=.2, z=6.5),
+            Point3(x=5.2, y=.2, z=6.5), device.pose.position)))
+    model = replace(base, levels=(*base.levels, middle, top), electrical_devices=(device,),
+                    ports=ports, routes=(route,), route_fittings=())
+    outputs = _drawings(model, "field:three-stories")
+    views = json.loads(outputs["drawings/plans.json"])["views"]
+    by_level = {dict(view["metadata"])["level_id"]: view for view in views}
+    for level in model.levels:
+        assert any(route.id in primitive["source_ids"] for primitive in by_level[level.id]["primitives"])
+    middle_markers = [primitive for primitive in by_level[middle.id]["primitives"]
+        if primitive["kind"] == "symbol" and primitive["symbol"] == "route-vertical-projection"]
+    assert len(middle_markers) == 1
+    assert middle_markers[0]["points"] == [{"x": 2, "y": .2}]
+    metadata = dict(middle_markers[0]["metadata"])
+    assert float(metadata["min_z_m"]) == pytest.approx(3)
+    assert float(metadata["max_z_m"]) == pytest.approx(5.8)
+    assert any(primitive.get("text") == "Vertical route" for primitive in by_level[middle.id]["primitives"])
+    assert len([name for name in outputs if name.startswith("drawings/plan-") and name.endswith(".svg")]) == 3
 
 
 def test_quantity_partition_preserves_original_bid_groups_and_variants():

@@ -99,6 +99,9 @@ def _list_limit(document, key, maximum):
 def request_limits(request):
     if type(request) is not dict:
         raise ContractError("as-built admission: transaction object required")
+    identity = request.get("transaction_id")
+    if type(identity) is not str or not identity.strip():
+        raise ContractError("as-built admission: transaction_id must be a nonempty string")
     return (_list_limit(request, "edits", MAX_EDITS),
             _list_limit(request, "evidence", MAX_EVIDENCE),
             _list_limit(request, "installed_assertions", MAX_ASSERTIONS),

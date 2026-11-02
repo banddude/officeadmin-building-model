@@ -92,6 +92,8 @@ records and 1,024 assertions per request. Retained history cumulatively allows
 and embedded snapshot is preflighted before any replay; appending also checks
 the resulting complete history. Exceeding a limit is an explicit refusal, not
 permission to trim history or reset the design baseline.
+Transaction IDs must be nonempty strings; this is checked for both new and
+retained requests before any duplicate-ID hashing or membership operations.
 
 ## Delivery
 
@@ -123,10 +125,16 @@ a successful manifest. Existing output directories are never overwritten.
 
 Plans use explicit generic location crosses plus supplied canonical envelopes.
 Each plan requires an explicit positive story height, uses finite elevation
-bounds capped by the next story, and opts into endpoint-level route selection.
+bounds capped by the next story, and opts into `traversed_stories` route selection.
 Legacy routes and their fittings cannot appear on an unrelated floor merely
-because their Z ranges overlap. Cross-level routes show their clipped portions
-on the endpoint levels; unknown endpoint levels are refused. They
+because a view has an oversized depth range. Endpoint levels must be known, but
+they do not limit a route's geometry to those two stories: each actually
+traversed finite story slice includes its clipped route portion, including an
+intermediate story with neither endpoint and a run that leaves and returns to
+the same story. A purely vertical clipped fragment has no XY line length, so it
+gets an explicit location cross, a visible "Vertical route" label, canonical
+source ID and clipped source-Z range in its metadata. This marker does not
+represent a diameter, fitting or purchased component. The plans
 remain review drawings. Layout, font appearance and source coverage need actual
 runtime and visual verification before acceptance.
 

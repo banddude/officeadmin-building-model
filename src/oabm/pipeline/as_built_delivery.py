@@ -114,7 +114,8 @@ def _drawings(model, revision):
     # or an invented device envelope. Canonical supplied sizes are drawn too.
     marker = SheetSymbol(((Point2(-1, 0), Point2(1, 0)),
                           (Point2(0, -1), Point2(0, 1))))
-    symbols = {"as-built-location": marker, "support_attachment": marker}
+    symbols = {"as-built-location": marker, "support_attachment": marker,
+               "route-vertical-projection": marker}
     levels = sorted(model.levels, key=lambda level: (level.elevation_m, level.id))
     plans = []
     for ordinal, level in enumerate(levels):
@@ -125,7 +126,7 @@ def _drawings(model, revision):
         _require(height > 0, "as-built plan levels need distinct elevations and positive vertical extents")
         plans.append(PlanSpec(stable_id("as-built-plan", level.id), level.id,
             cut_height_m=height, view_depth_below_m=0, view_depth_above_m=0,
-            route_level_policy="endpoint_levels"))
+            route_level_policy="traversed_stories"))
     plan = generate_drawing_set(model, plans=tuple(plans), include_schedules=False,
         symbol_provider=lambda entity, view_type: Symbol("as-built-location"),
         physical_geometry="xy-centerline", assembly_geometry="cut")

@@ -114,8 +114,8 @@ class PlanSpec:
             raise ValueError("plan cut/depth distances must be >= 0")
         if self.scale <= 0:
             raise ValueError("plan scale must be > 0")
-        if self.route_level_policy not in {"z_overlap", "endpoint_levels"}:
-            raise ValueError("route_level_policy: use z_overlap or endpoint_levels")
+        if self.route_level_policy not in {"z_overlap", "traversed_stories"}:
+            raise ValueError("route_level_policy: use z_overlap or traversed_stories")
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,6 +469,7 @@ def _generate_plan_base(
                 cut_depth=cut_z - level.elevation_m,
                 depth_interval=depth_interval,
                 fitting_selection_by_id=_fitting_selection_by_id(model),
+                vertical_route_markers=spec.route_level_policy == "traversed_stories",
             )
         )
         if spec.visibility.dimensions and isinstance(entity, Wall):
@@ -488,6 +489,9 @@ def _generate_plan_base(
         ("cut_elevation_m", _fmt_number(cut_z)),
         ("source_frame_id", model.coordinate_system.frame_id),
     )
+    if spec.route_level_policy == "traversed_stories":
+        metadata += (("route_level_policy", "traversed_stories"),
+                     ("vertical_route_projection", "explicit XY location marker; not diameter or fitting"))
     if any(isinstance(route,PhysicalRoute) for route in model.routes):
         from oabm.model.layers import _route_level_id
         unknown = sorted(route.id for route in model.routes if isinstance(route,PhysicalRoute)
@@ -982,6 +986,7 @@ def _entity_primitives(
     cut_depth: float | None = None,
     depth_interval: tuple[float, float] | None = None,
     fitting_selection_by_id: Mapping[str, Entity] | None = None,
+    vertical_route_markers: bool = False,
 ) -> list[DrawingPrimitive]:
     result: list[DrawingPrimitive] = []
     if isinstance(entity, Wall):
@@ -1122,6 +1127,22 @@ def _entity_primitives(
         )
         for index, fragment3 in enumerate(fragments3):
             points, depths = project_points(frame, fragment3)
+            if (vertical_route_markers and view_type == "plan" and len(set(points)) == 1
+                    and max(point.z for point in fragment3) > min(point.z for point in fragment3)):
+                # A clipped vertical riser has real 3D length but no XY line.
+                # Retain its location explicitly rather than silently dropping
+                # it from an intermediate story's otherwise complete plan.
+                anchor = points[0]
+                if _inside(anchor, bounds):
+                    result.append(_primitive(entity.id, "symbol", "electrical:routes", (anchor,),
+                        symbol="route-vertical-projection", suffix=f"vertical:{index}",
+                        metadata=(("geometry_scope", "vertical route XY location; not diameter or fitting"),
+                            ("min_z_m", _fmt_number(min(point.z for point in fragment3))),
+                            ("max_z_m", _fmt_number(max(point.z for point in fragment3))))))
+                    if label_provider is not None:
+                        result.append(_primitive(entity.id, "text", "annotations:routes",
+                            (Point2(anchor.x + .15, anchor.y),), text="Vertical route",
+                            suffix=f"vertical-label:{index}", style=LineStyle(stroke="annotation")))
             is_cut = view_type == "section" and _depth_spans(depths, 0.0)
             suffix_prefix = "frag" if len(fragments3) == 1 else f"depth:{index}"
             result.extend(
@@ -1397,8 +1418,11 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
             levels = {getattr(owners.get(ports[identity].owner_id), "level_id", None)
                       for identity in (route.start_port_id, route.end_port_id)}
             if None in levels:
-                raise ValueError("endpoint_levels plan requires known levels for both route endpoint owners")
-            return level_id in levels
+                raise ValueError("traversed_stories plan requires known levels for both route endpoint owners")
+            # Owner levels establish endpoint identity, not the complete path.
+            # Real clipping below admits every traversed story, including an
+            # intermediate story with neither endpoint and an out-and-back run.
+            return True
         result.extend(item for item in model.routes if
             level_admitted(item) and
             (min_z <= item.joints[0].position.z <= max_z and _route_level_id(model,item) in {None,level_id} if isinstance(item,PhysicalRoute)

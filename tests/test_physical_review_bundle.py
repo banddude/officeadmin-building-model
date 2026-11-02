@@ -13,6 +13,8 @@ from oabm.qa.confidence_review import (
 )
 from physical_route_fixture import make_physical_route, make_physical_source, supplied
 from test_review_bundle import _mutate_glb_binary, _rewrite_glb
+from test_confidence_review import _review_model, _wall
+from oabm.quantities import extract_quantities
 
 OPTIONS = {"physical_routes": True, "include_obstacles": True}
 
@@ -24,12 +26,16 @@ def model_fixture(mixed=False):
                                 size=Size3(x=0.2, y=0.2, z=0.2)),
                  provenance=supplied()),
     ))
+    if mixed:
+        architecture = _review_model(_wall(provenance=supplied()))
+        source = replace(source, levels=architecture.levels, walls=architecture.walls)
     physical = make_physical_route(source)
     routes = (physical,)
     if mixed:
         routes += (Route(id="route:legacy", route_type="emt",
                          start_port_id="port:a", end_port_id="port:b",
                          centerline=Polyline3D(points=tuple(p.pose.position for p in source.ports))),)
+        routes += (replace(routes[-1], id="route:legacy-overlap"),)
     return replace(source, routes=routes)
 
 
@@ -43,41 +49,68 @@ def bundle_for(model, payload, manifest, options=OPTIONS):
         glb_reference="synthetic/model.glb", confidence_manifest=manifest,
         confidence_reference="synthetic/review.json",
         source_reference_mapping_reference="synthetic/source-map.json",
-        source_references={("synthetic", "source:physical-fixture"): "synthetic/source"},
+        source_references={
+            ("synthetic", "source:physical-fixture"): "synthetic/source",
+            **({("drawing", "plan:synthetic"): "synthetic/plan"} if model.levels else {}),
+        },
         glb_options=options,
     )
 
 
 @pytest.mark.parametrize("mixed", [False, True])
-def test_physical_review_keeps_identity_provenance_and_explicit_quantity_limit(mixed, monkeypatch):
+def test_physical_review_keeps_whole_model_warning_parity_and_evidence(mixed):
     model = model_fixture(mixed)
+    route = replace(model.routes[0], confidence=0.4)
+    model = replace(model, routes=(route, *model.routes[1:]))
     before = model.to_json()
-    def forbidden(*args, **kwargs):
-        pytest.fail("physical review must not run or silently filter into a partial takeoff")
-    monkeypatch.setattr("oabm.qa.confidence_review.extract_quantities", forbidden)
-    record = model.routes[0].provenance[0]
-    evidence = EvidenceReference(
-        ref_id="crop:synthetic", entity_id=model.routes[0].id,
-        source_kind=record.source_kind, source_id=record.source_id,
-        fingerprint=fingerprint_provenance(record, entity_id=model.routes[0].id),
-    )
-    manifest = manifest_for(model, evidence=(evidence,))
-    limit = next(i for i in manifest.items if "physical_route_quantities_unsupported" in i.reasons)
-    assert limit.entity_ids == ("route:physical",)
-    assert "entire model quantity pass was not evaluated" in limit.detail
-    assert limit.crops[0]["fingerprint"] == evidence.fingerprint
-    assert not any(r.startswith("quantity_warning_") for i in manifest.items for r in i.reasons)
+    evidence = tuple(EvidenceReference(
+        ref_id=f"crop:{owner.id}", entity_id=owner.id,
+        source_kind=owner.provenance[0].source_kind,
+        source_id=owner.provenance[0].source_id,
+        fingerprint=fingerprint_provenance(owner.provenance[0], entity_id=owner.id),
+    ) for owner in (route,))
+    manifest = manifest_for(model, evidence=evidence)
+    actual = set()
+    for item in manifest.items:
+        if item.reasons[0].startswith("quantity_warning_"):
+            code = item.reasons[0].removeprefix("quantity_warning_")
+            actual.add((code, item.detail.removeprefix(f"quantity warning {code}: "), item.entity_ids))
+    expected = {(w.code, w.message, tuple(sorted(w.source_entity_ids)))
+                for w in extract_quantities(model).warnings}
+    assert actual == expected
+    codes = {row[0] for row in actual}
+    assert {"physical_route_geometric_length_only", "physical_route_overlap_not_evaluated",
+            "unmeasured_entities"} <= codes
+    if mixed:
+        assert {"assemblies_unresolved", "overlapping_route_runs"} <= codes
+        assert any("wall:review-south" in item.source_entity_ids
+                   for item in extract_quantities(model).items)
+    assert not any("physical_route_quantities_unsupported" in i.reasons for i in manifest.items)
+    limit = next(i for i in manifest.items
+                 if i.reasons == ("quantity_warning_physical_route_geometric_length_only",))
+    assert limit.entity_ids == (route.id,)
+    assert "live clearance approval" in limit.detail
+    assert limit.crops == (evidence[0].to_dict(),)
+    owner = next(i for i in manifest.items if i.item_id == f"review:entity:{route.id}")
+    assert "low_entity_confidence" in owner.reasons
+    assert owner.crops == (evidence[0].to_dict(),)
+    assert owner.provenance[0] in limit.provenance
+    # Nested geometry remains in its canonical route, not fabricated top-level entities.
+    assert model.routes[0].joints == route.joints
+    assert model.routes[0].segments == route.segments
+    assert model.routes[0].requirements == route.requirements
     assert ConfidenceReviewManifest.from_dict(manifest.to_dict()).to_json() == manifest.to_json()
     payload = build_glb_bytes(model, **OPTIONS)
     bundle = bundle_for(model, payload, manifest)
     document = bundle.to_dict()
     assert document["artifacts"]["glb"]["sha256"] == hashlib.sha256(payload).hexdigest()
     joined = next(i for i in document["items"] if i["item_id"] == limit.item_id)["entities"][0]
-    assert joined["canonical_id"] == "route:physical"
+    assert joined["canonical_id"] == route.id
     assert len(joined["rendered_node_indices"]) == 1
     assert joined["provenance"][0]["source_reference"] == "synthetic/source"
     assert ReviewBundle.from_dict(document).to_json() == bundle.to_json()
     assert model.to_json() == before
+    assert build_glb_bytes(model, **OPTIONS) == payload
     assert bundle_for(model, payload, manifest).to_json() == bundle.to_json()
 
 
@@ -110,7 +143,7 @@ def test_obstacle_coverage_and_exact_physical_reexport_are_required():
     with pytest.raises(ValueError, match="canonical node coverage"):
         bundle_for(model, payload, manifest, {"physical_routes": True})
     stale = manifest.to_dict()
-    stale["items"] = [i for i in stale["items"] if "physical_route_quantities_unsupported" not in i["reasons"]]
+    stale["items"] = [i for i in stale["items"] if "quantity_warning_physical_route_geometric_length_only" not in i["reasons"]]
     with pytest.raises(ValueError, match="stale or mismatched"):
         bundle_for(model, payload, stale)
     changed = replace(model, name="Changed snapshot")

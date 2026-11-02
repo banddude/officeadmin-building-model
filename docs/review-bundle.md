@@ -65,8 +65,9 @@ flags are retained in artifact export options; false flags are omitted from
 the portable document so default bundle bytes and legacy round-trips remain
 unchanged.
 
-The physical review manifest explicitly records that the **entire model**
-quantity pass is unsupported. It never filters out physical routes to produce
+The physical review manifest carries actual whole-model quantity warnings,
+including analytic-length limitations, unevaluated physical overlap and
+unmeasured entities. It never filters out physical routes to produce
 a misleading partial takeoff. Populated assemblies remain unsupported; canonical validation still forbids
 fitting references to physical routes. Tessellated conduit display and supplied obstacle
 meshes are review aids, not a new live clearance proof or engineering approval.

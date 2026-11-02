@@ -7,7 +7,7 @@ immutable derived report suitable for estimating adapters.
 
 from __future__ import annotations
 
-from oabm.model.site import reject_site_inventory
+from oabm.model.site import SITE_FIELDS, reject_site_inventory
 
 import json
 import math
@@ -998,7 +998,10 @@ def _validate_no_duplicate_references(model: BuildingModel) -> None:
 
 
 _ARCHITECTURAL = frozenset({"walls", "slabs", "ceilings", "spaces", "openings"})
-_CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | frozenset({
+# Site/service records are explicitly unsupported by this quantity consumer,
+# rather than measurable physical objects. Populated inventory is refused by
+# extract_quantities before coverage; empty fields must preserve legacy output.
+_CLASSIFIED_COLLECTIONS = _ARCHITECTURAL | SITE_FIELDS | frozenset({
     "levels", "electrical_equipment", "electrical_devices", "ports", "obstacles",
     "route_constraints", "routes", "route_fittings", "circuits", "conductors",
     "electrical_boxes", "box_selection_outcomes",

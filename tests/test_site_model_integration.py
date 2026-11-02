@@ -48,7 +48,9 @@ def test_opt_in_roundtrip_schema_and_empty_upgrade_preserve_old_bytes():
     model=site_model();document=model.to_dict()
     schema=json.loads((Path(__file__).parents[1]/'contracts/oabm-model-v1.8.schema.json').read_text())
     Draft202012Validator(schema).validate(document)
-    assert BuildingModel.from_json(model.to_json()).to_json()==model.to_json()
+    decoded=BuildingModel.from_json(model.to_json())
+    assert decoded.to_dict()==document  # Numeric facts, not integer/float spelling.
+    assert BuildingModel.from_json(decoded.to_json()).to_json()==decoded.to_json()
     assert not model.electrical_equipment and not model.ports and not model.routes
     assert 'z' not in document['service_nodes'][1]['plan_position']
     assert all(field not in old.to_dict() for field in ('site_features','service_nodes','service_connections'))
@@ -193,10 +195,27 @@ def test_supplied_demand_is_separate_source_bound_arithmetic(tmp_path):
 
 
 def test_physical_consumers_refuse_populated_site_records_before_geometry():
-    from oabm.exports.gltf import to_glb
+    from oabm.exports.gltf import build_glb_bytes
     from oabm.quantities import extract_quantities
-    for consumer in (to_glb,extract_quantities):
+    for consumer in (build_glb_bytes,extract_quantities):
         with pytest.raises(ContractError,match='site/service inventory'):consumer(site_model())
+
+
+def test_service_feeder_grid_preserves_unresolved_relationship_row_owners():
+    from oabm.drawings.single_line.feeder_grid import paginate_feeder_grid
+    topology=project_topology(site_model(),service_only=True)
+    before=json.dumps(topology.to_dict(),sort_keys=True)
+    ids=[edge['id'] for edge in topology.connections]
+    pages=paginate_feeder_grid(topology,ids,(10,10,560,350),sheet_id='U2',width_mm=594,height_mm=420)
+    rows=[row for page in pages for row in page['row_map']]
+    assert {row['source_id'] for row in rows}==set(ids)
+    assert {row['connection_id'] for row in rows}==set(ids)
+    import xml.etree.ElementTree as ET
+    text=' '.join(' '.join(ET.fromstring(page['body_svg']).itertext()) for page in pages)
+    assert 'CIRCUIT UNRESOLVED' in text and 'TERMINAL UNRESOLVED' in text
+    assert 'None' not in text
+    assert all(edge['circuit_id'] is None and edge['source_port_id'] is None and edge['load_port_id'] is None for edge in topology.connections)
+    assert json.dumps(topology.to_dict(),sort_keys=True)==before
 
 
 def test_explicit_field_edit_updates_lateral_atomically_without_fake_ports_or_source_rebinding():

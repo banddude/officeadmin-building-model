@@ -125,3 +125,12 @@ the routing refusal guard reject populated site/service records before silently
 omitting them. A remaining consumer audit, runtime execution and the private
 three-sheet comparison/delivery proof are still required. No issue is complete
 at this checkpoint.
+
+### Numeric JSON normalization
+
+New site/service float-typed facts use the existing typed decoder: direct Python
+construction may retain integer spelling on first serialization, while decoding
+normalizes float-typed fields to floats. Numeric values and identities roundtrip;
+typed-decoded serialization is stable on subsequent roundtrips. Source hashes bind
+the actual admitted snapshot bytes, not an assumed equivalence between integer
+and float spellings. No legacy serializer normalization is introduced.

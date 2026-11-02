@@ -137,8 +137,33 @@ def prepare(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fal
         (root/(name+'.json')).write_text(json.dumps(value,indent=2)+'\n')
     return request
 
+def generate(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=False,reference_cover=False):
+    """Generate the normal example packet and an independent reference companion.
+
+    The as-built example has its own canonical model, history and quantities.
+    Keep it outside the production coordinator's sealed delivery and propagate
+    its failures so the normal example command cannot claim both succeeded.
+    """
+    root=Path(root);root.mkdir(parents=True,exist_ok=False)
+    request=prepare(root/'inputs',variant=variant,pdf=pdf,profile=profile,
+        adaptive_layout=adaptive_layout,reference_cover=reference_cover)
+    delivery=create_production_sheet_set(request,output_directory=root/'attempt')
+    if variant=='reference':
+        from as_built_quick_edit import create_synthetic_delivery
+        companion=create_synthetic_delivery(root/'attempt'/'as-built-example')
+        (root/'attempt'/'AS-BUILT-COMPANION.txt').write_text(
+            'INDEPENDENT PUBLIC SYNTHETIC EXAMPLES\n'
+            'These examples do not share a canonical model. Do not combine quantities, totals or source claims.\n'
+            'Reference production receipt: delivery/PRODUCTION-MANIFEST.json\n'
+            'As-built quick-edit receipt: as-built-example/delivery/MANIFEST.json\n'
+            f'As-built revised snapshot SHA256: {companion["revised_model_sha256"]}\n'
+            'Actual visual acceptance: PENDING. Retained SVGs are not a visual pass or engineering approval.\n'
+            'As-built scope: explicit legacy quick edits; supported-object edits refused; physical products unresolved; nonhorizontal physical-route plans refused.\n',
+            encoding='utf-8')
+    return delivery
+
+
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('root');p.add_argument('--variant',choices=('reference','residential','commercial'),default='reference');p.add_argument('--profile',type=Path);p.add_argument('--adaptive-layout',action='store_true');p.add_argument('--reference-cover',action='store_true')
-    a=p.parse_args();root=Path(a.root);root.mkdir(parents=True,exist_ok=False)
-    request=prepare(root/'inputs',variant=a.variant,profile=a.profile,adaptive_layout=a.adaptive_layout,reference_cover=a.reference_cover)
-    print(create_production_sheet_set(request,output_directory=root/'attempt'))
+    a=p.parse_args()
+    print(generate(a.root,variant=a.variant,profile=a.profile,adaptive_layout=a.adaptive_layout,reference_cover=a.reference_cover))

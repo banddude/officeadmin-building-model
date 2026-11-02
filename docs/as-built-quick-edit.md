@@ -148,6 +148,34 @@ facts and missing products remain visible unresolved lines, never actual-used
 claims. Gross canonical quantities are not purchased stock. No prices, labor,
 demolition, slack, waste or stock calculations are inferred.
 
+## Synthetic reference-packet companion
+
+The normal `examples/reference_production_set.py` reference-variant command also
+generates the independent four-edit synthetic as-built example under
+`attempt/as-built-example/delivery/`. It calls the same example helper and
+canonical delivery workflow as the standalone command. A companion failure
+propagates; the normal example command cannot report successful completion of
+both examples if the as-built exporter failed.
+
+This is a separate synthetic canonical model and a separate delivery, beside
+the original production coordinator's `attempt/delivery/`. Their quantities,
+totals and source claims are not combined. The original production model,
+request, receipts and sealed delivery remain separate. The outer
+`attempt/AS-BUILT-COMPANION.txt` identifies both receipts and explicitly marks
+actual visual acceptance pending. The companion's `MANIFEST.json` binds its
+own snapshots, history, actual SVG plans/panels, materials and differences.
+
+The existing CI reference-example invocation already creates this review tree.
+Its existing `SHA256SUMS.txt` covers all files below `attempt`, including the
+companion manifest, and the existing `synthetic-production-review` artifact
+upload retains the enclosing review directory. No workflow, runner, credential,
+permission, upload destination or artifact contract change is required. The
+existing production PDF-to-PNG step does not create companion raster previews;
+the retained actual editable SVGs still need inspection on an approved surface.
+Retaining these files or passing CI does not establish visual acceptance,
+engineering approval or whole-issue completion. All support, physical-product
+and nonhorizontal physical-plan refusals described below continue to apply.
+
 ## Existing contract and consumer gaps
 
 PhysicalRoute still refuses legacy raceway/fitting product selections. This

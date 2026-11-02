@@ -108,14 +108,23 @@ def synthetic_inputs():
     return history, request
 
 
-def main():
+def create_synthetic_delivery(output_directory):
+    """Generate this independent public synthetic model's receipted delivery.
+
+    The reference production example can retain it as a companion. Its model,
+    quantities and evidence never become part of that other example's model.
+    """
     history, request = synthetic_inputs()
     with tempfile.TemporaryDirectory(prefix="as-built-inputs-") as temporary:
         temporary = Path(temporary)
         (temporary / "history.json").write_text(json.dumps(history))
         (temporary / "transaction.json").write_text(json.dumps(request))
-        create_as_built_delivery(temporary / "history.json", temporary / "transaction.json",
-                                  output_directory=sys.argv[1])
+        return create_as_built_delivery(temporary / "history.json", temporary / "transaction.json",
+                                        output_directory=output_directory)
+
+
+def main():
+    create_synthetic_delivery(sys.argv[1])
 
 
 if __name__ == "__main__":

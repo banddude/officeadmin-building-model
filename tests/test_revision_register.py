@@ -126,7 +126,7 @@ def test_rehashed_or_changed_report_is_not_trusted(target):
 def test_html_is_escaped_and_csv_text_cannot_become_formulas():
     before = detour(1)
     hostile = '=HYPERLINK("https://example.invalid")<script>alert(1)</script>'
-    before = replace(before,model_id=hostile)
+    before = replace(before,routes=(replace(before.routes[0],name=hostile),))
     route = before.routes[0]
     after = replace(before,routes=(replace(route,name='<img src=x onerror=alert(1)>'),))
     report = generate_revision_register(before,after)

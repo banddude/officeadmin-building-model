@@ -48,7 +48,7 @@ def mixed_snapshot(*, endpoint_x=4., radius_m=.15, edit_room=False):
     ports = tuple(Port(id=f"port:{key}", owner_id=f"device:{key}", domain="power", role=role,
         pose=Pose(position=point), direction=Vector3(x=sign, y=0, z=0))
         for key, point, role, sign in (("a", a, "source", 1), ("b", b, "sink", -1)))
-    legacy = Route(id="route:legacy", route_type="emt", level_id="level:proof",
+    legacy = Route(id="route:legacy", route_type="emt",
         start_port_id="port:a", end_port_id="port:b", nominal_diameter_m=.02,
         centerline=Polyline3D(points=(a, b)), provenance=supplied("centerline"))
     source = replace(room, electrical_devices=devices, ports=ports, routes=(legacy,))
@@ -77,7 +77,7 @@ def mixed_snapshot(*, endpoint_x=4., radius_m=.15, edit_room=False):
     ticks = lambda value: int(Decimal(str(value))*1_000_000_000)
     shape = realize(tuple(tuple(ticks(value) for value in point) for point in points),
                     ticks(radius_m), (1,0,0), (1,0,0))
-    route = replace(canonical_candidate(source, requirements, context, shape), level_id="level:proof")
+    route = canonical_candidate(source, requirements, context, shape)
     validate_physical_context_source(source, route)
     return replace(source, routes=(*source.routes, route))
 

@@ -9,7 +9,7 @@ import pytest
 
 from oabm.model import (
     BuildingModel, ContractError, Obstacle, Route, Polyline3D, Point3, Pose, Box3D, Size3,
-    Level, compute_physical_request_sha256, compute_physical_source_sha256,
+    Circuit, compute_physical_request_sha256, compute_physical_source_sha256,
 )
 from oabm.qa.revision_diff import build_revision_diff, RevisionDiff
 from oabm.reports.physical_route_revisions import generate_physical_route_comparison
@@ -174,19 +174,22 @@ def test_actual_od_change_is_geometry_with_auditable_variant_removal_and_additio
     assert physical["path_changed"] is False and physical["outside_diameter_changed"] is True
 
 
-def test_explicit_level_ownership_is_graph_without_changing_physical_length():
-    before = make_physical_model(); route = replace(before.routes[0],level_id="level:new")
-    after = replace(before,levels=(Level(id="level:new",elevation_m=0),),routes=(route,))
+def test_explicit_circuit_route_ownership_is_graph_without_changing_physical_length():
+    model = make_physical_model(); route = model.routes[0]
+    circuit = Circuit(id="circuit:owner",source_port_id=route.start_port_id,load_port_ids=(route.end_port_id,))
+    before = replace(model,circuits=(circuit,))
+    after = replace(before,circuits=(replace(circuit,route_ids=(route.id,)),))
     report = build_revision_diff(before,after)
-    assert route_change(report).change_classes == ("graph",)
-    assert route_change(report).field_changes[0].path == "level_id"
+    row = next(row for row in report.changes if row.entity_id == circuit.id)
+    assert row.change_classes == ("graph",)
+    assert row.field_changes[0].path == "route_ids"
     assert not report.quantity_deltas
 
 
 @pytest.mark.parametrize("owner", ["route","joint","segment","requirements"])
 def test_opaque_metadata_keys_and_missing_null_never_acquire_geometry_or_graph_classes(owner):
     before = make_physical_model(); original = before.routes[0]
-    attributes = {"confidence":False,"id":"changed","provenance":{"route_id":"changed"},"new":None}
+    attributes = {"user":{"confidence":False,"id":"changed","provenance":{"route_id":"changed"},"new":None}}
     if owner == "route": route = replace(original,attributes=attributes)
     elif owner == "joint": route = replace(original,joints=(replace(original.joints[0],attributes=attributes),*original.joints[1:]))
     elif owner == "segment": route = replace(original,segments=(replace(original.segments[0],attributes=attributes),))
@@ -195,8 +198,8 @@ def test_opaque_metadata_keys_and_missing_null_never_acquire_geometry_or_graph_c
     row = route_change(report)
     assert set(row.change_classes) == ({"attribute","provenance"} if owner == "requirements" else {"attribute"})
     changed = next(field for field in row.field_changes if field.path.endswith("attributes"))
-    assert "new" not in changed.before and "new" in changed.after and changed.after["new"] is None
-    assert changed.after["confidence"] is False
+    assert "user" not in changed.before and "new" in changed.after["user"] and changed.after["user"]["new"] is None
+    assert changed.after["user"]["confidence"] is False
     assert not report.quantity_deltas
 
 

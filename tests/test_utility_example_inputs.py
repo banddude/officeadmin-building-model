@@ -30,8 +30,8 @@ def test_companion_inputs_are_independent_synthetic_canonical_facts(tmp_path):
     assert all(record.scale_denominator==100. for feature in model.site_features for record in feature.evidence)
 
 
-@pytest.mark.parametrize('reference_only',[False,True])
-def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,reference_only):
+@pytest.mark.parametrize('reference_only,coincident',[(False,False),(True,False),(True,True)])
+def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,reference_only,coincident):
     from oabm.drawings.company_sheets import resolve_company_sheet_set,render_company_sheet_svg
     from oabm.drawings.model_utility import render_model_site_body
     before,_=example.prepare(tmp_path/'inputs')
@@ -41,6 +41,12 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
         from dataclasses import replace
         model=replace(model,site_requirements=tuple(replace(row,kind='horizontal_reference_distance',minimum_m=None)
             if row.kind=='minimum_horizontal_separation' else row for row in model.site_requirements))
+        if coincident:
+            # Distinct source owners may have the same XY. This is not a
+            # nonzero line, clearance threshold or reason to lose the record.
+            anchor=next(row.plan_position for row in model.service_nodes if row.id=='service:meter-main')
+            model=replace(model,site_features=tuple(replace(row,geometry=replace(row.geometry,points=(anchor,)))
+                if row.kind=='gas_location' else row for row in model.site_features))
     original=model.to_json()
     sheet=next(row for row in resolve_company_sheet_set(root/'profile.json',root/'job.json').sheets if row.id=='U1')
     body,receipt=render_model_site_body(model,sheet,source_files={key:root/path for key,path in request['sources'].items()},drawing=request['site']['drawing'])
@@ -48,7 +54,7 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
     render_company_sheet_svg(sheet,body_svg=body)
     bindings=receipt['projection']['dimension_bindings']
     assert len(bindings)==5
-    assert sorted(row['value_m'] for row in bindings)==pytest.approx([1.2,1.2,1.2,1.2,2.])
+    assert sorted(row['value_m'] for row in bindings)==pytest.approx(sorted([1.2,1.2,1.2,1.2,0. if coincident else 2.]))
     legend=[primitive for view in receipt['drawing']['views'] for primitive in view['primitives'] if primitive['id'].startswith('legend:')]
     notes=' '.join(dict(row['metadata']).get('full_text','') for row in legend)
     for row in bindings:
@@ -58,6 +64,10 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
     if reference_only:
         assert 'REFERENCE ANCHORS ONLY' in notes and 'min 0.5 m' not in notes
         assert all('meets_supplied_horizontal_minimum' not in row for row in receipt['projection']['measurement_requirements'])
+        if coincident:
+            zero,= [row for row in bindings if row['value_m']==0]
+            assert zero['source_id']!=zero['target_id'] and zero['endpoints'][0]==zero['endpoints'][1]
+            assert '0.000 m REFERENCE ANCHORS ONLY' in notes
     else:assert 'min 0.5 m' in notes
     assert all(not view['dimensions'] for view in receipt['drawing']['views'])
     assert model.to_json()==original

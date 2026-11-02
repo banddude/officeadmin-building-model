@@ -285,7 +285,7 @@ def render_model_site_body(model,sheet,*,source_files,drawing,dimension_offset_m
                                 for edge in row.get('surface_edges',()))
         measurement_notes=[]
         for axis,value,endpoints,minimum in descriptions:
-            if value<=0 or source is None or (minimum is not None and target is None):continue
+            if (value<=0 and not (axis=='reference-distance' and value==0)) or source is None or (minimum is not None and target is None):continue
             identity='dimension:'+row['requirement_id']+':'+axis
             text=(f'{value:.3f} m REFERENCE ANCHORS ONLY; no clearance threshold' if axis=='reference-distance' else
                   f'{value:.3f} m SURFACE EDGE' if minimum is None else f'{value:.3f} m PLAN; min {minimum:g} m')

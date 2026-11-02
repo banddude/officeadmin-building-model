@@ -105,3 +105,11 @@ The first independent source review added four admission/report safeguards:
   node budgets. Every alias occurrence is charged before encoding, including
   repeated basis/provenance and CSV rate receipts. Input limits alone are not
   treated as an output bound. Oversize output is refused rather than truncated.
+
+Conservative height admission additionally requires the union of supplied height
+bands to cover the entire measured closed interval without gaps, before checking
+dominance against every intersecting band (including shared boundaries). An
+unclassified lower span cannot become calculated work merely by selecting an
+upper band. UTC conversions that overflow Python's supported datetime range are
+reported as contract refusals; timestamp parsing and scheduling semantics are
+otherwise unchanged. These source-review repairs remain unexecuted.

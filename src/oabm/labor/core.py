@@ -167,7 +167,10 @@ def _instant(value):
         raise ContractError('expected ISO timestamp with UTC offset') from exc
     if value.utcoffset() is None:
         raise ContractError('work windows require explicit UTC offsets')
-    return value.astimezone(timezone.utc)
+    try:
+        return value.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
+        raise ContractError('work window UTC instant is outside supported datetime range') from exc
 
 
 def _period(row):
@@ -395,6 +398,20 @@ def generate_labor_report(model, request):
                 if high > ceiling or high < floor or (height['method'] == 'measured-split' and low < floor):
                     raise ContractError('height band crossing requires measured splits or declared conservative whole-operation policy')
                 if height['method'] == 'conservative-whole-operation':
+                    bands = sorted((_number(other['height_min_m'], zero=True),
+                                    _number(other['height_max_m']))
+                                   for other in rules.values() if other['condition'] == 'height')
+                    covered_to = low
+                    for lower, upper in bands:
+                        if upper < covered_to:
+                            continue
+                        if lower > covered_to:
+                            break
+                        covered_to = max(covered_to, upper)
+                        if covered_to >= high:
+                            break
+                    if covered_to < high:
+                        raise ContractError('conservative height interval has unclassified gaps; measured splits or complete policy required')
                     # No resource substitution hierarchy is assumed: a selected
                     # band must dominate effort and cover every distinct resource
                     # kind required by each intersected supplied band.
@@ -403,7 +420,7 @@ def generate_labor_report(model, request):
                             continue
                         lower = _number(other['height_min_m'], zero=True)
                         upper = _number(other['height_max_m'])
-                        intersects = (low < upper and high > lower) or (low == high and lower <= low <= upper)
+                        intersects = low <= upper and high >= lower
                         if intersects and (_number(rule['multiplier']) < _number(other['multiplier']) or
                                 (other['resource_kind'] is not None and rule['resource_kind'] != other['resource_kind'])):
                             raise ContractError('conservative height policy does not dominate intersected bands; measured splits required')

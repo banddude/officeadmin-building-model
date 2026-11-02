@@ -233,6 +233,9 @@ def test_height_crossing_requires_split_or_conservative_whole_operation():
     req['work'][0]['height_basis']['min_height_m'] = '1'
     with pytest.raises(ContractError, match='height band crossing'): generate_labor_report(m, req)
     req['work'][0]['height_basis']['method'] = 'conservative-whole-operation'
+    with pytest.raises(ContractError, match='unclassified gaps'): generate_labor_report(m, req)
+    req['rules'].append({'id': 'low-covered', 'condition': 'height', 'value': 'low-covered',
+        'height_min_m': '0', 'height_max_m': '3', 'multiplier': '1', 'resource_kind': None})
     assert generate_labor_report(m, req).to_dict()['work'][0]['cents'] == 400
 
 
@@ -346,3 +349,32 @@ def test_csv_repeated_rate_receipts_have_cumulative_preencoding_budget(monkeypat
     monkeypatch.setattr(core, '_json', guarded_json)
     with pytest.raises(ContractError, match='expanded labor output'): report.to_csv()
     assert len(receipt_encodings) < 4
+
+
+@pytest.mark.parametrize('lower_band_upper', ['0.5', '2', '2.999999999'])
+def test_conservative_height_union_requires_entire_interval_without_gaps(lower_band_upper):
+    m = model(); req = request_for(m)
+    req['work'][0]['height_basis'].update(min_height_m='1', max_height_m='5', method='conservative-whole-operation')
+    req['rules'].append({'id': 'lower', 'condition': 'height', 'value': 'lower',
+        'height_min_m': '0', 'height_max_m': lower_band_upper, 'multiplier': '1', 'resource_kind': None})
+    with pytest.raises(ContractError, match='unclassified gaps'): generate_labor_report(m, req)
+    req['rules'][-1]['height_max_m'] = '3'
+    assert generate_labor_report(m, req).to_dict()['work'][0]['status'] == 'calculated'
+
+
+def test_all_overlapping_height_bands_still_participate_after_union_coverage():
+    m = model(); req = request_for(m)
+    req['work'][0]['height_basis'].update(min_height_m='1', max_height_m='5', method='conservative-whole-operation')
+    req['rules'].extend([
+        {'id': 'cover', 'condition': 'height', 'value': 'cover', 'height_min_m': '0', 'height_max_m': '3',
+         'multiplier': '1', 'resource_kind': None},
+        {'id': 'overlap', 'condition': 'height', 'value': 'overlap', 'height_min_m': '2', 'height_max_m': '4',
+         'multiplier': '2', 'resource_kind': 'scaffold'}])
+    # Coverage is complete; the overlapping middle rule remains a blocker.
+    with pytest.raises(ContractError, match='does not dominate'): generate_labor_report(m, req)
+
+
+@pytest.mark.parametrize('timestamp', ['0001-01-01T00:00:00+01:00', '9999-12-31T23:59:59-01:00'])
+def test_utc_conversion_overflow_is_a_contract_refusal(timestamp):
+    from oabm.labor.core import _instant
+    with pytest.raises(ContractError, match='outside supported datetime range'): _instant(timestamp)

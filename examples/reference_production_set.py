@@ -171,8 +171,8 @@ def generate(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fa
         (root/'attempt'/'LABOR-COMPANION.txt').write_text(
             'INDEPENDENT FICTIONAL LABOR RECEIPT DEMONSTRATION\n'
             'This companion has its own canonical model. Do not combine its quantities or amounts with production or as-built models.\n'
-            'Retained receipt: labor-example/MANIFEST.json\n'
-            'Readable results: labor-example/SUMMARY.md\n'
+            'Retained receipt: labor-example/delivery/MANIFEST.json\n'
+            'Readable results: labor-example/delivery/SUMMARY.md\n'
             f'Labor canonical source SHA256: {labor["source_sha256"]}\n'
             'Two objects share one hire occurrence; 400-cent labor receipts and the once-only 1020-cent occurrence are fictional.\n'
             'A separate missing-input case remains explicitly UNPRICED.\n'

@@ -155,8 +155,8 @@ PYTHONPATH=src:examples python examples/labor_reality.py FRESH_OUTPUT \
   --model MODEL.json --request REQUEST.json --receipts EXPORTED_RECEIPTS.json
 ```
 
-All three files use bounded regular-file/pre-parser admission. The fresh output
-contains `model.json`, per-case exact `request.json` and `receipts.json`, source-bound
+All three files use bounded regular-file/pre-parser admission. The fresh output's
+`delivery/` directory contains `model.json`, per-case exact `request.json` and `receipts.json`, source-bound
 `labor.json`/`labor.csv`, readable `SUMMARY.md`, structured `SUMMARY.json`, a
 `README.txt`, and a final hash/byte `MANIFEST.json`. The canonical source hash uses
 normalized model text; each retained file, including its trailing newline, also
@@ -173,3 +173,14 @@ not be combined across the labor, production and as-built companions.
 **Source only:** none of these commands has been run for this checkpoint. No
 retained runtime output or CI dispatch is claimed. Actual generation/output review
 must wait for dependency acceptance and release of the coordinated execution hold.
+
+Supplied summary text escapes HTML and Markdown control punctuation, including
+image/link and URL delimiters; it remains literal receipt text rather than an
+active external image or link. Source JSON is unchanged. Companion writes now
+follow the existing as-built fresh-attempt pattern: write the entire payload and
+manifest in a temporary sibling, exclusively reserve the absent output root,
+then rename the complete payload to `delivery/`. A failed write leaves no final
+root, and a failed rename removes only the empty reservation. Existing outputs
+are never overwritten; failures still propagate through the reference packet.
+The retained companion receipt is now
+`attempt/labor-example/delivery/MANIFEST.json`, with its readable summary beside it.

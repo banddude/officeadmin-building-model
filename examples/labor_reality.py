@@ -10,7 +10,10 @@ from copy import deepcopy
 import hashlib
 import html
 import json
+import os
 from pathlib import Path
+import string
+import tempfile
 
 from oabm.labor import (contribution_inventory, generate_receipted_labor_report,
                         read_labor_json)
@@ -91,11 +94,18 @@ def _pretty(document):
 
 def _cell(value):
     # Markdown summary is presentation only; source-bound JSON retains originals.
-    return html.escape(str(value)).replace('\\', '\\\\').replace('|', '\\|').replace('\r', ' ').replace('\n', ' ')
+    text = html.escape(str(value).replace('\r', ' ').replace('\n', ' '))
+    # Keep HTML entities intact; escape Markdown punctuation (including URL
+    # delimiters) so receipt text cannot become images, links or formatting.
+    controls = set(string.punctuation) - {'&', ';'}
+    return ''.join('\\' + char if char in controls else char for char in text)
 
 
 def retain_delivery(output, model, request, cases, *, fictional=False):
     """Fresh standalone delivery, kept outside any sealed production manifest."""
+    root = Path(output).absolute()
+    if root.exists() or root.is_symlink():
+        raise FileExistsError('fresh labor output directory required')
     contents, summaries = {}, {}
     source = None
     for name, receipts in cases:
@@ -151,7 +161,7 @@ def retain_delivery(output, model, request, cases, *, fictional=False):
                   '| --- | --- | --- | --- | --- | --- |']
         notes = []
         for row in case['work']:
-            amount = 'UNPRICED' if row['cents'] is None else f"{row['cents']} cents {_cell(row['currency'])}"
+            amount = 'UNPRICED' if row['cents'] is None else f"{row['cents']} cents {row['currency']}"
             lines.append('| ' + ' | '.join(_cell(v) for v in (row['id'], row['base_person_hours'],
                 row['adjusted_person_hours'], row['price_basis'], amount, row['status'])) + ' |')
             for message in row['unresolved']: notes.append(f"Unresolved {_cell(row['id'])}: {_cell(message)}")
@@ -177,10 +187,21 @@ def retain_delivery(output, model, request, cases, *, fictional=False):
         'source_sha256': next(iter(summaries.values()))['source_sha256'],
         'review_status': summary['review_status'], 'files': {name: {'sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
             'bytes': len(text.encode('utf-8'))} for name, text in sorted(contents.items())}}
-    root = Path(output); root.mkdir(parents=True, exist_ok=False)
-    for name, text in contents.items():
-        path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text, encoding='utf-8')
-    (root / 'MANIFEST.json').write_text(_pretty(manifest), encoding='utf-8')
+    # Match the existing as-built staged/fresh-attempt publication pattern.
+    # All writes finish in a temporary sibling before reserving the final root.
+    root.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.labor-', dir=root.parent) as temporary:
+        stage = Path(temporary) / 'delivery'; stage.mkdir()
+        for name, text in contents.items():
+            path = stage / name; path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        (stage / 'MANIFEST.json').write_text(_pretty(manifest), encoding='utf-8')
+        root.mkdir()  # Exclusive reservation; never overwrite another attempt.
+        try:
+            os.rename(stage, root / 'delivery')
+        except BaseException:
+            root.rmdir()  # Only our still-empty reservation; no recursive cleanup.
+            raise
     return manifest
 
 

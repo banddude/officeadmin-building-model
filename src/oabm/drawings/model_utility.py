@@ -2,12 +2,11 @@
 from __future__ import annotations
 import hashlib
 import math
-import stat
-from pathlib import Path
 
 from oabm.model import ContractError, validate_model
 from oabm.model.site import SiteFeature,ServiceNode,service_node_position
 from oabm.reports.physical_routes import _snapshot
+from oabm.reports.source_files import hash_source_file
 
 
 def _source_bindings(model,source_files):
@@ -21,13 +20,7 @@ def _source_bindings(model,source_files):
     if not isinstance(source_files,dict):raise ContractError('explicit site source-file mapping required')
     for identity,digest in sorted(expected.items()):
         if identity not in source_files:raise ContractError(f'missing site source bytes for {identity}')
-        info=Path(source_files[identity]).stat()
-        if not stat.S_ISREG(info.st_mode) or info.st_size>256*1024*1024:
-            raise ContractError('site source must be a regular file no larger than256MiB')
-        actual=hashlib.sha256()
-        with Path(source_files[identity]).open('rb') as handle:
-            for block in iter(lambda:handle.read(1024*1024),b''):actual.update(block)
-        if actual.hexdigest()!=digest:raise ContractError(f'stale site source bytes for {identity}')
+        if hash_source_file(source_files[identity])!=digest:raise ContractError(f'stale site source bytes for {identity}')
         result[identity]=digest
     return result
 
@@ -144,13 +137,18 @@ def project_model_site(model,*,source_files,drawing):
 
 def project_service_topology(model):
     """Schematic service arrangement, retaining unresolved identities without ports."""
-    from .single_line.topology import Topology
+    from .single_line.topology import ServiceTopology,_project_canonical_electrical_topology
     validate_model(model)
+    if not model.service_nodes:raise ContractError('explicit service-only projection requires canonical service nodes')
     facts={item.equipment_id:item for item in model.service_equipment_facts}
     equipment={item.id:item for item in model.electrical_equipment}
     incoming={node.id:[] for node in model.service_nodes};outgoing={node.id:[] for node in model.service_nodes}
     connections=[];diagnostics=[]
-    circuits={item.id:item for item in model.circuits};ports={item.id:item for item in model.ports}
+    canonical=None
+    if any((model.electrical_equipment,model.electrical_devices,model.ports,model.circuits,model.conductors,model.routes)):
+        # Exactly the same established admission as the default SLD. Explicit
+        # service selection is not permission to weaken source-circuit checks.
+        canonical=_project_canonical_electrical_topology(model)
     service_nodes={node.id:node for node in model.service_nodes}
     for ordinal,edge in enumerate(sorted(model.service_connections,key=lambda row:row.id),1):
         incoming[edge.target_node_id].append(edge.id);outgoing[edge.source_node_id].append(edge.id)
@@ -161,34 +159,34 @@ def project_service_topology(model):
             wire_labels=[],source_ids=[edge.id,edge.source_node_id,edge.target_node_id,*([edge.circuit_id] if edge.circuit_id else [])],route_ids=[],conductor_ids=[],
             drawing_labels=[f'S{ordinal:03d} / supplied service relationship','Feeder specification unresolved']))
         if edge.circuit_id is not None:
-            from .single_line.drafting_facts import circuit_facts,feeder_labels
-            circuit=circuits[edge.circuit_id]
-            source=ports[circuit.source_port_id]
-            target=next(ports[key] for key in circuit.load_port_ids if ports[key].owner_id==service_nodes[edge.target_node_id].equipment_id)
-            wires=sorted((wire for wire in model.conductors if wire.circuit_id==circuit.id),key=lambda wire:wire.id)
-            connection=connections[-1]
-            connection.update(source_port_id=source.id,load_port_id=target.id,source_role=source.role,load_role=target.role,
-                drafting=circuit_facts(circuit),circuit_number=circuit.circuit_number,voltage_v=circuit.voltage_v,
-                poles=circuit.poles,phase=circuit.phase,route_ids=list(circuit.route_ids),conductor_ids=[wire.id for wire in wires],
-                wire_labels=[f'{wire.count}x {wire.size or "size UNKNOWN"} {wire.material or "material UNKNOWN"} {wire.role}' for wire in wires],
-                conductor_specification=' | '.join(f'{wire.count}x {wire.role}; {wire.size or "size UNKNOWN"}; {wire.material or "material UNKNOWN"}' for wire in wires) or 'Conductor specification UNKNOWN')
-            connection['source_ids'].extend([source.id,target.id,*[wire.id for wire in wires],*circuit.route_ids])
+            from .single_line.drafting_facts import feeder_labels
+            candidates=[row for row in canonical.connections if row['circuit_id']==edge.circuit_id
+                        and row['source_id']==service_nodes[edge.source_node_id].equipment_id
+                        and row['load_id']==service_nodes[edge.target_node_id].equipment_id]
+            if len(candidates)!=1:raise ContractError('service relationship must reference exactly one admitted canonical connection')
+            original=candidates[0]
+            connection={**original,'id':edge.id,'source_id':edge.source_node_id,'load_id':edge.target_node_id,
+                        'source_ids':[edge.id,edge.source_node_id,edge.target_node_id,*original['source_ids']]}
+            connections[-1]=connection
             connection['drawing_labels']=feeder_labels(connection,f'S{ordinal:03d}')
     rows=[]
+    canonical_equipment={row['id']:row for row in canonical.equipment} if canonical else {}
     for node in sorted(model.service_nodes,key=lambda row:row.id):
         owner=equipment.get(node.equipment_id)
+        established=canonical_equipment.get(node.equipment_id)
         value=facts.get(node.id) or facts.get(node.equipment_id)
-        notes=[node.unresolved_reason] if node.unresolved_reason else []
+        notes=[*(established['supplied_notes'] if established else []),*([node.unresolved_reason] if node.unresolved_reason else [])]
         if value:
             if value.integrated_service_disconnect is True:notes.append('One integrated service disconnect in this meter-main; no separate disconnect.')
             if value.main_lug_only is True:notes.append('MAIN LUG ONLY')
             if value.continuous_meter_rating_a is not None:notes.append(f'{value.continuous_meter_rating_a:g} A continuous metering')
             if value.circuit_positions is not None:notes.append(f'{value.circuit_positions} circuit positions')
         if node.location_basis!='placed_equipment':diagnostics.append(f'{node.id}: physical terminal geometry unresolved; {node.location_basis}')
+        drafting=dict(established['drafting']) if established else dict(status='unknown',bus_current_a=None,neutral_ground_bond='unknown',notes=[])
+        if value and value.equipment_rating_a is not None:drafting['bus_current_a']=value.equipment_rating_a
         rows.append(dict(id=node.id,name=node.name or (owner.name if owner else None) or node.id,
             equipment_type=node.equipment_type,rated_voltage_v=owner.rated_voltage_v if owner else None,
-            supplied_notes=notes,drafting=dict(status='unknown',bus_current_a=value.equipment_rating_a if value else None,
-                neutral_ground_bond='unknown',notes=[]),incoming=incoming[node.id],outgoing=outgoing[node.id]))
+            supplied_notes=notes,drafting=drafting,incoming=incoming[node.id],outgoing=outgoing[node.id]))
     source=[]
     document=model.to_dict()
     selected={key for edge in connections for key in edge['source_ids']}
@@ -196,4 +194,19 @@ def project_service_topology(model):
     for collection in ('service_nodes','service_connections','service_equipment_facts','electrical_equipment','ports','circuits','conductors','routes'):
         source.extend({'collection':collection,'entity':row} for row in document[collection]
                       if collection.startswith('service_') or row['id'] in selected)
-    return Topology(hashlib.sha256(model.to_json(indent=None).encode()).hexdigest(),tuple(rows),tuple(connections),tuple(sorted(diagnostics)),tuple(source))
+    inventory={(collection,row['id']) for collection,items in document.items() if isinstance(items,list)
+               for row in items if isinstance(row,dict) and isinstance(row.get('id'),str)}
+    consumed={(row['collection'],row['entity']['id']) for row in source}
+    projected={('service_nodes',row.id) for row in model.service_nodes}|{('service_connections',row.id) for row in model.service_connections}
+    omitted=sorted(inventory-consumed)
+    coverage={'selection_mode':'service_only_explicit','is_whole_electrical_graph':False,
+              'source_model_sha256':hashlib.sha256(model.to_json(indent=None).encode()).hexdigest(),
+              'model_entity_count':len(inventory),
+              'projected':[{'collection':collection,'id':identity} for collection,identity in sorted(projected)],
+              'supporting':[{'collection':collection,'id':identity} for collection,identity in sorted(consumed-projected)],
+              'omissions':[{'collection':collection,'id':identity,'reason':'Outside explicitly selected service-only projection; not claimed as rendered.'} for collection,identity in omitted]}
+    diagnostics.append(f'EXPLICIT SERVICE-ONLY SCOPE: {len(omitted)} canonical model owners omitted; complete identities retained in topology coverage report.')
+    for collection,identity in omitted:
+        if collection in {'electrical_equipment','electrical_devices','circuits'}:
+            diagnostics.append(f'SERVICE-ONLY OMISSION: {collection} {identity}')
+    return ServiceTopology(coverage['source_model_sha256'],tuple(rows),tuple(connections),tuple(sorted(diagnostics)),tuple(source),coverage)

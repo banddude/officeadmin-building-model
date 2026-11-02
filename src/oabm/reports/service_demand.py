@@ -5,13 +5,12 @@ from fractions import Fraction
 import hashlib
 import json
 import math
-from pathlib import Path
 import re
-import stat
 
 from oabm.model import ContractError
 from oabm.model.common import _validate_id
 from oabm.reports.physical_routes import _snapshot,_json
+from oabm.reports.source_files import hash_source_file
 from oabm.routing.physical_capture import capture,REPORT_BYTES,bounded_source_json
 
 
@@ -50,6 +49,11 @@ def calculate_service_demand(model,request,*,source_files):
         raise ContractError('demand must bind to a canonical meter_main service node')
     voltage=_decimal(request['voltage_v'],'voltage_v')
     if voltage<=0:raise ContractError('demand voltage must be positive')
+    service=nodes[request['service_node_id']]
+    if service.equipment_id is not None:
+        owner=next(item for item in model.electrical_equipment if item.id==service.equipment_id)
+        if owner.rated_voltage_v is not None and _decimal(owner.rated_voltage_v,'canonical service voltage')!=voltage:
+            raise ContractError('demand voltage contradicts known canonical service owner voltage')
     sources=request['sources']
     if not isinstance(source_files,dict):raise ContractError('explicit demand source-file mapping required')
     if not isinstance(sources,dict) or not sources:raise ContractError('demand requires supplied source digests')
@@ -58,13 +62,7 @@ def calculate_service_demand(model,request,*,source_files):
         if not isinstance(expected,str) or re.fullmatch('[0-9a-f]{64}',expected) is None:
             raise ContractError('demand source requires lowercase SHA256')
         if identity not in source_files:raise ContractError(f'missing demand source bytes for {identity}')
-        info=Path(source_files[identity]).stat()
-        if not stat.S_ISREG(info.st_mode) or info.st_size>256*1024*1024:
-            raise ContractError('demand source must be a regular file no larger than256MiB')
-        actual=hashlib.sha256()
-        with Path(source_files[identity]).open('rb') as handle:
-            for block in iter(lambda:handle.read(1024*1024),b''):actual.update(block)
-        if actual.hexdigest()!=expected:raise ContractError('demand source hash mismatch')
+        if hash_source_file(source_files[identity])!=expected:raise ContractError('demand source hash mismatch')
     components=request['components']
     if not isinstance(components,list) or not components or len(components)>1000:
         raise ContractError('demand requires 1..1000 components; no rows truncated')

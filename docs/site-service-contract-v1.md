@@ -89,10 +89,20 @@ squares. Current placed-equipment envelope and working-orientation measurements
 are explicitly unresolved until the corresponding physical projection is
 implemented. No measured marker separation is called enclosure clearance.
 
-The single-line projector admits the supplied service graph and retains
-unresolved terminal IDs as null. A meter-main renders as one integrated owner.
-Known referenced circuits retain their actual ports/specifications. The service
-graph is an explicit scoped arrangement, not a whole-building circuit takeoff.
+The default single-line projector never selects a service subset merely because
+service nodes exist. It refuses unsupported mixed service references instead of
+silently omitting the canonical branch graph. `project_topology(...,
+service_only=True)` and the corresponding `--service-only` command explicitly
+select the service graph, retaining complete disjoint projected/supporting/omitted
+owner inventories and visible scope diagnostics. Existing default topology
+document fields remain unchanged. Three-document utility packaging must opt in
+deliberately and retain this scope report.
+
+Unresolved terminal IDs remain null. A meter-main renders as one integrated
+owner and cannot carry contradictory false disconnect facts. Known referenced
+circuits pass the same shared canonical graph admission as the default SLD,
+including domains, terminal/network roles, conductor roles, port-only links,
+voltage and topology checks; only view aliases and service-edge IDs change.
 
 `oabm.reports.service_demand.bind_service_demand_inputs` creates a new report from
 an explicitly unbound, separately source-verified load profile and the current
@@ -101,6 +111,9 @@ stale model hash. General first-block/remainder factors, HVAC/floor components
 and sensitivity additions are supplied with source/basis; no factor or missing
 group is inferred. Exact values are integer/rational strings; display amps are
 finite numbers. Connected circuit VA is not overwritten or equated with demand.
+A demand voltage contradicting a placed service owner's known voltage is refused.
+Source readers check the descriptor actually opened, bound every streamed byte,
+and refuse changes while hashing; path swaps or growth cannot evade admission.
 
 Legacy spatial exports, quantities, general drawing generators and callers of
 the routing refusal guard reject populated site/service records before silently

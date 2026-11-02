@@ -67,12 +67,72 @@ def test_old_reader_rejects_new_fields_and_physical_binding_migration_refuses():
 
 
 def test_unknown_service_reference_is_not_placed_and_integrated_meter_main_is_one_identity():
-    topology=project_topology(site_model())
+    topology=project_topology(site_model(),service_only=True)
     assert len(topology.equipment)==3 and len(topology.connections)==2
     assert [row['id'] for row in topology.equipment if row['equipment_type']=='meter_main']==['service:main']
     assert not [row for row in topology.equipment if row['equipment_type']=='disconnect']
     assert all(row['source_port_id'] is None and row['load_port_id'] is None for row in topology.connections)
     assert any('geometry unresolved' in line for line in topology.diagnostics)
+
+
+def test_mixed_branch_graph_needs_explicit_service_scope_and_accounts_for_every_omission():
+    from test_single_line import make_model
+    legacy=make_model(False)
+    default=project_topology(legacy)
+    assert {row['id'] for row in default.equipment}=={row.id for row in legacy.electrical_equipment}
+    assert {row['circuit_id'] for row in default.connections}=={row.id for row in legacy.circuits}
+    mixed=replace(site_model(),electrical_equipment=legacy.electrical_equipment,ports=legacy.ports,
+        circuits=legacy.circuits,conductors=legacy.conductors,routes=legacy.routes)
+    with pytest.raises(ValueError,match='default whole-electrical-model projection cannot omit'):
+        project_topology(mixed)
+    selected=project_topology(mixed,service_only=True)
+    coverage=selected.to_dict()['coverage']
+    assert coverage['selection_mode']=='service_only_explicit' and coverage['is_whole_electrical_graph'] is False
+    omitted={(row['collection'],row['id']) for row in coverage['omissions']}
+    assert {('electrical_equipment',row.id) for row in legacy.electrical_equipment}<=omitted
+    assert {('circuits',row.id) for row in legacy.circuits}<=omitted
+    projected={(row['collection'],row['id']) for row in coverage['projected']}
+    supporting={(row['collection'],row['id']) for row in coverage['supporting']}
+    assert not (omitted&projected or omitted&supporting or projected&supporting)
+    assert len(omitted|projected|supporting)==coverage['model_entity_count']
+    assert 'coverage' not in default.to_dict()  # Unchanged default document shape.
+
+
+def wrap_branch_circuit(model):
+    upgraded=upgrade_to_v1_8(model)
+    return replace(upgraded,service_nodes=(
+        ServiceNode(id='service:branch-source',equipment_type='panelboard',location_basis='placed_equipment',equipment_id='MAIN'),
+        ServiceNode(id='service:branch-target',equipment_type='panelboard',location_basis='placed_equipment',equipment_id='SUB')),
+        service_connections=(ServiceConnection(id='service:branch-link',source_node_id='service:branch-source',
+            target_node_id='service:branch-target',specification_status='canonical_circuit',circuit_id='F003'),))
+
+
+@pytest.mark.parametrize('case',['domain','terminal_role','auxiliary_conductor','port_only_link'])
+def test_service_wrapper_uses_identical_established_circuit_refusals(case):
+    from test_single_line import make_model
+    model=make_model(False)
+    if case=='domain':
+        model=replace(model,ports=tuple(replace(port,domain='mechanical') if port.id=='F003-out' else port for port in model.ports))
+    elif case=='terminal_role':
+        model=replace(model,ports=tuple(replace(port,role='neutral') if port.id=='F003-in' else port for port in model.ports))
+    elif case=='auxiliary_conductor':
+        model=replace(model,circuits=tuple(replace(circuit,voltage_v=None,poles=None,
+            attributes={'single_line_drafting':{'connection_kind':'grounding'}}) if circuit.id=='F003' else circuit for circuit in model.circuits))
+    else:
+        links={'F001-out':('F003-in',),'F003-in':('F001-out',)}
+        model=replace(model,ports=tuple(replace(port,connected_port_ids=links[port.id]) if port.id in links else port for port in model.ports))
+    with pytest.raises(ValueError) as plain:project_topology(model)
+    with pytest.raises(ValueError) as service:project_topology(wrap_branch_circuit(model),service_only=True)
+    assert str(service.value)==str(plain.value)
+
+
+def test_admitted_service_circuit_retains_original_fields_and_port_identities():
+    from test_single_line import make_model
+    model=make_model(False)
+    original=next(row for row in project_topology(model).connections if row['circuit_id']=='F003')
+    projected,=project_topology(wrap_branch_circuit(model),service_only=True).connections
+    for key in ('circuit_id','source_port_id','load_port_id','drafting','voltage_v','poles','phase','wire_labels','conductor_specification','route_ids','conductor_ids'):
+        assert projected[key]==original[key]
 
 
 def test_dangling_refs_conflicting_facts_wrong_frame_and_stale_lateral_refuse():
@@ -141,3 +201,30 @@ def test_explicit_field_edit_updates_lateral_atomically_without_fake_ports_or_so
     assert edited.service_nodes[1].id==model.service_nodes[1].id
     assert edited.service_nodes[1].evidence==model.service_nodes[1].evidence
     assert not edited.ports and not edited.routes and not edited.electrical_equipment
+
+
+def test_meter_main_rejects_a_contradicted_integrated_disconnect():
+    model=site_model()
+    facts=replace(model.service_equipment_facts[0],integrated_service_disconnect=False)
+    with pytest.raises(ContractError,match='contradict'):
+        replace(model,service_equipment_facts=(facts,))
+
+
+def test_known_240v_service_refuses_120v_demand_basis(tmp_path):
+    from oabm.model import ElectricalEquipment,Pose,Point3
+    source=tmp_path/'source';source.write_bytes(b'synthetic calculation')
+    digest=hashlib.sha256(source.read_bytes()).hexdigest();model=site_model(digest)
+    owner=ElectricalEquipment(id='equipment:main',equipment_type='meter_main',rated_voltage_v=240,
+        pose=Pose(position=Point3(x=3,y=3,z=2)))
+    node=replace(model.service_nodes[1],location_basis='placed_equipment',equipment_id=owner.id,
+        plan_position=None,unresolved_reason=None)
+    model=replace(model,electrical_equipment=(owner,),service_nodes=(model.service_nodes[0],node,model.service_nodes[2]))
+    components=[dict(id='load:'+group,name=group,group=group,va=va,source_id='source:synthetic',basis='Synthetic input',assumption=True)
+                for group,va in [('general',20000),('hvac',2000),('floor_heat',500)]]
+    profile=dict(kind='supplied_service_demand_inputs_v1',service_node_id=node.id,voltage_v=120,
+        sources={'source:synthetic':digest},components=components,
+        general_demand={'first_va':10000,'remainder_factor':.4,'basis':'Supplied policy','source_id':'source:synthetic'},
+        sensitivity={'additional_va':4000,'basis':'Supplied scenario','source_id':'source:synthetic'})
+    with pytest.raises(ContractError,match='voltage contradicts'):
+        bind_service_demand_inputs(model,profile,source_files={'source:synthetic':source})
+    assert bind_service_demand_inputs(model,{**profile,'voltage_v':240},source_files={'source:synthetic':source})['no_supplemental_heat_a']==68.75

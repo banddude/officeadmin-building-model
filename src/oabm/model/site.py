@@ -392,6 +392,13 @@ def validate_site_inventory(model):
         identity=getattr(owner,'equipment_id',None) or owner.id
         if identity in claimed:raise ContractError('duplicate service facts for the same physical owner')
         claimed.add(identity)
+        if owner.equipment_type=='meter_main' and facts.integrated_service_disconnect is False:
+            raise ContractError('meter_main cannot contradict its integrated disconnect function')
+        physical_owner=equipment.get(getattr(owner,'equipment_id',None)) if isinstance(owner,ServiceNode) else owner
+        if physical_owner is not None and facts.equipment_rating_a is not None:
+            annotation=physical_owner.attributes.get('single_line_drafting',{})
+            if isinstance(annotation,dict) and annotation.get('bus_current_a') is not None and annotation['bus_current_a']!=facts.equipment_rating_a:
+                raise ContractError('service rating contradicts existing single-line annotation')
         if facts.integrated_service_disconnect is True and owner.equipment_type!='meter_main':
             raise ContractError('integrated service disconnect must belong to one meter_main')
         if facts.main_lug_only is True and owner.equipment_type!='panelboard':

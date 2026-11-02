@@ -101,6 +101,8 @@ def test_panel_cards_use_readable_font_unknown_positions_and_complete_source_row
 
 def test_actual_full_sheet_previews_bind_exact_svg_bytes_without_crop(tmp_path):
     pytest.importorskip('cairosvg')
+    from PIL import Image
+    from io import BytesIO
     root=tmp_path/'preview-example'
     manifest=example().create_synthetic_delivery(root,preview_images=True)
     preview=json.loads((root/'preview-images/PREVIEW-MANIFEST.json').read_bytes())
@@ -108,12 +110,16 @@ def test_actual_full_sheet_previews_bind_exact_svg_bytes_without_crop(tmp_path):
     assert preview['model_sha256']==manifest['revised_model_sha256']
     assert preview['source_manifest_sha256']==hashlib.sha256((root/'delivery/MANIFEST.json').read_bytes()).hexdigest()
     assert preview['images']
+    assert preview['background_color']=='#ffffff'
     for row in preview['images']:
         raw=(root/'delivery'/row['source_svg']).read_bytes()
         assert hashlib.sha256(raw).hexdigest()==row['source_svg_sha256']
         image=(root/'preview-images'/row['image']).read_bytes()
         assert hashlib.sha256(image).hexdigest()==row['sha256']
         assert struct.unpack('>II',image[16:24])==(row['width'],row['height'])
+        with Image.open(BytesIO(image)) as raster:
+            assert raster.convert('RGBA').getchannel('A').getextrema()==(255,255)
+            assert raster.convert('RGB').getpixel((0,0))==(255,255,255)
         svg=ET.fromstring(raw)
         assert row['width']==round(float(svg.get('width').removesuffix('mm'))*96/25.4*1.5)
         assert row['height']==round(float(svg.get('height').removesuffix('mm'))*96/25.4*1.5)

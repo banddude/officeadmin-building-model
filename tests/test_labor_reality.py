@@ -378,3 +378,116 @@ def test_all_overlapping_height_bands_still_participate_after_union_coverage():
 def test_utc_conversion_overflow_is_a_contract_refusal(timestamp):
     from oabm.labor.core import _instant
     with pytest.raises(ContractError, match='outside supported datetime range'): _instant(timestamp)
+
+
+def receipt_export_for(m, request):
+    """Proposed normalized export. Every amount here is explicitly fictitious."""
+    from oabm.labor.core import _hash
+    base = generate_labor_report(m, request).to_dict()
+    common = {'status': 'available', 'missing_inputs': [], 'revision': 'fictional-v1', 'source': 'fictitious export'}
+    labor = []
+    for index, row in enumerate(request['work']):
+        labor.append(dict(common, id=f'price-{index}', target_id=row['id'], currency='TEST',
+            cost_bucket='labor',
+            work_sha256=_hash(row), unit='person-hour' if index == 0 else 'operation',
+            price_basis='one-hour-unit' if index == 0 else 'total-hours-in-one-unit',
+            quantity='4' if index == 0 else '1', unit_price_cents=100 if index == 0 else 400,
+            amount_cents=400, priced_person_hours='4'))
+    occurrence = request['rentals'][0]
+    rental = dict(common, id='rental-total', target_id=occurrence['id'], currency='TEST',
+        cost_bucket='rental',
+        occurrence_sha256=_hash(occurrence), unit='occurrence', price_basis='provider-occurrence-total',
+        quantity='1', hire=occurrence['hire'], off_hire=occurrence['off_hire'], priced_elapsed_hours='25',
+        duration_basis='started-24-hour-days', durationDays='2',
+        tier_coverage_days={'day': '1', 'week': '7', 'month': '28'},
+        mix=[{'unit': 'day', 'quantity': 2, 'coverageDays': '2', 'timeCents': 600}], coverageDays='2',
+        timeCents=600, deliveryPickupCents=100, fuelCents=20, damageWaiverCents=84,
+        environmentalCents=12, costCents=816, markupBps=2500, markupCents=204, sellCents=1020,
+        rounding='half-up-integer-cents')
+    return {'version': 'external-labor-export-v1', 'source_sha256': base['source_sha256'],
+        'request_sha256': _hash(request), 'provider': {'id': 'fictional', 'revision': '1', 'source': 'fictitious'},
+        'standards': [dict(common, id='standard-' + op['id'], target_id=op['id'],
+                           unit=op['unit'], person_hours_per_unit='2') for op in request['operations']],
+        'labor_prices': labor, 'rental_prices': [rental]}
+
+
+def test_exported_receipts_apply_productivity_and_do_not_double_extend_hours_or_rental():
+    from oabm.labor import generate_receipted_labor_report
+    m = model(); req = request_for(m)
+    for operation in req['operations']: operation['person_hours_per_unit'] = '999'
+    export = receipt_export_for(m, req)
+    original_request, original_export = deepcopy(req), deepcopy(export)
+    report = generate_receipted_labor_report(m, req, export)
+    doc = report.to_dict()
+    assert [row['cents'] for row in doc['work']] == [400, 400]
+    assert len(doc['rentals']) == 1 and doc['rentals'][0]['cents'] == 1020
+    assert all(row['status'] == 'provider-reported' for row in doc['work'] + doc['rentals'])
+    assert req == original_request and export == original_export
+    assert doc['engine_report']['work'][0]['pricing_unresolved']
+    assert doc['engine_report']['work'][0]['nonpricing_unresolved'] == []
+    assert doc['engine_report']['work'][0]['operation']['person_hours_per_unit'] == '2'
+    assert '1020' in report.to_csv()
+    report.validate_against(m, req, export)
+
+
+@pytest.mark.parametrize('missing', ['price_basis', 'currency', 'revision'])
+def test_missing_external_price_contract_remains_unresolved(missing):
+    from oabm.labor import generate_receipted_labor_report
+    m = model(); req = request_for(m); export = receipt_export_for(m, req)
+    export['labor_prices'][0].pop(missing)
+    row = generate_receipted_labor_report(m, req, export).to_dict()['work'][0]
+    assert row['status'] == 'unresolved' and row['cents'] is None
+    assert missing in ' '.join(row['unresolved'])
+
+
+def test_missing_export_version_and_productivity_do_not_fall_back_to_request_defaults():
+    from oabm.labor import generate_receipted_labor_report
+    m = model(); req = request_for(m); export = receipt_export_for(m, req)
+    export.pop('version'); export['standards'] = []
+    doc = generate_receipted_labor_report(m, req, export).to_dict()
+    assert all(row['cents'] is None for row in doc['work'] + doc['rentals'])
+    assert doc['engine_report']['work'][0]['base_person_hours'] is None
+    assert 'version missing' in ' '.join(doc['unresolved'])
+
+
+@pytest.mark.parametrize('field,value', [('costCents', 817), ('markupCents', 205), ('sellCents', 1021),
+                                        ('timeCents', 601), ('coverageDays', '1'), ('durationDays', '1')])
+def test_external_rental_arithmetic_and_duration_are_checked(field, value):
+    from oabm.labor import generate_receipted_labor_report
+    m = model(); req = request_for(m); export = receipt_export_for(m, req)
+    export['rental_prices'][0][field] = value
+    with pytest.raises(ContractError): generate_receipted_labor_report(m, req, export)
+
+
+def test_total_hours_receipt_cannot_be_multiplied_or_rebound_to_another_crew():
+    from oabm.labor import generate_receipted_labor_report
+    m = model(); req = request_for(m); export = receipt_export_for(m, req)
+    export['labor_prices'][1]['amount_cents'] = 1600
+    with pytest.raises(ContractError, match='declared basis'): generate_receipted_labor_report(m, req, export)
+    export = receipt_export_for(m, req); export['labor_prices'][0]['work_sha256'] = 'stale'
+    with pytest.raises(ContractError, match='work/crew'): generate_receipted_labor_report(m, req, export)
+
+
+def test_local_calendar_vendor_contract_is_not_silently_elapsed_24_hour_billing():
+    from oabm.labor import generate_receipted_labor_report
+    m = model(); req = request_for(m); export = receipt_export_for(m, req)
+    export['rental_prices'][0]['duration_basis'] = 'local-calendar-days'
+    row = generate_receipted_labor_report(m, req, export).to_dict()['rentals'][0]
+    assert row['cents'] is None and 'timezone contract' in ' '.join(row['unresolved'])
+
+
+def test_external_receipt_missing_inputs_and_provider_tiers_are_preserved():
+    from oabm.labor import generate_receipted_labor_report
+    m = model(); req = request_for(m); export = receipt_export_for(m, req)
+    rental = export['rental_prices'][0]
+    rental.update(status='unresolved', missing_inputs=['vendor fee basis not exported'])
+    doc = generate_receipted_labor_report(m, req, export).to_dict()
+    assert doc['rentals'][0]['cents'] is None
+    assert doc['rentals'][0]['receipt']['tier_coverage_days'] == {'day': '1', 'week': '7', 'month': '28'}
+    assert 'vendor fee basis not exported' in doc['rentals'][0]['unresolved']
+
+
+def test_bounded_local_export_reader_rejects_duplicate_keys(tmp_path):
+    from oabm.labor import read_labor_json
+    path = tmp_path / 'fictional-export.json'; path.write_text('{"version":1,"version":2}')
+    with pytest.raises(ContractError, match='duplicate'): read_labor_json(path)

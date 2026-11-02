@@ -364,7 +364,7 @@ def generate_labor_report(model, request):
         if key in exclusive and exclusive[key] != chosen:
             raise ContractError('exclusive installation bases overlap')
         exclusive[key] = chosen
-        unknown, formula, required = [], [], set()
+        unknown, pricing_unknown, formula, required = [], [], [], set()
         _keys(row['conditions'], 'occupied hillside no-truck height')
         if row['height_basis'] is None:
             unknown.append('height relative to work surface is unknown')
@@ -448,7 +448,7 @@ def generate_labor_report(model, request):
             headcount += member['count']
             rate = rates.get(member['rate_id'])
             if rate is None:
-                unknown.append('missing labor rate: ' + member['id'])
+                pricing_unknown.append('missing labor rate: ' + member['id'])
             elif (rate['kind'], rate['unit'], rate['selection'], rate['role']) != ('labor', 'person-hour', member['selection'], member['role']):
                 raise ContractError('incompatible labor rate selection')
             else:
@@ -468,14 +468,15 @@ def generate_labor_report(model, request):
             unknown.append('supplied windows have insufficient crew capacity')
         formula.insert(0, {'quantity': _exact(quantity), 'fraction': _exact(fraction),
                           'person_hours_per_unit': op['person_hours_per_unit'], 'combined_multiplier': _exact(multiplier)})
-        price = None if unknown or adjusted is None else _cents(adjusted / headcount * crew_price)
+        price = None if unknown or pricing_unknown or adjusted is None else _cents(adjusted / headcount * crew_price)
         lines.append({'id': identity, 'contribution_id': row['contribution_id'], 'basis': basis,
             'operation': op, 'conditions': row['conditions'], 'height_basis': row['height_basis'],
             'phase': row['phase'], 'mobilization': row['mobilization'], 'evidence': row['evidence'],
             'crew': row['crew'], 'windows': row['windows'], 'base_person_hours': None if base is None else _exact(base),
             'adjusted_person_hours': None if adjusted is None else _exact(adjusted),
             'occupancy_hours': _exact(capacity), 'currency': next(iter(currencies), None),
-            'cents': price, 'unresolved': unknown, 'formula': formula})
+            'cents': price, 'unresolved': unknown + pricing_unknown,
+            'nonpricing_unresolved': unknown, 'pricing_unresolved': pricing_unknown, 'formula': formula})
     rental_lines, coverage = [], set()
     for identity, row in sorted(rentals.items()):
         _keys(row, 'id kind mobilization evidence capacity assignments hire off_hire rate_id billing_quantum_hours')
@@ -528,13 +529,16 @@ def generate_labor_report(model, request):
         rental_lines.append({'id': identity, 'occurrence': row, 'occupancy_hours': _exact(duration),
             'peak_concurrent_assignments': peak, 'currency': None if rate is None else rate['currency'],
             'cents': None if unknown else rate['cents'] * units, 'unresolved': unknown,
+            'nonpricing_unresolved': [], 'pricing_unresolved': unknown,
             'formula': [{'hire_hours_including_retained_gaps': _exact(duration),
                          'billing_quantum_hours': _exact(quantum), 'billable_quanta': units,
                          'rate_id': row['rate_id']} ]})
     for line in lines:
         for kind in sorted(schedules[line['id']][1]):
             if (line['id'], kind) not in coverage:
-                line['unresolved'].append('required resource occurrence missing: ' + kind)
+                message = 'required resource occurrence missing: ' + kind
+                line['unresolved'].append(message)
+                line['nonpricing_unresolved'].append(message)
         if line['unresolved']:
             line['cents'] = None
     for line in lines + rental_lines:

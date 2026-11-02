@@ -113,3 +113,9 @@ unclassified lower span cannot become calculated work merely by selecting an
 upper band. UTC conversions that overflow Python's supported datetime range are
 reported as contract refusals; timestamp parsing and scheduling semantics are
 otherwise unchanged. These source-review repairs remain unexecuted.
+
+The separate [exported receipt adapter](labor-export-receipts.md) consumes a
+proposed generic read-only interchange for per-unit standards and externally
+priced labor/rental occurrences. It does not claim an existing OA export or live
+authenticated integration; its native-export mapping and runtime acceptance
+remain pending.

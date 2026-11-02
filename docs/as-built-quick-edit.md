@@ -201,6 +201,18 @@ demolition, slack, waste or stock calculations are inferred.
 
 ## Synthetic reference-packet companion
 
+The reference example also retains a separate genuine changed-PhysicalRoute
+delivery at `attempt/physical-as-built-example/delivery/`. Its public helper
+`examples/as_built_physical_route.py` authors canonical line/arc records without
+test imports. The fixed-endpoint field route rises at X=.75, crosses at Z=3.5
+and rises again at X=2; all three story sheets and the supplied panel are retained.
+The design baseline, supplied evidence, replayable history, materials and
+differences belong only to that independent model. Products and clearance remain
+unconfirmed. PDF-enabled runs retain full-sheet PNGs and exact SVG/manifest hash
+receipts at `attempt/physical-as-built-example/preview-images/`, still marked
+unreviewed. This path is separate from the legacy example, production delivery
+and `attempt/labor-example`; no quantities or source claims are mixed.
+
 The normal `examples/reference_production_set.py` reference-variant command also
 generates the independent four-edit synthetic as-built example under
 `attempt/as-built-example/delivery/`. It calls the same example helper and

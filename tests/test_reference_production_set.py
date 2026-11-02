@@ -78,6 +78,21 @@ def test_reference_example_retains_independent_as_built_under_existing_checksum_
     assert {f'attempt/as-built-example/delivery/{name}' for name in manifest['files']}<=checksum_tree
     assert 'attempt/as-built-example/delivery/MANIFEST.json' in checksum_tree
     assert 'attempt/AS-BUILT-COMPANION.txt' in checksum_tree
+    physical=root/'attempt/physical-as-built-example/delivery'
+    physical_manifest=json.loads((physical/'MANIFEST.json').read_bytes())
+    physical_current=BuildingModel.load(physical/'canonical-model.json')
+    physical_design=BuildingModel.load(physical/'design-model.json')
+    assert physical_current.model_id not in {BuildingModel.load(production/'inputs/model.json').model_id,
+        BuildingModel.load(companion/'canonical-model.json').model_id}
+    assert physical_current.routes[0].joints!=physical_design.routes[0].joints
+    assert physical_current.ports==physical_design.ports
+    assert physical_current.routes[0].context==physical_design.routes[0].context
+    assert len(list((physical/'drawings').glob('plan-*.svg')))==3
+    assert list((physical/'drawings').glob('panel-*.svg'))
+    assert not json.loads((physical/'materials.json').read_bytes())['installed_items']
+    for name,receipt in physical_manifest['files'].items():
+        assert hashlib.sha256((physical/name).read_bytes()).hexdigest()==receipt['sha256']
+        assert f'attempt/physical-as-built-example/delivery/{name}' in checksum_tree
     history=json.loads((companion/'history.json').read_bytes())
     as_built=replay_history(history)
     as_built_json=(companion/'canonical-model.json').read_text()

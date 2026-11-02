@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 oabm-as-built = "oabm.pipeline.as_built_delivery:main"
+oabm-revision-register = "oabm.reports.revision_register:main"
 oabm-physical-route-compare = "oabm.reports.physical_route_revisions:main"
 oabm-physical-route-plan = "oabm.drawings.physical_routes:main"
 oabm-physical-route-schedule = "oabm.reports.physical_routes:main"

@@ -170,3 +170,7 @@ and unsupported-consumer safeguards remain unchanged.
 See [Physical-route revision comparisons](docs/physical-route-revisions.md) for
 standalone source-bound before/after evidence, exact signed length/bend deltas,
 gross physical replacements and explicitly excluded legacy scope.
+
+See [Labor reality source checkpoint](docs/labor-reality.md) for opt-in original
+contribution effort, explicit work windows and shared rental accounting. Runtime
+acceptance and private editable company-standard/rate integration remain pending.

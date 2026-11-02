@@ -116,16 +116,19 @@ still refuses physical routes. The opt-in retains every canonical collection
 and reviews the same confidence, provenance, missing-source and unresolved
 selection facts, including mixed legacy/physical route models.
 
-If any physical route is present, `extract_quantities` is unsupported for the
-whole model. The review does **not** remove physical routes, alter references,
-or fabricate a partial takeoff. Instead it emits
-`review:warning:physical_route_quantities_unsupported`, with reason
-`physical_route_quantities_unsupported`, naming the canonical physical route
-IDs and retaining their provenance and supplied evidence. Its detail explicitly
-states that the entire quantity pass, including legacy routes and other
-objects, was not evaluated. This is a capability limitation, not a
-`quantity_warning_*` result from a takeoff. Models without physical routes
-retain the existing quantity warning pass and output bytes.
+The review runs `extract_quantities` on the entire canonical model, including
+physical routes, legacy routes and architecture. Every actual warning becomes
+`quantity_warning_<code>` with the same message and source IDs. This includes
+`physical_route_geometric_length_only`, `physical_route_overlap_not_evaluated`
+and `unmeasured_entities`; no filtered partial takeoff is substituted. Supplied
+source-bound crops remain attached to their named canonical owners. Nested
+route joints, segments and requirements remain unchanged in the canonical model;
+they are not relabeled as independently reviewable top-level entities. Models without physical routes retain
+the existing quantity warning pass and output bytes.
+
+Analytic physical centerline length does not infer products, purchased elbows,
+slack, waste or live clearance approval. Physical overlap remains unevaluated;
+these limitations are review items rather than hidden omissions.
 
 Populated building assemblies remain unsupported. Physical-route fitting
 references remain forbidden by canonical validation. Display does not establish live obstacle clearance,

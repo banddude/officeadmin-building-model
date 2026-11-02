@@ -90,3 +90,18 @@ whole-operation selection can include lower work but must cover the known maximu
 in the selected upper band. Unknown surface evidence never becomes absolute-Z
 height. Resource rate receipts also declare `quantum_hours`; a conflicting caller
 billing quantum is rejected. Labor receipts carry null quantum hours.
+
+The first independent source review added four admission/report safeguards:
+
+- Inventory, JSON and CSV preserve takeoff group summaries and unmatched group
+  member counts. A misspelled alternate member remains explicitly disclosed.
+- A conservative height rule must have at least the effort multiplier of every
+  intersected supplied height band and the same required resource kind whenever
+  another band requires one. No lift/scaffold substitution is inferred; conflicts
+  require measured splits.
+- Groups must be plain objects with member-ID lists; condition names are checked
+  as text before finite lookup. Malformed inputs produce contract refusals.
+- Expanded inventory/report and CSV output have cumulative conservative byte and
+  node budgets. Every alias occurrence is charged before encoding, including
+  repeated basis/provenance and CSV rate receipts. Input limits alone are not
+  treated as an output bound. Oversize output is refused rather than truncated.

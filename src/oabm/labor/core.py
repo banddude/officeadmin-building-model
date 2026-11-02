@@ -20,6 +20,47 @@ from oabm.reports.physical_routes import _snapshot, _text_cell
 
 MAX_BYTES = 2_000_000
 MAX_NODES = 40_000
+MAX_OUTPUT_BYTES = 8_000_000
+MAX_OUTPUT_NODES = 200_000
+
+
+class _OutputBudget:
+    """Charge every expanded occurrence before encoding, including aliases.
+
+    Conservative ASCII escape/CSV quote bounds avoid constructing an oversized
+    serialized string merely to discover its size. Aliases are never deduplicated.
+    """
+    def __init__(self, byte_limit=None):
+        self.bytes_left = MAX_OUTPUT_BYTES if byte_limit is None else byte_limit
+        self.nodes_left = MAX_OUTPUT_NODES
+
+    def charge(self, value, depth=0):
+        self.nodes_left -= 1
+        self.bytes_left -= 4
+        if self.nodes_left < 0 or depth > 32 or self.bytes_left < 0:
+            raise ContractError('expanded labor output exceeds limit')
+        if type(value) is dict:
+            for key, item in value.items():
+                self.charge(key, depth + 1)
+                self.charge(item, depth + 1)
+        elif type(value) in (list, tuple):
+            for item in value:
+                self.charge(item, depth + 1)
+        elif type(value) is str:
+            self.bytes_left -= 24 * len(value) + 4
+        elif value is None or type(value) in (bool, float):
+            self.bytes_left -= 80
+        elif type(value) is int:
+            self.bytes_left -= value.bit_length() + 8
+        else:
+            raise ContractError('unsupported labor output value')
+        if self.bytes_left < 0:
+            raise ContractError('expanded labor output exceeds limit')
+
+
+def _bounded_json(value):
+    _OutputBudget().charge(value)
+    return _json(value)
 
 
 def _json(value):
@@ -147,24 +188,51 @@ def _cents(amount):
     return (amount.numerator * 2 + amount.denominator) // (2 * amount.denominator)
 
 
+def _groups(groups):
+    if groups is None:
+        return None
+    if type(groups) is not dict:
+        raise ContractError('groups must be an object of member lists or null')
+    owners = {}
+    for name, members in groups.items():
+        _text(name)
+        if type(members) is not list:
+            raise ContractError('group members must be a list of canonical IDs')
+        for member in members:
+            _text(member)
+            if member in owners and owners[member] != name:
+                raise ContractError('canonical ID belongs to multiple groups')
+            owners[member] = name
+    return groups
+
+
 def _inventory(model, groups):
+    groups = _groups(groups)
     detached, source = _snapshot(model)
     rows = []
+    budget = _OutputBudget()
     def retain(item):
         basis = item.to_dict()
+        budget.charge(basis)
         rows.append({'id': _hash(basis), 'basis': basis})
         return True
     takeoff = extract_quantities(detached, groups=groups, contribution_filter=retain)
     if len({r['id'] for r in rows}) != len(rows):
         raise ContractError('indistinguishable original contributions require quantity-lane identity')
-    return source, sorted(rows, key=lambda r: r['id']), [w.to_dict() for w in takeoff.warnings]
+    diagnostics = {'unmatched_group_ids': takeoff.unmatched_group_ids,
+        'groups': None if takeoff.group_summary is None else {
+            name: {'entities': entities, 'items': items}
+            for name, entities, items in takeoff.group_summary}}
+    return source, sorted(rows, key=lambda r: r['id']), [w.to_dict() for w in takeoff.warnings], diagnostics
 
 
 def contribution_inventory(model, *, groups=None):
     """Discover exact request selectors; these are original, unmerged scalars."""
-    source, rows, warnings = _inventory(model, _detach(groups) if groups is not None else None)
-    return {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
-            'contributions': rows, 'warnings': warnings}
+    source, rows, warnings, diagnostics = _inventory(model, _detach(groups) if groups is not None else None)
+    result = {'source_sha256': hashlib.sha256(source.encode()).hexdigest(),
+              'contributions': rows, 'warnings': warnings, 'group_diagnostics': diagnostics}
+    _OutputBudget().charge(result)
+    return result
 
 
 @dataclass(frozen=True)
@@ -182,22 +250,28 @@ class LaborReport:
     def to_csv(self):
         output = io.StringIO(newline='')
         writer = csv.writer(output, lineterminator='\n')
-        writer.writerow(('kind', 'id', 'status', 'base_person_hours', 'adjusted_person_hours',
+        budget = _OutputBudget()
+        def write(values):
+            # Charge raw expanded values BEFORE serializing embedded JSON cells.
+            budget.charge(values)
+            writer.writerow([_text_cell(_json(v) if type(v) in (dict, list) else v) for v in values])
+        write(('kind', 'id', 'status', 'base_person_hours', 'adjusted_person_hours',
                          'occupancy_hours', 'currency', 'cents', 'unresolved', 'formula', 'source_sha256',
                          'contribution_id', 'operation_id', 'source_entity_ids', 'unit', 'group',
-                         'assembly_key', 'variant', 'phase', 'mobilization', 'evidence', 'context', 'rate_receipts'))
+                         'assembly_key', 'variant', 'phase', 'mobilization', 'evidence', 'context', 'rate_receipts',
+                         'group_diagnostics'))
         doc = self.to_dict()
         for kind, rows in (('work', doc['work']), ('rental', doc['rentals'])):
             for row in rows:
                 basis = row.get('basis', {})
                 context = row.get('occurrence', row)
-                writer.writerow([_text_cell(v) for v in (kind, row['id'], row['status'],
+                write((kind, row['id'], row['status'],
                     row.get('base_person_hours'), row.get('adjusted_person_hours'), row.get('occupancy_hours'),
-                    row.get('currency'), row.get('cents'), _json(row['unresolved']), _json(row['formula']),
+                    row.get('currency'), row.get('cents'), row['unresolved'], row['formula'],
                     doc['source_sha256'], row.get('contribution_id'), row.get('operation', {}).get('id'),
-                    _json(basis.get('source_entity_ids', [])), basis.get('unit'), basis.get('group'),
-                    basis.get('assembly_key'), _json(basis.get('variant', {})), row.get('phase'),
-                    context.get('mobilization'), context.get('evidence'), _json(context), _json(doc['rates']))])
+                    basis.get('source_entity_ids', []), basis.get('unit'), basis.get('group'),
+                    basis.get('assembly_key'), basis.get('variant', {}), row.get('phase'),
+                    context.get('mobilization'), context.get('evidence'), context, doc['rates'], doc['group_diagnostics']))
         return output.getvalue()
 
     def validate_against(self, model, request):
@@ -215,7 +289,7 @@ def generate_labor_report(model, request):
     _keys(req['policy'], 'id revision source')
     for value in req['policy'].values():
         _text(value)
-    source, inventory, warnings = _inventory(model, req['groups'])
+    source, inventory, warnings, group_diagnostics = _inventory(model, req['groups'])
     digest = hashlib.sha256(source.encode()).hexdigest()
     if req['source_sha256'] != digest:
         raise ContractError('stale labor source binding')
@@ -232,6 +306,7 @@ def generate_labor_report(model, request):
     rule_keys = set()
     for rule in rules.values():
         _keys(rule, 'id condition value multiplier resource_kind height_min_m height_max_m')
+        _text(rule['condition'])
         if rule['condition'] not in conditions:
             raise ContractError('unknown condition rule')
         _text(rule['value'])
@@ -319,6 +394,19 @@ def generate_labor_report(model, request):
                 ceiling = _number(rule['height_max_m'])
                 if high > ceiling or high < floor or (height['method'] == 'measured-split' and low < floor):
                     raise ContractError('height band crossing requires measured splits or declared conservative whole-operation policy')
+                if height['method'] == 'conservative-whole-operation':
+                    # No resource substitution hierarchy is assumed: a selected
+                    # band must dominate effort and cover every distinct resource
+                    # kind required by each intersected supplied band.
+                    for other in rules.values():
+                        if other['condition'] != 'height':
+                            continue
+                        lower = _number(other['height_min_m'], zero=True)
+                        upper = _number(other['height_max_m'])
+                        intersects = (low < upper and high > lower) or (low == high and lower <= low <= upper)
+                        if intersects and (_number(rule['multiplier']) < _number(other['multiplier']) or
+                                (other['resource_kind'] is not None and rule['resource_kind'] != other['resource_kind'])):
+                            raise ContractError('conservative height policy does not dominate intersected bands; measured splits required')
             multiplier *= _number(rule['multiplier'])
             formula.append({'rule': rule['id'], 'multiplier': rule['multiplier']})
             if rule['resource_kind']:
@@ -437,6 +525,7 @@ def generate_labor_report(model, request):
     report = {'kind': 'labor-report-v1', 'source_sha256': digest, 'request_sha256': _hash(req),
         'policy': req['policy'], 'rates': sorted(rates.values(), key=lambda r: r['id']),
         'work': lines, 'rentals': rental_lines, 'quantity_warnings': warnings,
+        'group_diagnostics': group_diagnostics,
         'scope_allocations': [{'contribution_id': c, 'operation_id': o, 'fraction': _exact(f)}
                               for (c, o), f in sorted(allocations.items())],
         'limitations': ['Explicit selected scope only; unallocated inventory is not priced or declared complete.',
@@ -444,4 +533,4 @@ def generate_labor_report(model, request):
             'No scheduler optimization, wage eligibility, engineering or code judgment.',
             'No OA connection, editable company standards UI or production pricing integration.',
             'External rental quantum contract only; vendor weekly/monthly tier selection is not implemented.']}
-    return LaborReport(source, _json(req), _json(report))
+    return LaborReport(source, _json(req), _bounded_json(report))

@@ -250,3 +250,99 @@ def test_shared_hardware_original_contribution_allocated_once():
     assert len(doc['scope_allocations']) == 1 and doc['scope_allocations'][0]['fraction'] == '1'
     assert sum(int(w['base_person_hours']) for w in doc['work']) == 2
     assert all(w['basis'] == basis for w in doc['work'])
+
+
+def test_group_typo_and_matched_group_diagnostics_survive_inventory_and_report():
+    m = model(); req = request_for(m)
+    req['groups'] = {'ALTERNATE': ['device:misspelled-member'], 'EMPTY': []}
+    inv = contribution_inventory(m, groups=req['groups'])
+    expected = {'unmatched_group_ids': 1, 'groups': {
+        'ALTERNATE': {'entities': 0, 'items': 0}, 'EMPTY': {'entities': 0, 'items': 0}}}
+    assert inv['group_diagnostics'] == expected
+    # A misspelled alternate stays ungrouped in inherited takeoff, but its
+    # unmatched ownership is now visible in both report formats.
+    report = generate_labor_report(m, req)
+    assert report.to_dict()['group_diagnostics'] == expected
+    assert 'unmatched_group_ids' in report.to_csv()
+    actual_id = inv['contributions'][0]['basis']['source_entity_ids'][0]
+    matched = contribution_inventory(m, groups={'MATCHED': [actual_id]})
+    assert matched['group_diagnostics']['unmatched_group_ids'] == 0
+    assert matched['group_diagnostics']['groups']['MATCHED']['entities'] == 1
+
+
+@pytest.mark.parametrize('groups', [[], '', 0, {'ALT': 'device:evse'}, {'ALT': None},
+                                   {'ALT': [None]}, {'ALT': [[]]}, {'ALT': [7]}])
+def test_malformed_group_shapes_refuse_at_labor_boundary(groups):
+    m = model(); req = request_for(m); req['groups'] = groups
+    with pytest.raises(ContractError): generate_labor_report(m, req)
+    with pytest.raises(ContractError): contribution_inventory(m, groups=groups)
+
+
+@pytest.mark.parametrize('condition', [[], {}, None, 4, True])
+def test_malformed_rule_condition_is_contract_error(condition):
+    m = model(); req = request_for(m); req['rules'][0]['condition'] = condition
+    with pytest.raises(ContractError, match='text'): generate_labor_report(m, req)
+
+
+@pytest.mark.parametrize('low_multiplier,low_resource', [('2', None), ('1', 'scaffold'), ('2', 'scaffold')])
+def test_conservative_height_requires_effort_and_resource_dominance(low_multiplier, low_resource):
+    m = model(); req = request_for(m)
+    req['work'][0]['height_basis'].update(min_height_m='1', max_height_m='5', method='conservative-whole-operation')
+    # Selected high band is multiplier one and requires no resource. The crossed
+    # low band must not silently disappear just because the maximum is higher.
+    high = next(r for r in req['rules'] if r['condition'] == 'height')
+    high.update(multiplier='1', resource_kind=None)
+    req['rules'].append({'id': 'low', 'condition': 'height', 'value': 'low',
+        'height_min_m': '0', 'height_max_m': '3', 'multiplier': low_multiplier, 'resource_kind': low_resource})
+    with pytest.raises(ContractError, match='does not dominate'): generate_labor_report(m, req)
+    high.update(multiplier='2', resource_kind=low_resource)
+    if low_resource:
+        req['rentals'][0]['kind'] = low_resource
+        req['rates'][1]['role'] = low_resource
+    # The selected whole-operation rule now covers all crossed requirements.
+    assert generate_labor_report(m, req).to_dict()['work'][0]['status'] == 'calculated'
+
+
+def test_expanded_fractional_report_is_charged_before_report_serialization(monkeypatch):
+    import oabm.labor.core as core
+    m = model(); req = request_for(m)
+    captured = core._inventory(m, None)
+    template = deepcopy(req['work'][0]); template['fraction'] = '0.01'
+    req['work'] = [dict(deepcopy(template), id=f'fraction-{i}') for i in range(100)]
+    req['rentals'] = []
+    monkeypatch.setattr(core, '_inventory', lambda model, groups: captured)
+    # Establish a cap above a single original basis but below its repetition.
+    budget = core._OutputBudget()
+    budget.charge(captured[1][0]['basis'])
+    one_basis_charge = core.MAX_OUTPUT_BYTES - budget.bytes_left
+    monkeypatch.setattr(core, 'MAX_OUTPUT_BYTES', one_basis_charge * 10)
+    original_json = core._json
+    def guarded_json(value):
+        assert not (type(value) is dict and value.get('kind') == 'labor-report-v1'), 'oversized report reached JSON serialization'
+        return original_json(value)
+    monkeypatch.setattr(core, '_json', guarded_json)
+    with pytest.raises(ContractError, match='expanded labor output'): generate_labor_report(m, req)
+
+
+def test_csv_repeated_rate_receipts_have_cumulative_preencoding_budget(monkeypatch):
+    import oabm.labor.core as core
+    m = model(); req = request_for(m)
+    report = generate_labor_report(m, req)
+    doc = report.to_dict()
+    # A valid bounded report may still expand far more in CSV because each
+    # work row carries receipts. Use many otherwise-unused fictitious receipts.
+    doc['rates'] = [dict(doc['rates'][0], id=f'fictional-{i}', source='x' * 200) for i in range(20)]
+    doc['work'] = [dict(deepcopy(doc['work'][0]), id=f'csv-{i}') for i in range(20)]
+    report = replace(report, report_json=core._json(doc))
+    budget = core._OutputBudget(); budget.charge(doc['rates'])
+    receipt_charge = core.MAX_OUTPUT_BYTES - budget.bytes_left
+    monkeypatch.setattr(core, 'MAX_OUTPUT_BYTES', receipt_charge * 3)
+    original_json = core._json
+    receipt_encodings = []
+    def guarded_json(value):
+        if value is doc['rates'] or (type(value) is list and value and type(value[0]) is dict and value[0].get('id') == 'fictional-0'):
+            receipt_encodings.append(1)
+        return original_json(value)
+    monkeypatch.setattr(core, '_json', guarded_json)
+    with pytest.raises(ContractError, match='expanded labor output'): report.to_csv()
+    assert len(receipt_encodings) < 4

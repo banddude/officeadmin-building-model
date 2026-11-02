@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,8 @@ def test_public_physical_example_changes_geometry_with_current_fixed_endpoint_bi
     assert old.joints[0]==new.joints[0] and old.joints[-1]==new.joints[-1]
     assert old.context==new.context and old.requirements==new.requirements
     assert current.ports==baseline.ports and current.electrical_devices==baseline.electrical_devices
-    validate_physical_context_source(current,new)
+    source=replace(current,routes=tuple(route for route in current.routes if route.id!=new.id))
+    validate_physical_context_source(source,new)
     assert request['installed_assertions']==[]
     assert snapshot(baseline)==history['design_json']
 

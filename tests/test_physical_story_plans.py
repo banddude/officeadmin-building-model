@@ -16,9 +16,11 @@ from oabm.pipeline.as_built import VERSION,start_history,replay_history,snapshot
 from oabm.pipeline.as_built_delivery import create_as_built_delivery
 
 
-def vertical_bend_model(axis='x',descending=False):
+def vertical_bend_model(axis='x',descending=False,points_override=None):
     source=make_physical_source();template=make_physical_route(source)
     points=((0,0,0),(1250000000,0,0),(1250000000,0,7000000000))
+    if points_override is not None:
+        points=points_override
     direction=(1,0,0)
     if axis=='y':
         points=tuple((y,x,z) for x,y,z in points);direction=(0,1,0)
@@ -36,7 +38,8 @@ def vertical_bend_model(axis='x',descending=False):
     requirements=replace(template.requirements,centerline_radius_m=.25)
     context=replace(template.context,source_model_sha256=compute_physical_source_sha256(source),
         allowed_domain=replace(template.context.allowed_domain,volumes=(replace(template.context.allowed_domain.volumes[0],
-            pose=Pose(position=Point3(x=0,y=0,z=3)),size=replace(template.context.allowed_domain.volumes[0].size,x=20,y=20,z=20)),)))
+            pose=Pose(position=Point3(x=90 if points_override else 0,y=0,z=3)),
+            size=replace(template.context.allowed_domain.volumes[0].size,x=400 if points_override else 20,y=20,z=20)),)))
     context=replace(context,request_sha256=compute_physical_request_sha256(context,requirements))
     shape=realize(points,250000000,direction,(0,0,-1 if descending else 1))
     model=replace(source,routes=(canonical_candidate(source,requirements,context,shape),))
@@ -70,20 +73,28 @@ def test_vertical_plane_arc_is_analytically_clipped_not_a_3d_chord(axis,descendi
     assert model.to_json()==before
 
 
-def test_three_story_physical_riser_reaches_complete_as_built_delivery(tmp_path):
-    model=vertical_bend_model();history=start_history(model);parent=replay_history(history)
+def retained_delivery(tmp_path,model,replacement=None):
+    history=start_history(model);parent=replay_history(history)
     record=parent.to_dict()['routes'][0];statement='Synthetic geometric-only route reaffirmation; products unresolved.'
+    if replacement is not None:
+        statement='Synthetic fixed-endpoint field reroute; only centerline geometry supplied; products unresolved.'
     request={'version':VERSION,'transaction_id':'field:physical-plan','actor':'synthetic-review','reason':statement,
         'design_sha256':history['design_sha256'],'parent_sha256':_sha(snapshot(parent)),
         'evidence':[{'id':'evidence:physical','kind':'quick_edit','reference':'synthetic-inline',
                      'sha256':_sha(statement),'statement':statement}],
         'edits':[{'collection':'routes','id':record['id'],'expected_sha256':record_sha256(record),
-                  'record':record,'evidence_ids':['evidence:physical']}],
+                  'record':record if replacement is None else replacement,'evidence_ids':['evidence:physical']}],
         'method_reconciliations':[],'installed_assertions':[]}
     (tmp_path/'history.json').write_text(json.dumps(history));(tmp_path/'request.json').write_text(json.dumps(request))
     root=tmp_path/'attempt'
     manifest=create_as_built_delivery(tmp_path/'history.json',tmp_path/'request.json',output_directory=root)
-    delivery=root/'delivery';plans=json.loads((delivery/'drawings/plans.json').read_text())['views']
+    return root/'delivery',manifest,history,parent
+
+
+def test_three_story_physical_riser_reaches_complete_as_built_delivery(tmp_path):
+    model=vertical_bend_model()
+    delivery,manifest,history,parent=retained_delivery(tmp_path,model)
+    plans=json.loads((delivery/'drawings/plans.json').read_text())['views']
     layouts=json.loads((delivery/'drawings/plan-layout.json').read_text())['plans']
     assert len(plans)==3
     for view in plans:
@@ -99,3 +110,54 @@ def test_three_story_physical_riser_reaches_complete_as_built_delivery(tmp_path)
     materials=json.loads((delivery/'materials.json').read_text())
     assert not materials['installed_items']
     assert any(model.routes[0].id in row['source_entity_ids'] for row in materials['unresolved_items'])
+
+
+def test_separated_story_footprints_use_clipped_bounds_and_publish_complete_delivery(tmp_path):
+    points=((0,0,0),(60_000_000_000,0,0),(60_000_000_000,0,3_250_000_000),
+        (120_000_000_000,0,3_250_000_000),(120_000_000_000,0,6_250_000_000),
+        (180_000_000_000,0,6_250_000_000),(180_000_000_000,0,8_000_000_000))
+    model=vertical_bend_model(points_override=points)
+    delivery,manifest,history,parent=retained_delivery(tmp_path,model)
+    plans=json.loads((delivery/'drawings/plans.json').read_text())['views']
+    assert len(plans)==3
+    for ordinal,view in enumerate(plans,1):
+        # Includes the bounded 84mm margin legend; source geometry spans only
+        # this story's ~60m, rather than the full route's 180m.
+        assert view['bounds']['max_x']-view['bounds']['min_x']<75
+        route_points=[point for primitive in view['primitives'] if primitive['layer']=='electrical:routes'
+                      for point in primitive['points']]
+        assert max(p['x'] for p in route_points)-min(p['x'] for p in route_points)<61
+        assert (delivery/f'drawings/plan-{ordinal}.svg').is_file()
+    assert (delivery/'MANIFEST.json').is_file() and list((delivery/'drawings').glob('panel-*.svg'))
+
+
+def test_actual_changed_physical_route_keeps_endpoints_bindings_history_and_3d_materials(tmp_path):
+    model=vertical_bend_model();parent=replay_history(start_history(model));old=parent.routes[0]
+    source=replace(parent,routes=())
+    points=((0,0,0),(750_000_000,0,0),(750_000_000,2_000_000_000,0),
+        (2_750_000_000,2_000_000_000,0),(2_750_000_000,2_000_000_000,5_000_000_000),
+        (1_250_000_000,2_000_000_000,5_000_000_000),(1_250_000_000,0,5_000_000_000),(1_250_000_000,0,7_000_000_000))
+    replacement=canonical_candidate(source,old.requirements,old.context,
+        realize(points,250_000_000,(1,0,0),(0,0,1)))
+    changed=replace(parent,routes=(replacement,));validate_model(changed)
+    record=changed.to_dict()['routes'][0]
+    assert record!=parent.to_dict()['routes'][0]
+    delivery,manifest,history,parent=retained_delivery(tmp_path,model,record)
+    from oabm.model import BuildingModel
+    revised=BuildingModel.load(delivery/'canonical-model.json')
+    replayed=replay_history(json.loads((delivery/'history.json').read_text()))
+    assert snapshot(replayed)==snapshot(revised)
+    current=revised.routes[0]
+    assert (current.start_port_id,current.end_port_id)==(old.start_port_id,old.end_port_id)
+    assert current.joints[0].position==old.joints[0].position and current.joints[-1].position==old.joints[-1].position
+    assert current.context==old.context and current.requirements==old.requirements
+    assert current.joints!=old.joints and current.segments!=old.segments
+    assert revised.ports==parent.ports and revised.electrical_devices==parent.electrical_devices
+    assert (delivery/'design-model.json').read_text()==history['design_json']
+    assert len(list((delivery/'drawings').glob('plan-*.svg')))==3
+    materials=json.loads((delivery/'materials.json').read_text())
+    assert not materials['installed_items']
+    from oabm.quantities import extract_quantities
+    expected=[item.quantity for item in extract_quantities(revised).items if item.category=='route_length']
+    actual=[row['quantity'] for row in materials['unresolved_items'] if row['category']=='route_length']
+    assert actual==expected  # original analytic 3D contribution, never projected XY length

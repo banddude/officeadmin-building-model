@@ -1530,6 +1530,15 @@ def _auto_bounds(
 ) -> Bounds2:
     points: list[Point2] = []
     for entity in entities:
+        if isinstance(entity, PhysicalRoute) and depth_interval is not None:
+            from .route_arcs import physical_story_segments
+            fragments=physical_story_segments(entity,depth_interval[0]+frame.origin.z,depth_interval[1]+frame.origin.z)
+            # Cardinal quarter arcs are monotone in each varying coordinate;
+            # their clipped endpoints are their exact projected extrema. Never
+            # inherit joints belonging exclusively to another story.
+            for segment,fact,start,end,center in fragments:
+                points.extend((frame.project(start)[0],frame.project(end)[0]))
+            continue
         if isinstance(entity, Route) and depth_interval is not None:
             fragments = clip_polyline_depth(
                 entity.centerline.points,

@@ -231,6 +231,7 @@ class ServiceEquipmentFacts(Entity):
     integrated_service_disconnect: bool | None = None
     main_lug_only: bool | None = None
     circuit_positions: int | None = None
+    front_normal_radians: float | None = None
 
     def __post_init__(self):
         super(ServiceEquipmentFacts,self).__post_init__()
@@ -244,6 +245,7 @@ class ServiceEquipmentFacts(Entity):
             raise ContractError('integrated service disconnect cannot also be main-lug-only')
         if self.circuit_positions is not None and (type(self.circuit_positions) is not int or self.circuit_positions<=0):
             raise ContractError('circuit_positions must be a positive integer or null')
+        if self.front_normal_radians is not None:_number(self.front_normal_radians,'service equipment front_normal_radians')
         if self.equipment_rating_a is not None and self.continuous_meter_rating_a is not None and self.continuous_meter_rating_a>self.equipment_rating_a:
             raise ContractError('continuous meter rating exceeds equipment rating')
 

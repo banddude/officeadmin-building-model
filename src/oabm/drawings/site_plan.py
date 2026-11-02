@@ -25,7 +25,7 @@ VERSION = "supplied-site-plan-v1"
 UNITS = {"m": 1., "mm": .001, "ft": .3048}
 KINDS = {"building", "curb", "parking", "landscape", "equipment", "route"}
 _PLAN_MARKERS = frozenset({'gas_marker','utility_intercept','service_marker'})
-KINDS |= {'property_boundary','street_reference','working_surface','gas_region',*_PLAN_MARKERS}
+KINDS |= {'property_boundary','street_reference','working_surface','gas_region','equipment_region',*_PLAN_MARKERS}
 STYLES = {
     "building": LineStyle("object", "heavy"),
     "curb": LineStyle("object", "normal"),
@@ -35,7 +35,7 @@ STYLES = {
     "route": LineStyle("route", "normal"),
 }
 # Generic presentation marks only, never manufacturer outlines or clearances.
-for _kind in ('property_boundary','street_reference','working_surface','gas_region',*_PLAN_MARKERS):
+for _kind in ('property_boundary','street_reference','working_surface','gas_region','equipment_region',*_PLAN_MARKERS):
     STYLES[_kind]=LineStyle('object','normal')
 SYMBOLS = {"site-equipment": SheetSymbol(tuple((Point2(*a), Point2(*b)) for a,b in (
     ((-1.5,-1.5),(1.5,-1.5)), ((1.5,-1.5),(1.5,1.5)),

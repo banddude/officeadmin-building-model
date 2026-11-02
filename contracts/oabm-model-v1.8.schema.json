@@ -4614,6 +4614,12 @@
             }
           ]
         },
+        "front_normal_radians": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "id": {
           "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$",
           "type": "string"

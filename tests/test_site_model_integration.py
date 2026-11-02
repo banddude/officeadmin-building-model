@@ -98,6 +98,16 @@ def test_mixed_branch_graph_needs_explicit_service_scope_and_accounts_for_every_
     assert 'coverage' not in default.to_dict()  # Unchanged default document shape.
 
 
+def test_direct_equipment_service_facts_cannot_disappear_from_default_sld():
+    from test_single_line import make_model
+    model=replace(upgrade_to_v1_8(make_model(False)),service_equipment_facts=(
+        ServiceEquipmentFacts(id='facts:direct-panel',equipment_id='MAIN',equipment_rating_a=200,
+                              main_lug_only=True,circuit_positions=24),))
+    assert not model.service_nodes and not model.service_connections
+    with pytest.raises(ValueError,match='cannot omit typed service references/facts'):
+        project_topology(model)
+
+
 def wrap_branch_circuit(model):
     upgraded=upgrade_to_v1_8(model)
     return replace(upgraded,service_nodes=(

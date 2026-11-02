@@ -49,8 +49,8 @@ def project_topology(model: BuildingModel, *, service_only: bool = False) -> Top
     if service_only:
         from oabm.drawings.model_utility import project_service_topology
         return project_service_topology(model)
-    if model.service_nodes or model.service_connections:
-        raise ValueError('single-line: default whole-electrical-model projection cannot omit service references; use explicit service_only=True with complete scope/omission reporting')
+    if model.service_nodes or model.service_connections or model.service_equipment_facts:
+        raise ValueError('single-line: default whole-electrical-model projection cannot omit typed service references/facts; use explicit service_only=True with complete scope/omission reporting')
     return _project_canonical_electrical_topology(model)
 
 

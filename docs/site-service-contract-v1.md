@@ -84,13 +84,14 @@ surfaces. It never moves unknown 3D ports or rebinds physical routing receipts.
 `oabm.drawings.model_utility.project_model_site` verifies supplied source bytes,
 then returns an existing site drawing request plus a model-hash/ownership receipt.
 Only paper scale/layout settings are supplied separately. Omitted unlocated
-service references are explicit. Markers are crosses, not generic enclosure
-squares. Current placed-equipment envelope and working-orientation measurements
-are explicitly unresolved until the corresponding physical projection is
-implemented. No measured marker separation is called enclosure clearance.
+service references are explicit. Known placed equipment projects its actual
+rotated box footprint; unknown extents remain crosses. Measurements/dimensions
+retain their geometric basis. Unknown enclosure/front-interface facts remain
+unresolved. No measured marker separation is called enclosure clearance.
 
 The default single-line projector never selects a service subset merely because
-service nodes exist. It refuses unsupported mixed service references instead of
+service records exist. It refuses unsupported mixed service references or direct
+equipment facts instead of
 silently omitting the canonical branch graph. `project_topology(...,
 service_only=True)` and the corresponding `--service-only` command explicitly
 select the service graph, retaining complete disjoint projected/supporting/omitted
@@ -115,9 +116,12 @@ A demand voltage contradicting a placed service owner's known voltage is refused
 Source readers check the descriptor actually opened, bound every streamed byte,
 and refuse changes while hashing; path swaps or growth cannot evade admission.
 
+The [three-document command](model-utility-delivery.md) now connects the source
+projections, dimensions, supplied load report and shared company PDF backend.
+Its synthetic workflow cases are written but remain unrun under the hold.
+
 Legacy spatial exports, quantities, general drawing generators and callers of
 the routing refusal guard reject populated site/service records before silently
-omitting them. A remaining consumer audit, runtime execution, one-command
-three-PDF packaging, derived dimensions/physical-footprint integration and the
-private three-sheet comparison/delivery proof are still required. No issue is
-complete at this checkpoint.
+omitting them. A remaining consumer audit, runtime execution and the private
+three-sheet comparison/delivery proof are still required. No issue is complete
+at this checkpoint.

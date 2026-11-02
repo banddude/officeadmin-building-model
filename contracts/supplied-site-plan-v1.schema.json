@@ -239,7 +239,8 @@
               "gas_region",
               "gas_marker",
               "utility_intercept",
-              "service_marker"
+              "service_marker",
+              "equipment_region"
             ]
           },
           "frame_id": {

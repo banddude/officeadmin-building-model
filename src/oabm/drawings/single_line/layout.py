@@ -102,7 +102,10 @@ def _facts(topology,tags):
     rows=[]
     for edge in topology.connections:
         voltage='V UNKNOWN' if edge['voltage_v'] is None else f'{edge["voltage_v"]:g} V'
-        values=[f'{tags[edge["id"]]} | Circuit {edge["circuit_id"]} | FROM {edge["source_id"]} / {edge["source_port_id"]} ({edge["source_role"]}) -> {edge["load_id"]} / {edge["load_port_id"]} ({edge["load_role"]})',
+        circuit=f'Circuit {edge["circuit_id"]}' if edge['circuit_id'] is not None else 'Service relationship / circuit unresolved'
+        source_port=edge['source_port_id'] if edge['source_port_id'] is not None else 'terminal geometry unresolved'
+        load_port=edge['load_port_id'] if edge['load_port_id'] is not None else 'terminal geometry unresolved'
+        values=[f'{tags[edge["id"]]} | {circuit} | FROM {edge["source_id"]} / {source_port} ({edge["source_role"]}) -> {edge["load_id"]} / {load_port} ({edge["load_role"]})',
                 f'{voltage}; poles {edge["poles"] if edge["poles"] is not None else "UNKNOWN"}; phase {edge["phase"] or "UNKNOWN"}; Conductors: {edge["conductor_specification"]}; Routes: '+(', '.join(edge['route_ids']) or 'UNKNOWN / not supplied')]
         values.extend(edge['drafting']['notes'])
         rows.append({'connection_id':edge['id'],'values':values})

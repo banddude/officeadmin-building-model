@@ -38,7 +38,7 @@ def test_small_model_physical_callouts_legend_route_and_paper_are_bound_to_uncha
     assert layout['scale'] in {25,50} and layout['text_height_mm']==3
     entries={row['owner_id']:row for row in layout['entries']}
     for identity in ('device:evse','device:spare','equip:panel',model.routes[0].id):
-        assert entries[identity]['callout_status']=='placed'
+        assert entries[identity]['callout_status']=='placed',entries[identity]
     boxes=[row['text_box_m'] for row in entries.values() if row['callout_status']=='placed']
     for index,box in enumerate(boxes):
         assert not any(_overlap(box,other) for other in boxes[index+1:])
@@ -180,3 +180,21 @@ def test_panel_row_rectangles_match_exact_svg_anchor_coordinates():
                 assert x==pytest.approx(page.placement.x_mm+(point.x-view.bounds.min_x)*1000,abs=1e-5)
                 assert y==pytest.approx(page.placement.y_mm+(view.bounds.max_y-point.y)*1000,abs=1e-5)
                 assert left<=x<=right and top<=y<=bottom
+
+
+def test_only_explicit_colocated_endpoint_owns_a_vertical_marker_box():
+    from oabm.drawings import DrawingPrimitive,Point2
+    from oabm.pipeline.as_built_presentation import _shared_marker_connections
+    history,request=example().synthetic_inputs()
+    model=replay_history(apply_transaction(history,request))
+    panel=model.electrical_equipment[0];route=model.routes[0]
+    marker=DrawingPrimitive(id='derived:panel-marker',kind='symbol',layer='electrical:routes',
+        source_ids=(route.id,),points=(Point2(panel.pose.position.x,panel.pose.position.y),),
+        symbol='route-vertical-projection',metadata=(('min_z_m','1.5'),('max_z_m','2.5')))
+    assert _shared_marker_connections(model,marker)==({'marker_id':marker.id,'route_id':route.id,
+        'port_id':route.start_port_id,'owner_id':panel.id},)
+    spare=next(device for device in model.electrical_devices if device.id=='device:spare')
+    unrelated=replace(marker,points=(Point2(spare.pose.position.x,spare.pose.position.y),),
+        metadata=(('min_z_m','0'),('max_z_m','3')))
+    assert _shared_marker_connections(model,unrelated)==()
+    assert _shared_marker_connections(model,replace(marker,metadata=(('min_z_m','2'),('max_z_m','3'))))==()

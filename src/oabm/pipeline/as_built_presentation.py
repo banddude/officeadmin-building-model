@@ -39,6 +39,40 @@ def _owners(model):
     return result
 
 
+def _shared_marker_connections(model, primitive):
+    """Only explicit endpoint ports can own a colocated vertical marker.
+
+    This associates the marker's symbol box, never the route's strokes or an
+    unrelated route passing nearby. Both the port and owner connection anchor
+    must match XY, and the port's actual Z must be in the retained clipped span.
+    """
+    if primitive.kind!='symbol' or primitive.symbol!='route-vertical-projection':
+        return ()
+    metadata=dict(primitive.metadata)
+    low=metadata.get('clipped_min_z_m',metadata.get('min_z_m'))
+    high=metadata.get('clipped_max_z_m',metadata.get('max_z_m'))
+    if low is None or high is None:
+        return ()
+    low,high=float(low),float(high)
+    ports={port.id:port for port in model.ports}
+    owners=_owners(model)
+    connections=[]
+    for route in model.routes:
+        if route.id not in primitive.source_ids:
+            continue
+        for identity in (route.start_port_id,route.end_port_id):
+            port=ports[identity];owner=owners.get(port.owner_id,(None,''))[0]
+            pose=getattr(owner,'pose',None)
+            if pose is None:
+                continue
+            point=port.pose.position
+            if (primitive.points[0]==Point2(point.x,point.y)==Point2(pose.position.x,pose.position.y)
+                    and low<=point.z<=high):
+                connections.append({'marker_id':primitive.id,'route_id':route.id,
+                    'port_id':port.id,'owner_id':port.owner_id})
+    return tuple(connections)
+
+
 def _layout(model, view, scale):
     """Use actual sheet font widths, millimetre symbols and dimension gaps.
 
@@ -92,11 +126,14 @@ def _layout(model, view, scale):
         offset=(9 if owners.get(dimension.source_ids[0],(None,''))[1]=='W' else 5)*unit
         dimensions.append(replace(dimension,offset_m=-offset if toward>=0 else offset))
 
-    boxes,segments=[],[]
+    boxes,segments,shared_connections=[],[],[]
     for p in geometry:
         if p.kind=='symbol':
             a=p.points[0];radius=SYMBOL_RADIUS_MM*unit
-            boxes.append(((a.x-radius,a.y-radius,a.x+radius,a.y+radius),p.source_ids))
+            connections=_shared_marker_connections(model,p)
+            shared_connections.extend(connections)
+            box_owners=tuple(sorted(set(p.source_ids)|{row['owner_id'] for row in connections}))
+            boxes.append(((a.x-radius,a.y-radius,a.x+radius,a.y+radius),box_owners))
         elif p.kind=='text':
             boxes.append((_box(p.points[0],p.text or '',scale),p.source_ids))
         elif p.kind=='quarter_arc':
@@ -237,6 +274,7 @@ def _layout(model, view, scale):
         'text_height_mm':TEXT_MM,'font_family':FONT,'symbol_radius_mm':SYMBOL_RADIUS_MM,
         'level_id':level.id,'level_elevation_m':level.elevation_m,'view_title':view.title,
         'printed_level_heading_lines':identity_lines,
+        'shared_vertical_marker_connections':shared_connections,
         'entries':entries,'unplaced_callout_owner_ids':unplaced,
         'dimension_text_boxes_m':[list(box) for box in dimension_boxes],
         'geometry_unchanged':True,'review_status':'needs_review' if unplaced else 'unreviewed'}

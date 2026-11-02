@@ -120,7 +120,7 @@ def test_reference_example_retains_independent_as_built_under_existing_checksum_
     assert not [row for row in parent_differences['quantity_deltas'] if row['category']=='device']
     assert sum(row['quantity'] for row in materials['installed_items'] if row['category']=='device')==2
     from oabm.qa import build_revision_diff
-    assert build_revision_diff(design,as_built).to_dict()==differences
+    assert json.loads(build_revision_diff(design,as_built).to_json())==differences
     assert not [row for row in build_revision_diff(as_built,design).quantity_deltas if row.category=='device']
     for name in ('drawings/plan-1.svg','drawings/panel-1.svg'):
         svg=ET.fromstring((companion/name).read_bytes())

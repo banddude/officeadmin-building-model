@@ -17,8 +17,8 @@ def geometry(kind,points):
 def evidence():
     return SiteSourceEvidence(source_id='source:synthetic',sha256='0'*64,page=1,
         sheet_id='SYN-1',model_frame_id='site',source_units='pdf_point',drawing_units='m',
-        scale_denominator=100,region=(0.,0.,100.,100.),
-        source_to_model=(.01,0.,0.,-.01,0.,1.))
+        scale_denominator=100,region=(0.,0.,1000.,1000.),
+        source_to_model=(.0254/72*100,0.,0.,-.0254/72*100,0.,20.))
 
 
 def test_site_polygon_is_plan_only_and_does_not_repeat_closure_or_invent_elevation():
@@ -28,6 +28,15 @@ def test_site_polygon_is_plan_only_and_does_not_repeat_closure_or_invent_elevati
     assert all(set(point)=={'x','y'} for point in asdict(feature)['geometry']['points'])
     assert 'z' not in asdict(feature)['geometry']
     assert replace(feature,geometry=geometry('polygon',[(0,0),(5,0),(5,3),(0,3)])).id==feature.id
+
+
+def test_translated_small_polygon_retains_area_without_global_shoelace_cancellation():
+    assert geometry('polygon',[(1e9,1e9),(1e9+1,1e9),(1e9+1,1e9+1),(1e9,1e9+1)]).kind=='polygon'
+
+
+@pytest.mark.parametrize('transform',[(.01,0.,0.,-.01,0.,1.),(.04,.01,0.,-.04,0.,0.),(.04,0.,0.,-.03,0.,0.)])
+def test_metric_source_rejects_inconsistent_scale_shear_and_anisotropic_transform(transform):
+    with pytest.raises(ContractError):replace(evidence(),source_to_model=transform)
 
 
 @pytest.mark.parametrize('kind,points',[

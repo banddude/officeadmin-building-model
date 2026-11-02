@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from oabm.model.site import reject_site_inventory
+
 from oabm.model import reject_physical_routes
 import json
 import math
@@ -273,6 +275,7 @@ def to_ifc(
     and a model whose walls all lack a token writes the same bytes as a
     default export without the option ever being present.
     """
+    reject_site_inventory(model, "to_ifc")
 
     if layer_delivery is not None:
         from oabm.exports.layer_memberships import verify_layer_delivery

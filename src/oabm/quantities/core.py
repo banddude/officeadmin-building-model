@@ -7,6 +7,8 @@ immutable derived report suitable for estimating adapters.
 
 from __future__ import annotations
 
+from oabm.model.site import reject_site_inventory
+
 import json
 import math
 from fractions import Fraction
@@ -204,6 +206,7 @@ def extract_quantities(
     groups, composed with any caller group. Contradictory source metadata fails
     closed. These counts do not select alternates or authorize purchases.
     """
+    reject_site_inventory(model, "extract_quantities")
 
     if not isinstance(model, BuildingModel):
         raise TypeError("model must be a BuildingModel")

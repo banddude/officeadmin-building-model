@@ -223,7 +223,7 @@
           "id": {
             "type": "string",
             "minLength": 1,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+            "pattern": "^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}|[A-Za-z][A-Za-z0-9_.:-]{0,127})$"
           },
           "kind": {
             "enum": [
@@ -232,7 +232,14 @@
               "parking",
               "landscape",
               "equipment",
-              "route"
+              "route",
+              "property_boundary",
+              "street_reference",
+              "working_surface",
+              "gas_region",
+              "gas_marker",
+              "utility_intercept",
+              "service_marker"
             ]
           },
           "frame_id": {

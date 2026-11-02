@@ -79,7 +79,7 @@ def _core(topology, ids, bounds):
             xx=left+(right-left)*(i+1)/(len(row)+1)
             parents=[edge['source_id'] for edge in edges if edge['load_id']==e['id']]
             outgoing=sum(edge['source_id']==e['id'] for edge in topology.connections)
-            bus_width=min(right-left-30,max(node_width,80*outgoing+20)) if len(row)==1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch'} else node_width
+            bus_width=min(right-left-30,max(node_width,80*outgoing+20)) if len(row)==1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch','meter_main'} else node_width
             if len(row)==1 and len(parents)==1 and outgoing<=1:
                 parent=next((node for node in nodes if node['equipment_id']==parents[0]),None)
                 if parent is not None:
@@ -87,12 +87,12 @@ def _core(topology, ids, bounds):
                     xx=parent['axis_x']-lane['axis_x']+bus_width/2
             nodes.append({'equipment_id':e['id'],'x':xx,
                           'y':top+12+rank*pitch,'width':bus_width,'height':40,'equipment_type':e['equipment_type'],'network_kinds':sorted({edge['drafting']['connection_kind'] for edge in topology.connections if e['id'] in {edge['source_id'],edge['load_id']}}),
-                          'drafting_lane':'side-wide' if outgoing>1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch'} else 'side',
-                          'axis_x':symbol_lane((xx-bus_width/2,top+12+rank*pitch,xx+bus_width/2,top+52+rank*pitch),wide=outgoing>1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch'})['axis_x']})
+                          'drafting_lane':'side-wide' if outgoing>1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch','meter_main'} else 'side',
+                          'axis_x':symbol_lane((xx-bus_width/2,top+12+rank*pitch,xx+bus_width/2,top+52+rank*pitch),wide=outgoing>1 and e['equipment_type'] in {'panelboard','switchboard','transfer_switch','meter_main'})['axis_x']})
     by_id={e['id']:e for e in selected}
     for node in nodes:
         lane=symbol_lane((0,0,node['width'],node['height']),wide=node['drafting_lane']=='side-wide')
-        limit=3 if by_id[node['equipment_id']]['equipment_type'] in {'panelboard','switchboard','disconnect','transfer_switch'} else 4
+        limit=3 if by_id[node['equipment_id']]['equipment_type'] in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'} else 4
         if len(wrap_mm(by_id[node['equipment_id']]['name'],lane['text_width']))>limit:
             return None
     return {'nodes':nodes,'connections':[e['id'] for e in edges],'core_bounds':bounds}
@@ -446,7 +446,7 @@ def _cached_backbone_geometry(payload):
             outgoing=[k for k in original if edges[k]['source_id']==edge['source_id']]
             incoming=[k for k in original if edges[k]['load_id']==edge['load_id']]
             source_offset=(outgoing.index(key)-(len(outgoing)-1)/2)*6
-            if start.get('equipment_type') in {'panelboard','switchboard','transfer_switch'}:
+            if start.get('equipment_type') in {'panelboard','switchboard','transfer_switch','meter_main'}:
                 source_axis=start.get('axis_x',start['x'])
                 target_axis=end.get('axis_x',end['x'])
                 lane=symbol_lane(raw_boxes[edge['source_id']],wide=start.get('drafting_lane')=='side-wide')
@@ -565,7 +565,7 @@ def _paper_route(start,end,bounds,boxes,segments):
     return _simplify_path([(snap(x,0),snap(y,1)) for x,y in route])
 
 
-_BUS_EQUIPMENT={'panelboard','switchboard','disconnect','transfer_switch'}
+_BUS_EQUIPMENT={'panelboard','switchboard','disconnect','transfer_switch','meter_main'}
 
 
 def _bus_key(edge):

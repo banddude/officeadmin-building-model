@@ -24,6 +24,8 @@ from .sheet_svg import SheetSymbol, render_sheet_svg
 VERSION = "supplied-site-plan-v1"
 UNITS = {"m": 1., "mm": .001, "ft": .3048}
 KINDS = {"building", "curb", "parking", "landscape", "equipment", "route"}
+_PLAN_MARKERS = frozenset({'gas_marker','utility_intercept','service_marker'})
+KINDS |= {'property_boundary','street_reference','working_surface','gas_region',*_PLAN_MARKERS}
 STYLES = {
     "building": LineStyle("object", "heavy"),
     "curb": LineStyle("object", "normal"),
@@ -33,6 +35,8 @@ STYLES = {
     "route": LineStyle("route", "normal"),
 }
 # Generic presentation marks only, never manufacturer outlines or clearances.
+for _kind in ('property_boundary','street_reference','working_surface','gas_region',*_PLAN_MARKERS):
+    STYLES[_kind]=LineStyle('object','normal')
 SYMBOLS = {"site-equipment": SheetSymbol(tuple((Point2(*a), Point2(*b)) for a,b in (
     ((-1.5,-1.5),(1.5,-1.5)), ((1.5,-1.5),(1.5,1.5)),
     ((1.5,1.5),(-1.5,1.5)), ((-1.5,1.5),(-1.5,-1.5)))))}
@@ -46,6 +50,18 @@ SYMBOLS.update({
     "site-control":SheetSymbol(tuple((Point2(*a),Point2(*b)) for a,b in (
         ((-2,-1.5),(2,-1.5)),((2,-1.5),(2,1.5)),((2,1.5),(-2,1.5)),((-2,1.5),(-2,-1.5)),
         ((-1.2,-.8),(1.2,.8)),((-1.2,.8),(1.2,-.8)))))})
+
+
+SYMBOLS['site-marker']=SheetSymbol(((Point2(-1.5,0),Point2(1.5,0)),(Point2(0,-1.5),Point2(0,1.5))))
+
+
+def _feature_identifier(value,label):
+    from oabm.model.common import _validate_id
+    try:
+        _validate_id(value,label)
+        return value
+    except ValueError:
+        return _identifier(value,label)
 
 
 def _keys(value, required, optional=(), *, label):
@@ -169,7 +185,7 @@ def prepare_site_plan(request, *, graphics=None, dimensions=()):
     statuses=[]
     for row in rows:
         _keys(row,{"id","kind","frame_id","points","closed","label","evidence"},{"route_status"},label="feature")
-        key=_identifier(row["id"],"feature.id")
+        key=_feature_identifier(row["id"],"feature.id")
         if key in seen:
             raise ValueError("duplicate feature id")
         seen.add(key)
@@ -192,7 +208,7 @@ def prepare_site_plan(request, *, graphics=None, dimensions=()):
             statuses.append({"id":key,"status":status,"has_geometry":bool(points)})
         elif status is not None:
             raise ValueError(f"{key}: route_status is only for routes")
-        if kind=="equipment":
+        if kind=="equipment" or kind in _PLAN_MARKERS:
             if closed or len(points)!=1:
                 raise ValueError(f"{key}: equipment requires one anchor and closed=false")
         elif kind!="route" or points:
@@ -215,7 +231,7 @@ def prepare_site_plan(request, *, graphics=None, dimensions=()):
             primitive_id="geometry:"+key
             ids.append(primitive_id)
             style=STYLES[kind]
-            token="site-equipment"
+            token="site-marker" if kind in _PLAN_MARKERS else "site-equipment"
             if graphics:
                 work=graphics["work_status"].get(key,"unresolved")
                 if kind in {"building","curb","parking","landscape"}:
@@ -231,8 +247,8 @@ def prepare_site_plan(request, *, graphics=None, dimensions=()):
                 token=graphics["symbols"].get(key,"site-equipment")
             if kind=="route" and status=="future":
                 style=replace(style,pattern="dash")
-            primitives.append(DrawingPrimitive(primitive_id,"symbol" if kind=="equipment" else "polygon" if closed else "polyline",
-                "site:"+kind,(key,),points,closed,style,symbol=token if kind=="equipment" else None,
+            primitives.append(DrawingPrimitive(primitive_id,"symbol" if kind=="equipment" or kind in _PLAN_MARKERS else "polygon" if closed else "polyline",
+                "site:"+kind,(key,),points,closed,style,symbol=token if kind=="equipment" or kind in _PLAN_MARKERS else None,
                 metadata=(("qualification",evidence["qualification"]),("route_status",status or "not_applicable"),
                           ("work_status",graphics["work_status"].get(key,"unresolved") if graphics else "not_supplied"))))
             if not graphics or key in graphics["label_feature_ids"]:

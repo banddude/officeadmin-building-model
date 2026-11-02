@@ -9,7 +9,7 @@ import json
 from oabm.model import BuildingModel, validate_model
 from .drafting_facts import equipment_facts,circuit_facts,feeder_labels
 
-SUPPORTED = {'source', 'generator', 'meter', 'panelboard', 'switchboard',
+SUPPORTED = {'source', 'generator', 'meter', 'meter_main', 'panelboard', 'switchboard',
              'disconnect', 'transformer', 'transfer_switch', 'breaker', 'fuse',
              'ground_electrode','neutral_bus','ground_bus'}
 
@@ -39,6 +39,9 @@ def project_topology(model: BuildingModel) -> Topology:
     is retained with a visible warning. Unknown supplied facts stay unknown.
     """
     validate_model(model)
+    if model.service_nodes:
+        from oabm.drawings.model_utility import project_service_topology
+        return project_service_topology(model)
     equipment = {e.id:e for e in model.electrical_equipment}
     ports = {p.id:p for p in model.ports}
     if not equipment:

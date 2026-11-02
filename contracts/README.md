@@ -29,6 +29,11 @@ Contract v1 covers coordinate system and units, stable object IDs, levels/storie
 
 ## Change rule
 
+Candidate opt-in `1.8.0` adds strict plan-only site/service records under existing
+#361. See [source checkpoint and migration boundary](../docs/site-service-contract-v1.md).
+Bound 1.7 physical routes cannot be migrated or have their hashes silently rebound.
+The candidate remains subject to independent review and runtime acceptance.
+
 Any contract change requires tests and migration notes. Version 1.0 remains the default and retains its serialized semantics. See [physical box contract and explicit migration](../docs/electrical-boxes.md) for version 1.1 and [raceway selections](../docs/raceway-selections.md) for version 1.2. A consumer must not silently reinterpret a document whose `schema_version` it does not support.
 
 `scope-policy-v1.schema.json` and `scope-ledger-v1.schema.json` describe opt-in

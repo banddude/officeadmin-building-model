@@ -78,7 +78,7 @@ def render_body(topology,layout,page,sheet):
         symbol_lanes[lane_key(identity,(x,y,x+w,y+h))]={'side':side,'axis':axis,'symbol_left':sx,'symbol_right':sx+sw,'wide':lane=='side-wide'}
         symbols.append({'equipment_id':identity,'bounds_mm':(x,y,x+w,y+h),
             'label_lane':(text_left,y,text_left+text_width+3,y+h) if side else None,'axis_x':axis,
-            'enclosure_stroke_width_mm':.13,'enclosure_bounds_mm':(sx,y+5,sx+sw,y+h-.5) if kind in {'panelboard','switchboard','disconnect','transfer_switch'} else None})
+            'enclosure_stroke_width_mm':.13,'enclosure_bounds_mm':(sx,y+5,sx+sw,y+h-.5) if kind in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'} else None})
         same_sheet_context=identity in seen and layout['equipment_home_sheets'][identity]==page['id']
         continued=layout['equipment_home_sheets'][identity]!=page['id']
         symbols[-1]['continued']=bool(continued)
@@ -88,10 +88,10 @@ def render_body(topology,layout,page,sheet):
         label_anchor='end' if side else 'start'
         text(label_x,y+3.5,status_tag(facts['status'])+' '+identity,3.5,label_anchor)
         names=wrap_mm(e['name'],text_width)
-        name_limit=4 if side and kind not in {'panelboard','switchboard','disconnect','transfer_switch'} else 3
+        name_limit=4 if side and kind not in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'} else 3
         if len(names)>name_limit:raise ValueError(f'{identity}: equipment name exceeds its measured label lane; select a larger diagram area')
         for i,value in enumerate(names):text(label_x,y+9+i*TEXT_LINE_MM,value,anchor=label_anchor)
-        bus_kinds={'panelboard','switchboard','disconnect','transfer_switch'}
+        bus_kinds={'panelboard','switchboard','disconnect','transfer_switch','meter_main'}
         if kind in bus_kinds:
             outline(sx,y+5,sw,h-5.5)
             volts='V ?' if e['rated_voltage_v'] is None else f'{e["rated_voltage_v"]:g} V'
@@ -113,6 +113,15 @@ def render_body(topology,layout,page,sheet):
                     line(sx+6,y+31,sx+sw-6,y+31,.65)
                     terminal_bar(identity,'power',(sx+6,y+31),(sx+sw-6,y+31))
                     record_glyph('bus',identity,(sx+6,y+30.6,sx+sw-6,y+31.4),'equipment_type')
+            elif kind=='meter_main':
+                # One owner/enclosure, not a second service-disconnect entity.
+                circle(axis,y+15,3);text(axis,y+16,'M',3,'middle')
+                line(axis,y+18,axis,y+20)
+                line(sx+6,y+23,axis-6,y+23,.65)
+                device('disconnect',axis,y+23,1,0,identity)
+                line(axis+6,y+23,sx+sw-6,y+23,.65)
+                terminal_bar(identity,'power',(sx+6,y+23),(sx+sw-6,y+23))
+                record_glyph('integrated_meter_main',identity,(axis-6,y+12,axis+6,y+27),'equipment_type')
             else:
                 line(sx+6,y+23,sx+sw-6,y+23,.65)
                 terminal_bar(identity,'power',(sx+6,y+23),(sx+sw-6,y+23))
@@ -174,8 +183,8 @@ def render_body(topology,layout,page,sheet):
         lane=symbol_lanes.get(lane_key(identity,bounds),{})
         if lane.get('side'):
             axis=lane['axis'];device=e['equipment_type']
-            if kind=='neutral' and device in {'panelboard','switchboard','disconnect','transfer_switch'}:return (lane['symbol_left']+11.5,y+28)
-            if kind=='grounding' and device in {'panelboard','switchboard','disconnect','transfer_switch'}:return (lane['symbol_right']-11.5,y+32)
+            if kind=='neutral' and device in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'}:return (lane['symbol_left']+11.5,y+28)
+            if kind=='grounding' and device in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'}:return (lane['symbol_right']-11.5,y+32)
             if device in {'source','generator','meter'}:
                 if source and lane['wide']:return (min(lane['symbol_right']-6,max(lane['symbol_left']+6,boundary[0])),y+34)
                 return (axis,y+(29 if source else 19))
@@ -187,8 +196,8 @@ def render_body(topology,layout,page,sheet):
                 if source and lane['wide']:return (min(lane['symbol_right']-6,max(lane['symbol_left']+6,boundary[0])),y+31)
                 return (axis+(8 if source else -8),y+(24 if source else 21 if role=='normal' else 27))
             return (min(lane['symbol_right']-6,max(lane['symbol_left']+6,boundary[0])),y+23) if source or lane['wide'] else (axis,y+23)
-        if kind=='neutral' and e['equipment_type'] in {'panelboard','switchboard','disconnect','transfer_switch'}:return (x+11.5,y+28)
-        if kind=='grounding' and e['equipment_type'] in {'panelboard','switchboard','disconnect','transfer_switch'}:return (r-11.5,y+32)
+        if kind=='neutral' and e['equipment_type'] in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'}:return (x+11.5,y+28)
+        if kind=='grounding' and e['equipment_type'] in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'}:return (r-11.5,y+32)
         t=e['equipment_type']
         if t=='transfer_switch':return (x+w/2+(8 if source else -8),y+(24 if source else 21 if role=='normal' else 27))
         if t=='transformer':return (x+w/2,y+(30 if source else 16))

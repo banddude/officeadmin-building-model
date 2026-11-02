@@ -219,17 +219,18 @@ None of these limits justify counting this issue as completed.
 `model/site.py` now defines the proposed strict plan geometry, source evidence,
 site feature/requirement and owner-bound service-fact records. Geometry has a
 256-point admission cap and rejects degenerate, crossing or overlapping paths.
-These are source-only candidate types: they are deliberately not registered in
-`BuildingModel`, exported as a supported schema version, or consumed by any
-existing consumer yet. Synthetic type-level cases are written but unrun under
-the owner hold. Cross-record owner/frame/source resolution, versioned schema and
-migration integration are next, followed by actual projections and regeneration.
+The subsequent source integration admits these through opt-in `1.8.0`, with
+explicit unresolved service references instead of optional general equipment or
+port geometry. Cross-record validation, migration/schema handling, fail-closed
+spatial gates, callable site/service projections, atomic plan edits and supplied
+demand arithmetic are now in source. They remain unexecuted under the owner
+hold. [The current source checkpoint](site-service-contract-v1.md) records the
+precise APIs, supported facts and remaining delivery/acceptance gaps.
 
-The unresolved-placement decision must cover both `ElectricalEquipment.pose`
+The unresolved-placement decision covers both `ElectricalEquipment.pose`
 and `Port.pose`/`direction`; making equipment placement optional alone would
-still fabricate terminal geometry. The bounded optional-placement option would
-permit explicit null placement only in 1.8, keep graph identity/connectivity,
-and make spatial consumers refuse before geometry access. Plan-only equipment
-location and lateral facts also need a canonical representation without lifting
-XY into a fake 3D route. These points remain explicit design decisions for the
-next integration pass, not silently solved by placeholder poses or attributes.
+still fabricate terminal geometry. `ServiceNode` and `ServiceConnection` now
+retain unresolved identities and supplied topology without fabricating either.
+`PlanServiceLateral` preserves XY-only private path facts. General equipment and
+port placement remain unchanged; no placeholder origin or terminal direction is
+introduced.

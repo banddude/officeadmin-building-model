@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from oabm.model.site import reject_site_inventory
+
 from oabm.model import reject_physical_routes
 import hashlib
 import math
@@ -297,6 +299,7 @@ def generate_drawing_set(
     opt-in presentation options shared by every generated view; see
     :func:`generate_plan`.
     """
+    reject_site_inventory(model, "generate_drawing_set")
     from .route_arcs import admit_plan_routes
     admit_plan_routes(model,physical_geometry)
     if assembly_geometry not in (None, "cut"):
@@ -400,6 +403,7 @@ def generate_plan(
     before labels, so ``"skip_with_dimensions"`` only sees the dimensions that
     survived this pass.
     """
+    reject_site_inventory(model, "generate_plan")
     from .route_arcs import admit_plan_routes
     admit_plan_routes(model,physical_geometry)
     if assembly_geometry not in (None, "cut"):
@@ -517,6 +521,7 @@ def generate_elevation(
     dimension_overlap: str = "keep", assembly_geometry: str | None = None,
 ) -> DrawingView:
     """Project physical child meshes only through explicit projection admission."""
+    reject_site_inventory(model, "generate_elevation")
     reject_physical_routes(model, "generate_elevation")
     if assembly_geometry not in (None, "projection"):
         raise ValueError("assembly_geometry: use None or explicit 'projection'")
@@ -621,6 +626,7 @@ def generate_section(
     ``dimension_overlap`` are validated for interface parity but do not change
     section output.
     """
+    reject_site_inventory(model, "generate_section")
     reject_physical_routes(model, "generate_section")
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
@@ -705,6 +711,7 @@ def _generate_section_base(
 
 
 def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
+    reject_site_inventory(model, "generate_schedules")
     if model.building_assemblies or model.assembly_components or any(isinstance(route,PhysicalRoute) for route in model.routes):
         validate_model(model)
     schedules = (

@@ -53,3 +53,9 @@ from .physical_route_context import (AllowedPhysicalDomain, PhysicalGeometryCove
     validate_physical_context_source, physical_geometry_inventory, physical_box_bounds)
 
 __all__ = [name for name in globals() if not name.startswith("_")]
+from .common import SITE_SCHEMA_VERSION
+from .site import (SitePlanGeometry,SiteSourceEvidence,SiteFeature,SiteRequirement,
+                   ServiceEquipmentFacts,ServiceNode,ServiceConnection,PlanServiceLateral,
+                   reject_site_inventory)
+from .model import upgrade_to_v1_8
+__all__ = [name for name in globals() if not name.startswith('_')]

@@ -120,13 +120,13 @@ def prepare(root):
     job=json.loads((ROOT/'fixtures/company_sheets/v1/job.json').read_text())
     job['set_id']='synthetic-utility-example';job['formats']=['svg','pdf']
     job['fields'].update(project='FICTIONAL UTILITY EXAMPLE',client='SYNTHETIC OWNER',address='NO REAL ADDRESS',issue='SYNTHETIC / NOT FOR CONSTRUCTION')
-    job['sheets']=[{'id':'U1','title':'SYNTHETIC SITE','fields':{'scale':'1:100'}},
+    job['sheets']=[{'id':'U1','title':'SYNTHETIC SITE','fields':{'scale':'1:25'}},
                    {'id':'U2','title':'SYNTHETIC SERVICE ARRANGEMENT','fields':{'scale':'DIAGRAMMATIC'}},
                    {'id':'U3','title':'SUPPLIED SYNTHETIC LOADS','fields':{'scale':'N/A'}}]
     (root/'job.json').write_text(_json(job))
     request={'version':'model-utility-set-v1','model':'model.json','profile':'profile.json','job':'job.json',
         'sources':{'source:synthetic-utility':'reference-plan.svg','source:synthetic-loads':'load-source.json'},'load_inputs':'load-inputs.json',
-        'site':{'sheet_id':'U1','drawing':{'scale':100.,'placement_mm':[15.,20.],'padding_mm':5.,'legend_width_mm':95.}},
+        'site':{'sheet_id':'U1','drawing':{'scale':25.,'placement_mm':[15.,20.],'padding_mm':5.,'legend_width_mm':95.}},
         'single_line':{'sheet_id':'U2','service_only':True},'loads':{'sheet_id':'U3'},
         'documents':{'site':'Synthetic Site.pdf','single_line':'Synthetic Service.pdf','loads':'Synthetic Loads.pdf'}}
     (root/'baseline-request.json').write_text(_json(request))

@@ -88,6 +88,14 @@ service-only SLD selection where the default whole-model projection cannot cover
 them. The complete service scope/omission report remains in the package; adding
 records never silently replaces the default branch-panel graph.
 
+Dense measurement annotations use the shared measured, wrapped site legend,
+instead of fixed-offset rails whose labels can collide around small surfaces.
+Every positive measurement retains its dimension ID, owner IDs, basis, value and
+minimum in that readable legend; the projection receipt retains exact endpoints
+and marks this presentation explicitly. The finite legend refuses page overflow
+rather than hiding measurements. This presentation does not alter geometry or
+turn an anchor separation into verified enclosure clearance.
+
 ## Delivery and retained proof
 
 All request/model/profile/job/load JSON is captured through bounded, regular-file

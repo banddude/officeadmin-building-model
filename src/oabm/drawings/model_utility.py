@@ -264,14 +264,13 @@ def project_model_site(model,*,source_files,drawing):
 
 def render_model_site_body(model,sheet,*,source_files,drawing,dimension_offset_mm=8.):
     """Render only canonical projections and derived requirement dimensions."""
-    from .model import DrawingDimension,Point2
     from .site_plan import _render_site_body_fixed
     if type(dimension_offset_mm) not in (int,float) or not math.isfinite(dimension_offset_mm):
         raise ContractError('dimension_offset_mm must be finite paper-space presentation')
     request,receipt=project_model_site(model,source_files=source_files,drawing=drawing)
     if sheet.fields.get('scale')!=f'1:{drawing["scale"]:g}':
         raise ContractError('site titleblock must state the actual canonical projection scale1:N')
-    dimensions=[];bindings=[];features={row['id']:row for row in request['features']}
+    bindings=[];features={row['id']:row for row in request['features']}
     for row in receipt['measurement_requirements']:
         source=receipt['owner_feature_ids'].get(row['source_id']);target=receipt['owner_feature_ids'].get(row['target_id'])
         descriptions=[]
@@ -283,20 +282,26 @@ def render_model_site_body(model,sheet,*,source_files,drawing,dimension_offset_m
         if row['status']=='unresolved':
             descriptions.extend((f'surface-edge-{edge["edge_index"]}',edge['length_m'],edge['endpoints'],None)
                                 for edge in row.get('surface_edges',()))
+        measurement_notes=[]
         for axis,value,endpoints,minimum in descriptions:
             if value<=0 or source is None or (minimum is not None and target is None):continue
             identity='dimension:'+row['requirement_id']+':'+axis
             text=f'{value:.3f} m SURFACE EDGE' if minimum is None else f'{value:.3f} m PLAN; min {minimum:g} m'
-            dimensions.append(DrawingDimension(identity,tuple(dict.fromkeys(key for key in (source,target) if key is not None)),
-                Point2(*endpoints[0]),Point2(*endpoints[1]),dimension_offset_mm*drawing['scale']/1000,value,text))
+            # Keep dense measurements in the shared measured/wrapped legend.
+            # Paper-offset rails around tiny adjacent edges cannot establish
+            # readable placement merely by sharing a fixed offset. The legend
+            # is finite and refuses overflow rather than overlapping/truncating.
+            measurement_notes.append(f'{identity}: {text}; owners {row["source_id"]} -> {row["target_id"]}; basis {row["reference_basis"]}.')
             bindings.append({'dimension_id':identity,'requirement_id':row['requirement_id'],'source_id':row['source_id'],
-                             'target_id':row['target_id'],'basis':row['reference_basis'],'value_m':value,'minimum_m':minimum})
+                             'target_id':row['target_id'],'basis':row['reference_basis'],'value_m':value,'minimum_m':minimum,
+                             'presentation':'measured_legend','endpoints':endpoints})
         summary=(f'{row["requirement_id"]}: '+
                  (f'{row["distance_m"]:.3f} m {row["reference_basis"]}; supplied min {row["minimum_m"]:g} m; geometric evidence only.'
                   if row['distance_m'] is not None else row.get('reason','Measurement unresolved.')))
         attachment=source or target or next(iter(features),None)
-        if attachment is not None:features[attachment]['evidence']['qualification']+=' '+summary
-    body,drawings,composition,audit,source_map=_render_site_body_fixed(request,sheet,dimensions=tuple(dimensions))
+        if attachment is None and measurement_notes:raise ContractError('measurement legend requires a projected canonical owner')
+        if attachment is not None:features[attachment]['evidence']['qualification']+=' '+summary+' '+' '.join(measurement_notes)
+    body,drawings,composition,audit,source_map=_render_site_body_fixed(request,sheet,dimensions=())
     receipt['dimension_bindings']=bindings
     receipt['unresolved_measurements']=[row['requirement_id'] for row in receipt['measurement_requirements'] if row['status']=='unresolved']
     return body,{'projection':receipt,'drawing':drawings.to_dict(),'audit':audit,'source_map':source_map,'request':request}

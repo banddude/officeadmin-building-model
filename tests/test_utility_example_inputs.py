@@ -26,6 +26,31 @@ def test_companion_inputs_are_independent_synthetic_canonical_facts(tmp_path):
     profile=json.loads((before.parent/'load-inputs.json').read_text())
     assert profile['general_demand']['first_va']==8000 and profile['general_demand']['remainder_factor']==.5
     assert {row['va'] for row in profile['components']}=={18000,1500,600}
+    assert first['site']['drawing']['scale']==25.
+    assert all(record.scale_denominator==100. for feature in model.site_features for record in feature.evidence)
+
+
+def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path):
+    from oabm.drawings.company_sheets import resolve_company_sheet_set,render_company_sheet_svg
+    from oabm.drawings.model_utility import render_model_site_body
+    before,_=example.prepare(tmp_path/'inputs')
+    request=json.loads(before.read_text());root=before.parent
+    model=BuildingModel.from_json((root/'model.json').read_bytes());original=model.to_json()
+    sheet=next(row for row in resolve_company_sheet_set(root/'profile.json',root/'job.json').sheets if row.id=='U1')
+    body,receipt=render_model_site_body(model,sheet,source_files={key:root/path for key,path in request['sources'].items()},drawing=request['site']['drawing'])
+    # Actual shared renderer verifies finite page bounds and measured ink.
+    render_company_sheet_svg(sheet,body_svg=body)
+    bindings=receipt['projection']['dimension_bindings']
+    assert len(bindings)==5
+    assert sorted(row['value_m'] for row in bindings)==pytest.approx([1.2,1.2,1.2,1.2,2.])
+    legend=[primitive for view in receipt['drawing']['views'] for primitive in view['primitives'] if primitive['id'].startswith('legend:')]
+    notes=' '.join(dict(row['metadata']).get('full_text','') for row in legend)
+    for row in bindings:
+        assert row['presentation']=='measured_legend' and len(row['endpoints'])==2
+        assert row['dimension_id'] in notes and row['source_id'] in notes and row['target_id'] in notes
+    assert 'SURFACE EDGE' in notes and 'min 0.5 m' in notes
+    assert all(not view['dimensions'] for view in receipt['drawing']['views'])
+    assert model.to_json()==original
 
 
 def test_companion_model_identity_is_separate_from_primary():

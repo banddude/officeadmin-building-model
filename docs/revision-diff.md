@@ -53,8 +53,50 @@ report actual takeoff deltas; a changed variant remains an explicit old removal
 and new addition under the existing null-absent-side contract. Parent records do
 not add a second quantity. A denser ceiling layout reports real added/removed
 components and changed assignment membership. Provenance-record reordering alone
-does not invent a revision. Physical `line_arc_v1` routes still refuse here;
-the separate physical-route comparison remains their current comparison path.
+does not invent a revision. Mixed snapshots can also contain physical
+`line_arc_v1` routes as described below.
+
+## Mixed physical-route revisions
+
+Physical routes pass the existing bounded detached capture and canonical
+request/geometry admission before diffing. Stable route IDs remain the only
+matching rule. Actual nested fields use dot-separated paths (for example
+`joints.1.position.x` or `requirements.outside_diameter_m`) under the unchanged
+revision report schema. Child identities and ownership are `graph`; positions,
+ordered primitives, OD and supplied radius are `geometry`. Route type and
+supplied physical constraints are `product` **basis**, not inferred catalog
+selections. Retained source/request context (including domain/objective/resource
+settings), IDs and hashes is
+`provenance`; a source change alone is not a physical path change.
+
+Canonical provenance order is normalized inside physical owners. Opaque
+`attributes` dictionaries retain exact types and key presence, even for keys
+named `confidence`, `id` or `provenance`. Evidence and attribute containers are
+reported whole so absent keys remain distinguishable from explicit nulls without
+adding fields to the established report contract. Legacy-only output is unchanged.
+
+Whole-model signed quantity deltas use the existing analytic takeoff, including
+physical and legacy routes, conductors and actual assembly components. OD/type
+variant changes retain separate removed/added lines with null absent sides;
+unchanged scope is not counted again. These are net quantity deltas, not gross
+replacement, salvage or stock quantities. Equal-length path edits still report
+geometry changes without inventing a nonzero quantity delta.
+
+For retained normalized snapshot hashes and exact signed straight-tick/pi terms,
+use the existing `generate_physical_route_comparison` alongside this report.
+Its independent physical inventory remains deliberately scoped and is not added
+to the whole-model takeoff a second time. Neither report authenticates a source,
+rebinds stale route context, infers changed-source reconciliation, nor performs
+live clearance, engineering, product or pricing approval.
+
+`PYTHONPATH=src:examples python examples/canonical_physical_revisions.py FRESH_OUTPUT`
+produces actual before/after mixed enclosed-room snapshots, canonical revision
+JSON, the existing source-bound physical comparison, takeoffs and a checked
+summary. Supplied room edits, a .5 m endpoint extension and a .05 m bend-radius
+increase yield physical net `.1 + .1*pi` m plus .5 m of legacy run. All room and
+legacy context is explicitly outside clearance proof scope. The fixture uses
+the existing explicit 1.7 upgrade and canonical path producer, not a new schema
+or an engineering verification receipt.
 
 ## Purity and determinism
 

@@ -137,8 +137,17 @@ def prepare(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fal
         (root/(name+'.json')).write_text(json.dumps(value,indent=2)+'\n')
     return request
 
-if __name__=='__main__':
+def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('root');p.add_argument('--variant',choices=('reference','residential','commercial'),default='reference');p.add_argument('--profile',type=Path);p.add_argument('--adaptive-layout',action='store_true');p.add_argument('--reference-cover',action='store_true')
-    a=p.parse_args();root=Path(a.root);root.mkdir(parents=True,exist_ok=False)
+    a=p.parse_args(argv);root=Path(a.root);root.mkdir(parents=True,exist_ok=False)
     request=prepare(root/'inputs',variant=a.variant,profile=a.profile,adaptive_layout=a.adaptive_layout,reference_cover=a.reference_cover)
-    print(create_production_sheet_set(request,output_directory=root/'attempt'))
+    delivery=create_production_sheet_set(request,output_directory=root/'attempt')
+    if a.variant=='reference':
+        from utility_service_set import create_example
+        create_example(root/'inputs'/'model-utility-example')
+    print(delivery)
+    return delivery
+
+
+if __name__=='__main__':
+    main()

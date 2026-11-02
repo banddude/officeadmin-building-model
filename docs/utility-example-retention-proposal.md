@@ -30,7 +30,7 @@ The small fixture-admission test exercises only input preparation/decoding; it
 does not add another full six-PDF generation to the unit suite. Real companion
 outputs are produced by the explicit example command, once a runtime slot opens.
 
-## Smallest proposed hook, pending independent review
+## Reference-only hook
 
 After the existing reference production delivery completes in the script's
 `__main__` path, call `utility_service_set.create_example` only for
@@ -41,12 +41,13 @@ production model, change any default library `prepare()` behavior or alter its
 existing sheet bodies.
 
 The existing `find inputs ...` checksum command and whole-root artifact upload
-would then cover the companion recursively, including its own file hashes and
+cover the companion recursively, including its own file hashes and
 all PNG pages. Its six PDFs are two separate three-document deliveries, not
 additional pages in the reference production sheet set. Private project proof
 stays elsewhere and is never part of this hook.
 
-This hook is intentionally not applied in the current checkpoint. Independent
-source review should accept the companion and placement first, then actual hosted
-runtime can measure its cost and inspect its PDFs/images. No workflow edit or
-new artifact destination is proposed.
+The hook runs only after primary generation succeeds and prints the primary
+success path only after companion success. Companion failures propagate. The
+existing upload is success-only: failed companion output is not retained by that
+upload. Actual hosted runtime must still measure cost and inspect PDFs/images.
+No workflow edit or new artifact destination is introduced.

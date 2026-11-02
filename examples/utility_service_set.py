@@ -154,7 +154,7 @@ def create_example(root):
         source=json.loads((delivery/'derived/site-projection.json').read_text())['projection']['model_sha256']
         if json.loads((delivery/'derived/load-report.json').read_text())['source_model_sha256']!=source or json.loads((delivery/'derived/single-line.json').read_text())['topology']['model_sha256']!=source:
             raise ValueError('synthetic document source bindings disagree')
-    summary={'synthetic_only':True,'baseline_distance_m':2,'edited_distance_m':1,'identities_preserved':True,
+    summary={'synthetic_only':True,'model_id':original['model_id'],'baseline_distance_m':2,'edited_distance_m':1,'identities_preserved':True,
              'document_source_bindings_verified':True,'engineering_approval':False,'private_project_acceptance':False,
              'files':{path.relative_to(root).as_posix():_sha(path.read_bytes()) for path in sorted(root.rglob('*')) if path.is_file()}}
     (root/'EXAMPLE-ACCEPTANCE.json').write_text(_json(summary))

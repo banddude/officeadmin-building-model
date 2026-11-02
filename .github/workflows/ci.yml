@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     # Includes dependency installation as well as the growing full suite.
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       PYTHONUNBUFFERED: '1'
     steps:

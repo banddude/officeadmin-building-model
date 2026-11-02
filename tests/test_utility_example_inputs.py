@@ -57,7 +57,17 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
     # Actual shared renderer verifies finite page bounds and measured ink.
     import xml.etree.ElementTree as ET
     rendered=render_company_sheet_svg(sheet,body_svg=body)
-    visible=' '.join(' '.join(ET.fromstring(rendered).itertext()).split())
+    # SVG serialization sorts hashed/lexical IDs, not reading order. Use the
+    # source-mapped legend text nodes and actual paper-space baseline positions.
+    nodes={node.get('id'):node for node in ET.fromstring(rendered).iter() if node.get('id')}
+    legend_ids=[row['svg_id'] for row in receipt['source_map']['items']
+                if row['source_item_id'].startswith('legend:')]
+    assert legend_ids and all(identity in nodes for identity in legend_ids)
+    legend_nodes=[nodes[identity] for identity in legend_ids]
+    assert all(node.tag.endswith('}text') for node in legend_nodes)
+    ordered=sorted(legend_nodes,key=lambda node:(float(node.get('y')),float(node.get('x'))))
+    assert len({(node.get('x'),node.get('y')) for node in ordered})==len(ordered)
+    visible=' '.join(' '.join(''.join(node.itertext()) for node in ordered).split())
     bindings=receipt['projection']['dimension_bindings']
     assert len(bindings)==5
     assert sorted(row['value_m'] for row in bindings)==pytest.approx(sorted([1.2,1.2,1.2,1.2,0. if coincident else 2.]))

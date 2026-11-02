@@ -48,6 +48,35 @@ def _endpoint_routes(model,owner,origin):
     return {route.id for route in model.routes if ports.intersection((route.start_port_id,route.end_port_id))}
 
 
+def _shared_marker_connections(model,primitives):
+    """Symmetric symbol ownership only at explicit clipped endpoint ports.
+
+    Route strokes, text and other coincident objects retain ordinary collision
+    checks. An XY coincidence or an unrelated nearby route alone grants nothing.
+    """
+    ports={port.id:port for port in model.ports};owners=_owners(model)
+    result=[]
+    for primitive in primitives:
+        if primitive.kind!='symbol' or primitive.symbol!='route-vertical-projection':
+            continue
+        meta=dict(primitive.metadata)
+        low=meta.get('clipped_min_z_m',meta.get('min_z_m'))
+        high=meta.get('clipped_max_z_m',meta.get('max_z_m'))
+        if low is None or high is None:
+            continue
+        for route in model.routes:
+            if route.id not in primitive.source_ids:
+                continue
+            for identity in (route.start_port_id,route.end_port_id):
+                port=ports[identity];owner=owners.get(port.owner_id,(None,''))[0]
+                pose=getattr(owner,'pose',None);point=port.pose.position
+                if (pose is not None and primitive.points[0]==Point2(point.x,point.y)==Point2(pose.position.x,pose.position.y)
+                        and float(low)<=point.z<=float(high)):
+                    result.append({'marker_id':primitive.id,'route_id':route.id,'port_id':identity,
+                        'owner_id':port.owner_id,'anchor_m':[point.x,point.y]})
+    return result
+
+
 def _layout(model, view, scale):
     """Use actual sheet font widths, millimetre symbols and dimension gaps.
 
@@ -101,11 +130,17 @@ def _layout(model, view, scale):
         offset=(9 if owners.get(dimension.source_ids[0],(None,''))[1]=='W' else 5)*unit
         dimensions.append(replace(dimension,offset_m=-offset if toward>=0 else offset))
 
+    shared_connections=_shared_marker_connections(model,geometry)
     boxes,segments=[],[]
     for p in geometry:
         if p.kind=='symbol':
             a=p.points[0];radius=SYMBOL_RADIUS_MM*unit
-            boxes.append(((a.x-radius,a.y-radius,a.x+radius,a.y+radius),p.source_ids))
+            symbol_owners=set(p.source_ids)
+            for connection in shared_connections:
+                pair={connection['route_id'],connection['owner_id']}
+                if [a.x,a.y]==connection['anchor_m'] and pair.intersection(p.source_ids):
+                    symbol_owners.update(pair)
+            boxes.append(((a.x-radius,a.y-radius,a.x+radius,a.y+radius),tuple(sorted(symbol_owners))))
         elif p.kind=='text':
             boxes.append((_box(p.points[0],p.text or '',scale),p.source_ids))
         elif p.kind=='quarter_arc':
@@ -265,6 +300,7 @@ def _layout(model, view, scale):
         'text_height_mm':TEXT_MM,'font_family':FONT,'symbol_radius_mm':SYMBOL_RADIUS_MM,
         'level_id':level.id,'level_elevation_m':level.elevation_m,'view_title':view.title,
         'printed_level_heading_lines':identity_lines,
+        'shared_endpoint_symbols':shared_connections,
         'entries':entries,'unplaced_callout_owner_ids':unplaced,
         'dimension_text_boxes_m':[list(box) for box in dimension_boxes],
         'geometry_unchanged':True,'review_status':'needs_review' if unplaced else 'unreviewed'}

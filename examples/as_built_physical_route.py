@@ -33,7 +33,7 @@ def physical_field_inputs():
         levels=tuple(Level(id=f'level:physical:{i}',name=f'Physical example story {i+1}',
             elevation_m=float(i*3),height_m=3.) for i in range(3)),
         electrical_equipment=(ElectricalEquipment(id='panel:physical-example',equipment_type='panelboard',
-            name='Independent supplied panel; ratings unknown',pose=Pose(position=start),level_id='level:physical:0'),),
+            name='Independent supplied panel; ratings unknown',pose=Pose(position=Point3(x=-1.,y=1.,z=1.5)),level_id='level:physical:0'),),
         electrical_devices=tuple(ElectricalDevice(id=f'device:physical:{key}',device_type='geometry-unspecified-endpoint',
             name=f'Physical route endpoint {key}',pose=Pose(position=point),level_id=f'level:physical:{level}')
             for key,point,level in (('a',start,0),('b',end,2))),

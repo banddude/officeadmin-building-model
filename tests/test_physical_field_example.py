@@ -32,6 +32,14 @@ def test_public_physical_example_changes_geometry_with_current_fixed_endpoint_bi
     validate_physical_context_source(source,new)
     assert request['installed_assertions']==[]
     assert snapshot(baseline)==history['design_json']
+    from oabm.pipeline.as_built_delivery import _drawings
+    outputs=_drawings(current,'field:shared-physical-endpoint')
+    layout=json.loads(outputs['drawings/plan-layout.json'])
+    third=next(row for row in layout['plans'] if row['level_id']=='level:physical:2')
+    entries={row['owner_id']:row for row in third['entries']}
+    assert entries['device:physical:b']['callout_status']=='placed'
+    assert entries['route:physical-example']['callout_status']=='placed'
+    assert {row['owner_id'] for row in third['shared_endpoint_symbols']}=={'device:physical:b'}
 
 
 def test_public_physical_delivery_retains_all_story_previews_with_exact_source_receipts(tmp_path,monkeypatch):
@@ -51,3 +59,24 @@ def test_public_physical_delivery_retains_all_story_previews_with_exact_source_r
     assert current.model_id=='model:synthetic-physical-field-reroute'
     materials=json.loads((root/'delivery/materials.json').read_bytes())
     assert not materials['installed_items'] and materials['unresolved_items']
+
+
+def test_unrelated_coincident_panel_keeps_symbol_collision_checks(monkeypatch):
+    from oabm.model import compute_physical_source_sha256,compute_physical_request_sha256
+    from oabm.pipeline.as_built_delivery import _drawings
+    history,request=example(monkeypatch).physical_field_inputs()
+    current=replay_history(apply_transaction(history,request))
+    endpoint=next(device for device in current.electrical_devices if device.id=='device:physical:a')
+    panel=replace(current.electrical_equipment[0],pose=endpoint.pose)
+    source=replace(current,routes=(),electrical_equipment=(panel,))
+    route=current.routes[0]
+    context=replace(route.context,source_model_sha256=compute_physical_source_sha256(source))
+    context=replace(context,request_sha256=compute_physical_request_sha256(context,route.requirements))
+    model=replace(source,routes=(replace(route,context=context),))
+    outputs=_drawings(model,'field:unrelated-coincident-symbol')
+    layout=json.loads(outputs['drawings/plan-layout.json'])
+    first=next(row for row in layout['plans'] if row['level_id']=='level:physical:0')
+    assert {row['owner_id'] for row in first['shared_endpoint_symbols']}=={endpoint.id}
+    entries={row['owner_id']:row for row in first['entries']}
+    for identity in (panel.id,endpoint.id,route.id):
+        assert entries[identity]['callout_status']=='legend_only'

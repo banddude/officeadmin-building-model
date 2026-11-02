@@ -106,6 +106,12 @@ def calculate_service_demand(model,request,*,source_files):
             'no_supplemental_heat_va_exact':str(total),'no_supplemental_heat_a_exact':str(total/voltage),
             'sensitivity_va_exact':str(total+sensitivity),'sensitivity_a_exact':str((total+sensitivity)/voltage),
             'no_supplemental_heat_a':display[0],'sensitivity_a':display[1],
+            'arithmetic':{'voltage_v_exact':str(voltage),'first_threshold_va_exact':str(first),
+                'remainder_factor_exact':str(factor),'first_applied_va_exact':str(min(sums['general'],first)),
+                'remainder_connected_va_exact':str(max(Fraction(0),sums['general']-first)),
+                'remainder_demand_va_exact':str(max(Fraction(0),sums['general']-first)*factor),
+                'group_connected_va_exact':{key:str(value) for key,value in sums.items()},
+                'sensitivity_additional_va_exact':str(sensitivity)},
             'connected_circuit_values_modified':False,'engineering_approval':False,
             'limitations':['Supplied demand arithmetic only; grouping, factors and assumptions are not an automatic NEC compliance decision.',
                            'Demand differs from connected VA; no circuit loads, feeder sizes or selected equipment are inferred.']}

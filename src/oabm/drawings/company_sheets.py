@@ -226,7 +226,7 @@ class ResolvedCompanySheetSet:
     job_json: bytes
 
 
-def _logos(value, directory):
+def _logos(value, directory, *, reader=None):
     _object(value, {'icon','wordmark'}, 'logos')
     result={}
     from PIL import Image
@@ -239,7 +239,7 @@ def _logos(value, directory):
         source=Path(path)
         if not source.is_absolute(): source=directory/source
         try:
-            raw=source.read_bytes()
+            raw=source.read_bytes() if reader is None else reader(source)
             if len(raw)>8*1024*1024: raise ValueError('PNG exceeds 8 MiB')
             with Image.open(io.BytesIO(raw)) as im:
                 if im.format!='PNG' or im.width*im.height>16_000_000: raise ValueError('bounded PNG required')
@@ -250,14 +250,19 @@ def _logos(value, directory):
     return result
 
 
-def resolve_company_sheet_set(profile_path, job_path):
+def resolve_company_sheet_set(profile_path, job_path, *, _profile_raw=None, _job_raw=None, _logo_reader=None):
     """Read saved defaults and job overrides without mutating either file.
 
     Asset paths are relative to the file supplying that override. Explicit null
     clears a logo. Issue date/revision must come from the job, never the clock.
     """
     pp,jp=Path(profile_path),Path(job_path)
-    pr,jr=pp.read_bytes(),jp.read_bytes()
+    # Internal source-bound producers can provide descriptor-admitted snapshots
+    # without reopening mutable JSON paths. Ordinary callers retain old behavior.
+    if _profile_raw is not None and type(_profile_raw) is not bytes:raise ValueError('profile snapshot must be bytes')
+    if _job_raw is not None and type(_job_raw) is not bytes:raise ValueError('job snapshot must be bytes')
+    pr=pp.read_bytes() if _profile_raw is None else _profile_raw
+    jr=jp.read_bytes() if _job_raw is None else _job_raw
     profile,job=_decode(pr),_decode(jr)
     _xml_strings(profile);_xml_strings(job)
     _object(profile, {'version','fields','template','logos'}, 'profile', {'version','fields','template'})
@@ -270,7 +275,7 @@ def resolve_company_sheet_set(profile_path, job_path):
     _object(profile['template'],DEFAULT_TEMPLATE,'profile.template')
     _object(job.get('template',{}),DEFAULT_TEMPLATE,'job.template')
     template=_template({**profile['template'],**job.get('template',{})})
-    logos={**_logos(profile.get('logos',{}),pp.parent),**_logos(job.get('logos',{}),jp.parent)}
+    logos={**_logos(profile.get('logos',{}),pp.parent,reader=_logo_reader),**_logos(job.get('logos',{}),jp.parent,reader=_logo_reader)}
     issued=_date(job['date'],'date')
     revision=job['revision']
     if not isinstance(revision,str) or not revision.strip() or any(ord(c)<32 for c in revision):
@@ -291,7 +296,7 @@ def resolve_company_sheet_set(profile_path, job_path):
         _printable(title)
         t=_template({**template,**row.get('template',{})})
         effective={**fields,**_fields(row.get('fields',{}),'sheet.fields'),'date':issued,'revision':revision}
-        assets={**logos,**_logos(row.get('logos',{}),jp.parent)}
+        assets={**logos,**_logos(row.get('logos',{}),jp.parent,reader=_logo_reader)}
         w,h,m,r=(t[k] for k in ('width_mm','height_mm','margin_mm','rail_width_mm'))
         sheets.append(ResolvedCompanySheet(sid,title,w,h,(m,m,w-m-r,h-m),
                       MappingProxyType(effective),MappingProxyType(t),tuple(sorted((k,v) for k,v in assets.items() if v is not None))))

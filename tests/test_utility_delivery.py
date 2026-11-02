@@ -3,12 +3,13 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 from pypdf import PdfReader
 
-from oabm.model import ContractError,SiteFeature,SiteRequirement
-from oabm.drawings.utility_delivery import create_utility_delivery,_filename
+from oabm.model import BuildingModel,ContractError,SiteFeature,SiteRequirement
+from oabm.drawings.utility_delivery import create_utility_delivery,_filename,_load_bodies
 from test_site_model_integration import site_model
 from test_site_contract_types import geometry
 
@@ -97,3 +98,40 @@ def test_stale_source_and_filename_errors_refuse_before_reserving_output(tmp_pat
     (tmp_path/'source.bin').write_bytes(b'changed source')
     with pytest.raises(ContractError,match='stale'):create_utility_delivery(request,output_directory=tmp_path/'stale')
     assert not (tmp_path/'stale').exists()
+
+
+def test_generated_load_body_passes_actual_shared_ink_bounds_validation(tmp_path):
+    from oabm.drawings.company_sheets import resolve_company_sheet_set,render_company_sheet_svg
+    from oabm.reports.service_demand import bind_service_demand_inputs
+    utility_inputs(tmp_path)
+    model=BuildingModel.from_json((tmp_path/'model.json').read_bytes())
+    report=bind_service_demand_inputs(model,json.loads((tmp_path/'loads.json').read_text()),
+        source_files={'source:synthetic':tmp_path/'source.bin'})
+    resolved=resolve_company_sheet_set(tmp_path/'profile.json',tmp_path/'job.json')
+    template=next(sheet for sheet in resolved.sheets if sheet.id=='U3')
+    sheets,bodies,_=_load_bodies(report,template,{'U1','U2'})
+    assert sheets
+    for sheet in sheets:
+        # This invokes the production renderer's measured text/stroke checks,
+        # rather than trusting the generator's coordinate accounting.
+        svg=render_company_sheet_svg(sheet,body_svg=bodies[sheet.id])
+        assert sheet.id in ''.join(ET.fromstring(svg).itertext())
+        left,_,right,_=sheet.drawing_bounds_mm
+        for rectangle in ET.fromstring(bodies[sheet.id]).iter('{http://www.w3.org/2000/svg}rect'):
+            x=float(rectangle.get('x'));width=float(rectangle.get('width'));half=float(rectangle.get('stroke-width'))/2
+            assert x-half>left and x+width+half<right
+
+
+def test_load_pdf_itself_contains_numeric_policy_subtotals_and_scenarios(tmp_path):
+    request=utility_inputs(tmp_path)
+    delivery=create_utility_delivery(request,output_directory=tmp_path/'numeric-proof')
+    text=' '.join(' '.join((page.extract_text() or '') for page in PdfReader(delivery/'Synthetic Loads.pdf').pages).split())
+    for required in ('NUMERIC DEMAND CALCULATION','SUPPLIED LOAD COMPONENTS','General connected VA',
+                     'Supplied first-block threshold','Supplied remainder factor','20000 VA','10000 VA','0.4',
+                     '10000 x 0.4 = 4000 VA','10000 + 4000 = 14000 VA',
+                     '14000 + 2000 + 500 = 16500 VA','16500 VA / 240 V',
+                     '16500 + 4000 = 20500 VA','20500 VA / 240 V','68.75 A','85.42 A','source:synthetic'):
+        assert required in text,required
+    rows=json.loads((delivery/'derived/load-rows.json').read_text())
+    assert len([row for row in rows if row['record_kind']=='calculation'])==15
+    assert {row['component_id'] for row in rows if row['record_kind']=='component'}=={'load:general','load:hvac','load:floor_heat'}

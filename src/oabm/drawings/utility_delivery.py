@@ -2,6 +2,8 @@
 from __future__ import annotations
 import argparse
 from dataclasses import replace
+from decimal import Decimal,localcontext
+from fractions import Fraction
 import hashlib
 import json
 import io
@@ -14,7 +16,7 @@ from oabm.model import BuildingModel,ContractError,Point2D,Provenance
 from oabm.model.model import _decode_dataclass
 from oabm.electrical.service_site import move_plan_service_node
 from oabm.reports.physical_routes import _json
-from oabm.reports.source_files import hash_source_file
+from oabm.reports.source_files import hash_source_file,read_source_bytes
 from oabm.reports.service_demand import bind_service_demand_inputs,validate_service_demand_report
 from oabm.routing.physical_capture import bounded_source_json,SOURCE_BYTES
 from oabm.routing.physical_verify_types import VerificationStop
@@ -40,7 +42,7 @@ def _read_json(path):
             if key in result:raise ContractError('duplicate utility input JSON key')
             result[key]=value
         return result
-    with Path(path).open('rb') as handle:raw=handle.read(SOURCE_BYTES+1)
+    raw=read_source_bytes(path,max_bytes=SOURCE_BYTES)
     return raw,json.loads(bounded_source_json(raw),object_pairs_hook=unique)
 
 
@@ -55,21 +57,80 @@ def _filename(value):
     return value
 
 
+def _exact_number(value):
+    """Readable exact terminating decimal, otherwise an explicit rational."""
+    number=Fraction(value);denominator=number.denominator
+    for factor in (2,5):
+        while denominator%factor==0:denominator//=factor
+    if denominator!=1:return str(number)
+    with localcontext() as context:
+        context.prec=len(str(abs(number.numerator)))+len(str(number.denominator))+10
+        text=format(Decimal(number.numerator)/Decimal(number.denominator),'f')
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
+def _calculation_rows(report):
+    arithmetic=report['arithmetic'];policy=report['inputs']['general_demand'];scenario=report['inputs']['sensitivity']
+    groups=arithmetic['group_connected_va_exact']
+    sources={group:sorted({row['source_id'] for row in report['inputs']['components'] if row['group']==group}) for group in groups}
+    def number(value):return _exact_number(value)
+    general=number(report['general_connected_va_exact']);threshold=number(arithmetic['first_threshold_va_exact'])
+    first=number(arithmetic['first_applied_va_exact']);remainder=number(arithmetic['remainder_connected_va_exact'])
+    factor=number(arithmetic['remainder_factor_exact']);remainder_demand=number(arithmetic['remainder_demand_va_exact'])
+    general_demand=number(report['general_demand_va_exact']);hvac=number(groups['hvac']);floor=number(groups['floor_heat'])
+    total=number(report['no_supplemental_heat_va_exact']);additional=number(arithmetic['sensitivity_additional_va_exact'])
+    scenario_total=number(report['sensitivity_va_exact']);voltage=number(arithmetic['voltage_v_exact'])
+    all_sources=sorted(set(source for values in sources.values() for source in values)|{policy['source_id']})
+    raw=[
+        ('general-connected','General connected VA',general+' VA',sources['general'],'Sum supplied general component VA'),
+        ('first-threshold','Supplied first-block threshold',threshold+' VA',[policy['source_id']],'Supplied threshold; not inferred'),
+        ('factor','Supplied remainder factor',factor,[policy['source_id']],'Supplied multiplier; not inferred'),
+        ('first-applied','First block applied',first+' VA',sources['general']+[policy['source_id']],f'min({general}, {threshold}) = {first} VA'),
+        ('remainder-connected','General connected remainder',remainder+' VA',sources['general']+[policy['source_id']],f'max(0, {general} - {threshold}) = {remainder} VA'),
+        ('remainder-demand','Remainder demand',remainder_demand+' VA',[policy['source_id']],f'{remainder} x {factor} = {remainder_demand} VA'),
+        ('general-demand','General demand subtotal',general_demand+' VA',sources['general']+[policy['source_id']],f'{first} + {remainder_demand} = {general_demand} VA'),
+        ('hvac','Supplied HVAC subtotal',hvac+' VA',sources['hvac'],'Sum supplied HVAC component VA'),
+        ('floor-heat','Supplied floor-heat subtotal',floor+' VA',sources['floor_heat'],'Sum supplied floor-heat component VA'),
+        ('base-va','Base demand total',total+' VA',all_sources,f'{general_demand} + {hvac} + {floor} = {total} VA'),
+        ('voltage','Supplied voltage basis',voltage+' V',[report['service_node_id']],'Supplied profile; reconciled with known placed-owner voltage'),
+        ('base-current','Base demand current',f'{report["no_supplemental_heat_a"]:.2f} A',all_sources,
+            f'{total} VA / {voltage} V; exact A = {number(report["no_supplemental_heat_a_exact"])}'),
+        ('sensitivity-addition','Supplied sensitivity addition',additional+' VA',[scenario['source_id']],'Explicit additional scenario demand'),
+        ('sensitivity-total','Sensitivity demand total',scenario_total+' VA',all_sources+[scenario['source_id']],f'{total} + {additional} = {scenario_total} VA'),
+        ('sensitivity-current','Sensitivity current',f'{report["sensitivity_a"]:.2f} A',all_sources+[scenario['source_id']],
+            f'{scenario_total} VA / {voltage} V; exact A = {number(report["sensitivity_a_exact"])}'),
+    ]
+    return [(identity,[identity,label,'calculation',value,', '.join(sorted(set(source_ids))),formula]) for identity,label,value,source_ids,formula in raw]
+
+
 def _load_bodies(report,template,reserved):
     """Measured, paginated source rows; no shrink-to-fit or silent truncation."""
-    left,top,right,bottom=template.drawing_bounds_mm
+    body_left,body_top,body_right,body_bottom=template.drawing_bounds_mm
+    # The shared renderer checks actual ink, including text safety padding and
+    # half the table stroke. Keep both inside its unchanged external bounds.
+    inset=2.
+    left,top,right,bottom=body_left+inset,body_top+inset,body_right-inset,body_bottom-inset
+    if right-left<=30 or bottom-top<=110:raise ContractError('load template has insufficient inset content capacity')
     widths=[(right-left)*fraction for fraction in (.14,.20,.10,.10,.12,.24)]
-    headers=['Component ID','Supplied load','Group','VA','Source ID','Basis / assumption']
+    headers=['Record ID','Calculation / supplied load','Group','Value / unit','Source ID','Numeric formula / source basis']
+    header_lines=[_rows(value,width-4,2.5,700) for value,width in zip(headers,widths)]
+    header_height=max(len(lines) for lines in header_lines)*3.7+3
+    if header_height>15:raise ContractError('load column headings exceed measured header capacity')
     records=[]
-    for row in report['inputs']['components']:
-        values=[row['id'],row['name'],row['group'],str(row['va']),row['source_id'],row['basis']+(' [ASSUMPTION]' if row['assumption'] else '')]
-        wrapped=[_rows(value,width-4,2.5) for value,width in zip(values,widths)]
-        height=max(1,max(len(lines) for lines in wrapped))*3.7+4
-        if height>bottom-top-100:raise ContractError('load component exceeds one measured page; no row is truncated')
-        records.append((row['id'],wrapped,height))
+    for section,rows in (
+        ('NUMERIC DEMAND CALCULATION',[(identity,values,'calculation') for identity,values in _calculation_rows(report)]),
+        ('SUPPLIED LOAD COMPONENTS',[(row['id'],[row['id'],row['name'],row['group'],str(row['va'])+' VA',row['source_id'],
+            row['basis']+(' [ASSUMPTION]' if row['assumption'] else '')],'component') for row in report['inputs']['components']])):
+        records.append((section,None,8.,'section'))
+        for identity,values,kind in rows:
+            wrapped=[_rows(value,width-4,2.5) for value,width in zip(values,widths)]
+            height=max(1,max(len(lines) for lines in wrapped))*3.7+4
+            if height>bottom-top-108:raise ContractError('load record exceeds one measured page; no row is truncated')
+            records.append((identity,wrapped,height,kind))
     pages=[];pending=[];used=0.;capacity=bottom-top-100
-    for record in records:
-        if pending and used+record[2]>capacity:pages.append(pending);pending=[];used=0.
+    for index,record in enumerate(records):
+        required=record[2]+(records[index+1][2] if record[3]=='section' else 0)
+        if pending and used+required>capacity:pages.append(pending);pending=[];used=0.
         pending.append(record);used+=record[2]
     if pending:pages.append(pending)
     if not pages or len(pages)>MAX_DOCUMENT_PAGES:raise ContractError('load schedule page count exceeds admission')
@@ -82,7 +143,9 @@ def _load_bodies(report,template,reserved):
         root=ET.Element('{'+SVG+'}g');y=top+5
         def text(x,y,value,size=2.5,weight=400):
             ET.SubElement(root,'{'+SVG+'}text',x=str(x),y=str(y),**{'font-size':str(size),'font-family':'Liberation Sans','font-weight':str(weight)}).text=value
-        text(left,y,'SUPPLIED SERVICE DEMAND / SOURCE COMPONENTS',4,700);y+=7
+        for line in _rows('SUPPLIED SERVICE DEMAND / SOURCE COMPONENTS',right-left,4,700):
+            text(left,y,line,4,700);y+=6
+        y+=1
         summary=[f'Service owner: {report["service_node_id"]}; supplied voltage: {report["inputs"]["voltage_v"]} V',
             f'No supplemental heat: {report["no_supplemental_heat_a"]:.2f} A; sensitivity: {report["sensitivity_a"]:.2f} A',
             'Demand is separate from connected circuit VA. Supplied grouping/factors/allowances; no automatic NEC or engineering approval.',
@@ -93,15 +156,20 @@ def _load_bodies(report,template,reserved):
             for line in _rows(value,right-left,2.5):text(left,y,line);y+=4
         if y>top+75:raise ContractError('load report summary exceeds measured header capacity')
         y=top+80;x=left
-        for value,width in zip(headers,widths):text(x+2,y,value,2.5,700);x+=width
-        y+=5
-        for component_id,wrapped,height in page:
+        for lines,width in zip(header_lines,widths):
+            for line_number,line in enumerate(lines):text(x+2,y+line_number*3.7,line,2.5,700)
+            x+=width
+        y+=header_height
+        for record_id,wrapped,height,kind in page:
+            if kind=='section':
+                text(left+2,y+5,record_id,3,700);y+=height;continue
             x=left
             for lines,width in zip(wrapped,widths):
                 ET.SubElement(root,'{'+SVG+'}rect',x=str(x),y=str(y),width=str(width),height=str(height),fill='none',stroke='#333333',**{'stroke-width':'.15'})
                 for line_number,line in enumerate(lines):text(x+2,y+4+line_number*3.7,line)
                 x+=width
-            maps.append({'component_id':component_id,'sheet_id':identity,'bounds_mm':[left,y,right,y+height]})
+            maps.append({('component_id' if kind=='component' else 'calculation_id'):record_id,
+                         'record_kind':kind,'sheet_id':sheet.id,'bounds_mm':[left,y,right,y+height]})
             y+=height
         if y>bottom-5:raise ContractError('load table exceeds actual sheet bounds')
         sheets.append(sheet);bodies[identity]=ET.tostring(root,encoding='unicode')
@@ -168,7 +236,13 @@ def create_utility_delivery(request_path,*,output_directory):
         event=request['field_edit'];_keys(event,{'node_id','x_m','y_m','provenance'})
         model=move_plan_service_node(model,event['node_id'],Point2D(x=event['x_m'],y=event['y_m']),
             field_evidence=_decode_dataclass(Provenance,event['provenance']))
-    resolved=resolve_company_sheet_set(profile_path,job_path)
+    logo_sources={}
+    def logo_reader(path):
+        raw=read_source_bytes(path,max_bytes=8*1024*1024);identity=str(Path(path).absolute());digest=_sha(raw)
+        if identity in logo_sources and logo_sources[identity]!=digest:raise ContractError('logo source changed during utility input capture')
+        logo_sources[identity]=digest
+        return raw
+    resolved=resolve_company_sheet_set(profile_path,job_path,_profile_raw=profile_raw,_job_raw=job_raw,_logo_reader=logo_reader)
     if 'pdf' not in resolved.formats:raise ContractError('utility job must explicitly request PDF output')
     if resolved.profile_json!=profile_raw or resolved.job_json!=job_raw:raise ContractError('company profile/job changed while resolving utility inputs')
     by_id={sheet.id:sheet for sheet in resolved.sheets}
@@ -221,6 +295,8 @@ def create_utility_delivery(request_path,*,output_directory):
         validate_service_demand_report(model,_json(demand),source_files=sources)
         for input_path,raw in ((request_path,request_raw),(model_path,model_raw),(profile_path,profile_raw),(job_path,job_raw),(load_path,load_raw)):
             if hash_source_file(input_path)!=_sha(raw):raise ContractError('utility input changed during generation')
+        for path,digest in logo_sources.items():
+            if hash_source_file(path,max_bytes=8*1024*1024)!=digest:raise ContractError('utility logo source changed during generation')
         files=[{'path':file.relative_to(pending).as_posix(),'bytes':file.stat().st_size,'sha256':hash_source_file(file)}
                for file in sorted(pending.rglob('*')) if file.is_file()]
         manifest={'kind':'model_utility_delivery','version':'1.0.0','source_request_sha256':_sha(request_raw),
@@ -228,6 +304,7 @@ def create_utility_delivery(request_path,*,output_directory):
             'visual_review':'pending human comparison to source architect sheet','documents':{
                 role:{'filename':names[role],'bytes':len(pdfs[role]),'sha256':_sha(pdfs[role]),'pages':pdf_receipts[role]['pages']} for role in groups},
             'page_proofs':page_proofs,'service_scope':topology.to_dict().get('coverage',{'selection_mode':'whole_canonical_electrical_graph'}),
+            'source_logo_sha256':logo_sources,
             'unresolved_measurements':site_receipt['projection']['unresolved_measurements'],'files':files}
         write('MANIFEST.json',(_json(manifest)+'\n').encode())
         os.rename(pending,output/'delivery')

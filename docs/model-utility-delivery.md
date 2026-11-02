@@ -90,10 +90,22 @@ records never silently replaces the default branch-panel graph.
 
 ## Delivery and retained proof
 
+All request/model/profile/job/load JSON is captured through bounded, regular-file
+descriptors opened nonblocking. Nonregular inputs refuse before reading; byte
+counts and descriptor stability reject replacement/growth races. The company
+resolver receives captured JSON bytes instead of reopening mutable paths;
+logos use bounded capture and a final source recheck. Ordinary company-renderer
+callers and drawing bounds remain unchanged.
+
 All PDFs are prepared and size-checked before reserving the fresh attempt.
 The shared company renderer provides real sheet stationery, font checks and PDF
-pages. The load table wraps with measured fonts and paginates; no row or source
-basis is dropped. Up to 20 pages per document are admitted, and every page gets
+pages. The load body insets measured text and table strokes within those bounds.
+Its numeric section prints supplied threshold/factor, first block, remainder,
+general/HVAC/floor subtotals, total VA, voltage division and sensitivity
+addition/total/current with source IDs and bound numeric formulas. Policy prose
+is supplemental, not the only calculation evidence. Components remain a separate
+labeled section. Both sections wrap and paginate; no row or source basis is
+dropped. Up to 20 pages per document are admitted, and every page gets
 a rendered PNG proof. Images have a pixel admission limit and a counted output
 stream; the complete attempt is limited to 128 MiB. Exceeding a bound refuses.
 

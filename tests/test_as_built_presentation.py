@@ -206,5 +206,8 @@ def test_endpoint_escape_membership_requires_a_port_at_the_actual_owner_anchor()
     assert _endpoint_routes(model,panel,Point2(anchor.x+.01,anchor.y))==set()
     port=next(port for port in model.ports if port.owner_id==panel.id)
     moved_port=replace(port,pose=replace(port.pose,position=replace(port.pose.position,z=port.pose.position.z+.1)))
-    source=replace(model,ports=tuple(moved_port if p.id==port.id else p for p in model.ports))
+    moved_route=replace(route,centerline=replace(route.centerline,
+        points=(moved_port.pose.position,*route.centerline.points[1:])))
+    source=replace(model,ports=tuple(moved_port if p.id==port.id else p for p in model.ports),
+        routes=tuple(moved_route if r.id==route.id else r for r in model.routes))
     assert _endpoint_routes(source,panel,anchor)==set()

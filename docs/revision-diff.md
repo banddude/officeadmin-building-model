@@ -45,8 +45,12 @@ scope under #235.
 
 The takeoff can split an otherwise identical numeric item into several rows
 because their field/design provenance differs. Revision quantities sum all
-comparable rows for the same category, type, unit and complete variant using a
-deterministic finite scalar total. A provenance-only split of two EVSEs into two
+comparable original measured contributions for the same category, type, unit and
+complete variant, once, using a deterministic finite scalar total. Already
+rounded provenance-bucket subtotals are not summed: regrouping measurements such
+as 0.1, 0.2 and 0.3 must not manufacture a floating-point quantity change. No
+blanket tolerance or output rounding suppresses genuine small changes.
+A provenance-only split of two EVSEs into two
 one-unit rows therefore remains two EVSEs, with no invented credit. Provenance
 changes remain explicit in the entity audit; they are not physical removals.
 Product, work-scope, geometry/material and measurement bases carried in variants

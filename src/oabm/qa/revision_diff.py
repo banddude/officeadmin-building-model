@@ -551,22 +551,27 @@ class _QuantityTotal:
 
 
 def _quantity_map(model: BuildingModel) -> dict[tuple, _QuantityTotal]:
-    """Sum comparable scalar rows; evidence buckets are not physical removals.
+    """Sum original measured contributions once, before evidence bucketing.
 
     The takeoff legitimately splits the same commercial/measurement identity
     by evidence status. A later field confirmation can therefore turn a single
     two-device row into two one-device rows without changing installed scope.
-    Count every row rather than retaining an arbitrary representative. Keep
+    Count every original scalar rather than retaining a representative or
+    summing already-rounded status-bucket subtotals. Keep
     units and the complete variant (including work scope and measurement or
     product/material basis) distinct. Never merge incompatible bid/assembly
     ownership that the current portable delta cannot represent.
     """
 
-    report = extract_quantities(model)
     grouped: dict[tuple, list[QuantityItem]] = {}
-    for item in report.items:
+    def collect(item: QuantityItem) -> bool:
         key = (item.category, item.item_type, item.unit, _variant_key(item.variant))
         grouped.setdefault(key, []).append(item)
+        # The existing contribution filter receives a singleton view of each
+        # original measured contribution before takeoff status aggregation.
+        # Retain those scalars here, not unused rounded report subtotals.
+        return False
+    extract_quantities(model, contribution_filter=collect)
     result: dict[tuple, _QuantityTotal] = {}
     for key, parts in grouped.items():
         bases = {(part.group, part.assembly_key) for part in parts}

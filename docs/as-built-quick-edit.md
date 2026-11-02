@@ -208,7 +208,7 @@ Hosted run [41479090133](https://github.com/banddude/officeadmin-building-model/
 passed at head `b38f75d` and retained its original synthetic packet. Independent
 inspection then found a real false EVSE credit: provenance split a two-unit
 quantity row into two one-unit rows and the shared revision mapper kept only
-one. This repair sums comparable rows without mixing variants, units or bases,
+one. This repair totals original measured contributions once, without mixing variants, units or bases,
 and adds the separate retained three-story example. The old packet remains
 immutable evidence; green tests did not establish artifact correctness.
 

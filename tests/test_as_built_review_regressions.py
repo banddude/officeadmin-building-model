@@ -149,6 +149,53 @@ def test_unchanged_port_and_route_cannot_validate_translated_device():
         apply_transaction(history, request)
 
 
+def test_port_and_connected_route_cannot_move_without_their_device_in_admission_or_replay():
+    history,valid=inputs();retained=apply_transaction(history,valid)
+    request=deepcopy(valid)
+    request['edits']=[row for row in request['edits'] if row['collection']!='electrical_devices']
+    request['installed_assertions']=[]
+    before=deepcopy(history)
+    with pytest.raises(ContractError,match='independent device-owned port pose/direction'):
+        apply_transaction(history,request)
+    retained['transactions'][0]['request']=request
+    with pytest.raises(ContractError,match='independent device-owned port pose/direction'):
+        replay_history(retained)
+    assert history==before
+
+
+@pytest.mark.parametrize('change',['direction','rotation','owner'])
+def test_existing_device_port_internal_changes_refuse_under_unchanged_owner(change):
+    history,request=inputs();model=replay_history(history)
+    port=deepcopy(next(row for row in model.to_dict()['ports'] if row['owner_id']=='device:evse'))
+    if change=='direction':
+        port['direction']={'x':1.,'y':0.,'z':0.}
+    elif change=='rotation':
+        port['pose']['rotation']={'x':0.,'y':0.,'z':1.,'w':0.}
+    else:
+        port['owner_id']='device:spare'
+    request.update(edits=[edit(model,'ports',port['id'],port)],method_reconciliations=[],installed_assertions=[])
+    with pytest.raises(ContractError,match='device-owned port'):
+        apply_transaction(history,request)
+
+
+def test_unchanged_port_testimony_and_valid_rigid_move_keep_replay_contract():
+    history,valid=inputs();model=replay_history(history)
+    port=next(row for row in model.to_dict()['ports'] if row['owner_id']=='device:evse')
+    request=deepcopy(valid)
+    request.update(edits=[edit(model,'ports',port['id'],port)],method_reconciliations=[],installed_assertions=[])
+    testimony=replay_history(apply_transaction(history,request))
+    actual=next(row for row in testimony.ports if row.id==port['id'])
+    original=next(row for row in model.ports if row.id==port['id'])
+    assert actual.pose==original.pose and actual.direction==original.direction
+    moved_history=apply_transaction(history,valid);moved=replay_history(moved_history)
+    device=next(row for row in moved.electrical_devices if row.id=='device:evse')
+    moved_port=next(row for row in moved.ports if row.id==port['id'])
+    assert device.pose!=next(row for row in model.electrical_devices if row.id==device.id).pose
+    assert moved_port.pose.position==device.pose.position==moved.routes[0].centerline.points[-1]
+    assert moved_history['design_json']==history['design_json']
+    assert snapshot(replay_history(deepcopy(moved_history)))==snapshot(moved)
+
+
 def test_invariant_absolute_connection_position_can_survive_rigid_rotation():
     history, request = inputs()
     model = replay_history(history)

@@ -206,7 +206,7 @@ def _layout(model, view, scale):
     if len(identity_lines)>64:
         raise ValueError('as-built level identity exceeds bounded measured heading capacity')
     for line in identity_lines:
-        legend.append(_primitive(f'{view.id}:level-heading:{len(legend)}','text',source,
+        legend.append(_primitive(f'{view.id}:level-heading:{len(legend):03d}','text',source,
             (Point2(legend_x,y),),text=line))
         y-=4.5*unit
     y-=3*unit

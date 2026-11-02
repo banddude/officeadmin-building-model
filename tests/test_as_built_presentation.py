@@ -126,7 +126,9 @@ def test_retained_three_story_sheets_print_their_actual_level_in_elevation_order
         svg=ET.fromstring((root/f'delivery/drawings/plan-{ordinal}.svg').read_bytes())
         manifest=json.loads((root/f'delivery/drawings/plan-{ordinal}.manifest.json').read_text())
         ids={item['svg_id'] for item in manifest['items'] if ':level-heading:' in item['source_item_id']}
-        heading=[node.text or '' for node in svg.findall('.//s:text',NS) if node.get('id') in ids]
+        heading=[node.text or '' for node in sorted(
+            (node for node in svg.findall('.//s:text',NS) if node.get('id') in ids),
+            key=lambda node:(float(node.get('y')),float(node.get('x'))))]
         assert heading==row['printed_level_heading_lines']
         assert ''.join(heading)==f'{level.name or level.id} PlanLevel ID: {level.id}Elevation: {level.elevation_m:g} m'
 
@@ -134,7 +136,7 @@ def test_retained_three_story_sheets_print_their_actual_level_in_elevation_order
 def test_long_level_names_wrap_losslessly_within_selected_sheet_bounds():
     history,request=example().synthetic_inputs()
     model=replay_history(apply_transaction(history,request))
-    name='Long canonical level name retained in full / '*8
+    name='Long canonical level name retained in full / '*24
     model=replace(model,levels=(replace(model.levels[0],name=name),))
     outputs=_drawings(model,'field:long-level')
     row=json.loads(outputs['drawings/plan-layout.json'])['plans'][0]
@@ -142,7 +144,10 @@ def test_long_level_names_wrap_losslessly_within_selected_sheet_bounds():
     svg=ET.fromstring(outputs['drawings/plan-1.svg'])
     manifest=json.loads(outputs['drawings/plan-1.manifest.json'])
     ids={item['svg_id'] for item in manifest['items'] if ':level-heading:' in item['source_item_id']}
-    printed=''.join(node.text or '' for node in svg.findall('.//s:text',NS) if node.get('id') in ids)
+    assert len(ids)>10
+    printed=''.join(node.text or '' for node in sorted(
+        (node for node in svg.findall('.//s:text',NS) if node.get('id') in ids),
+        key=lambda node:(float(node.get('y')),float(node.get('x')))))
     assert printed==''.join(row['printed_level_heading_lines'])
 
 

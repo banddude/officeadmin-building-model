@@ -155,7 +155,7 @@ def _measurements(model):
     result=[]
     for requirement in sorted(model.site_requirements,key=lambda row:row.id):
         source,target=(owners[key] for key in (requirement.source_id,requirement.target_id))
-        row={'requirement_id':requirement.id,'source_id':source.id,'target_id':target.id,
+        row={'requirement_id':requirement.id,'kind':requirement.kind,'source_id':source.id,'target_id':target.id,
              'reference_basis':requirement.reference_basis,'minimum_m':requirement.minimum_m,
              'distance_m':None,'endpoints':None,'status':'unresolved','engineering_approval':False}
         if requirement.kind=='working_surface_for':
@@ -184,7 +184,8 @@ def _measurements(model):
             else:row['reason']='Actual enclosure extents are unknown; no bounding-box certification.'
         if row['distance_m'] is not None:
             if not math.isfinite(row['distance_m']):raise ContractError('derived site distance exceeds finite range')
-            row['meets_supplied_horizontal_minimum']=row['distance_m']>=requirement.minimum_m
+            if requirement.kind=='minimum_horizontal_separation':
+                row['meets_supplied_horizontal_minimum']=row['distance_m']>=requirement.minimum_m
         result.append(row)
     return result
 
@@ -275,7 +276,7 @@ def render_model_site_body(model,sheet,*,source_files,drawing,dimension_offset_m
         source=receipt['owner_feature_ids'].get(row['source_id']);target=receipt['owner_feature_ids'].get(row['target_id'])
         descriptions=[]
         if row['distance_m'] is not None:
-            descriptions.append(('separation',row['distance_m'],row['endpoints'],row['minimum_m']))
+            descriptions.append(('reference-distance' if row['kind']=='horizontal_reference_distance' else 'separation',row['distance_m'],row['endpoints'],row['minimum_m']))
         for axis in ('width','depth'):
             if row.get(axis+'_m') is not None:
                 descriptions.append((axis,row[axis+'_m'],row[axis+'_endpoints'],row['supplied_'+axis+'_m']))
@@ -286,7 +287,8 @@ def render_model_site_body(model,sheet,*,source_files,drawing,dimension_offset_m
         for axis,value,endpoints,minimum in descriptions:
             if value<=0 or source is None or (minimum is not None and target is None):continue
             identity='dimension:'+row['requirement_id']+':'+axis
-            text=f'{value:.3f} m SURFACE EDGE' if minimum is None else f'{value:.3f} m PLAN; min {minimum:g} m'
+            text=(f'{value:.3f} m REFERENCE ANCHORS ONLY; no clearance threshold' if axis=='reference-distance' else
+                  f'{value:.3f} m SURFACE EDGE' if minimum is None else f'{value:.3f} m PLAN; min {minimum:g} m')
             # Keep dense measurements in the shared measured/wrapped legend.
             # Paper-offset rails around tiny adjacent edges cannot establish
             # readable placement merely by sharing a fixed offset. The legend
@@ -296,7 +298,9 @@ def render_model_site_body(model,sheet,*,source_files,drawing,dimension_offset_m
                              'target_id':row['target_id'],'basis':row['reference_basis'],'value_m':value,'minimum_m':minimum,
                              'presentation':'measured_legend','endpoints':endpoints})
         summary=(f'{row["requirement_id"]}: '+
-                 (f'{row["distance_m"]:.3f} m {row["reference_basis"]}; supplied min {row["minimum_m"]:g} m; geometric evidence only.'
+                 (f'{row["distance_m"]:.3f} m {row["reference_basis"]}; '+
+                  (f'supplied min {row["minimum_m"]:g} m; geometric evidence only.' if row['minimum_m'] is not None else
+                   'informational anchors only; no enclosure-clearance comparison.')
                   if row['distance_m'] is not None else row.get('reason','Measurement unresolved.')))
         attachment=source or target or next(iter(features),None)
         if attachment is None and measurement_notes:raise ContractError('measurement legend requires a projected canonical owner')

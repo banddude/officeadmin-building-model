@@ -30,12 +30,18 @@ def test_companion_inputs_are_independent_synthetic_canonical_facts(tmp_path):
     assert all(record.scale_denominator==100. for feature in model.site_features for record in feature.evidence)
 
 
-def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path):
+@pytest.mark.parametrize('reference_only',[False,True])
+def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,reference_only):
     from oabm.drawings.company_sheets import resolve_company_sheet_set,render_company_sheet_svg
     from oabm.drawings.model_utility import render_model_site_body
     before,_=example.prepare(tmp_path/'inputs')
     request=json.loads(before.read_text());root=before.parent
-    model=BuildingModel.from_json((root/'model.json').read_bytes());original=model.to_json()
+    model=BuildingModel.from_json((root/'model.json').read_bytes())
+    if reference_only:
+        from dataclasses import replace
+        model=replace(model,site_requirements=tuple(replace(row,kind='horizontal_reference_distance',minimum_m=None)
+            if row.kind=='minimum_horizontal_separation' else row for row in model.site_requirements))
+    original=model.to_json()
     sheet=next(row for row in resolve_company_sheet_set(root/'profile.json',root/'job.json').sheets if row.id=='U1')
     body,receipt=render_model_site_body(model,sheet,source_files={key:root/path for key,path in request['sources'].items()},drawing=request['site']['drawing'])
     # Actual shared renderer verifies finite page bounds and measured ink.
@@ -48,7 +54,11 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path):
     for row in bindings:
         assert row['presentation']=='measured_legend' and len(row['endpoints'])==2
         assert row['dimension_id'] in notes and row['source_id'] in notes and row['target_id'] in notes
-    assert 'SURFACE EDGE' in notes and 'min 0.5 m' in notes
+    assert 'SURFACE EDGE' in notes
+    if reference_only:
+        assert 'REFERENCE ANCHORS ONLY' in notes and 'min 0.5 m' not in notes
+        assert all('meets_supplied_horizontal_minimum' not in row for row in receipt['projection']['measurement_requirements'])
+    else:assert 'min 0.5 m' in notes
     assert all(not view['dimensions'] for view in receipt['drawing']['views'])
     assert model.to_json()==original
 

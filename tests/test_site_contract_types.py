@@ -101,4 +101,12 @@ def test_integrated_service_facts_are_one_owner_and_unknown_stays_unknown():
     assert facts.main_lug_only is None and facts.circuit_positions is None
     with pytest.raises(ContractError):replace(facts,main_lug_only=True)
     with pytest.raises(ContractError):replace(facts,continuous_meter_rating_a=250.)
+
+
+@pytest.mark.parametrize('field,value',[('minimum_m',1.),('width_m',1.),('depth_m',1.),('orientation_radians',0.),('reference_basis','envelope_to_envelope')])
+def test_informational_reference_distance_cannot_carry_clearance_rules(field,value):
+    row=SiteRequirement(id='requirement:reference',kind='horizontal_reference_distance',
+        source_id='site:gas',target_id='service:main',reference_basis='point_to_point')
+    assert row.minimum_m is None
+    with pytest.raises(ContractError):replace(row,**{field:value})
     with pytest.raises(ContractError):replace(facts,circuit_positions=True)

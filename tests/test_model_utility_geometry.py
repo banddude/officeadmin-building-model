@@ -62,6 +62,35 @@ def test_unknown_extent_is_unresolved_for_envelope_separation(tmp_path):
     assert 'meets_supplied_horizontal_minimum' not in measured
 
 
+def test_informational_anchor_distance_stays_separate_from_unknown_enclosure_rule(tmp_path):
+    import json
+    from pathlib import Path
+    from jsonschema import Draft202012Validator,ValidationError
+    import pytest
+    model,sources=placed_model(tmp_path,size=False)
+    gas=SiteFeature(id='site:gas',kind='gas_location',status='existing',geometry=geometry('point',[(6,3)]),
+        extent_basis='source_marker',evidence=model.site_features[0].evidence)
+    reference=SiteRequirement(id='requirement:reference',kind='horizontal_reference_distance',source_id=gas.id,
+        target_id='service:main',reference_basis='point_to_point')
+    clearance=SiteRequirement(id='requirement:clearance',kind='minimum_horizontal_separation',source_id=gas.id,
+        target_id='service:main',reference_basis='envelope_to_envelope',minimum_m=1.)
+    model=replace(model,site_features=(*model.site_features,gas),site_requirements=(reference,clearance))
+    _,receipt=project_model_site(model,source_files=sources,drawing=DRAWING)
+    rows={row['requirement_id']:row for row in receipt['measurement_requirements']}
+    assert rows[reference.id]['distance_m']==3 and rows[reference.id]['status']=='coordinate_measurement_only'
+    assert rows[clearance.id]['distance_m'] is None and rows[clearance.id]['status']=='unresolved'
+    assert all('meets_supplied_horizontal_minimum' not in row for row in rows.values())
+    assert rows[reference.id]['minimum_m'] is None and rows[reference.id]['engineering_approval'] is False
+    assert rows[reference.id]['source_id']==gas.id and rows[reference.id]['target_id']=='service:main'
+    assert receipt['source_sha256'] and receipt['model_sha256']
+    decoded=type(model).from_json(model.to_json())
+    assert decoded.site_requirements[0].kind=='horizontal_reference_distance'
+    schema=json.loads((Path(__file__).parents[1]/'contracts/oabm-model-v1.8.schema.json').read_text())
+    validator=Draft202012Validator(schema);document=model.to_dict();validator.validate(document)
+    document['site_requirements'][0]['minimum_m']=1.
+    with pytest.raises(ValidationError):validator.validate(document)
+
+
 def test_working_rectangle_requires_known_front_and_enclosure_interface(tmp_path):
     model,sources=placed_model(tmp_path)
     surface=SiteFeature(id='site:surface',kind='working_surface',status='proposed',owner_id='service:main',

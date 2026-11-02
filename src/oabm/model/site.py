@@ -207,7 +207,12 @@ class SiteRequirement(Entity):
         if self.source_id==self.target_id:
             raise ContractError('site requirement must reference distinct owners')
         if self.orientation_radians is not None:_number(self.orientation_radians,'working surface orientation_radians')
-        if self.kind=='minimum_horizontal_separation':
+        if self.kind=='horizontal_reference_distance':
+            if self.reference_basis!='point_to_point':
+                raise ContractError('horizontal reference distance requires point-to-point anchors')
+            if any(value is not None for value in (self.minimum_m,self.width_m,self.depth_m,self.orientation_radians)):
+                raise ContractError('horizontal reference distance forbids minimum, width, depth and orientation')
+        elif self.kind=='minimum_horizontal_separation':
             if not isinstance(self.reference_basis,str) or self.reference_basis not in {'point_to_point','anchor_to_boundary','envelope_to_envelope'}:
                 raise ContractError('site separation requires an explicit geometric reference basis')
             _number(self.minimum_m,'site separation minimum_m',positive=True)

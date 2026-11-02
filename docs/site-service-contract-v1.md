@@ -134,3 +134,17 @@ normalizes float-typed fields to floats. Numeric values and identities roundtrip
 typed-decoded serialization is stable on subsequent roundtrips. Source hashes bind
 the actual admitted snapshot bytes, not an assumed equivalence between integer
 and float spellings. No legacy serializer normalization is introduced.
+
+### Informational anchor reference distance
+
+`SiteRequirement.kind = "horizontal_reference_distance"` is an informational
+point-to-point measurement between explicit canonical owners. It requires
+`reference_basis = "point_to_point"` and forbids non-null minimum, width, depth
+and orientation fields. Null optional fields retain ordinary serialization.
+Unknown anchors remain unresolved. Known anchors produce coordinate-only
+distance with owner/evidence/model bindings and never a
+`meets_supplied_horizontal_minimum` boolean. Its measured-legend label explicitly
+says REFERENCE ANCHORS ONLY, without a clearance threshold. A separate minimum
+enclosure separation can remain unresolved alongside it; the informational
+measurement cannot satisfy that requirement. Existing minimum-separation and
+working-surface admission rules are unchanged. Older schema files are unchanged.

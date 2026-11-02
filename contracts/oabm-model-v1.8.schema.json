@@ -5086,7 +5086,8 @@
         "kind": {
           "enum": [
             "minimum_horizontal_separation",
-            "working_surface_for"
+            "working_surface_for",
+            "horizontal_reference_distance"
           ]
         },
         "minimum_m": {
@@ -5157,7 +5158,40 @@
         "target_id",
         "reference_basis"
       ],
-      "type": "object"
+      "type": "object",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "horizontal_reference_distance"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reference_basis": {
+                "const": "point_to_point"
+              },
+              "minimum_m": {
+                "type": "null"
+              },
+              "width_m": {
+                "type": "null"
+              },
+              "depth_m": {
+                "type": "null"
+              },
+              "orientation_radians": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     },
     "SiteSourceEvidence": {
       "additionalProperties": false,

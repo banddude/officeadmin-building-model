@@ -94,11 +94,13 @@ def _pretty(document):
 
 def _cell(value):
     # Markdown summary is presentation only; source-bound JSON retains originals.
-    text = html.escape(str(value).replace('\r', ' ').replace('\n', ' '))
-    # Keep HTML entities intact; escape Markdown punctuation (including URL
-    # delimiters) so receipt text cannot become images, links or formatting.
-    controls = set(string.punctuation) - {'&', ';'}
-    return ''.join('\\' + char if char in controls else char for char in text)
+    text = str(value).replace('\r', ' ').replace('\n', ' ')
+    # Escape Markdown first, then encode HTML, so generated numeric entities
+    # (for example an apostrophe's &#x27;) are never escaped a second time.
+    # HTML delimiters/quotes are handled by html.escape rather than backslashes.
+    controls = set(string.punctuation) - {'&', ';', '<', '>', '"', "'"}
+    escaped = ''.join('\\' + char if char in controls else char for char in text)
+    return html.escape(escaped)
 
 
 def retain_delivery(output, model, request, cases, *, fictional=False):

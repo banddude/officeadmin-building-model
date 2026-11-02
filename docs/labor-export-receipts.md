@@ -184,3 +184,8 @@ root, and a failed rename removes only the empty reservation. Existing outputs
 are never overwritten; failures still propagate through the reference packet.
 The retained companion receipt is now
 `attempt/labor-example/delivery/MANIFEST.json`, with its readable summary beside it.
+
+Markdown punctuation is escaped before HTML encoding. Generated apostrophe
+entities therefore retain their original form instead of acquiring an escaped
+`#`; a combined apostrophe/image/link source case is retained in source coverage.
+The staged publication layout and hook paths are unchanged.

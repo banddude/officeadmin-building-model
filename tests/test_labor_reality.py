@@ -545,3 +545,19 @@ def test_export_reader_shared_structure_scan_runs_before_json_parser(tmp_path, m
                 '{"number":' + '1' * 129 + '}'):
         path.write_text(raw)
         with pytest.raises(ContractError, match='admission'): read_labor_json(path)
+
+
+def test_demo_summary_apostrophe_and_malicious_markdown_remain_literal():
+    # The example is an independent feature consumer; test coverage may import
+    # it, while the example never imports a test module. Execution remains held.
+    import importlib.util
+    path = Path(__file__).resolve().parents[1] / 'examples/labor_reality.py'
+    spec = importlib.util.spec_from_file_location('fictional_labor_demo', path)
+    demo = importlib.util.module_from_spec(spec); spec.loader.exec_module(demo)
+    source = "Installer's ![x](https://example.invalid/image) [link](https://example.invalid/page) <tag>"
+    escaped = demo._cell(source)
+    assert "Installer&#x27;s" in escaped
+    assert '&\\#x27;' not in escaped
+    assert r'\!\[x\]\(' in escaped and r'\[link\]\(' in escaped
+    assert r'https\:\/\/example\.invalid\/image' in escaped
+    assert '&lt;tag&gt;' in escaped and '<tag>' not in escaped

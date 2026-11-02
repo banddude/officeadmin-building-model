@@ -78,13 +78,18 @@ def test_all_public_consumers_refuse_before_other_work(physical_model, module, n
 
 @pytest.mark.parametrize('module,name', [('qa.revision_diff', 'build_revision_diff')])
 @pytest.mark.parametrize('physical_side', ['before', 'after'])
-def test_comparisons_refuse_either_snapshot(physical_model, module, name, physical_side):
+def test_comparisons_include_either_physical_snapshot(physical_model, module, name, physical_side):
     function = getattr(importlib.import_module('oabm.' + module), name)
     legacy = replace(physical_model, routes=())
     pair = (physical_model, legacy) if physical_side == 'before' else (legacy, physical_model)
     frozen = tuple(m.to_json() for m in pair)
-    with pytest.raises(ContractError, match='does not support physical routes'):
-        function(*pair)
+    report = function(*pair)
+    status = 'removed' if physical_side == 'before' else 'added'
+    changes = [row for row in report.changes if row.collection == 'routes']
+    assert {row.entity_id for row in changes} == {route.id for route in physical_model.routes}
+    assert all(row.change == status and row.document for row in changes)
+    lengths = [row for row in report.quantity_deltas if row.category == 'route_length']
+    assert lengths and all(row.status == status for row in lengths)
     assert tuple(m.to_json() for m in pair) == frozen
 
 

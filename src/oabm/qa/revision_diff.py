@@ -35,7 +35,6 @@ viewer, and it does not claim to reconcile identities across sources.
 
 from __future__ import annotations
 
-from oabm.model import reject_physical_routes
 import dataclasses
 import hashlib
 import json
@@ -44,7 +43,7 @@ from dataclasses import dataclass, fields as dataclass_fields
 from typing import Any, Iterable, Mapping, get_args, get_origin, get_type_hints
 
 from oabm.model.assemblies import AssemblyRecord
-from oabm.model import BuildingModel, Entity
+from oabm.model import BuildingModel, Entity, PhysicalRoute
 from oabm.quantities import extract_quantities
 
 #: Version of the portable diff document. Bump on breaking changes to its
@@ -132,10 +131,84 @@ def _normalized_document(entity: Entity) -> dict[str, Any]:
     """
 
     document = _entity_document(entity)
+    if isinstance(entity, PhysicalRoute):
+        return _normalize_physical_provenance(document)
     provenance = document.get("provenance")
     if isinstance(provenance, (list, tuple)):
         document["provenance"] = sorted(provenance, key=_provenance_sort_key)
     return document
+
+
+def _normalize_physical_provenance(value):
+    """Normalize canonical evidence order, leaving opaque attributes untouched."""
+    if isinstance(value, dict):
+        return {
+            key: child if key == "attributes" else
+                sorted(child, key=_provenance_sort_key) if key == "provenance" else
+                _normalize_physical_provenance(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_physical_provenance(child) for child in value]
+    return value
+
+
+def _physical_classes(path):
+    # Reuse the existing physical comparison's ownership/metadata boundaries.
+    # In particular, user attribute keys never become canonical field names.
+    from oabm.reports.physical_route_revisions import _category
+    category = _category(path)
+    opaque = path.index("attributes") if "attributes" in path else len(path)
+    if "provenance" in path[:opaque] or "confidence" in path[:opaque]:
+        return (_CLASS_PROVENANCE,)
+    if opaque < len(path):
+        return (_CLASS_ATTRIBUTE,)
+    if category in {"identity", "connectivity"}:
+        return (_CLASS_GRAPH,)
+    if path[0] == "context":
+        if path[1:2] in (("start_port_id",), ("end_port_id",)):
+            return (_CLASS_GRAPH,)
+        if path[1:2] == ("route_type",):
+            return (_CLASS_PRODUCT,)
+        return (_CLASS_PROVENANCE,)  # retained source/request identity and hashes
+    if path[0] == "requirements":
+        if path[1:2] == ("name",):
+            return (_CLASS_ATTRIBUTE,)
+        if path[1:2] in (("outside_diameter_m",), ("centerline_radius_m",)):
+            return (_CLASS_GEOMETRY,)
+        return (_CLASS_PRODUCT,)  # supplied constraints, no engineering inference
+    if category in {"path_geometry", "outside_diameter"} or path[0] == "geometry_kind":
+        return (_CLASS_GEOMETRY,)
+    return _change_classes(path[0])
+
+
+def _physical_field_changes(before, after):
+    """Existing recursive physical comparison, under the canonical diff schema."""
+    from oabm.reports.physical_route_revisions import _changes
+    paths = set()
+    for change in _changes(before, after):
+        path = tuple(change["path"])
+        # Keep evidence records and opaque dictionaries whole. Their exact
+        # before/after containers preserve missing-vs-null keys without adding
+        # presence flags to the established FieldChange contract.
+        for index, key in enumerate(path):
+            if key in {"provenance", "attributes"}:
+                path = path[:index + 1]
+                break
+        paths.add(path)
+    def value_at(document, path):
+        value = document
+        for key in path:
+            if isinstance(value, (tuple, list)):
+                value = value[int(key)]
+            elif isinstance(value, dict) and key in value:
+                value = value[key]
+            else:
+                return None
+        return value
+    return [FieldChange(path=".".join(path), change_classes=_physical_classes(path),
+                        before=value_at(before, path), after=value_at(after, path))
+            for path in sorted(paths)]
 
 
 def _require_comparable(base: BuildingModel, target: BuildingModel) -> None:
@@ -487,12 +560,18 @@ def build_revision_diff(base: BuildingModel, target: BuildingModel) -> RevisionD
     """Diff two comparable snapshots of one model, with quantity deltas.
 
     Neither snapshot is read destructively, and both are revalidated by the
-    quantities lane as a side effect of the real takeoff on each.
+    quantities lane as a side effect of the real takeoff on each. Physical
+    inputs additionally use the existing bounded detached snapshot admission;
+    source/request hashes are retained, never repaired or treated as live proof.
     """
 
-    reject_physical_routes(base, "build_revision_diff")
-    reject_physical_routes(target, "build_revision_diff")
     _require_comparable(base, target)
+    if any(isinstance(route, PhysicalRoute) for model in (base, target) for route in model.routes):
+        # Reuse bounded detached physical admission. This validates the retained
+        # request/geometry without rewriting or guessing a current source hash.
+        from oabm.reports.physical_routes import _snapshot
+        base, _ = _snapshot(base)
+        target, _ = _snapshot(target)
     base_collections = _entity_collections(base)
     target_collections = _entity_collections(target)
     if set(base_collections) != set(target_collections):
@@ -533,20 +612,19 @@ def build_revision_diff(base: BuildingModel, target: BuildingModel) -> RevisionD
             before_doc = _normalized_document(base_entities[entity_id])
             after_doc = _normalized_document(target_entities[entity_id])
             field_changes: list[FieldChange] = []
-            classes: set[str] = set()
-            for field_name in sorted(set(before_doc) | set(after_doc)):
-                before_value = before_doc.get(field_name)
-                after_value = after_doc.get(field_name)
-                if _canonical_json(before_value) == _canonical_json(after_value):
-                    continue
-                field_classes = _change_classes(field_name)
-                classes.update(field_classes)
-                field_changes.append(FieldChange(
-                    path=field_name,
-                    change_classes=field_classes,
-                    before=before_value,
-                    after=after_value,
-                ))
+            if isinstance(base_entities[entity_id], PhysicalRoute) or isinstance(target_entities[entity_id], PhysicalRoute):
+                field_changes = _physical_field_changes(before_doc, after_doc)
+            else:
+                for field_name in sorted(set(before_doc) | set(after_doc)):
+                    before_value = before_doc.get(field_name)
+                    after_value = after_doc.get(field_name)
+                    if _canonical_json(before_value) == _canonical_json(after_value):
+                        continue
+                    field_changes.append(FieldChange(
+                        path=field_name, change_classes=_change_classes(field_name),
+                        before=before_value, after=after_value,
+                    ))
+            classes = {value for field in field_changes for value in field.change_classes}
             if field_changes:
                 ordered_classes = [
                     value for value in (

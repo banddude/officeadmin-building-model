@@ -1,8 +1,10 @@
 # Physical route revision comparison
 
 This opt-in report under #235 compares two complete normalized canonical
-snapshots by stable route ID. It does not call or change `build_revision_diff`,
-whole-model quantities, saved-review comparisons, or the OfficeAdmin app.
+snapshots by stable route ID. It remains a separate exact physical inventory;
+`build_revision_diff` now also supports mixed physical/legacy/assembly models
+with whole-model quantity deltas. Saved-review comparisons and the OfficeAdmin
+app remain separate. See [canonical revision diff](revision-diff.md).
 
 ```sh
 PYTHONPATH=src python -m oabm.reports.physical_route_revisions before.json after.json fresh-output

@@ -61,8 +61,9 @@ def _layout(model, view, scale):
             owner = owners[identity][0]
             texts.setdefault(identity,[owner.name or getattr(owner,'device_type',None) or
                 getattr(owner,'box_type',None) or getattr(owner,'equipment_type',None) or getattr(owner,'route_type','')])
-            if owners[identity][1]=='R' and f'{owner.route_type} route' not in texts[identity]:
-                texts[identity].append(f'{owner.route_type} route')
+            route_caption=f'{getattr(owner,"route_type","physical centerline")} route'
+            if owners[identity][1]=='R' and route_caption not in texts[identity]:
+                texts[identity].append(route_caption)
     if len(texts)>128:
         raise ValueError('as-built presentation supports at most 128 callout owners per plan')
     if sum(len(text) for labels in texts.values() for text in labels)>32768 or any(

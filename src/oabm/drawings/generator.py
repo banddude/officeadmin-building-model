@@ -496,7 +496,10 @@ def _generate_plan_base(
         from oabm.model.layers import _route_level_id
         unknown = sorted(route.id for route in model.routes if isinstance(route,PhysicalRoute)
                          and _route_level_id(model,route) is None)
-        metadata += (("physical_geometry","horizontal analytic XY centerline; no OD or clearance envelope; no partial XY crop"),
+        physical_scope=("analytic XY centerline; nonhorizontal segments are finite-story projections only; no OD or clearance envelope; no partial XY crop"
+            if any(isinstance(route,PhysicalRoute) and len({joint.position.z for joint in route.joints})>1 for route in entities)
+            else "horizontal analytic XY centerline; no OD or clearance envelope; no partial XY crop")
+        metadata += (("physical_geometry",physical_scope),
                      ("physical_routes_unknown_level",",".join(unknown)))
     if overlap != "keep":
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
@@ -1112,8 +1115,8 @@ def _entity_primitives(
     elif isinstance(entity, PhysicalRoute):
         from .route_arcs import physical_plan_primitives
         if view_type != "plan":
-            raise ValueError("physical route DrawingViews support explicit horizontal XY plans only")
-        result.extend(physical_plan_primitives(entity,frame,bounds))
+            raise ValueError("physical route DrawingViews support explicit XY plans only")
+        result.extend(physical_plan_primitives(entity,frame,bounds,depth_interval=depth_interval))
     elif isinstance(entity, Route):
         fragments3 = (
             clip_polyline_depth(
@@ -1423,9 +1426,12 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
             # Real clipping below admits every traversed story, including an
             # intermediate story with neither endpoint and an out-and-back run.
             return True
+        from .route_arcs import physical_story_segments
         result.extend(item for item in model.routes if
             level_admitted(item) and
-            (min_z <= item.joints[0].position.z <= max_z and _route_level_id(model,item) in {None,level_id} if isinstance(item,PhysicalRoute)
+            (bool(physical_story_segments(item,min_z,max_z)) and
+             (route_level_policy=='traversed_stories' or len({joint.position.z for joint in item.joints})>1 or
+              _route_level_id(model,item) in {None,level_id}) if isinstance(item,PhysicalRoute)
              else _polyline_z_overlap(item.centerline,min_z,max_z)))
         route_ids = {item.id for item in result if isinstance(item, Route)}
         result.extend(item for item in model.route_fittings if item.route_id in route_ids and
@@ -1548,6 +1554,10 @@ def _label_anchor(
     depth_interval: tuple[float, float] | None = None,
 ) -> Point2 | None:
     if isinstance(entity, PhysicalRoute):
+        if depth_interval is not None:
+            from .route_arcs import physical_story_segments
+            fragments=physical_story_segments(entity,depth_interval[0]+frame.origin.z,depth_interval[1]+frame.origin.z)
+            return frame.project(fragments[0][2])[0] if fragments else None
         return frame.project(entity.joints[0].position)[0]
     if isinstance(entity, Wall):
         points, _ = project_points(frame, entity.centerline.points)

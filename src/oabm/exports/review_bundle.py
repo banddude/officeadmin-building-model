@@ -72,17 +72,21 @@ def _entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:
     hints = get_type_hints(type(model))
     collections: dict[str, tuple[Entity, ...]] = {}
     for field_info in fields(model):
+        if field_info.name in {"building_assemblies", "assembly_components"} and not (model.building_assemblies or model.assembly_components):
+            continue
         hint = hints[field_info.name]
         args = get_args(hint)
         if (
             get_origin(hint) is tuple
             and args
-            and (field_info.name == "routes" or (
+            and (field_info.name in {"routes", "building_assemblies", "assembly_components"} or (
                 isinstance(args[0], type) and issubclass(args[0], Entity)
             ))
         ):
             values = getattr(model, field_info.name)
-            if not isinstance(values, tuple) or any(not isinstance(item, Entity) for item in values):
+            from oabm.model.assemblies import BuildingAssembly, AssemblyComponent
+            allowed = BuildingAssembly if field_info.name == "building_assemblies" else AssemblyComponent if field_info.name == "assembly_components" else Entity
+            if not isinstance(values, tuple) or any(not isinstance(item, allowed) for item in values):
                 raise ValueError(f"canonical collection {field_info.name!r} is malformed")
             collections[field_info.name] = values
     if not collections:
@@ -218,7 +222,7 @@ def _decode_confidence_manifest(
 
 
 def _verify_confidence_manifest(
-    model: BuildingModel, manifest: ConfidenceReviewManifest, *, physical_routes: bool = False,
+    model: BuildingModel, manifest: ConfidenceReviewManifest, *, physical_routes: bool = False, building_assemblies: bool = False,
 ) -> str:
     if manifest.model_id != model.model_id:
         raise ValueError("confidence review model_id does not match canonical model")
@@ -234,7 +238,7 @@ def _verify_confidence_manifest(
     )
     expected = build_confidence_review(
         model, ReviewConfig(manifest.confidence_threshold), evidence=evidence,
-        physical_routes=physical_routes,
+        physical_routes=physical_routes, building_assemblies=building_assemblies,
     )
     canonical = manifest.to_json(indent=None)
     if expected.to_json(indent=None) != canonical:
@@ -378,7 +382,7 @@ def _node_index(
 
 
 def _verify_expected_rendered_nodes(
-    model: BuildingModel, node_indices: Mapping[str, list[int]], *, include_obstacles: bool = False,
+    model: BuildingModel, node_indices: Mapping[str, list[int]], *, include_obstacles: bool = False, semantic_parents: bool = False,
 ) -> None:
     """Require every exporter-supported canonical entity and wire instance."""
     expected: dict[str, int] = {}
@@ -396,6 +400,14 @@ def _verify_expected_rendered_nodes(
     if model.schema_version in FITTING_SCHEMA_VERSIONS:
         for fitting in model.route_fittings:
             expected[fitting.id] = 1
+    if semantic_parents:
+        from oabm.model.layers import _universe
+        expected={identity:1 for identity in _universe(model,include_obstacles=include_obstacles)}
+    elif model.building_assemblies:
+        aggregate_hosts={assembly.host_id for assembly in model.building_assemblies
+            if assembly.assembly_kind=="wall" and assembly.host_representation=="aggregate_host"}
+        expected={identity:count for identity,count in expected.items() if identity not in aggregate_hosts}
+        expected.update({component.id:1 for component in model.assembly_components})
     for conductor in model.conductors:
         wire_count = conductor.count * len(dict.fromkeys(conductor.route_ids))
         if wire_count:
@@ -452,6 +464,7 @@ def build_review_bundle(
     source_reference_mapping_reference: str,
     source_references: Mapping[tuple[str, str], str],
     glb_options: Mapping[str, Any] | None = None,
+    building_assemblies: bool = False,
 ) -> ReviewBundle:
     """Bind canonical review facts to a verified GLB and caller artifact refs.
 
@@ -466,7 +479,13 @@ def build_review_bundle(
     if not isinstance(glb_options, Mapping) or glb_options.get("physical_routes") is not True:
         reject_physical_routes(model, "build_review_bundle")
     export_args, export_options = _normalize_glb_options(glb_options)
-    require_no_populated_building_assemblies(model, "build_review_bundle")
+    if type(building_assemblies) is not bool:
+        raise ValueError("building_assemblies must be a boolean")
+    if not building_assemblies:
+        require_no_populated_building_assemblies(model, "build_review_bundle")
+    else:
+        from oabm.model import validate_model
+        validate_model(model)
     refs = {
         "model": _reference(model_reference, "model_reference"),
         "glb": _reference(glb_reference, "glb_reference"),
@@ -483,7 +502,7 @@ def build_review_bundle(
     model_sha = canonical_model_sha256(model)
     entities, serialized_entities = _canonical_entity_index(model)
     manifest_sha = _verify_confidence_manifest(
-        model, manifest, physical_routes=export_args["physical_routes"],
+        model, manifest, physical_routes=export_args["physical_routes"], building_assemblies=building_assemblies,
     )
     from oabm.exports.gltf import build_glb_bytes
 
@@ -499,7 +518,7 @@ def build_review_bundle(
 
     node_indices = _node_index(glb_document, entities)
     _verify_expected_rendered_nodes(
-        model, node_indices, include_obstacles=export_args["include_obstacles"],
+        model, node_indices, include_obstacles=export_args["include_obstacles"], semantic_parents=bool(export_args["groups"]),
     )
     if glb_bytes != trusted_glb_bytes:
         raise ValueError("GLB bytes do not match the trusted canonical export and supplied display options")

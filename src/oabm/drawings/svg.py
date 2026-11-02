@@ -68,6 +68,9 @@ def paper_text_height_m(scale: float, paper_height_m: float = _LABEL_TEXT_HEIGHT
 
 def _primitive_svg(primitive: DrawingPrimitive, view: DrawingView, ppu: float, font_size: str | None) -> str:
     attrs = _attrs(primitive)
+    if primitive.style.stroke == "ghost":
+        fill_style = ";fill:#a6adb8" if primitive.kind == "text" else ""
+        attrs += f' style="color:#a6adb8;opacity:0.35{fill_style}"'
     if primitive.kind in {"line", "polyline", "polygon"}:
         points = " ".join(_svg_point(point, view, ppu) for point in primitive.points)
         tag = "polygon" if primitive.closed or primitive.kind == "polygon" else "polyline"

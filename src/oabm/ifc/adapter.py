@@ -46,6 +46,7 @@ from oabm.model import (
     SUPPORTED_SCHEMA_VERSIONS,
     Box3D,
     BuildingModel,
+    PresetResolution,
     Point3,
     Polyline3D,
     Pose,
@@ -182,6 +183,8 @@ def to_ifc(
     groups: Mapping[str, Iterable[str]] | None = None,
     element_status: Mapping[str, str] | None = None,
     assembly_geometry: str | None = None,
+    layer_resolution: PresetResolution | None = None,
+    layer_delivery: Any = None,
 ) -> ifcopenshell.file:
     """Materialize a canonical model as IFC4 suitable for Bonsai editing.
 
@@ -269,6 +272,11 @@ def to_ifc(
     default export without the option ever being present.
     """
 
+    if layer_delivery is not None:
+        from oabm.exports.layer_memberships import verify_layer_delivery
+        model,_,bound_resolution=verify_layer_delivery(model,layer_delivery)
+        if layer_resolution is not None and layer_resolution!=bound_resolution:
+            raise ValueError("IFC resolution disagrees with source-bound saved request")
     reject_physical_routes(model, "to_ifc")
     if assembly_geometry not in (None, "tessellated"):
         raise IfcAdapterError("assembly_geometry: use None or explicit 'tessellated'")
@@ -1019,6 +1027,16 @@ def to_ifc(
             f"for ports {mismatched!r}"
         )
 
+    if layer_delivery is not None:
+        from oabm.exports.layer_memberships import verify_layer_delivery, assign_ifc_named_layers
+        _, _, bound_resolution = verify_layer_delivery(model, layer_delivery)
+        if layer_resolution is not None and layer_resolution != bound_resolution:
+            raise ValueError("IFC resolution disagrees with source-bound saved request")
+        layer_resolution = bound_resolution
+        assign_ifc_named_layers(ifc, model, layer_delivery, entity_ifc)
+    if layer_resolution is not None:
+        from oabm.exports.layer_presentation import assign_ifc_layer_selection
+        assign_ifc_layer_selection(ifc, model, layer_resolution, entity_ifc)
     _finalize_deterministic_bytes(ifc)
 
     if destination is not None:

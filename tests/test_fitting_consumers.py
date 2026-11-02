@@ -13,7 +13,7 @@ from oabm.electrical.fittings import select_route_fittings
 from oabm.exports.gltf import build_glb_bytes
 from oabm.exports.review_bundle import _parse_glb_document, _canonical_entity_index, _node_index, _verify_expected_rendered_nodes
 from oabm.ifc.adapter import (CANONICAL_PSET, IfcAdapterError, _point_on_segment,
-    _placement_3d, _property_set, from_ifc, to_ifc)
+    _placement_3d, _property_set, canonical_id_to_ifc_guid, from_ifc, to_ifc)
 from oabm.model import BuildingModel, Level, Point3, Size3
 from oabm.model.layers import LayerDefinition, LayerSelectionConfig, SavedPreset, resolve_preset
 from oabm.exports.layers import layer_glb_plan
@@ -214,7 +214,48 @@ def test_drawing_schedules_and_layer_adapter_use_existing_fitting_envelope():
     ghost_resolution = resolve_preset(ghost_config, model, preset="preset:fittings-ghost",
                                       unassigned="visible")
     ghost_plan = layer_glb_plan(model, ghost_resolution)
-    assert ghost_plan.unsupported_ghost_ids == ("fitting:one",)
+    assert ghost_plan.unsupported_ghost_ids == ()
+    payload = build_glb_bytes(model, groups=ghost_plan.groups, hidden_groups=ghost_plan.hidden_groups,
+        dimmed_ids=ghost_plan.dimmed_ids)
+    document = _glb_document(payload)
+    node = next(n for n in document["nodes"] if n["name"] == "fitting:one")
+    material = document["materials"][document["meshes"][node["mesh"]]["primitives"][0]["material"]]
+    assert material["alphaMode"] == "BLEND"
+    assert material["pbrMetallicRoughness"]["baseColorFactor"][3] == .3
+
+
+def test_ifc_layer_route_hiding_does_not_override_independent_fitting_ghost():
+    model = _selected(envelope=True)
+    route_id = model.routes[0].id
+    config = LayerSelectionConfig(layers=(
+        LayerDefinition(id="layer:route", name="Route", member_ids=(route_id,)),
+        LayerDefinition(id="layer:fitting", name="Fitting", member_ids=("fitting:one",)),
+    ), presets=(SavedPreset(id="preset:independent", name="Independent states",
+        hidden_layer_ids=("layer:route",), ghosted_layer_ids=("layer:fitting",)),))
+    resolution = resolve_preset(config, model, preset="preset:independent", unassigned="visible")
+    native = to_ifc(model, layer_resolution=resolution)
+    layers = {layer.Name.rsplit(":",1)[1]:layer for layer in native.by_type("IfcPresentationLayerWithStyle")}
+    fitting = _native_fitting(native)
+    fitting_items = {item for rep in fitting.Representation.Representations for item in rep.Items}
+    assert fitting_items
+    assert fitting_items <= set(layers["ghosted"].AssignedItems)
+    assert not fitting_items.intersection(layers["hidden"].AssignedItems)
+    route_items = {
+        item
+        for index in range(len(model.routes[0].centerline.points) - 1)
+        for rep in native.by_guid(canonical_id_to_ifc_guid(f"{route_id}#segment:{index}")).Representation.Representations
+        for item in rep.Items
+    }
+    assert route_items
+    assert route_items <= set(layers["hidden"].AssignedItems)
+    assert not route_items.intersection(layers["ghosted"].AssignedItems)
+    assert all(item.is_a("IfcGeometricRepresentationItem") or item.is_a("IfcMappedItem")
+               for layer in layers.values() for item in layer.AssignedItems)
+    assert layers["hidden"].LayerOn is False
+    assert layers["hidden"].LayerFrozen is True
+    assert layers["ghosted"].LayerOn is True
+    assert layers["ghosted"].LayerStyles[0].Styles[0].Transparency == pytest.approx(.82)
+    assert from_ifc(native).to_dict() == model.to_dict()
 
 
 def test_review_bundle_node_coverage_accepts_fitting_node():

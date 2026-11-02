@@ -72,3 +72,21 @@ fitting references to physical routes. Tessellated conduit display and supplied 
 meshes are review aids, not a new live clearance proof or engineering approval.
 The caller still provides authorized artifact and source references; this
 bridge does not upload anything or implement viewer transport.
+
+## Opt-in building assemblies and saved layer sidecar
+
+Populated canonical assemblies can be reviewed with explicit
+`building_assemblies=True` on both confidence review and bundle construction.
+This admits the existing typed assembly records into the canonical identity and
+provenance inventory, validates the full model, preserves actual quantity warnings,
+and verifies exact GLB re-export. State-group exports include semantic parent nodes
+and every physical child once; ungrouped physical previews omit duplicate aggregate
+host bodies. Default assembly refusals remain unchanged.
+
+For complete saved-layer handoff use `build_layer_review` / `read_layer_review`
+from `oabm.exports`. They retain the existing review-file schema and pair it with
+the existing selection-manifest sidecar, checking the same source/configuration,
+request, resolution and exact GLB along with the four original artifacts. See
+[layer selections](layer-selections.md) for native IFC/DXF memberships and bounded
+JSON admission. This is an engine transport feature, not proof that the current OA
+viewer accepts assemblies or implements saved selections.

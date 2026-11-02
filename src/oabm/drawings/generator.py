@@ -19,6 +19,7 @@ from oabm.model import (
     ElectricalEquipment,
     ElectricalBox,
     SupportComponent,
+    StructuralMember,
     SupportInterface,
     Entity,
     Level,
@@ -1021,6 +1022,11 @@ def _entity_primitives(
     elif isinstance(entity, SupportInterface):
         result.extend(_symbol_primitive(entity, frame, bounds,
                       Symbol("support_attachment", "attachment"), "electrical:support-interfaces"))
+    elif isinstance(entity, StructuralMember):
+        result.extend(_box_entity_primitives(entity.id, entity.pose, entity.size, frame, bounds,
+                      layer="structure:members", style=LineStyle(stroke="object")))
+        if view_type == "section" and _box_intersects_section(entity.pose, entity.size, frame):
+            result.extend(_box_section_cut(entity.id, entity.pose, entity.size, frame, bounds, layer="structure:members"))
     elif isinstance(entity, SupportComponent):
         result.extend(_box_entity_primitives(entity.id, entity.pose, entity.size, frame, bounds,
                       layer="electrical:supports", style=LineStyle(stroke="electrical", pattern="dash")))
@@ -1305,7 +1311,7 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
     if visibility.architecture:
         result.extend(
             item
-            for item in (*model.walls, *model.slabs, *model.ceilings, *model.openings)
+            for item in (*model.walls, *model.slabs, *model.ceilings, *model.openings, *model.structural_members)
             if _entity_on_level(item, level_id, model) and _entity_z_overlap(item, min_z, max_z)
         )
     if visibility.spaces:
@@ -1336,7 +1342,7 @@ def _spatial_entities(model: BuildingModel, level_ids: tuple[str, ...], visibili
         level_id = getattr(entity, "level_id", None)
         return not allowed or level_id is None or level_id in allowed or (isinstance(entity, Opening) and _opening_level(entity, model) in allowed)
     if visibility.architecture:
-        result.extend(item for item in (*model.walls, *model.slabs, *model.ceilings, *model.openings) if level_ok(item))
+        result.extend(item for item in (*model.walls, *model.slabs, *model.ceilings, *model.openings, *model.structural_members) if level_ok(item))
     if visibility.spaces:
         result.extend(item for item in model.spaces if level_ok(item))
     if visibility.electrical:
@@ -1392,7 +1398,7 @@ def _entity_points(entity: Entity, *, fitting_selection_by_id: Mapping[str, Enti
     if isinstance(entity, (Slab, Ceiling)): return entity.footprint.points
     if isinstance(entity, Opening): return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
     if isinstance(entity, SupportInterface): return (entity.pose.position,)
-    if isinstance(entity, (ElectricalEquipment, ElectricalDevice, ElectricalBox, SupportComponent)):
+    if isinstance(entity, (ElectricalEquipment, ElectricalDevice, ElectricalBox, SupportComponent, StructuralMember)):
         if entity.size is None: return (entity.pose.position,)
         return oriented_box_corners(entity.pose, entity.size.x, entity.size.y, entity.size.z)
     if isinstance(entity, Route): return entity.centerline.points
@@ -1649,7 +1655,7 @@ def _source_reference(entity: Entity) -> SourceReference:
 def _entities(model: BuildingModel) -> tuple[Entity, ...]:
     return (
         *model.levels, *model.spaces, *model.walls, *model.slabs, *model.ceilings,
-        *model.openings, *model.electrical_equipment, *model.electrical_devices,
+        *model.openings, *model.structural_members, *model.electrical_equipment, *model.electrical_devices,
         *model.ports, *model.obstacles, *model.route_constraints, *model.routes,
         *model.route_fittings, *model.circuits, *model.conductors,
         *model.electrical_boxes, *model.box_selection_outcomes,

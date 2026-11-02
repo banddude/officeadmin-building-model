@@ -250,16 +250,43 @@ def test_component_groups_and_caller_ghosting_apply_without_duplicates():
 
     # Grouping the suppressed wall host groups its owned wall parts and the
     # separately owned insert parts that point back to that parent wall.
+    # Layer selection also exposes the canonical host as one meshless node;
+    # group members count scene children, not physical material quantities.
     host_payload = build_glb_bytes(
         model, groups={"whole-wall": ("wall:north",)},
         hidden_groups=("whole-wall",),
     )
-    host_gltf, _ = _read_glb(host_payload)
+    host_gltf, host_binary = _read_glb(host_payload)
     host_nodes = {node["name"]: node for node in host_gltf["nodes"]}
     host_group = host_nodes["group:whole-wall"]
     child_names = {host_gltf["nodes"][index]["name"] for index in host_group["children"]}
-    assert host_group["extras"]["members"] == len(model.assembly_components)
-    assert child_names == {component.id for component in model.assembly_components}
+    component_ids = {component.id for component in model.assembly_components}
+    assert child_names == component_ids | {"wall:north"}
+    assert host_group["extras"]["members"] == len(component_ids) + 1
+    host = host_nodes["wall:north"]
+    assert "mesh" not in host
+    assert host["extras"]["canonical_id"] == "wall:north"
+    assert host["extras"]["canonical_type"] == "wall"
+    assert {host_gltf["nodes"][index]["name"] for index in host_group["children"]
+            if "mesh" in host_gltf["nodes"][index]} == component_ids
+
+    # Grouping adds semantic nodes only: identical binary geometry/mesh records
+    # and exactly the same mesh instances as the ordinary physical preview.
+    plain_gltf, plain_binary = _read_glb(build_glb_bytes(model))
+    assert host_binary == plain_binary
+    assert host_gltf["meshes"] == plain_gltf["meshes"]
+    assert Counter(node["name"] for node in host_gltf["nodes"] if "mesh" in node) == Counter(
+        node["name"] for node in plain_gltf["nodes"] if "mesh" in node)
+    assert all(sum(node["name"] == identity for node in host_gltf["nodes"]) == 1
+               for identity in component_ids | {"wall:north"})
+    reached = set()
+    pending = list(host_gltf["scenes"][host_gltf.get("scene", 0)]["nodes"])
+    while pending:
+        index = pending.pop()
+        assert index not in reached, "duplicate scene parent or cycle"
+        reached.add(index)
+        pending.extend(host_gltf["nodes"][index].get("children", ()))
+    assert reached == set(range(len(host_gltf["nodes"])))
 
 
 def test_glb_fails_closed_for_insert_without_aggregate_wall_void_geometry():

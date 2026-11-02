@@ -632,12 +632,14 @@ def _entity_collections(model: BuildingModel) -> dict[str, tuple[Entity, ...]]:
     hints = get_type_hints(type(model))
     result: dict[str, tuple[Entity, ...]] = {}
     for field_info in fields(model):
+        if field_info.name in {"building_assemblies", "assembly_components"} and not (model.building_assemblies or model.assembly_components):
+            continue
         hint = hints[field_info.name]
         arguments = get_args(hint)
         if (
             get_origin(hint) is tuple
             and arguments
-            and (field_info.name == "routes" or (
+            and (field_info.name in {"routes", "building_assemblies", "assembly_components"} or (
                 isinstance(arguments[0], type) and issubclass(arguments[0], Entity)
             ))
         ):
@@ -820,6 +822,7 @@ def build_confidence_review(
     *,
     evidence: Sequence[EvidenceReference] | None = None,
     physical_routes: bool = False,
+    building_assemblies: bool = False,
 ) -> ConfidenceReviewManifest:
     """Build the deterministic review manifest for ``model``.
 
@@ -863,7 +866,12 @@ def build_confidence_review(
         validate_model(model)
     if not isinstance(config, ReviewConfig):
         raise TypeError("config must be a ReviewConfig")
-    require_no_populated_building_assemblies(model, "build_confidence_review")
+    if type(building_assemblies) is not bool:
+        raise ValueError("building_assemblies must be a boolean")
+    if not building_assemblies:
+        require_no_populated_building_assemblies(model, "build_confidence_review")
+    else:
+        validate_model(model)
     threshold = config.confidence_threshold
     crops_by_entity = _validated_evidence(model, evidence)
 

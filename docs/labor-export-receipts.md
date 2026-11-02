@@ -128,3 +128,48 @@ and scalar token length **before** JSON parsing allocates containers. Labor's
 stricter detached request budget then applies to the decoded value. Duplicate-key
 and nonfinite-value refusals remain in place. FIFO/device and parser-order cases
 are added in source only; no local execution was performed.
+
+## Standalone retained-output demonstration
+
+`examples/labor_reality.py` is a standalone source consumer with no test-module
+imports. Once execution is authorized, its default command is:
+
+```sh
+PYTHONPATH=src:examples python examples/labor_reality.py FRESH_OUTPUT
+```
+
+It authors one tiny canonical synthetic model with two fictional luminaires,
+selects their original quantity contributions, consumes an external per-EA
+productivity standard, and submits two source-bound labor receipts plus one
+shared lift receipt. Each object has two base person-hours and four adjusted
+person-hours. One 400-cent receipt uses one-hour units; the other is an already
+400-cent total-hours operation. The 25-hour shared occurrence retains its explicit
+2-day provider contract and charges 1020 cents once. A second case lacks one crew
+price and must display `UNPRICED`, while retaining known effort and other amounts.
+The example refuses to retain a fictional success packet if these values differ.
+
+A caller can instead provide a complete exported case:
+
+```sh
+PYTHONPATH=src:examples python examples/labor_reality.py FRESH_OUTPUT \
+  --model MODEL.json --request REQUEST.json --receipts EXPORTED_RECEIPTS.json
+```
+
+All three files use bounded regular-file/pre-parser admission. The fresh output
+contains `model.json`, per-case exact `request.json` and `receipts.json`, source-bound
+`labor.json`/`labor.csv`, readable `SUMMARY.md`, structured `SUMMARY.json`, a
+`README.txt`, and a final hash/byte `MANIFEST.json`. The canonical source hash uses
+normalized model text; each retained file, including its trailing newline, also
+has its separate byte hash. Provider, revision, receipt provenance, price basis
+and unresolved labels remain visible. No grand total is invented for unpriced work.
+
+The reviewed reference-packet hook adds this as an independent sibling at
+`attempt/labor-example` with `attempt/LABOR-COMPANION.txt`, outside the sealed
+production coordinator delivery. The current CI artifact upload already retains
+the whole reference-output root, so no runner/workflow changes are needed.
+Failure propagates to the reference example. Models, quantities and amounts must
+not be combined across the labor, production and as-built companions.
+
+**Source only:** none of these commands has been run for this checkpoint. No
+retained runtime output or CI dispatch is claimed. Actual generation/output review
+must wait for dependency acceptance and release of the coordinated execution hold.

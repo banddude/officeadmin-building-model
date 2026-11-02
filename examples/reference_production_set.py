@@ -138,11 +138,12 @@ def prepare(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fal
     return request
 
 def generate(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=False,reference_cover=False):
-    """Generate the normal example packet and an independent reference companion.
+    """Generate the normal example packet and independent reference companions.
 
     The as-built example has its own canonical model, history and quantities.
-    Keep it outside the production coordinator's sealed delivery and propagate
-    its failures so the normal example command cannot claim both succeeded.
+    The fictional labor companion also has a separate canonical model. Keep both
+    outside the production coordinator's sealed delivery and propagate failures
+    so the normal example command cannot claim an unsuccessful companion passed.
     """
     root=Path(root);root.mkdir(parents=True,exist_ok=False)
     request=prepare(root/'inputs',variant=variant,pdf=pdf,profile=profile,
@@ -164,6 +165,18 @@ def generate(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fa
             'PDF-enabled normal examples retain full-sheet PNGs beside each delivery, with exact SVG/hash preview receipts. Visual review is still pending.\n'
             'Actual visual acceptance: PENDING. Retained SVGs are not a visual pass or engineering approval.\n'
             'As-built scope: explicit legacy quick edits; supported-object edits refused; physical products unresolved; nonhorizontal physical-route plans refused.\n',
+            encoding='utf-8')
+        from labor_reality import create_synthetic_delivery as create_labor_delivery
+        labor=create_labor_delivery(root/'attempt'/'labor-example')
+        (root/'attempt'/'LABOR-COMPANION.txt').write_text(
+            'INDEPENDENT FICTIONAL LABOR RECEIPT DEMONSTRATION\n'
+            'This companion has its own canonical model. Do not combine its quantities or amounts with production or as-built models.\n'
+            'Retained receipt: labor-example/MANIFEST.json\n'
+            'Readable results: labor-example/SUMMARY.md\n'
+            f'Labor canonical source SHA256: {labor["source_sha256"]}\n'
+            'Two objects share one hire occurrence; 400-cent labor receipts and the once-only 1020-cent occurrence are fictional.\n'
+            'A separate missing-input case remains explicitly UNPRICED.\n'
+            'Proposed receipt interchange only; no live OA integration. Actual output review and #234 acceptance remain pending.\n',
             encoding='utf-8')
     return delivery
 

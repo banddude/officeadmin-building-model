@@ -97,8 +97,16 @@ def _html(document):
     for line in LIMITATIONS:
         out.write('<li>'+text(line)+'</li>')
     out.write('</ul><nav><a href="#quantities">Quantity deltas</a> · <a href="#objects">Object changes</a> · <a href="#physical">Physical route measurements</a></nav><h2>Snapshot bindings</h2>')
-    for side, source in document['sources'].items():
+    for side in ('before','after'):
+        source = document['sources'][side]
         out.write('<p>'+text(side)+' — normalized-canonical-model-json-v1<br><span class="hash">SHA-256 '+text(source['sha256'])+'</span></p>')
+    route_quantities = [row for row in diff['quantity_deltas'] if row['category'] == 'route_length']
+    if route_quantities:
+        out.write('<h2>Route length changes at a glance</h2><p>Excerpt of the complete quantity table below; these are the same delta IDs, not additional quantities.</p>')
+        table(['Delta ID','Type','Variant','Unit','Status','Before','After','Delta'],
+              ([row['delta_id'],row['item_type'],_json(row['variant']),row['unit'],row['status'],
+                *(row[key] if row[key] is not None else 'null' for key in ('before','after','delta'))]
+               for row in route_quantities))
     out.write('<h2 id="quantities">Quantity deltas</h2><p>One row per complete quantity identity. Added and removed product variants remain separate. Null deltas are not arithmetic zero.</p>')
     table(['Delta ID', 'Category', 'Type', 'Unit', 'Variant', 'Status', 'Before', 'After', 'Delta'], _quantity_rows(diff, []))
     out.write('<h2 id="objects">Canonical object changes</h2><p>Expand an object to inspect every changed field or its complete added/removed document.</p>')

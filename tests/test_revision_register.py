@@ -38,6 +38,8 @@ def test_actual_room_register_is_complete_deterministic_and_not_a_second_takeoff
     assert exact['straight_ticks'] == 100000000
     assert exact['pi_coefficient_ticks'] == {'numerator':100000000,'denominator':1}
     assert exact['total_m_approx'] == pytest.approx(.1+.1*math.pi)
+    assert 'Route length changes at a glance' in report.files()['index.html']
+    assert 'same delta IDs, not additional quantities' in report.files()['index.html']
     assert any(json.loads(row['delta_json']) == .5 for row in quantities if row['category'] == 'route_length')
     assert any(row['before_json'] == 'null' and row['status'] == 'added' for row in quantities)
     assert any(row['after_json'] == 'null' and row['status'] == 'removed' for row in quantities)

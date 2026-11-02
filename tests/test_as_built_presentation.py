@@ -39,6 +39,11 @@ def test_small_model_physical_callouts_legend_route_and_paper_are_bound_to_uncha
     entries={row['owner_id']:row for row in layout['entries']}
     for identity in ('device:evse','device:spare','equip:panel',model.routes[0].id):
         assert entries[identity]['callout_status']=='placed',entries[identity]
+    assert entries['equip:panel']['leader_trim_mm']>1.5
+    assert entries['equip:panel']['endpoint_route_ids']==[model.routes[0].id]
+    assert entries['device:spare']['endpoint_route_ids']==[]
+    assert entries['device:spare']['leader_trim_mm']==1.5
+    assert not any(p['kind']=='symbol' and p['symbol']=='route-vertical-projection' for p in view['primitives'])
     boxes=[row['text_box_m'] for row in entries.values() if row['callout_status']=='placed']
     for index,box in enumerate(boxes):
         assert not any(_overlap(box,other) for other in boxes[index+1:])
@@ -182,19 +187,18 @@ def test_panel_row_rectangles_match_exact_svg_anchor_coordinates():
                 assert left<=x<=right and top<=y<=bottom
 
 
-def test_only_explicit_colocated_endpoint_owns_a_vertical_marker_box():
-    from oabm.drawings import DrawingPrimitive,Point2
-    from oabm.pipeline.as_built_presentation import _shared_marker_connections
+def test_endpoint_escape_membership_requires_a_port_at_the_actual_owner_anchor():
+    from oabm.drawings import Point2
+    from oabm.pipeline.as_built_presentation import _endpoint_routes
     history,request=example().synthetic_inputs()
     model=replay_history(apply_transaction(history,request))
     panel=model.electrical_equipment[0];route=model.routes[0]
-    marker=DrawingPrimitive(id='derived:panel-marker',kind='symbol',layer='electrical:routes',
-        source_ids=(route.id,),points=(Point2(panel.pose.position.x,panel.pose.position.y),),
-        symbol='route-vertical-projection',metadata=(('min_z_m','1.5'),('max_z_m','2.5')))
-    assert _shared_marker_connections(model,marker)==({'marker_id':marker.id,'route_id':route.id,
-        'port_id':route.start_port_id,'owner_id':panel.id},)
+    anchor=Point2(panel.pose.position.x,panel.pose.position.y)
+    assert _endpoint_routes(model,panel,anchor)=={route.id}
     spare=next(device for device in model.electrical_devices if device.id=='device:spare')
-    unrelated=replace(marker,points=(Point2(spare.pose.position.x,spare.pose.position.y),),
-        metadata=(('min_z_m','0'),('max_z_m','3')))
-    assert _shared_marker_connections(model,unrelated)==()
-    assert _shared_marker_connections(model,replace(marker,metadata=(('min_z_m','2'),('max_z_m','3'))))==()
+    assert _endpoint_routes(model,spare,Point2(spare.pose.position.x,spare.pose.position.y))==set()
+    assert _endpoint_routes(model,panel,Point2(anchor.x+.01,anchor.y))==set()
+    port=next(port for port in model.ports if port.owner_id==panel.id)
+    moved_port=replace(port,pose=replace(port.pose,position=replace(port.pose.position,z=port.pose.position.z+.1)))
+    source=replace(model,ports=tuple(moved_port if p.id==port.id else p for p in model.ports))
+    assert _endpoint_routes(source,panel,anchor)==set()

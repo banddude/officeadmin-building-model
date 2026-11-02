@@ -131,7 +131,9 @@ def _drawings(model, revision):
     plan = generate_drawing_set(model, plans=tuple(plans), include_schedules=False,
         symbol_provider=lambda entity, view_type: Symbol("as-built-location"),
         physical_geometry="xy-centerline", assembly_geometry="cut")
-    prepared=[prepare_plan(model,view,ordinal,revision) for ordinal,view in enumerate(plan.views,1)]
+    level_order={level.id:index for index,level in enumerate(levels)}
+    ordered_views=sorted(plan.views,key=lambda view:level_order[dict(view.metadata)['level_id']])
+    prepared=[prepare_plan(model,view,ordinal,revision) for ordinal,view in enumerate(ordered_views,1)]
     plan=replace(plan,views=tuple(view for view,spec,audit in prepared))
     outputs = {"drawings/plans.json": plan.to_json(),
                "drawings/plan-layout.json":_json({"model_sha256":_sha(snapshot(model)),
@@ -165,7 +167,10 @@ def _drawings(model, revision):
             view.bounds.min_y - .001, view.bounds.max_x + .001, view.bounds.max_y + .001))
             for view in page.drawing_set.views)
         projected = replace(page.drawing_set, views=views)
-        rendered=render_sheet_svg(projected, spec, (page.placement,),options=options,text_styles=True)
+        # Bounds expansion changes the paper origin by +1mm on both axes at
+        # this schedule's 1:1 scale. Preserve the exact retained row rectangles.
+        placement=replace(page.placement,x_mm=page.placement.x_mm-1,y_mm=page.placement.y_mm-1)
+        rendered=render_sheet_svg(projected, spec, (placement,),options=options,text_styles=True)
         outputs[f"drawings/panel-{ordinal}.svg"] = rendered.svg
         outputs[f"drawings/panel-{ordinal}.manifest.json"] = rendered.manifest_json
     outputs["drawings/panel-facts.json"] = report.to_json()

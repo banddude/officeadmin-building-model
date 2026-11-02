@@ -147,6 +147,12 @@ runtime and visual verification before acceptance.
 
 ### Physical-sheet presentation
 
+Plans are numbered in canonical elevation/ID order. Each printed margin heading
+retains the actual view title, full level ID and elevation. Long names wrap
+losslessly using physical font measurements; heading capacity and finite paper
+selection fail explicitly rather than truncating identifiers. Panel row audit
+rectangles retain their exact paper coordinates when stroke bounds expand.
+
 As-built plans select from finite standard paper/scale pairs rather than always
 placing a small model on A0: 1:25 on A4/A3, 1:50 through A2, or 1:100 through A0.
 The sheet prints its selected scale. Only derived view scale, annotations,

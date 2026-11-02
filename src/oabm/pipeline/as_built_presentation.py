@@ -196,8 +196,20 @@ def _layout(model, view, scale):
     layout=ScheduleLayout(text_height_mm=TEXT_MM,line_height_mm=4.5,padding_mm=1)
     legend_x=plot_bounds.max_x+8*unit
     y=plot_bounds.max_y-4*unit
-    source=entries[0]['owner_id'] if entries else model.levels[0].id
+    level_id=dict(view.metadata)['level_id']
+    level=next(level for level in model.levels if level.id==level_id)
+    source=level.id
     legend=[]
+    identity_lines=[]
+    for value in (view.title, f'Level ID: {level.id}', f'Elevation: {level.elevation_m:g} m'):
+        identity_lines.extend(wrap_cell(value,legend_width,layout))
+    if len(identity_lines)>64:
+        raise ValueError('as-built level identity exceeds bounded measured heading capacity')
+    for line in identity_lines:
+        legend.append(_primitive(f'{view.id}:level-heading:{len(legend)}','text',source,
+            (Point2(legend_x,y),),text=line))
+        y-=4.5*unit
+    y-=3*unit
     for text in ('CALLOUTS / SOURCE IDS','Blue dashed: supplied route','Location cross: not product CAD'):
         legend.append(_primitive(f'{view.id}:legend-header:{len(legend)}','text',source,(Point2(legend_x,y),),text=text))
         y-=5*unit
@@ -222,6 +234,8 @@ def _layout(model, view, scale):
                    legend_x+legend_width*unit,plot_bounds.max_y)
     return replace(view,scale=scale,bounds=bounds,primitives=tuple(geometry+placed+legend),dimensions=tuple(dimensions)), {
         'text_height_mm':TEXT_MM,'font_family':FONT,'symbol_radius_mm':SYMBOL_RADIUS_MM,
+        'level_id':level.id,'level_elevation_m':level.elevation_m,'view_title':view.title,
+        'printed_level_heading_lines':identity_lines,
         'entries':entries,'unplaced_callout_owner_ids':unplaced,
         'dimension_text_boxes_m':[list(box) for box in dimension_boxes],
         'geometry_unchanged':True,'review_status':'needs_review' if unplaced else 'unreviewed'}

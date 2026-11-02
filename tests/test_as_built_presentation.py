@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import struct
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 
 import pytest
 
@@ -111,3 +112,66 @@ def test_actual_full_sheet_previews_bind_exact_svg_bytes_without_crop(tmp_path):
         svg=ET.fromstring(raw)
         assert row['width']==round(float(svg.get('width').removesuffix('mm'))*96/25.4*1.5)
         assert row['height']==round(float(svg.get('height').removesuffix('mm'))*96/25.4*1.5)
+
+
+def test_retained_three_story_sheets_print_their_actual_level_in_elevation_order(tmp_path):
+    module=example();root=tmp_path/'three-story'
+    module.create_three_story_delivery(root)
+    from oabm.model import BuildingModel
+    model=BuildingModel.load(root/'delivery/canonical-model.json')
+    audit=json.loads((root/'delivery/drawings/plan-layout.json').read_text())
+    levels=sorted(model.levels,key=lambda level:(level.elevation_m,level.id))
+    assert [row['level_id'] for row in audit['plans']]==[level.id for level in levels]
+    for ordinal,(level,row) in enumerate(zip(levels,audit['plans']),1):
+        svg=ET.fromstring((root/f'delivery/drawings/plan-{ordinal}.svg').read_bytes())
+        manifest=json.loads((root/f'delivery/drawings/plan-{ordinal}.manifest.json').read_text())
+        ids={item['svg_id'] for item in manifest['items'] if ':level-heading:' in item['source_item_id']}
+        heading=[node.text or '' for node in svg.findall('.//s:text',NS) if node.get('id') in ids]
+        assert heading==row['printed_level_heading_lines']
+        assert ''.join(heading)==f'{level.name or level.id} PlanLevel ID: {level.id}Elevation: {level.elevation_m:g} m'
+
+
+def test_long_level_names_wrap_losslessly_within_selected_sheet_bounds():
+    history,request=example().synthetic_inputs()
+    model=replay_history(apply_transaction(history,request))
+    name='Long canonical level name retained in full / '*8
+    model=replace(model,levels=(replace(model.levels[0],name=name),))
+    outputs=_drawings(model,'field:long-level')
+    row=json.loads(outputs['drawings/plan-layout.json'])['plans'][0]
+    assert ''.join(row['printed_level_heading_lines']).startswith(name+' Plan')
+    svg=ET.fromstring(outputs['drawings/plan-1.svg'])
+    manifest=json.loads(outputs['drawings/plan-1.manifest.json'])
+    ids={item['svg_id'] for item in manifest['items'] if ':level-heading:' in item['source_item_id']}
+    printed=''.join(node.text or '' for node in svg.findall('.//s:text',NS) if node.get('id') in ids)
+    assert printed==''.join(row['printed_level_heading_lines'])
+
+
+def test_panel_row_rectangles_match_exact_svg_anchor_coordinates():
+    from oabm.drawings import SheetSpec
+    from oabm.drawings.schedule_set import panel_schedule_drawing_set
+    from oabm.drawings.schedule_layout import ScheduleLayout,draft_panel_schedule_pages
+    history,request=example().synthetic_inputs()
+    model=replay_history(apply_transaction(history,request));outputs=_drawings(model,'field:row-bounds')
+    report,schedules=panel_schedule_drawing_set(model)
+    pages=draft_panel_schedule_pages(report,schedules,SheetSpec('AB-P',420,297,titleblock_height_mm=30,
+        title='As-built supplied panel facts',revision='field:row-bounds'),
+        layout=ScheduleLayout(text_height_mm=3,line_height_mm=4.5,packing='compact'),table_width_mm=360)
+    recorded=json.loads(outputs['drawings/panel-layout.json'])['rows']
+    assert recorded==[row for page in pages for row in page.row_map]
+    for ordinal,page in enumerate(pages,1):
+        svg=ET.fromstring(outputs[f'drawings/panel-{ordinal}.svg'])
+        manifest=json.loads(outputs[f'drawings/panel-{ordinal}.manifest.json'])
+        ids={item['source_item_id']:item['svg_id'] for item in manifest['items']}
+        nodes={node.get('id'):node for node in svg.findall('.//s:text',NS)}
+        view=page.drawing_set.views[0];primitives={p.id:p for p in view.primitives}
+        for row in page.row_map:
+            left,top,right,bottom=row['bounds_mm']
+            for identity in row['primitive_ids']:
+                primitive=primitives[identity]
+                if primitive.kind!='text':
+                    continue
+                point=primitive.points[0];node=nodes[ids[identity]]
+                x=float(node.get('x'));y=float(node.get('y'))
+                assert x==pytest.approx(page.placement.x_mm+(point.x-view.bounds.min_x)*1000,abs=1e-5)
+                assert y==pytest.approx(page.placement.y_mm+(view.bounds.max_y-point.y)*1000,abs=1e-5)
+                assert left<=x<=right and top<=y<=bottom

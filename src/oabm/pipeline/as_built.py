@@ -12,6 +12,8 @@ import json
 import re
 
 from oabm.model import BuildingModel, ContractError
+from .as_built_admission import (MODEL_BYTES, MAX_TRANSACTIONS, admit_history,
+                                admit_request, detached, json_text)
 
 VERSION = "oabm-as-built-v1"
 COLLECTIONS = frozenset({
@@ -38,7 +40,13 @@ def _sha(value):
 
 def snapshot(model):
     """Detach even mutable attributes before retaining a snapshot."""
-    return BuildingModel.from_json(model.to_json(indent=None)).to_json(indent=None)
+    _require(type(model) is BuildingModel, "snapshot requires canonical BuildingModel")
+    model = detached(model, byte_limit=MODEL_BYTES)
+    try:
+        text = json_text(model.to_json(indent=None), byte_limit=MODEL_BYTES)
+        return BuildingModel.from_json(text).to_json(indent=None)
+    except (RecursionError, TypeError, ValueError, AttributeError) as exc:
+        raise ContractError("as-built admission: invalid canonical snapshot") from exc
 
 
 def _object(value, keys, label):
@@ -67,7 +75,7 @@ def start_history(design: BuildingModel):
 
 def record_sha256(record):
     """Fingerprint a detached canonical entity record for optimistic editing."""
-    return _sha(_json(record))
+    return _sha(_json(detached(record, byte_limit=MODEL_BYTES)))
 
 
 def preview_transaction(history, request):
@@ -81,6 +89,7 @@ def preview_transaction(history, request):
 
 def replay_history(history):
     """Validate all retained parents, outcomes and evidence by deterministic replay."""
+    history = admit_history(history)
     _object(history, ("version", "design_json", "design_sha256", "transactions"), "history")
     _require(history["version"] == VERSION, "unsupported as-built history")
     _require(type(history["transactions"]) is list, "transactions must be a list")
@@ -103,6 +112,8 @@ def replay_history(history):
 
 def apply_transaction(history, request):
     """Return a detached history; failure mutates neither caller input nor baseline."""
+    history, request = admit_history(history), admit_request(request)
+    _require(len(history["transactions"]) < MAX_TRANSACTIONS, "as-built admission: transaction history is full")
     current = replay_history(history)
     _require(request.get("transaction_id") not in {
         item["request"]["transaction_id"] for item in history["transactions"]}, "duplicate transaction ID")
@@ -111,10 +122,19 @@ def apply_transaction(history, request):
     output = deepcopy(history)
     output["transactions"].append({"request": deepcopy(request), "result_json": result,
                                    "result_sha256": _sha(result)})
-    return output
+    return admit_history(output)
 
 
 def _apply(parent, design_sha, request):
+    try:
+        return _apply_admitted(parent, design_sha, request)
+    except ContractError:
+        raise
+    except (RecursionError, KeyError, IndexError, AttributeError, TypeError, ValueError, OverflowError) as exc:
+        raise ContractError("as-built transaction: malformed canonical edit or evidence") from exc
+
+
+def _apply_admitted(parent, design_sha, request):
     _object(request, ("version", "transaction_id", "actor", "reason", "design_sha256",
                      "parent_sha256", "evidence", "edits", "method_reconciliations",
                      "installed_assertions"), "transaction")
@@ -168,6 +188,7 @@ def _apply(parent, design_sha, request):
                      "quick edits cannot introduce arbitrary product semantics in attributes")
             scopes = sorted(k for k in new if k not in {"id", "provenance"}
                             and (old is None or old.get(k) != new[k]))
+            changed_fields[key] = tuple(scopes)  # actual changes, never reaffirmation scopes
             removed = set(old or {}) - set(new)
             _require(not removed, "replace omitted optional values with canonical null rather than deleting fields")
             if not scopes:
@@ -175,7 +196,6 @@ def _apply(parent, design_sha, request):
                 # reconciliation, and must not require changing a label.
                 scopes = sorted(set(new) - {"id", "provenance", "attributes", "confidence"})
             _require(bool(scopes), "replacement requires canonical field claims")
-            changed_fields[key] = scopes
             new.setdefault("provenance", []).append({
                 "source_kind": "as-built-field-edit", "source_id": request["transaction_id"],
                 "method": "supplied-quick-edit", "derivation": "user", "confidence": 1.0,
@@ -191,6 +211,7 @@ def _apply(parent, design_sha, request):
             else:
                 rows[pos] = new
     _check_device_moves(before, after, touched, changed_fields)
+    _check_affected_supports(before, after, touched)
     for identity, old in _index(before, "routes").items():
         new = _index(after, "routes").get(identity)
         if new is not None and old.get("centerline") != new.get("centerline"):
@@ -201,9 +222,56 @@ def _apply(parent, design_sha, request):
     _check_method_changes(before, after, touched, request["method_reconciliations"])
     # One admission after every dependent edit: never publish an intermediate
     # device pose, dangling route, stale fitting, or mismatched selected product.
-    revised = BuildingModel.from_dict(after)
+    revised = BuildingModel.from_dict(detached(after, byte_limit=MODEL_BYTES))
     _check_installed_assertions(revised, request["installed_assertions"], evidence_ids)
     return revised
+
+
+def _check_affected_supports(before, after, touched):
+    """Refuse stale support testimony until atomic support editing exists.
+
+    Canonical reference validity does not prove spatial contact. Keep support
+    producers unchanged and refuse rather than guessing new hardware or letting
+    unchanged support hashes preserve earlier installation confirmations.
+    """
+    affected = set()
+    for collection, identity in touched:
+        if collection not in {"electrical_devices", "ports", "routes", "route_fittings", "electrical_boxes",
+                              "raceway_selections", "fitting_selections", "fitting_interfaces", "conductors"}:
+            continue
+        old = _index(before, collection).get(identity)
+        new = _index(after, collection).get(identity)
+        def facts(record):
+            return None if record is None else {key: value for key, value in record.items()
+                if key not in {"provenance", "confidence", "name", "attributes"}}
+        if facts(old) == facts(new):
+            continue
+        affected.add(identity)
+        for record in (old, new):
+            if record is not None:
+                if record.get("route_id") is not None:
+                    affected.add(record["route_id"])
+                affected.update(record.get("route_ids", []))
+                if collection == "fitting_interfaces":
+                    for document in (before, after):
+                        selection = _index(document, "fitting_selections").get(record["selection_id"])
+                        if selection is not None:
+                            affected.add(selection["route_id"])
+        if collection == "ports":
+            for port in (old, new):
+                if port is not None:
+                    affected.add(port["owner_id"])
+            for route in before.get("routes", []):
+                if identity in {route["start_port_id"], route["end_port_id"]}:
+                    affected.add(route["id"])
+        if collection == "electrical_devices":
+            affected.update(box["id"] for box in before.get("electrical_boxes", [])
+                            if identity in box["occupant_ids"])
+    for collection in ("support_assemblies", "support_selection_outcomes"):
+        for row in before.get(collection, []):
+            if affected.intersection(row["supported_object_ids"]):
+                raise ContractError("as-built support reconciliation unavailable: affected supported object; "
+                                    "refusing to retain stale hardware or installed assertions")
 
 
 def _check_installed_assertions(model, assertions, evidence_ids):
@@ -232,14 +300,43 @@ def _check_installed_assertions(model, assertions, evidence_ids):
 
 
 def _check_device_moves(before, after, touched, changed_fields):
+    from oabm.assembly_geometry import rotate_vector_xyzw
+    def vector(record):
+        return tuple(record[axis] for axis in ("x", "y", "z"))
+    def quaternion(record):
+        return tuple(record[axis] for axis in ("x", "y", "z", "w"))
+    def multiply(a, b):
+        x, y, z, w = a
+        i, j, k, r = b
+        return (w*i + x*r + y*k - z*j, w*j - x*k + y*r + z*i,
+                w*k + x*j - y*i + z*r, w*r - x*i - y*j - z*k)
+    def close(a, b, tolerance=1e-9):
+        return all(abs(x-y) <= tolerance for x, y in zip(a, b))
     for identity, device in _index(before, "electrical_devices").items():
         new = _index(after, "electrical_devices").get(identity)
         if new is None or device["pose"] == new["pose"]:
             continue
+        _require("pose" in changed_fields.get(("electrical_devices", identity), ()),
+                 "device move requires an actual pose change, not reaffirmation testimony")
         owned = {p["id"] for p in before.get("ports", []) if p["owner_id"] == identity}
+        old_rotation = quaternion(device["pose"]["rotation"])
+        delta = multiply(quaternion(new["pose"]["rotation"]),
+                         (-old_rotation[0], -old_rotation[1], -old_rotation[2], old_rotation[3]))
         for port_id in owned:
-            _require("pose" in changed_fields.get(("ports", port_id), ()),
-                     "moved device requires explicit pose for every owned port")
+            _require(("ports", port_id) in touched, "moved device requires explicit reconciliation for every owned port")
+            old_port = _index(before, "ports")[port_id]
+            new_port = _index(after, "ports").get(port_id)
+            _require(new_port is not None and new_port["owner_id"] == identity,
+                     "rigid device moves must retain owned port identities")
+            offset = tuple(a-b for a, b in zip(vector(old_port["pose"]["position"]), vector(device["pose"]["position"])))
+            expected = tuple(a+b for a, b in zip(vector(new["pose"]["position"]), rotate_vector_xyzw(offset, delta)))
+            expected_rotation = multiply(delta, quaternion(old_port["pose"]["rotation"]))
+            actual_rotation = quaternion(new_port["pose"]["rotation"])
+            _require(close(expected, vector(new_port["pose"]["position"])) and
+                     (close(expected_rotation, actual_rotation, 1e-12) or
+                      close(tuple(-value for value in expected_rotation), actual_rotation, 1e-12)) and
+                     close(rotate_vector_xyzw(vector(old_port["direction"]), delta), vector(new_port["direction"])),
+                     "port pose/direction contradict rigid device movement; unchanged world ports are valid only at invariant connection poses")
         for route in before.get("routes", []):
             if {route["start_port_id"], route["end_port_id"]} & owned:
                 _require(("routes", route["id"]) in touched,

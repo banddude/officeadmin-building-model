@@ -105,6 +105,7 @@ class PlanSpec:
     bounds: Bounds2 | None = None
     scale: float = 50.0
     visibility: VisibilityPolicy = VisibilityPolicy()
+    route_level_policy: str = "z_overlap"
 
     def __post_init__(self) -> None:
         if not self.id or not self.level_id:
@@ -113,6 +114,8 @@ class PlanSpec:
             raise ValueError("plan cut/depth distances must be >= 0")
         if self.scale <= 0:
             raise ValueError("plan scale must be > 0")
+        if self.route_level_policy not in {"z_overlap", "endpoint_levels"}:
+            raise ValueError("route_level_policy: use z_overlap or endpoint_levels")
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,7 +449,8 @@ def _generate_plan_base(
         normal=Vector3(x=0, y=0, z=1),
     )
     entities = _plan_entities(model, spec.level_id, min_z=min_z, max_z=max_z,
-                              visibility=spec.visibility, fitting_selection_by_id=fitting_selections)
+                              visibility=spec.visibility, fitting_selection_by_id=fitting_selections,
+                              route_level_policy=spec.route_level_policy)
     depth_interval = (min_z - level.elevation_m, max_z - level.elevation_m)
     bounds = spec.bounds or _auto_bounds(frame, entities, depth_interval=depth_interval,
                                          fitting_selection_by_id=fitting_selections)
@@ -1365,7 +1369,8 @@ def _opening_dimensions(opening: Opening, frame: ProjectionFrame, bounds: Bounds
 
 def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: float,
                    visibility: VisibilityPolicy,
-                   fitting_selection_by_id: Mapping[str, Entity] | None = None) -> tuple[Entity, ...]:
+                   fitting_selection_by_id: Mapping[str, Entity] | None = None,
+                   route_level_policy: str = "z_overlap") -> tuple[Entity, ...]:
     result: list[Entity] = []
     if visibility.architecture:
         result.extend(
@@ -1383,7 +1388,19 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
         )
     if visibility.routes:
         from oabm.model.layers import _route_level_id
+        ports = {port.id: port for port in model.ports}
+        owners = {owner.id: owner for owner in (*model.electrical_equipment,
+            *model.electrical_devices, *model.electrical_boxes)}
+        def level_admitted(route):
+            if route_level_policy == "z_overlap":
+                return True
+            levels = {getattr(owners.get(ports[identity].owner_id), "level_id", None)
+                      for identity in (route.start_port_id, route.end_port_id)}
+            if None in levels:
+                raise ValueError("endpoint_levels plan requires known levels for both route endpoint owners")
+            return level_id in levels
         result.extend(item for item in model.routes if
+            level_admitted(item) and
             (min_z <= item.joints[0].position.z <= max_z and _route_level_id(model,item) in {None,level_id} if isinstance(item,PhysicalRoute)
              else _polyline_z_overlap(item.centerline,min_z,max_z)))
         route_ids = {item.id for item in result if isinstance(item, Route)}

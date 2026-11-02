@@ -1,7 +1,9 @@
 # Evidence-bound as-built quick edits (#238)
 
 This source checkpoint is **unexecuted and unaccepted**. Laptop runtime, tests,
-rendering, publication and CI remain held for the coordinated recovery window.
+rendering and publication remain held for coordinated source acceptance. Hosted
+CI has reopened independently; this branch has not been authorized to publish
+or trigger checks yet.
 Do not close #238 from the existence of these source files or tests.
 
 The workflow uses the canonical `BuildingModel`; it does not change its schema,
@@ -55,6 +57,42 @@ box edits that canonical inventory record and its outcome; it does not rerun
 `select_electrical_boxes` with a partial intent list and erase unrelated boxes.
 The existing whole-inventory producers remain unchanged.
 
+Device moves currently support a rigid owner/port relationship: port position,
+orientation and direction must equal the old connection transformed by the
+device's supplied old-to-new rigid transform (1e-9 m/vector and 1e-12 quaternion
+tolerances; whole-quaternion sign equivalence is allowed). A port's absolute
+position may stay unchanged only when it is invariant under that transform,
+such as a device rotating around that connection point; the required orientation
+and direction must still agree. Reaffirmed evidence scopes are separate from
+actual changed fields and cannot satisfy a pose-change guard. Independent
+internal port relocation is outside this bounded quick-edit scope.
+
+Edits affecting any supported route, device or box, including endpoint and
+product/conductor dependencies, currently fail closed. Support assemblies and
+selection-outcome membership are checked before canonical admission. Spatial
+support contact is not established by reference validity alone; unchanged
+hardware hashes and old installation assertions cannot authorize retaining
+hardware after the supported object's geometry changes. Atomic support edits
+remain unsupported; no support inventory is dropped or guessed.
+
+## Admission limits
+
+The existing bounded detached-capture utility runs before model serialization,
+caller-object copying and replay. It rejects cycles, custom object types,
+nonfinite numbers, and excessive depth/nodes with controlled `ContractError`
+results. Models have a 4 MiB capture/JSON budget; requests have 512 KiB; complete
+history has 16 MiB. Capture uses a conservative escaped-JSON byte charge, not
+just raw file size. Depth is capped at 48 and capture nodes at 100,000; JSON is
+also scanned before parsing for nesting, tokens and node limits. File admission
+uses bounded reads and requires regular files, including a post-open file check.
+
+There are at most 32 retained transactions, 256 edits/reconciliations, 64 evidence
+records and 1,024 assertions per request. Retained history cumulatively allows
+2,048 edits, 512 evidence records and 4,096 assertions. Every retained request
+and embedded snapshot is preflighted before any replay; appending also checks
+the resulting complete history. Exceeding a limit is an explicit refusal, not
+permission to trim history or reset the design baseline.
+
 ## Delivery
 
 Once execution reopens, the installed command is:
@@ -83,12 +121,19 @@ variants and units. Every artifact is hashed and bound to the same revised
 snapshot in `MANIFEST.json`. SVG/HTML text is escaped. No export failure produces
 a successful manifest. Existing output directories are never overwritten.
 
-Plans use explicit generic location crosses plus supplied canonical envelopes,
-and show all heights in the level rather than implying a hidden slice. They
+Plans use explicit generic location crosses plus supplied canonical envelopes.
+Each plan requires an explicit positive story height, uses finite elevation
+bounds capped by the next story, and opts into endpoint-level route selection.
+Legacy routes and their fittings cannot appear on an unrelated floor merely
+because their Z ranges overlap. Cross-level routes show their clipped portions
+on the endpoint levels; unknown endpoint levels are refused. They
 remain review drawings. Layout, font appearance and source coverage need actual
 runtime and visual verification before acceptance.
 
-Materials partition the real canonical quantity report. Only exact current
+Materials classify real canonical source contributions before aggregation,
+preserving product variants, quantity/provenance bases and bid-group ownership.
+Two identical boxes with only one field-confirmed produce one installed and one
+unresolved box, rather than declaring both unresolved. Only exact current
 field-confirmed source records enter installed lines. Product-bearing route and
 fitting selections/interfaces also require confirmation. Unconfirmed design
 facts and missing products remain visible unresolved lines, never actual-used
@@ -115,7 +160,8 @@ from this lane without parent coordination.
 
 No Python import, test, render, build or CI execution has been performed for this
 checkpoint. After the coordinated opening: run the synthetic command; inspect
-actual plans/panel sheets/materials/differences; run `tests/test_as_built.py` and
+actual plans/panel sheets/materials/differences; run `tests/test_as_built.py`,
+`tests/test_as_built_review_regressions.py` and
 CI-equivalent checks; add and run physical-route and adversarial HTML/CSV cases;
 check complete manifest hashes; review current producer receipts and changed
 product variants independently. No merge, publication, formal approval or issue

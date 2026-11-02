@@ -167,6 +167,7 @@ def extract_quantities(
     *,
     assembly_resolver: AssemblyResolver | None = None,
     groups: Mapping[str, Iterable[str]] | None = None,
+    contribution_filter: Callable[[QuantityItem], bool] | None = None,
 ) -> TakeoffReport:
     """Derive deterministic install quantities from canonical semantic objects.
 
@@ -197,6 +198,12 @@ def extract_quantities(
     name.  An id may belong to at most one group (``ValueError`` otherwise);
     ids that match nothing are ignored and counted in the report.  Without
     ``groups`` ordinary non-AI reports retain their existing bytes.
+
+    An optional ``contribution_filter`` receives a single-source QuantityItem
+    before aggregation and must return bool. This partitions measured inventory
+    without guessing a proportional share of aggregated rows. Product variants,
+    quantity provenance and original group ownership are retained. Warnings
+    still describe the whole source model, including filtered-out scope.
 
     Reviewed AI symbols additionally retain work/bid/alternate scope in line
     variants. Only explicit new+base may join ungrouped base. Reuse, removal,
@@ -617,6 +624,19 @@ def extract_quantities(
         warnings.append(QuantityWarning("empty_takeoff",
             "The model contains no entities." if not any(collections.values()) else
             "The model contains entities, but none produced a measurable quantity.", ()))
+    # An opt-in read-only classifier sees one real source contribution before
+    # aggregation. It can partition field-confirmed inventory without dividing
+    # counts/lengths after sources, product variants or bid groups were merged.
+    # Default extraction and whole-model warnings remain unchanged.
+    if contribution_filter is not None:
+        admitted = []
+        for contribution in contributions:
+            keep = contribution_filter(_aggregate((contribution,))[0])
+            if type(keep) is not bool:
+                raise QuantityError("contribution_filter must return bool")
+            if keep:
+                admitted.append(contribution)
+        contributions = admitted
     items = _aggregate(contributions)
     group_summary = _group_summary(
         supplied_group_names, group_owner, groupable_ids, items

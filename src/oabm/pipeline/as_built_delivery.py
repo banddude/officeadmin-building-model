@@ -17,17 +17,7 @@ from oabm.quantities import extract_quantities
 from oabm.qa.revision_diff import build_revision_diff
 from .as_built import (_index, _json, _require, _sha,
                        apply_transaction, replay_history, snapshot)
-
-
-def _decode(raw):
-    def pairs(items):
-        result = {}
-        for key, value in items:
-            _require(key not in result, "duplicate JSON key")
-            result[key] = value
-        return result
-    return json.loads(raw, object_pairs_hook=pairs,
-                      parse_constant=lambda value: _require(False, "nonfinite JSON"))
+from .as_built_admission import (HISTORY_BYTES, REQUEST_BYTES, admit_history, decode, read_bytes)
 
 
 def installed_materials(history):
@@ -36,6 +26,7 @@ def installed_materials(history):
     Absence of installation testimony is an unresolved material, not permission
     to call designed quantities installed. Curved routes remain geometric-only.
     """
+    history = admit_history(history)
     model = replay_history(history)
     document = model.to_dict()
     confirmed = {}
@@ -48,10 +39,7 @@ def installed_materials(history):
                     "actor": request["actor"], "evidence_ids": item["evidence_ids"],
                     "record_sha256": item["record_sha256"]}
     physical = {route.id for route in model.routes if isinstance(route, PhysicalRoute)}
-    installed, unresolved = [], []
-    takeoff = extract_quantities(model)
-    for item in takeoff.items:
-        row = item.to_dict()
+    def eligibility(item):
         sources = set(item.source_entity_ids)
         # A route's installed product must have its own confirmation; asserting
         # geometry cannot turn its existing designed selection into an installation.
@@ -75,13 +63,26 @@ def installed_materials(history):
         missing = sorted(dependencies - set(confirmed))
         if missing:
             reasons.append("missing_current_field_installation_confirmation")
-        row.update({"installation_evidence": {identity: confirmed[identity]
-                    for identity in sorted(dependencies & set(confirmed))},
-                    "unconfirmed_entity_ids": missing, "reason_codes": reasons})
-        (unresolved if reasons else installed).append(row)
+        return dependencies, missing, reasons
+
+    # Partition actual source contributions before the engine aggregates them.
+    # In particular two identical boxes with one confirmation stay 1 installed
+    # and 1 unresolved. No proportional split, synthetic bid group or variant
+    # rewriting is used; existing quantity bases/ownership remain intact.
+    installed_report = extract_quantities(model, contribution_filter=lambda item: not eligibility(item)[2])
+    unresolved_report = extract_quantities(model, contribution_filter=lambda item: bool(eligibility(item)[2]))
+    installed, unresolved = [], []
+    for target, report in ((installed, installed_report), (unresolved, unresolved_report)):
+        for item in report.items:
+            row = item.to_dict()
+            dependencies, missing, reasons = eligibility(item)
+            row.update({"installation_evidence": {identity: confirmed[identity]
+                        for identity in sorted(dependencies & set(confirmed))},
+                        "unconfirmed_entity_ids": missing, "reason_codes": reasons})
+            target.append(row)
     return {"model_sha256": _sha(snapshot(model)), "installed_items": installed,
             "unresolved_items": unresolved,
-            "quantity_warnings": [warning.to_dict() for warning in takeoff.warnings],
+            "quantity_warnings": [warning.to_dict() for warning in installed_report.warnings],
             "limitations": ["Field assertions are supplied testimony; source authenticity is not verified.",
                 "No prices, labor, demolition, purchased stock, slack or waste are inferred.",
                 "Designed facts without current field confirmation are unresolved.",
@@ -114,10 +115,18 @@ def _drawings(model, revision):
     marker = SheetSymbol(((Point2(-1, 0), Point2(1, 0)),
                           (Point2(0, -1), Point2(0, 1))))
     symbols = {"as-built-location": marker, "support_attachment": marker}
-    plan = generate_drawing_set(model, plans=tuple(
-        PlanSpec(stable_id("as-built-plan", level.id), level.id,
-                 cut_height_m=1.2, view_depth_below_m=1000, view_depth_above_m=1000)
-        for level in model.levels), include_schedules=False,
+    levels = sorted(model.levels, key=lambda level: (level.elevation_m, level.id))
+    plans = []
+    for ordinal, level in enumerate(levels):
+        _require(level.height_m is not None, "as-built plan requires explicit positive level height")
+        height = level.height_m
+        if ordinal + 1 < len(levels):
+            height = min(height, levels[ordinal + 1].elevation_m - level.elevation_m)
+        _require(height > 0, "as-built plan levels need distinct elevations and positive vertical extents")
+        plans.append(PlanSpec(stable_id("as-built-plan", level.id), level.id,
+            cut_height_m=height, view_depth_below_m=0, view_depth_above_m=0,
+            route_level_policy="endpoint_levels"))
+    plan = generate_drawing_set(model, plans=tuple(plans), include_schedules=False,
         symbol_provider=lambda entity, view_type: Symbol("as-built-location"),
         physical_geometry="xy-centerline", assembly_geometry="cut")
     outputs = {"drawings/plans.json": plan.to_json()}
@@ -159,10 +168,10 @@ def create_as_built_delivery(history_path, transaction_path, *, output_directory
     """
     output = Path(output_directory).absolute()
     _require(not output.exists() and not output.is_symlink(), "fresh output directory required")
-    history_raw = Path(history_path).read_bytes()
-    request_raw = Path(transaction_path).read_bytes()
-    history = _decode(history_raw)
-    request = _decode(request_raw)
+    history_raw = read_bytes(history_path, byte_limit=HISTORY_BYTES)
+    request_raw = read_bytes(transaction_path, byte_limit=REQUEST_BYTES)
+    history = decode(history_raw, byte_limit=HISTORY_BYTES)
+    request = decode(request_raw, byte_limit=REQUEST_BYTES)
     parent = replay_history(history)
     revised_history = apply_transaction(history, request)
     current = replay_history(revised_history)

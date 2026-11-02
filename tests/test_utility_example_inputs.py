@@ -39,8 +39,12 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
     model=BuildingModel.from_json((root/'model.json').read_bytes())
     if reference_only:
         from dataclasses import replace
+        from oabm.model import SiteRequirement
         model=replace(model,site_requirements=tuple(replace(row,kind='horizontal_reference_distance',minimum_m=None)
             if row.kind=='minimum_horizontal_separation' else row for row in model.site_requirements))
+        model=replace(model,site_requirements=(*model.site_requirements,
+            SiteRequirement(id='requirement:separate-clearance',kind='minimum_horizontal_separation',
+                source_id='site:gas',target_id='service:meter-main',reference_basis='envelope_to_envelope',minimum_m=.5)))
         if coincident:
             # Distinct source owners may have the same XY. This is not a
             # nonzero line, clearance threshold or reason to lose the record.
@@ -51,7 +55,9 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
     sheet=next(row for row in resolve_company_sheet_set(root/'profile.json',root/'job.json').sheets if row.id=='U1')
     body,receipt=render_model_site_body(model,sheet,source_files={key:root/path for key,path in request['sources'].items()},drawing=request['site']['drawing'])
     # Actual shared renderer verifies finite page bounds and measured ink.
-    render_company_sheet_svg(sheet,body_svg=body)
+    import xml.etree.ElementTree as ET
+    rendered=render_company_sheet_svg(sheet,body_svg=body)
+    visible=' '.join(' '.join(ET.fromstring(rendered).itertext()).split())
     bindings=receipt['projection']['dimension_bindings']
     assert len(bindings)==5
     assert sorted(row['value_m'] for row in bindings)==pytest.approx(sorted([1.2,1.2,1.2,1.2,0. if coincident else 2.]))
@@ -64,11 +70,18 @@ def test_dense_site_measurements_are_complete_in_measured_legend(tmp_path,refere
     if reference_only:
         assert 'REFERENCE ANCHORS ONLY' in notes and 'min 0.5 m' not in notes
         assert all('meets_supplied_horizontal_minimum' not in row for row in receipt['projection']['measurement_requirements'])
+        assert 'SUPPLIED REQUIREMENT: minimum 0.5 m; actual clearance UNRESOLVED; no pass claim.' in notes
+        assert 'SUPPLIED REQUIREMENT: minimum 0.5 m;' in visible
+        assert 'actual clearance UNRESOLVED; no pass claim.' in visible
+        reference_row=next(row for row in receipt['projection']['measurement_requirements'] if row['kind']=='horizontal_reference_distance')
+        assert reference_row['minimum_m'] is None
         if coincident:
             zero,= [row for row in bindings if row['value_m']==0]
             assert zero['source_id']!=zero['target_id'] and zero['endpoints'][0]==zero['endpoints'][1]
             assert '0.000 m REFERENCE ANCHORS ONLY' in notes
     else:assert 'min 0.5 m' in notes
+    assert 'SUPPLIED REQUIREMENT: width 0.8 m, depth 0.8 m; actual working clearance UNRESOLVED; no pass claim.' in notes
+    assert 'SUPPLIED REQUIREMENT: width 0.8 m, depth 0.8 m;' in visible
     assert all(not view['dimensions'] for view in receipt['drawing']['views'])
     assert model.to_json()==original
 

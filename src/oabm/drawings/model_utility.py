@@ -302,6 +302,11 @@ def render_model_site_body(model,sheet,*,source_files,drawing,dimension_offset_m
                   (f'supplied min {row["minimum_m"]:g} m; geometric evidence only.' if row['minimum_m'] is not None else
                    'informational anchors only; no enclosure-clearance comparison.')
                   if row['distance_m'] is not None else row.get('reason','Measurement unresolved.')))
+        if row['status']=='unresolved':
+            if row['kind']=='minimum_horizontal_separation':
+                summary+=f' SUPPLIED REQUIREMENT: minimum {row["minimum_m"]:g} m; actual clearance UNRESOLVED; no pass claim.'
+            elif row['kind']=='working_surface_for':
+                summary+=f' SUPPLIED REQUIREMENT: width {row["supplied_width_m"]:g} m, depth {row["supplied_depth_m"]:g} m; actual working clearance UNRESOLVED; no pass claim.'
         attachment=source or target or next(iter(features),None)
         if attachment is None and measurement_notes:raise ContractError('measurement legend requires a projected canonical owner')
         if attachment is not None:features[attachment]['evidence']['qualification']+=' '+summary+' '+' '.join(measurement_notes)

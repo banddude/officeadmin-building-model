@@ -9,7 +9,6 @@ from dataclasses import dataclass, replace
 import html
 import math
 
-from oabm.assembly_compat import require_no_populated_building_assemblies
 from oabm.model import BuildingModel, Point3, Vector3, ElectricalEquipment, Route, Port, Wall, SupportComponent
 from .generator import (ElevationSpec, SectionSpec, VisibilityPolicy,
                         generate_elevation, generate_section, _entity_points,
@@ -129,7 +128,6 @@ class DetailResult:
 def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
     """Reject missing dimensions, cropped sources, unsupported geometry and empty cuts."""
     reject_physical_routes(model, "generate_detail")
-    require_no_populated_building_assemblies(model, "generate_detail")
     entities = {e.id: e for name in _COLLECTIONS for e in getattr(model, name)}
     selections = _fitting_selection_by_id(model)
     frame = frame_from_view_direction(origin=spec.origin, direction=spec.direction)
@@ -182,12 +180,15 @@ def generate_detail(model: BuildingModel, spec: DetailSpec) -> DetailResult:
     visibility = VisibilityPolicy(labels=False, dimensions=False)
     common = dict(id=spec.id, origin=spec.origin, direction=spec.direction,
                   bounds=spec.bounds, scale=spec.scale, visibility=visibility)
-    # Call the original model to preserve validation/assembly guards. Unselected
-    # primitives are discarded only after the supported engine projection.
+    # Keep the original canonical model; explicit assembly projection admits
+    # unrelated context without stripping records. Unsupported selected sources
+    # still refuse above or when no supported selected geometry is produced.
     if RECIPES[spec.recipe] == "section":
-        view = generate_section(model, SectionSpec(**common, depth_m=spec.far_m, back_depth_m=-spec.near_m), symbol_provider=lambda *_: None)
+        view = generate_section(model, SectionSpec(**common, depth_m=spec.far_m, back_depth_m=-spec.near_m), symbol_provider=lambda *_: None,
+            assembly_geometry="cut" if model.building_assemblies or model.assembly_components else None)
     else:
-        view = generate_elevation(model, ElevationSpec(**common, near_m=spec.near_m, far_m=spec.far_m), symbol_provider=lambda *_: None)
+        view = generate_elevation(model, ElevationSpec(**common, near_m=spec.near_m, far_m=spec.far_m), symbol_provider=lambda *_: None,
+            assembly_geometry="projection" if model.building_assemblies or model.assembly_components else None)
     ids = set(spec.source_ids)
     primitives = tuple(p for p in view.primitives if set(p.source_ids) <= ids)
     primitives += tuple(DrawingPrimitive(id=f"{spec.id}:{e.id}:location",kind="symbol",layer="detail:ports",source_ids=(e.id,),points=(frame.project(e.pose.position)[0],),symbol="supplied_connection_location") for e in selected if isinstance(e,Port))

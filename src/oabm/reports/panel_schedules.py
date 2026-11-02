@@ -9,11 +9,12 @@ from dataclasses import asdict, dataclass, fields, is_dataclass
 from typing import Any, get_args, get_origin, get_type_hints
 
 from oabm.model import (BuildingModel, ContractError, Entity, CoordinateSystem, Provenance,
-                        Route, reject_physical_routes,
+                        Route,
                         FITTING_SCHEMA_VERSION, STRUCTURAL_SCHEMA_VERSION,
                         SUPPORTED_SCHEMA_VERSIONS, validate_model)
 from oabm.model.common import _finite, _validate_id, _validate_json_value
 from oabm.model.model import _decode_dataclass, _encode
+from oabm.model.physical_routes import PhysicalRoute, _physical_json_float, validate_physical_json_numbers
 
 REPORT_VERSION = "1.0.0"
 PANEL_TYPES = frozenset({"panelboard"})
@@ -21,8 +22,8 @@ BINDING_ALGORITHM = "canonical-entity-order-and-scope-sets-v1"
 ENTITY_TYPES = {name: get_args(tp)[0] for name, tp in get_type_hints(BuildingModel).items()
                 if get_origin(tp) is tuple and get_args(tp) and isinstance(get_args(tp)[0], type)
                 and issubclass(get_args(tp)[0], Entity)}
-# Routes now have a tagged union in the canonical model. Keep the legacy
-# source inventory key; unsupported physical snapshots fail explicitly below.
+# Collection membership is shared by both canonical route variants. Decode
+# the actual discriminator rather than treating physical facts as legacy lines.
 ENTITY_TYPES["routes"] = Route
 OPTIONAL_FACTS = ("circuit_number", "poles", "phase", "voltage_v", "load_va")
 
@@ -143,7 +144,8 @@ class ModelSourceContext:
 def _decode_source_entity(collection, data):
     if (collection == "routes" and isinstance(data, dict)
             and data.get("geometry_kind") == "line_arc_v1"):
-        raise ContractError("SourceSnapshot does not support physical routes (line_arc_v1)")
+        validate_physical_json_numbers({"routes": [data]})
+        return _decode_dataclass(PhysicalRoute, data)
     return _decode_dataclass(ENTITY_TYPES[collection], data)
 
 
@@ -340,7 +342,9 @@ class PanelScheduleReport:
             raise ContractError("explicit panel circuit cannot be unassigned")
         snapshots={}
         for source in tuple(p.panel for p in self.panels)+tuple(s for r in all_rows for s in (r.circuit,r.source_port,r.source_owner)):
-            if self.source_model_version < _minimum_source_schema(source.collection):
+            minimum_version = ('1.7.0' if source.collection == 'routes' and source.entity.get('geometry_kind') == 'line_arc_v1'
+                               else _minimum_source_schema(source.collection))
+            if self.source_model_version < minimum_version:
                 raise ContractError('source collection is unavailable in declared model version')
             previous=snapshots.get(source.id)
             if previous is not None and previous != source:
@@ -361,7 +365,18 @@ class PanelScheduleReport:
                 result[key]=value
             return result
         def constant(value):raise ContractError('nonfinite panel report JSON number')
-        try:data=json.loads(text,object_pairs_hook=pairs,parse_constant=constant)
+        try:
+            exact=json.loads(text,object_pairs_hook=pairs,parse_constant=constant,parse_float=_physical_json_float)
+            if isinstance(exact,dict):
+                rows=list(exact.get('unassigned_circuits', ())) if isinstance(exact.get('unassigned_circuits'),list) else []
+                for panel in exact.get('panels', ()) if isinstance(exact.get('panels'),list) else ():
+                    if isinstance(panel,dict) and isinstance(panel.get('circuits'),list):rows.extend(panel['circuits'])
+                for row in rows:
+                    owner=row.get('source_owner') if isinstance(row,dict) else None
+                    entity=owner.get('entity') if isinstance(owner,dict) and owner.get('collection')=='routes' else None
+                    if isinstance(entity,dict) and entity.get('geometry_kind')=='line_arc_v1':
+                        validate_physical_json_numbers({'routes':[entity]})
+            data=json.loads(text,object_pairs_hook=pairs,parse_constant=constant)
         except (TypeError,json.JSONDecodeError) as exc:raise ContractError('invalid panel report JSON') from exc
         return cls.from_dict(data)
 
@@ -395,7 +410,6 @@ def _source_document(model):
 
 def generate_panel_schedule_report(model: BuildingModel) -> PanelScheduleReport:
     """No source mutation, source-owner guessing or engineering calculations."""
-    reject_physical_routes(model, "generate_panel_schedule_report")
     document=_source_document(model)
     fingerprint=hashlib.sha256(_json(document).encode()).hexdigest()
     sources={entity['id']:SourceSnapshot.from_source_data(collection,entity)

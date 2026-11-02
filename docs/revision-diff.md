@@ -43,6 +43,19 @@ scope under #235.
   lines are explicit `added`/`removed` with nulls on the absent side.
   Nothing prices anything.
 
+## Completed physical assembly revisions
+
+Comparable 1.6/1.7 snapshots include canonical building-assignment parents and
+physical components. Geometry changes (including actual mesh geometry), supplied
+product/material/preset basis and ownership changes receive their existing
+geometry/product/graph classes. Regenerated room edits retain semantic IDs and
+report actual takeoff deltas; a changed variant remains an explicit old removal
+and new addition under the existing null-absent-side contract. Parent records do
+not add a second quantity. A denser ceiling layout reports real added/removed
+components and changed assignment membership. Provenance-record reordering alone
+does not invent a revision. Physical `line_arc_v1` routes still refuse here;
+the separate physical-route comparison remains their current comparison path.
+
 ## Purity and determinism
 
 Neither snapshot is mutated. Item and delta identifiers are stable

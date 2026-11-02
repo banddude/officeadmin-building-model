@@ -43,7 +43,7 @@ import math
 from dataclasses import dataclass, fields as dataclass_fields
 from typing import Any, Iterable, Mapping, get_args, get_origin, get_type_hints
 
-from oabm.assembly_compat import require_no_populated_building_assemblies
+from oabm.model.assemblies import AssemblyRecord
 from oabm.model import BuildingModel, Entity
 from oabm.quantities import extract_quantities
 
@@ -66,18 +66,22 @@ _CLASS_ATTRIBUTE = "attribute"
 _GEOMETRY_FIELDS = frozenset({
     "centerline", "footprint", "pose", "size", "thickness_m", "height_m",
     "elevation_m", "listed_volume_m3", "nominal_diameter_m", "points",
+    "geometry", "boundary", "host_representation", "wall_frame",
 })
 _PRODUCT_FIELDS = frozenset({
     "product", "basis", "requested_product", "requested_basis",
     "selected_box_id", "selected_selection_id", "selected_assembly_id",
     "route_type", "wiring_method", "designation", "designation_kind",
     "assembly_type", "component_type", "category", "box_type", "mounting",
+    "material_id", "material_basis", "geometry_basis", "catalog_id", "catalog_revision",
+    "preset_id", "preset_revision", "resolved_parameters", "selected_by", "generator_version",
 })
 _GRAPH_FIELDS = frozenset({
     "connected_port_ids", "route_ids", "load_port_ids", "source_port_id",
     "start_port_id", "end_port_id", "circuit_id", "owner_id", "host_id",
     "occupant_ids", "supported_object_ids", "intent_id", "level_id",
     "fitting_ids", "circuit_ids", "role", "count",
+    "assembly_id", "component_ids", "interface_ids", "opening_id", "deck_id", "hanger_attachment",
 })
 _PROVENANCE_FIELDS = frozenset({"provenance", "confidence"})
 
@@ -129,7 +133,7 @@ def _normalized_document(entity: Entity) -> dict[str, Any]:
 
     document = _entity_document(entity)
     provenance = document.get("provenance")
-    if isinstance(provenance, list):
+    if isinstance(provenance, (list, tuple)):
         document["provenance"] = sorted(provenance, key=_provenance_sort_key)
     return document
 
@@ -177,7 +181,7 @@ def _entity_collections(model: BuildingModel) -> dict[str, dict[str, Entity]]:
             get_origin(hint) is tuple
             and arguments
             and (field_info.name == "routes" or (
-                isinstance(arguments[0], type) and issubclass(arguments[0], Entity)
+                isinstance(arguments[0], type) and issubclass(arguments[0], (Entity, AssemblyRecord))
             ))
         ):
             result[field_info.name] = {
@@ -488,8 +492,6 @@ def build_revision_diff(base: BuildingModel, target: BuildingModel) -> RevisionD
 
     reject_physical_routes(base, "build_revision_diff")
     reject_physical_routes(target, "build_revision_diff")
-    require_no_populated_building_assemblies(base, "build_revision_diff base snapshot")
-    require_no_populated_building_assemblies(target, "build_revision_diff target snapshot")
     _require_comparable(base, target)
     base_collections = _entity_collections(base)
     target_collections = _entity_collections(target)

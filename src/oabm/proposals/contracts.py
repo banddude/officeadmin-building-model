@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from oabm.model import BuildingModel, ContractError, Provenance, stable_id
+from oabm.model import BuildingModel, ContractError, Provenance, stable_id, reject_physical_routes
 from oabm.model.common import _finite as _canonical_finite, _validate_id, _validate_json_value, provenance_applies_to
 from oabm.model.model import _decode_dataclass as _canonical_decode_dataclass
 from oabm.reports.panel_schedules import (
@@ -217,6 +217,7 @@ class PlacementContext:
             raise ContractError('candidate identities must be sorted and distinct')
         fingerprint(self.source_model_fingerprint,'source model fingerprint')
         model=self.source_model()
+        _preflight(model,self.options)
         if digest(_source_document(model)) != self.source_model_fingerprint:
             raise ContractError('source model snapshot binding mismatch')
         if self.candidates != _candidates(model,self.options):
@@ -250,6 +251,10 @@ class PlacementContext:
 def _preflight(model,options):
     if not isinstance(model,BuildingModel) or not isinstance(options,PlacementOptions):
         raise ContractError('capture requires canonical source and typed options')
+    # Snapshot/quantity consumers can retain physical routes, but this producer
+    # has not implemented their placement semantics. Refuse before callbacks,
+    # including when a saved context is reconstructed directly.
+    reject_physical_routes(model,'PlacementContext')
     if sum(len(getattr(model,c)) for c in ENTITY_TYPES)>MAX_SOURCE_ENTITIES:
         raise ContractError('source entity budget exceeded before placement work')
     walls=[w for w in model.walls if w.level_id==options.level_id and w.construction!='glazed']

@@ -21,7 +21,10 @@ def test_drawing_set_indexes_every_canonical_child_and_refuses_unsupported_scope
     indexed={r.canonical_id for r in result.source_index}
     assert {c.id for c in m.assembly_components}|{a.id for a in m.building_assemblies}<=indexed
     assert all(set(p.source_ids)<=indexed for v in result.views for p in v.primitives)
-    with pytest.raises(ValueError,match='include_schedules=False'):generate_drawing_set(m,plans=[p],assembly_geometry='cut')
+    scheduled=generate_drawing_set(m,plans=[p],assembly_geometry='cut')
+    assert any(s.id=='schedule:assembly-components' for s in scheduled.schedules)
+    assert all(row.source_id in indexed for schedule in scheduled.schedules for row in schedule.rows)
+    with pytest.raises(ValueError,match='assembly_geometry'):generate_drawing_set(m,plans=[p],assembly_geometry='guessed')
 
 
 def test_model_delivery_v2_uses_same_model_for_assembly_plans_and_preview(tmp_path):

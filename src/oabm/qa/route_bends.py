@@ -60,6 +60,77 @@ def _distance(a, b):
     return math.dist(_coords(a), _coords(b))
 
 
+def _junction_bends(model, radii, tolerance, angle_tolerance):
+    """Resolve only explicit consolidation elbows, retaining uncertainty.
+
+    One physical elbow is reported on its canonical owner. Its setback is
+    charged independently to both incident route ends. Coincident but
+    disconnected endpoints cannot establish a junction.
+    """
+    ends, handled, bends, diagnostics = {}, set(), [], []
+    routes = {route.id: route for route in model.routes}
+    for fitting in sorted(model.route_fittings, key=lambda f: f.id):
+        if not fitting.fitting_type.startswith("elbow") or not isinstance(
+            fitting.attributes.get("consolidation"), dict
+        ):
+            continue
+        owner = routes[fitting.route_id]
+        points = owner.centerline.points
+        if not any(_distance(fitting.pose.position, p) <= tolerance
+                   for p in (points[0], points[-1])):
+            continue  # Ordinary interior-vertex handling below.
+        handled.add(fitting.id)
+        incident = []
+        for route in sorted(model.routes, key=lambda r: r.id):
+            pts = route.centerline.points
+            for index, neighbor, port in ((0, 1, route.start_port_id),
+                                          (len(pts)-1, len(pts)-2, route.end_port_id)):
+                if _distance(fitting.pose.position, pts[index]) <= tolerance:
+                    incident.append((route, index, pts[index], pts[neighbor], port))
+        ids = (fitting.id,)
+        # Same canonical connection port, same route type, exactly two legs.
+        if (len(incident) != 2 or len({entry[0].id for entry in incident}) != 2
+                or len({entry[4] for entry in incident}) != 1
+                or any(entry[0].route_type != owner.route_type for entry in incident)):
+            diagnostics.append(BendDiagnostic("junction_ambiguous", owner.id, -1, ids))
+            continue
+        vectors = []
+        for _, _, point, adjacent, _ in incident:
+            length = _distance(point, adjacent)
+            if not math.isfinite(length) or length <= 0:
+                raise ContractError("bend preflight segment length overflow or underflow")
+            vectors.append(tuple((b-a)/length for a,b in zip(_coords(point), _coords(adjacent))))
+        u, v = vectors
+        cross = (u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0])
+        angle = math.atan2(math.hypot(*cross), -sum(a*b for a,b in zip(u,v)))
+        supplied = [radii.get(entry[0].id) for entry in incident]
+        radius = supplied[0] if all(value is not None for value in supplied) else None
+        if radius is None:
+            diagnostics.append(BendDiagnostic("radius_unknown", owner.id, -1, ids))
+        elif abs(supplied[0] - supplied[1]) > tolerance:
+            diagnostics.append(BendDiagnostic("junction_radius_mismatch", owner.id, -1, ids))
+            radius = None
+        reverse = math.pi - angle <= angle_tolerance
+        if reverse or angle <= angle_tolerance:
+            diagnostics.append(BendDiagnostic("junction_not_turn", owner.id, -1, ids))
+        setback = None if radius is None or reverse else radius * math.tan(angle/2)
+        if setback is not None and not math.isfinite(setback):
+            raise ContractError("bend preflight tangent setback overflow")
+        owner_index = next(entry[1] for entry in incident if entry[0].id == owner.id)
+        bends.append(BendCheck(owner.id, owner_index, angle, radius, setback))
+        if fitting.angle_radians is None or abs(fitting.angle_radians-angle) > angle_tolerance:
+            diagnostics.append(BendDiagnostic("elbow_angle_mismatch", owner.id, owner_index, ids))
+        named = {"elbow-90": math.pi/2, "elbow-45": math.pi/4}.get(fitting.fitting_type)
+        if named is not None and abs(named-angle) > angle_tolerance:
+            diagnostics.append(BendDiagnostic("elbow_type_mismatch", owner.id, owner_index, ids))
+        for route, index, *_ in incident:
+            key = (route.id, index)
+            if key in ends:
+                diagnostics.append(BendDiagnostic("elbow_ambiguous", route.id, index, ids))
+            ends[key] = setback
+    return ends, handled, bends, diagnostics
+
+
 def check_route_bends(model: BuildingModel, *, radii_m: Mapping[str, float],
                       tolerance_m: float = 1e-6, angle_tolerance_rad: float = 1e-6) -> BendReport:
     """Check elbow inventory and tangent-space budgets on every canonical route.
@@ -72,9 +143,9 @@ def check_route_bends(model: BuildingModel, *, radii_m: Mapping[str, float],
     Collinear redundant vertices are coalesced for length budgets only; report
     indices always refer to original canonical vertices. Fitting matches use
     canonical vertex poses, as emitted by the router, not tangent endpoints.
-    Supports interior turns within each route only. A valid consolidation
-    junction elbow at a straight trunk endpoint reports elbow_off_turn; its
-    cross-route bend budget is unsupported, not evidence of invalid topology.
+    Explicit consolidation elbows at a shared canonical endpoint are supported
+    when exactly two same-type route legs meet. Both routes must supply the
+    same radius; ambiguous topology remains unresolved.
     """
     reject_physical_routes(model, "check_route_bends")
     validate_model(model)
@@ -92,7 +163,9 @@ def check_route_bends(model: BuildingModel, *, radii_m: Mapping[str, float],
         if type(radius) not in (int, float) or not math.isfinite(radius) or radius <= 0:
             raise ContractError("bend preflight radii must be finite and positive")
     fittings = {f.id: f for f in model.route_fittings}
-    bends, diagnostics = [], []
+    endpoint_setbacks, endpoint_fittings, bends, diagnostics = _junction_bends(
+        model, radii_m, tolerance_m, angle_tolerance_rad,
+    )
     for route in sorted(model.routes, key=lambda r: r.id):
         points = route.centerline.points
         turns = []
@@ -139,10 +212,11 @@ def check_route_bends(model: BuildingModel, *, radii_m: Mapping[str, float],
         turn_indices = {i for i, _ in turns}
         for fid in sorted(route.fitting_ids):
             f = fittings[fid]
-            if f.fitting_type.startswith("elbow") and not any(_distance(f.pose.position, points[i]) <= tolerance_m for i in turn_indices):
+            if f.fitting_type.startswith("elbow") and fid not in endpoint_fittings and not any(_distance(f.pose.position, points[i]) <= tolerance_m for i in turn_indices):
                 diagnostics.append(BendDiagnostic("elbow_off_turn", route.id, -1, (fid,)))
         # Merge collinear pieces into one straight budget without editing model.
-        boundaries = [(0, 0.0), *turns, (len(points)-1, 0.0)]
+        boundaries = [(0, endpoint_setbacks.get((route.id, 0), 0.0)), *turns,
+                      (len(points)-1, endpoint_setbacks.get((route.id, len(points)-1), 0.0))]
         for (a, left), (b, right) in zip(boundaries, boundaries[1:]):
             if left is None or right is None:
                 continue

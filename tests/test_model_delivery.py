@@ -2,6 +2,7 @@
 from dataclasses import replace
 import hashlib
 import json
+import math
 from pathlib import Path
 import struct
 
@@ -10,7 +11,7 @@ import pytest
 from oabm.drawings import PlanSpec, generate_drawing_set, layout_view_labels, paper_text_height_m, view_to_svg
 from oabm.exports.gltf import to_glb
 from oabm.exports import model_delivery as delivery
-from oabm.model import BuildingModel, ContractError, validate_model
+from oabm.model import BuildingModel, ContractError, ElectricalDevice, Point3, Polyline3D, Port, Pose, Vector3, validate_model
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/model_delivery/v1"
 
@@ -172,7 +173,7 @@ def test_changed_artifact_before_publication_fails(tmp_path,monkeypatch):
     assert not (tmp_path/"attempt/delivery").exists()
 
 
-def test_consolidated_junction_is_explicit_review_not_global_block(tmp_path):
+def consolidated_corner_inputs(tmp_path):
     from oabm.routing import consolidate_bundled_routes
     model, config = inputs(tmp_path,bend_policy="report")
     m = BuildingModel.load(model)
@@ -186,14 +187,87 @@ def test_consolidated_junction_is_explicit_review_not_global_block(tmp_path):
     options = json.loads(config.read_bytes())
     options["radii_m"] = {r.id:.3 for r in m.routes}
     config.write_text(json.dumps(options))
-    root = delivery.deliver_model(model,config,output_directory=tmp_path/"report")
-    assert json.loads((root/"MANIFEST.json").read_bytes())["status"]["bend_check"] == "needs_review"
-    assert [d["code"] for d in json.loads((root/"bend-report.json").read_bytes())["diagnostics"]] == ["elbow_off_turn"]
+    return model,config,m,options
+
+
+@pytest.mark.parametrize('policy',['report','require'])
+def test_unambiguous_consolidated_corner_delivers_with_both_leg_budgets(tmp_path,policy):
+    from oabm.qa.route_bends import check_route_bends
+    model,config,m,options=consolidated_corner_inputs(tmp_path)
+    frozen=m.to_json()
+    assert len(m.routes)==2 and len(m.route_fittings)==1
+    elbow=m.route_fittings[0];junction=elbow.pose.position
+    assert elbow.fitting_type=='elbow-90' and elbow.angle_radians==pytest.approx(math.pi/2)
+    legs=[];connection_ports=[]
+    xyz=lambda point:(point.x,point.y,point.z)
+    for route in m.routes:
+        points=route.centerline.points
+        assert len(points)==2 and junction in points
+        at_start=points[0]==junction
+        adjacent=points[1] if at_start else points[0]
+        connection_ports.append(route.start_port_id if at_start else route.end_port_id)
+        legs.append(tuple(a-b for a,b in zip(xyz(adjacent),xyz(junction))))
+        assert math.dist(xyz(junction),xyz(adjacent))==pytest.approx(2.)
+    assert len(set(connection_ports))==1
+    assert sum(a*b for a,b in zip(*legs))==pytest.approx(0.)
+    # Independently charge each actual two-metre leg. Checking only the elbow's
+    # owning route would incorrectly pass one of these two over-budget legs.
+    over=check_route_bends(m,radii_m={route.id:2.1 for route in m.routes})
+    short=[diagnostic for diagnostic in over.diagnostics if diagnostic.code=='short_straight']
+    assert {diagnostic.route_id for diagnostic in short}=={route.id for route in m.routes}
+    assert len(short)==2
+    assert all(d.available_m==pytest.approx(2.) and d.required_m==pytest.approx(2.1) for d in short)
+
+    options['bend_policy']=policy;config.write_text(json.dumps(options))
+    root=delivery.deliver_model(model,config,output_directory=tmp_path/policy)
+    manifest=json.loads((root/'MANIFEST.json').read_bytes())
+    report=json.loads((root/'bend-report.json').read_bytes())
+    assert manifest['status']['bend_check']=='passed_bounded_checks'
+    assert manifest['status']['engineering_approval'] is False
+    assert report['ready'] is True and report['diagnostics']==[]
+    assert len(report['bends'])==1
+    bend=report['bends'][0]
+    assert bend['route_id']==elbow.route_id
+    assert bend['angle_radians']==pytest.approx(math.pi/2)
+    assert bend['radius_m']==pytest.approx(.3)
+    assert bend['tangent_setback_m']==pytest.approx(.3)
+    assert json.loads((root/'canonical-model.json').read_bytes())==m.to_dict()
+    assert m.to_json()==frozen
+    verify(root,manifest)
     assert (root/"preview.glb").exists()
+
+
+def test_ambiguous_consolidated_junction_requires_review_and_blocks_require(tmp_path,monkeypatch):
+    model,config,m,options=consolidated_corner_inputs(tmp_path)
+    # Three distinct outgoing legs cannot be certified by the surviving
+    # two-way elbow; no geometry duplication is needed to make this ambiguous.
+    junction=m.route_fittings[0].pose.position
+    first=m.routes[0]
+    junction_port=first.start_port_id if first.centerline.points[0]==junction else first.end_port_id
+    end=Point3(x=2,y=-2,z=0)
+    device=ElectricalDevice(id='device:ambiguous-extra',device_type='synthetic-endpoint',pose=Pose(position=end))
+    port=Port(id='port:ambiguous-extra',owner_id=device.id,domain='power',role='connection',pose=Pose(position=end),
+        direction=Vector3(x=0,y=1,z=0))
+    extra=replace(first,id='route:ambiguous-extra',start_port_id=junction_port,end_port_id=port.id,
+        centerline=Polyline3D(points=(junction,end)),fitting_ids=(),attributes={},provenance=())
+    m=replace(m,routes=(*m.routes,extra),ports=(*m.ports,port),electrical_devices=(*m.electrical_devices,device))
+    validate_model(m);m.dump(model)
+    options['radii_m']={route.id:.3 for route in m.routes};config.write_text(json.dumps(options))
+    root=delivery.deliver_model(model,config,output_directory=tmp_path/'report')
+    manifest=json.loads((root/'MANIFEST.json').read_bytes())
+    assert manifest['status']['bend_check']=='needs_review'
+    assert [d['code'] for d in json.loads((root/'bend-report.json').read_bytes())['diagnostics']]==['junction_ambiguous']
+    assert (root/'preview.glb').exists()
+    verify(root,manifest)
     options["bend_policy"] = "require"
     config.write_text(json.dumps(options))
-    with pytest.raises(delivery.ModelDeliveryError):
-        delivery.deliver_model(model,config,output_directory=tmp_path/"required")
+    with monkeypatch.context() as guarded:
+        guarded.setattr(delivery,'generate_drawing_set',lambda *args,**kwargs:pytest.fail('ambiguous bend gate bypassed'))
+        with pytest.raises(delivery.ModelDeliveryError) as error:
+            delivery.deliver_model(model,config,output_directory=tmp_path/"required")
+    assert error.value.stage=='bend_preflight'
+    assert not (tmp_path/'required'/'delivery').exists()
+    assert not (tmp_path/'required'/'.pending'/'MANIFEST.json').exists()
     options.update(bend_policy="skip",radii_m={},plans=[])
     config.write_text(json.dumps(options))
     root = delivery.deliver_model(model,config,output_directory=tmp_path/"skip")

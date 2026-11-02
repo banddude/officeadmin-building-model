@@ -39,9 +39,20 @@ triangle fragments merge; internal coplanar triangulation diagonals are removed.
 The metadata states that assembly parts beyond the cut plane are not projected.
 These APIs do not yet supply assembly hidden-line elevations, hatch/material
 patterns, automatic dimensioning, structural approval or manufacturer detail.
-`generate_elevation` and legacy `generate_schedules` retain their populated-assembly
-guards. Drawing-set and delivery support require the explicit options documented
-below; default requests do not silently enable assembly cuts.
+`generate_elevation(..., assembly_geometry='projection')` now projects actual
+physical child mesh wireframes, clipped to the requested near/far depth slab and
+2D bounds, with component/parent source IDs. Automatic framing includes actual
+child bounds. Aggregate host bodies/dimensions are suppressed. Triangulation
+edges remain visible; no hidden-line removal, surface occlusion or new dimension
+inference is claimed. Default elevation requests retain their assembly guard.
+
+`generate_schedules(model)` validates populated assignments and adds canonical
+parent-assignment metadata and one inventory row per physical child. Parent rows
+are explicitly not a takeoff; quantities are neither summed twice nor inferred
+from row counts. Unknown materials retain their unknown basis. Existing ordinary
+schedules remain present. Selected supported equipment/box details can coexist
+with unrelated assemblies without stripping the model; unsupported selected
+assembly records/geometry still refuse.
 
 ## IFC APIs
 
@@ -73,10 +84,11 @@ manufacturer fit remain governed by their existing explicit unknowns.
 
 ## Connected requests and composed model-view sheets
 
-`generate_drawing_set(..., assembly_geometry='cut', include_schedules=False)` now
-supports plan and section batches and indexes both parent and physical child
-provenance. Populated assembly elevations or legacy schedules still refuse;
-the caller must request only supported consumers. Default requests are unchanged.
+`generate_drawing_set(..., assembly_geometry='cut')` supports plane-cut plans and
+sections, depth-clipped mesh-wireframe elevations and optional canonical schedules,
+indexing both parent and physical child provenance. Set `include_schedules=False`
+to omit schedules as before. Default requests without explicit assembly geometry
+remain guarded; no physical permit sheet or raster is implicitly added.
 
 The existing model-delivery CLI accepts `model-delivery-v2` options: the original
 v1 keys plus explicit `"assembly_geometry": "cut"`. It uses the same canonical
@@ -128,8 +140,8 @@ oabm-production-sheets /tmp/physical-packet-new/inputs/production.json /tmp/phys
 This demonstration produces a two-sheet shared-titleblock plan/section packet
 through the real coordinator. A requested cover can coexist with these views;
 its final index is reconciled with their IDs. Ordinary non-assembly component
-bodies retain their own support contracts. Requesting an unsupported legacy
-detail on a populated assembly model still refuses rather than dropping parts.
+bodies retain their own support contracts. Unsupported selected detail sources
+still refuse; unrelated assembly context no longer blocks supported selections.
 
 ### Native source-closure verification
 
@@ -153,7 +165,7 @@ canonical model. The drawing adapter no longer constructs an intermediate model
 with its assemblies removed: doing so invalidated valid assembly-bound route
 receipts and prevented a successfully routed model from reaching plan delivery.
 The source model and route receipts remain byte-for-byte unchanged. Legacy
-requests without explicit cut mode still refuse populated assemblies, and stale
+plan/section requests without explicit cut mode still refuse populated assemblies, and stale
 assembly/route combinations still fail canonical validation.
 
 Run `python examples/routed_assembly_delivery.py FRESH_ROOT` for a connected

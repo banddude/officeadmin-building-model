@@ -66,8 +66,8 @@ def test_unrelated_coincident_panel_keeps_symbol_collision_checks(monkeypatch):
     from oabm.pipeline.as_built_delivery import _drawings
     history,request=example(monkeypatch).physical_field_inputs()
     current=replay_history(apply_transaction(history,request))
-    endpoint=next(device for device in current.electrical_devices if device.id=='device:physical:a')
-    panel=replace(current.electrical_equipment[0],pose=endpoint.pose)
+    endpoint=next(device for device in current.electrical_devices if device.id=='device:physical:b')
+    panel=replace(current.electrical_equipment[0],pose=endpoint.pose,level_id=endpoint.level_id)
     source=replace(current,routes=(),electrical_equipment=(panel,))
     route=current.routes[0]
     context=replace(route.context,source_model_sha256=compute_physical_source_sha256(source))
@@ -75,8 +75,8 @@ def test_unrelated_coincident_panel_keeps_symbol_collision_checks(monkeypatch):
     model=replace(source,routes=(replace(route,context=context),))
     outputs=_drawings(model,'field:unrelated-coincident-symbol')
     layout=json.loads(outputs['drawings/plan-layout.json'])
-    first=next(row for row in layout['plans'] if row['level_id']=='level:physical:0')
-    assert {row['owner_id'] for row in first['shared_endpoint_symbols']}=={endpoint.id}
-    entries={row['owner_id']:row for row in first['entries']}
+    third=next(row for row in layout['plans'] if row['level_id']=='level:physical:2')
+    assert {row['owner_id'] for row in third['shared_endpoint_symbols']}=={endpoint.id}
+    entries={row['owner_id']:row for row in third['entries']}
     for identity in (panel.id,endpoint.id,route.id):
         assert entries[identity]['callout_status']=='legend_only'

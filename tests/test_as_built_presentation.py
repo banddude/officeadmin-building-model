@@ -211,3 +211,31 @@ def test_endpoint_escape_membership_requires_a_port_at_the_actual_owner_anchor()
     source=replace(model,ports=tuple(moved_port if p.id==port.id else p for p in model.ports),
         routes=tuple(moved_route if r.id==route.id else r for r in model.routes))
     assert _endpoint_routes(source,panel,anchor)==set()
+
+
+def test_high_precision_legacy_endpoint_shares_the_quantized_marker_anchor_without_model_writeback():
+    from oabm.model import Point3
+    from oabm.drawings import Point2
+    history,request=example().synthetic_three_story_inputs()
+    model=replay_history(apply_transaction(history,request))
+    x=.123456789123;y=1.2
+    panel=replace(model.electrical_equipment[0],size=None,pose=replace(model.electrical_equipment[0].pose,
+        position=Point3(x=x,y=y,z=model.electrical_equipment[0].pose.position.z)))
+    device=replace(model.electrical_devices[0],size=None,pose=replace(model.electrical_devices[0].pose,
+        position=Point3(x=x,y=y,z=model.electrical_devices[0].pose.position.z)))
+    owners={panel.id:panel,device.id:device}
+    ports=tuple(replace(port,pose=owners[port.owner_id].pose) for port in model.ports)
+    route=replace(model.routes[0],centerline=replace(model.routes[0].centerline,
+        points=(panel.pose.position,device.pose.position)))
+    model=replace(model,electrical_equipment=(panel,),electrical_devices=(device,),ports=ports,routes=(route,))
+    before=snapshot(model);outputs=_drawings(model,'field:high-precision-shared-anchor')
+    layout=json.loads(outputs['drawings/plan-layout.json'])
+    third=next(row for row in layout['plans'] if row['level_id']==device.level_id)
+    expected=[Point2(x,y).x,Point2(x,y).y]
+    assert expected!=[x,y]
+    assert third['shared_endpoint_symbols']
+    assert all(row['anchor_m']==expected for row in third['shared_endpoint_symbols'])
+    entries={row['owner_id']:row for row in third['entries']}
+    assert entries[device.id]['callout_status']=='placed'
+    assert entries[route.id]['callout_status']=='placed'
+    assert model.ports[-1].pose.position.x==x and snapshot(model)==before

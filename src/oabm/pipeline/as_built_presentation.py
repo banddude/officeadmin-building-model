@@ -73,7 +73,7 @@ def _shared_marker_connections(model,primitives):
                 if (pose is not None and primitive.points[0]==Point2(point.x,point.y)==Point2(pose.position.x,pose.position.y)
                         and float(low)<=point.z<=float(high)):
                     result.append({'marker_id':primitive.id,'route_id':route.id,'port_id':identity,
-                        'owner_id':port.owner_id,'anchor_m':[point.x,point.y]})
+                        'owner_id':port.owner_id,'anchor_m':[primitive.points[0].x,primitive.points[0].y]})
     return result
 
 

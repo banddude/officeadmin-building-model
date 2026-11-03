@@ -20,11 +20,70 @@ def rows(report, name):
     return list(csv.DictReader(io.StringIO(report.files()[name])))
 
 
+def _assert_quantity_formats(report):
+    """Read actual HTML cells, not the formatter that produced them."""
+    from html.parser import HTMLParser
+    class Cells(HTMLParser):
+        def __init__(self):super().__init__();self.rows=[];self.row=None;self.cell=None
+        def handle_starttag(self,tag,attrs):
+            if tag=='tr':self.row=[]
+            if tag=='td':self.cell=[]
+        def handle_data(self,value):
+            if self.cell is not None:self.cell.append(value)
+        def handle_endtag(self,tag):
+            if tag=='td':self.row.append(''.join(self.cell));self.cell=None
+            if tag=='tr' and self.row:self.rows.append(self.row);self.row=None
+    parser=Cells();parser.feed(report.files()['index.html'])
+    csv_rows=rows(report,'quantity-deltas.csv')
+    deltas=report.to_dict()['diff']['quantity_deltas']
+    assert len(csv_rows)==len(deltas)
+    for delta in deltas:
+        csv_row,=[row for row in csv_rows if row['delta_id']==delta['delta_id']]
+        html_row,=[row for row in parser.rows if len(row)==9 and row[0]==delta['delta_id']]
+        assert html_row==[csv_row[key] for key in ('delta_id','category','item_type','unit','variant_json','status','before_json','after_json','delta_json')]
+        for key in ('before','after','delta'):
+            assert json.loads(csv_row[key+'_json'])==delta[key]
+    return deltas
+
+
+@pytest.mark.parametrize('increment',[0.,1e-12,-1e-12])
+def test_fractional_provenance_split_register_preserves_original_totals_across_formats(increment):
+    from oabm.model import BuildingModel,Level,Wall,Polyline3D,Point3,Provenance
+    lengths=(.1,.2,.3);level=Level(id='level:fractions',elevation_m=0,height_m=3)
+    observed=(Provenance(source_kind='synthetic',source_id='fixture:fractions',derivation='observed'),)
+    walls=tuple(Wall(id=f'wall:fraction-{i}',level_id=level.id,
+        centerline=Polyline3D(points=(Point3(x=0,y=i,z=0),Point3(x=length,y=i,z=0))),
+        thickness_m=.1,height_m=1,provenance=observed) for i,length in enumerate(lengths))
+    before=BuildingModel(model_id='model:fractional-register',levels=(level,),walls=walls)
+    field=Provenance(source_kind='as-built-field-edit',source_id='field:fraction-confirmation',derivation='user',scope_paths=('centerline',))
+    changed=tuple(replace(wall,provenance=(*wall.provenance,field)) if i<2 else wall for i,wall in enumerate(walls))
+    changed=(replace(changed[0],centerline=replace(changed[0].centerline,
+        points=(changed[0].centerline.points[0],Point3(x=.1+increment,y=0,z=0)))),*changed[1:])
+    after=replace(before,walls=changed)
+    frozen=(before.to_json(),after.to_json());report=generate_revision_register(before,after)
+    deltas=_assert_quantity_formats(report)
+    if increment==0:
+        assert deltas==[] and not rows(report,'quantity-deltas.csv')
+        assert rows(report,'changes.csv')  # Provenance changes remain visible.
+    else:
+        line,=[row for row in deltas if row['category']=='wall_length']
+        assert line['before']==math.fsum(lengths)
+        assert line['after']==math.fsum((.1+increment,.2,.3))
+        assert line['delta']==line['after']-line['before'] and line['delta']!=0
+        assert any(row['path'].startswith('centerline') for row in rows(report,'changes.csv'))
+    reordered=replace(after,walls=tuple(reversed(after.walls)))
+    assert generate_revision_register(before,reordered).to_dict()['diff']==report.to_dict()['diff']
+    assert validate_revision_register(report.to_json()).files()==report.files()
+    report.validate_against_models(before,after)
+    assert frozen==(before.to_json(),after.to_json())
+
+
 def test_actual_room_register_is_complete_deterministic_and_not_a_second_takeoff(tmp_path):
     before, after = mixed_snapshots()
     frozen = [model.to_json() for model in (before,after)]
     report = generate_revision_register(before,after)
     data = report.to_dict()
+    _assert_quantity_formats(report)
     assert data['diff']['changed_count'] == 53
     assert len(data['diff']['changes']) == 53
     changes = rows(report,'changes.csv')
@@ -50,6 +109,24 @@ def test_actual_room_register_is_complete_deterministic_and_not_a_second_takeoff
     out = write_revision_register(report,tmp_path/'register')
     assert {path.name:path.read_text() for path in out.iterdir()} == report.files()
     assert '53 changed objects' in (out/'index.html').read_text()
+
+
+def test_split_device_counts_and_real_removal_keep_variant_identity_in_all_formats():
+    from oabm.model import Provenance
+    from test_revision_diff import _routed_garage
+    model=_routed_garage();original=model.electrical_devices[0]
+    peer=replace(original,id='device:register-peer')
+    variant=replace(original,id='device:register-other-size',size=replace(original.size,x=original.size.x+.1))
+    before=replace(model,electrical_devices=(original,peer,variant))
+    field=Provenance(source_kind='as-built-field-edit',source_id='field:register-count',derivation='user',scope_paths=('pose',))
+    confirmed=replace(original,provenance=(*original.provenance,field))
+    split=replace(before,electrical_devices=(confirmed,peer,variant))
+    assert _assert_quantity_formats(generate_revision_register(before,split))==[]
+    removed=replace(split,electrical_devices=(confirmed,variant))
+    deltas=_assert_quantity_formats(generate_revision_register(before,removed))
+    line,=[row for row in deltas if row['category']=='device']
+    assert (line['before'],line['after'],line['delta'],line['unit'])==(2,1,-1,'ea')
+    assert dict(line['variant'])['size_x_m']==original.size.x
 
 
 def test_equal_length_moved_path_remains_visible_without_quantity_change():

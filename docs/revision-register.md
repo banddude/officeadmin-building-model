@@ -41,3 +41,11 @@ No canonical geometry, quantities or source objects are modified.
 
 This is the readable list section of #235. Plan identity reconciliation, 3D
 revision presentation and priced change orders remain outside this exporter.
+# Quantity aggregation dependency
+
+The register consumes the accepted canonical revision engine directly. That
+engine sums original measured contributions once, before provenance bucketing,
+and refuses incompatible quantity ownership bases. The register does not add a
+second aggregator or sum rounded evidence-bucket subtotals. Provenance-only
+regrouping must not create quantity deltas; real fractional changes remain
+visible across JSON, HTML and CSV without intermediate rounding.

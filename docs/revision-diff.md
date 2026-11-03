@@ -7,6 +7,9 @@ with every object brand new.
 
 ## API
 
+For offline HTML and CSV presentation of the complete mixed-model diff, see the
+[revision change register](revision-register.md).
+
 ```python
 from oabm.qa import build_revision_diff
 

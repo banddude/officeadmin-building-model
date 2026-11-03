@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 oabm-manual-design = "oabm.electrical.manual_design_cli:main"
+oabm-physical-route-measure = "oabm.electrical.physical_route_measurement:main"
 oabm-source-coverage = "oabm.reports.source_coverage_cli:main"
 oabm-utility-set = "oabm.drawings.utility_delivery:main"
 oabm-as-built = "oabm.pipeline.as_built_delivery:main"

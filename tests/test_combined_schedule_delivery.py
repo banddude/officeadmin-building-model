@@ -251,3 +251,20 @@ def test_multi_page_row_maps_and_portable_logo_replay(tmp_path):
     assert len(manifest['rows']) == manifest['row_count'] == len(manifest['row_sources'])
     assert {row['sheet_id'] for row in manifest['rows']} == set(manifest['sheet_order'])
     assert all(row['primitive_ids'] and row['wrapped_cells'] for row in manifest['rows'])
+
+
+def test_combined_delivery_is_explicit_and_legacy_review_contract_unchanged():
+    from oabm.pipeline.review_drawings import generate_review_drawings, ReviewDrawingConfig, VERSION
+    from oabm.drawings.panel_schedules import panel_report_to_drawing_schedules
+    model = example.synthetic_model()
+    original = model.to_json()
+    report, combined = combined_schedule_drawing_set(model)
+    expected_panel_ids = [s.id for s in panel_report_to_drawing_schedules(report)]
+    payloads, _ = generate_review_drawings(model,
+        ReviewDrawingConfig(version=VERSION, plans=(), pixels_per_model_unit=40.0))
+    legacy = json.loads(payloads['drawing_set'])['drawing_set']['schedules']
+    assert [s['id'] for s in legacy] == expected_panel_ids
+    ordinary_ids = {s.id for s in generate_schedules(model)}
+    assert not ordinary_ids.intersection(expected_panel_ids)
+    assert ordinary_ids.union(expected_panel_ids) == {s.id for s in combined.schedules}
+    assert model.to_json() == original

@@ -20,9 +20,11 @@ schedule IDs, row source IDs, complete cells, repeated headers and readable
 paper-sized text; the existing company-sheet renderer creates SVG and combined
 vector PDF. Oversized content refuses delivery rather than truncating rows.
 The panel-only entrypoint and its drafted-card default remain compatible.
-Opt-in pipeline review drawings now include these ordinary schedules alongside
-the panel facts, with their existing incomplete-review banner. Default drawings
-retain their existing schedule set, with invalid references now refused.
+The existing versioned review-plan and saved-sheet pipeline remains panel-only
+and byte-compatible; its strict panel-fact coherence guard is unchanged. Use
+the explicit combined entrypoint for ordinary inventories and panel schedules
+together. Default drawings retain their existing schedule set, with invalid
+references now refused.
 
 The retained `schedule-source/model.json` is byte-for-byte the input. Editable
 `drawing-schedules.json`, `panel-facts.json`, individual page drawing JSON and

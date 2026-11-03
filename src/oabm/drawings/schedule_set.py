@@ -22,6 +22,40 @@ VERSION = 'panel-schedule-sheet-set-v1'
 COMBINED_VERSION = 'combined-schedule-sheet-set-v1'
 
 
+def _schedule_entities(model):
+    # Assembly records are canonical owners but intentionally do not inherit
+    # Entity, so the panel report's Entity-only collection index is insufficient.
+    return {entity.id: entity for entity in (
+        *_entities(model), *model.building_assemblies, *model.assembly_components)}
+
+
+def _schedule_source_records(model):
+    from oabm.reports.panel_schedules import ENTITY_TYPES
+    document = model.to_dict()
+    collections = (*ENTITY_TYPES, 'building_assemblies', 'assembly_components')
+    return {entity['id']: {'collection': collection, 'entity': entity}
+        for collection in collections for entity in document.get(collection, [])}
+
+
+def _panel_totals(report):
+    return [{'panel_id': panel.panel.id, 'known_connected_va': panel.known_connected_va,
+        'all_listed_loads_known': panel.all_listed_loads_known,
+        'subtotal_source_circuit_ids': list(panel.subtotal_source_circuit_ids),
+        'unknown_load_circuit_ids': list(panel.unknown_load_circuit_ids)}
+        for panel in report.panels]
+
+
+def _page_receipts(pages):
+    return {
+        'sheet_order': [page.spec.id for page in pages],
+        'rows': [row for page in pages for row in page.row_map],
+        'schedule_pages': [{'sheet_id': page.spec.id, **section}
+            for page in pages for section in (page.sections or (
+                {'schedule_id': page.schedule_id, 'schedule_page': page.schedule_page,
+                 'schedule_pages': page.schedule_pages},))],
+    }
+
+
 def combined_schedule_drawing_set(model, *, report=None):
     """One validated snapshot, semantic inventories and supplied panel facts.
 
@@ -29,7 +63,6 @@ def combined_schedule_drawing_set(model, *, report=None):
     circuits. Selection outcomes describe decisions, not additional products.
     Site inventory remains unsupported and is refused by generate_schedules.
     """
-    from oabm.reports.panel_schedules import ENTITY_TYPES
     # Roundtrip to detach mutable source attributes from the caller.
     validate_model(model)
     snapshot = BuildingModel.from_json(model.to_json())
@@ -38,8 +71,7 @@ def combined_schedule_drawing_set(model, *, report=None):
     report = generate_panel_schedule_report(snapshot) if report is None else report
     report.validate_against_model(snapshot)
     schedules = (*generate_schedules(snapshot), *panel_report_to_drawing_schedules(report))
-    entities = {e.id: e for collection in ENTITY_TYPES for e in getattr(snapshot, collection)}
-    entities.update({e.id: e for e in _entities(snapshot)})
+    entities = _schedule_entities(snapshot)
     drawing = DrawingSet(snapshot.model_id, (), schedules,
         tuple(_source_reference(e) for _, e in sorted(entities.items())))
     if any(row.source_id not in entities for schedule in schedules for row in schedule.rows):
@@ -88,10 +120,7 @@ def verify_combined_schedule_delivery(directory, *, model_path=None):
         raise ValueError('editable schedules do not match canonical source')
     if report.source_model_fingerprint != manifest['source_model_fingerprint']:
         raise ValueError('report source binding mismatch')
-    from oabm.reports.panel_schedules import ENTITY_TYPES
-    document = model.to_dict()
-    sources = {e['id']: {'collection': collection, 'entity': e}
-        for collection in ENTITY_TYPES for e in document.get(collection, [])}
+    sources = _schedule_source_records(model)
     expected_rows = [{'schedule_id': s.id, 'row_index': n, 'source_id': r.source_id,
         'source_model_sha256': _sha(source), **sources[r.source_id]}
         for s in drawing.schedules for n, r in enumerate(s.rows)]
@@ -103,6 +132,53 @@ def verify_combined_schedule_delivery(directory, *, model_path=None):
     if len(rows) != len(expected_cells) or manifest['row_count'] != len(rows) or {
         (r['schedule_id'], r['row_index'], r['source_id']): r['cells'] for r in rows} != expected_cells:
         raise ValueError('delivered row coverage/cells mismatch')
+    # Recompute physical pagination and receipts from retained inputs. A hash
+    # list alone cannot protect the manifest that contains that same list.
+    from .company_sheets import resolve_company_sheet_set, _body_group
+    retained = directory / 'schedule-source'
+    settings = _decode((retained / 'settings.json').read_bytes())
+    if not isinstance(settings, dict) or set(settings) != {'version', 'layout'} or settings['version'] != COMBINED_VERSION:
+        raise ValueError('invalid retained combined schedule settings')
+    layout = ScheduleLayout(**settings['layout'])
+    profile = _decode((retained / 'profile.json').read_bytes())
+    job = _decode((retained / 'job.json').read_bytes())
+    # Logos do not affect schedule geometry. Never reopen original external
+    # logo paths merely to verify a portable schedule delivery.
+    profile['logos'] = {}
+    job['logos'] = {}
+    job['sheets'] = [{**sheet, 'logos': {}} for sheet in job['sheets']]
+    resolved = resolve_company_sheet_set(retained / 'profile.json', retained / 'job.json',
+        _profile_raw=_json(profile), _job_raw=_json(job))
+    if len(resolved.sheets) != 1 or not {'svg', 'pdf'} <= set(resolved.formats):
+        raise ValueError('invalid retained schedule template/formats')
+    pages = paginate_schedules(drawing, resolved.sheets[0], layout=layout,
+        empty_schedule_sources={stable_id('schedule', f'panel-facts:{p.panel.id}'): p.panel.id
+                                for p in report.panels if not p.circuits})
+    expected = {**_page_receipts(pages), 'panel_totals': _panel_totals(report),
+        'model_id': model.model_id, 'layout': asdict(layout),
+        'status': 'supplied_facts_only', 'engineering_approval': False,
+        'drafting_grammar': 'fact-ledger-v1'}
+    for key, value in expected.items():
+        if _json(manifest.get(key)) != _json(value):
+            raise ValueError(f'derived schedule receipt mismatch: {key}')
+    def xml_content(node):
+        return (node.tag, tuple(sorted(node.attrib.items())), node.text or '',
+                tuple(xml_content(child) for child in node))
+    for number, page in enumerate(pages, 1):
+        stored = _decode((retained / f'{page.spec.id}.drawing.json').read_bytes())
+        if _json(stored) != _json(page.drawing_set.to_dict()):
+            raise ValueError('retained page drawing differs from regenerated pagination')
+        body = page.body_svg(layout)
+        if (retained / f'{page.spec.id}.body.svg').read_text() != body + '\n':
+            raise ValueError('retained page body differs from regenerated pagination')
+        svg = ET.fromstring((directory / 'sheets' / f'{number:03d}-{page.spec.id}.svg').read_bytes())
+        groups = svg.findall('{http://www.w3.org/2000/svg}g')
+        expected_group = _body_group(body, resolved.sheets[0].drawing_bounds_mm)
+        if len(groups) != 1 or xml_content(groups[0]) != xml_content(expected_group):
+            raise ValueError('rendered schedule geometry differs from regenerated pagination')
+    verification = _verify_shared_output(directory, pages, resolved.formats)
+    if _json(manifest.get('verification')) != _json(verification):
+        raise ValueError('schedule verification receipt mismatch')
     return manifest
 
 
@@ -275,10 +351,7 @@ def _create_schedule_sheet_set(model_path, profile_path, job_path, settings_path
                     {'sheet_id': p.spec.id, **section} for p in pages for section in (p.sections or (
                         {'schedule_id': p.schedule_id, 'schedule_page': p.schedule_page,
                          'schedule_pages': p.schedule_pages},))],
-                'panel_totals': [{'panel_id': p.panel.id, 'known_connected_va': p.known_connected_va,
-                    'all_listed_loads_known': p.all_listed_loads_known,
-                    'subtotal_source_circuit_ids': list(p.subtotal_source_circuit_ids),
-                    'unknown_load_circuit_ids': list(p.unknown_load_circuit_ids)} for p in report.panels],
+                'panel_totals': _panel_totals(report),
                 'limitations': ['Connected supplied VA only; no demand, service sizing, breaker selection, spare slots or code approval.',
                     'Font/pixel review remains independent; no construction or permit readiness claim.']}
             if combined:
@@ -288,10 +361,7 @@ def _create_schedule_sheet_set(model_path, profile_path, job_path, settings_path
                 manifest['unsupported_inventory'] = 'Site inventory is refused, never silently omitted.'
                 # Full canonical source records retain field-qualified provenance
                 # beyond the legacy DrawingSet source-index projection.
-                document = model.to_dict()
-                from oabm.reports.panel_schedules import ENTITY_TYPES
-                sources = {e['id']: {'collection': collection, 'entity': e}
-                    for collection in ENTITY_TYPES for e in document.get(collection, [])}
+                sources = _schedule_source_records(model)
                 manifest['row_sources'] = [
                     {'schedule_id': schedule.id, 'row_index': index, 'source_id': row.source_id,
                      'source_model_sha256': manifest['source_model_sha256'], **sources[row.source_id]}

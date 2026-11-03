@@ -36,8 +36,13 @@ legacy projection of that evidence. Units and references are validated through
 the canonical contract before delivery. The source is never edited by delivery.
 
 `verify_combined_schedule_delivery(path, model_path=current_model_path)` checks
-the receipts and regenerates the editable schedules from retained canonical
-source, refusing stale report/source combinations or altered files. The optional
+the receipts and regenerates both editable schedules and physical pagination
+from retained canonical source and layout inputs. It compares complete row,
+page, primitive, wrapped-cell and panel-total receipts, retained page drawings
+and SVG bodies, and rendered SVG schedule geometry. Architecture-only and
+assembly inventories retain their complete canonical owner records. Original
+external logo paths are not reopened during replay. Stale report/source
+combinations, altered files and modified manifest mappings are refused. The optional
 current source path additionally requires exact source bytes. Regenerate into a
 fresh output attempt after edits; prior attempts are not overwritten. This is
 an integrity check, not a signature or independent visual acceptance.

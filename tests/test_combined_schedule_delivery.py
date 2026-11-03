@@ -138,3 +138,116 @@ def test_empty_panel_kept_and_assembly_row_sources_indexed():
     _, drawing = combined_schedule_drawing_set(synthetic_enclosed_room_assembly())
     index = {s.canonical_id for s in drawing.source_index}
     assert all(r.source_id in index for s in drawing.schedules for r in s.rows)
+
+
+@pytest.fixture(scope='module')
+def verified_delivery(tmp_path_factory):
+    root = tmp_path_factory.mktemp('combined-receipt-proof')
+    inputs = example.write_inputs(root / 'inputs', example.synthetic_model())
+    return create_combined_schedule_sheet_set(*inputs, output_directory=root / 'output')
+
+
+@pytest.mark.parametrize('field', [
+    'panel_totals', 'sheet_order', 'schedule_pages', 'sheet_id', 'page',
+    'primitive_ids', 'bounds_mm', 'wrapped_cells', 'layout',
+    'status', 'engineering_approval', 'verification',
+])
+def test_derived_manifest_receipts_recomputed(verified_delivery, tmp_path, field):
+    import shutil
+    delivery = tmp_path / 'delivery'
+    shutil.copytree(verified_delivery, delivery)
+    path = delivery / 'SCHEDULE-MANIFEST.json'
+    manifest = json.loads(path.read_text())
+    if field == 'panel_totals':
+        manifest[field][0]['known_connected_va'] = 999999
+    elif field == 'sheet_order':
+        manifest[field] = ['nonexistent-sheet']
+    elif field == 'schedule_pages':
+        manifest[field][0]['sheet_id'] = 'nonexistent-sheet'
+    elif field == 'layout':
+        manifest[field]['text_height_mm'] = 999
+    elif field == 'status':
+        manifest[field] = 'engineered'
+    elif field == 'engineering_approval':
+        manifest[field] = True
+    elif field == 'verification':
+        manifest[field]['pdf']['page_count'] = 999
+    else:
+        bad = {'sheet_id': 'nonexistent-sheet', 'page': 999,
+               'primitive_ids': ['nonexistent-primitive'],
+               'bounds_mm': [0, 0, 1, 1], 'wrapped_cells': [['invented']]}
+        manifest['rows'][0][field] = bad[field]
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='receipt mismatch'):
+        verify_combined_schedule_delivery(delivery)
+
+
+@pytest.mark.parametrize('target', ['drawing', 'body', 'rendered'])
+def test_rehashed_page_mutations_refused(verified_delivery, tmp_path, target):
+    import shutil
+    import xml.etree.ElementTree as ET
+    delivery = tmp_path / 'delivery'
+    shutil.copytree(verified_delivery, delivery)
+    path = delivery / 'SCHEDULE-MANIFEST.json'
+    manifest = json.loads(path.read_text())
+    sheet = manifest['sheet_order'][0]
+    if target == 'drawing':
+        changed = delivery / 'schedule-source' / f'{sheet}.drawing.json'
+        data = json.loads(changed.read_text())
+        data['views'][0]['primitives'][0]['points'][0]['x'] += .001
+        changed.write_text(json.dumps(data))
+    elif target == 'body':
+        changed = delivery / 'schedule-source' / f'{sheet}.body.svg'
+        changed.write_text(changed.read_text().replace('x="', 'x="1', 1))
+    else:
+        changed = delivery / 'sheets' / f'001-{sheet}.svg'
+        root = ET.fromstring(changed.read_bytes())
+        text = root.find('{http://www.w3.org/2000/svg}g/{http://www.w3.org/2000/svg}text')
+        text.set('x', str(float(text.get('x')) + 10))
+        changed.write_bytes(ET.tostring(root))
+    relative = changed.relative_to(delivery).as_posix()
+    receipt = next(row for row in manifest['files'] if row['path'] == relative)
+    raw = changed.read_bytes()
+    receipt.update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='differs from regenerated pagination'):
+        verify_combined_schedule_delivery(delivery)
+
+
+def test_architecture_and_assembly_deliveries_keep_all_row_sources(tmp_path):
+    from oabm.model import BuildingModel
+    from oabm.building_assemblies.room_fixtures import synthetic_enclosed_room_assembly
+    cases = [('architecture', BuildingModel.from_json(
+        (ROOT / 'fixtures/model/v1/minimal-room.json').read_bytes())),
+        ('assembly', synthetic_enclosed_room_assembly())]
+    for name, model in cases:
+        inputs = example.write_inputs(tmp_path / name / 'inputs', model)
+        delivery = create_combined_schedule_sheet_set(*inputs, output_directory=tmp_path / name / 'output')
+        manifest = verify_combined_schedule_delivery(delivery, model_path=inputs[0])
+        assert manifest['row_count'] > 0
+        assert not manifest['panel_totals']
+        assert len(manifest['row_sources']) == manifest['row_count']
+        if name == 'assembly':
+            assert {'building_assemblies', 'assembly_components'} <= {
+                row['collection'] for row in manifest['row_sources']}
+
+
+def test_multi_page_row_maps_and_portable_logo_replay(tmp_path):
+    from PIL import Image
+    model = example.synthetic_model()
+    model = replace(model, circuits=tuple(replace(model.circuits[0],
+        id=f'circuit:many-{i:03}', circuit_number=f'L{i:03}',
+        load_va=None if i % 7 == 0 else 1800.0) for i in range(72)) + (model.circuits[2],))
+    inputs = example.write_inputs(tmp_path / 'inputs', model)
+    Image.new('RGB', (16, 16), '#336699').save(inputs[1].parent / 'logo.png')
+    profile = json.loads(inputs[1].read_text())
+    profile['logos'] = {'icon': 'logo.png'}
+    inputs[1].write_text(json.dumps(profile))
+    delivery = create_combined_schedule_sheet_set(*inputs, output_directory=tmp_path / 'output')
+    # Delivery replay must not reopen original logo paths or mutable inputs.
+    inputs[0].parent.rename(tmp_path / 'original-inputs-moved')
+    manifest = verify_combined_schedule_delivery(delivery)
+    assert len(manifest['sheet_order']) >= 3
+    assert len(manifest['rows']) == manifest['row_count'] == len(manifest['row_sources'])
+    assert {row['sheet_id'] for row in manifest['rows']} == set(manifest['sheet_order'])
+    assert all(row['primitive_ids'] and row['wrapped_cells'] for row in manifest['rows'])

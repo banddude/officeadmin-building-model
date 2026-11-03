@@ -1,0 +1,11 @@
+# Explicit manual intake to preliminary design
+
+`design_manual_intake` is an opt-in local boundary between the manual-device intake and the existing preliminary circuit router. It takes a canonical base model, the original manual intake request with its digest, a separate design decision and the decision digest. It recomputes the intake and rejects a decision bound to a different intake or candidate model. The digest binds normalized content for correlation; it does not authenticate the source or prove human review.
+
+The decision supplies an existing panel and source port, one explicit load-port mapping for every admitted device, complete groups, every circuit rule, every routing control and an explicit route domain. Unresolved intake rows remain visible in the report and are never added to groups. The wrapper refuses a panel with pre-existing circuiting, connected routes, port connections or owned design records, and verifies that other pre-existing circuits, routes and conductors have not changed. It returns a detached designed model and a report naming newly created circuits and routes; it never modifies the original or invokes a provider.
+
+This is a preliminary user-supplied design, not source observation, a saved reviewed-electrical workflow, a code-compliance determination or engineering approval. It does not establish source authenticity, inventory completeness, spatial registration, site clearance or correct conductor/raceway sizing. The older router rejects physical line-and-arc routes, and the caller is responsible for supplying accurate obstacle and domain data. A route produced from incomplete geometry is not field-verified. If the model, intake or decision changes, produce and review a new bound decision; no correspondence or review is inferred from matching hashes.
+
+The separate `manual-design-decision-v1` and `manual-design-report-v1` schemas define shape and required warnings. Schema validity alone cannot authenticate input, prove semantic consistency or replace recomputing the result from the current model and decisions. This is a partial development slice, not closure of #72/#241 or an OfficeAdmin deployment.
+
+This first bounded slice accepts at most four admitted devices and 512 total model entities per request. Larger projects require a future cumulative-work design; the limit is not an electrical rule.

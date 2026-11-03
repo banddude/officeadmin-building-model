@@ -75,6 +75,10 @@ profile, repeated headers, deterministic pagination and verified PDF output.
 See [Panel schedule facts](docs/panel-schedule-facts.md) for an opt-in grouped
 report of supplied circuit values, missing facts and connected-load completeness.
 
+See [Combined schedule delivery](docs/combined-schedule-delivery.md) for ordinary
+semantic inventories and panel facts together from one canonical snapshot, with
+editable JSON, SVG/PDF and source-bound row/file receipts. Cloud acceptance is pending.
+
 See [Object scope ledger](docs/scope-ledger.md) for source-bound per-object
 scope facts, separate counts and explicit confirmed-unmarked caller policy.
 

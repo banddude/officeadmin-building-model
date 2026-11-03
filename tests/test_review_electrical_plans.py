@@ -245,6 +245,8 @@ def test_actual_saved_cli_persists_review_plans_facts_and_repeated_versions(tmp_
     facts.validate_against_model(model)
     assert facts.panels[0].unknown_load_circuit_ids==("circuit:base-facts",)
     rows=json.loads((first/"drawing-set.json").read_bytes())["drawing_set"]["schedules"]
+    from oabm.drawings.generator import generate_schedules
+    assert {s.id for s in generate_schedules(model)} <= {s['id'] for s in rows}
     assert "circuit:base-facts" in {r["source_id"] for s in rows for r in s["rows"]}
     assert not report["review_drawings"]["permit_ready"] and not any(report["claims"].values())
 

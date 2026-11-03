@@ -13,8 +13,7 @@ from oabm.proposals.contracts import Portable, digest, text
 from oabm.drawings import (Bounds2, PlanSpec, VisibilityPolicy, compact_label_provider,
     generate_drawing_set, view_to_svg, paper_text_height_m)
 from oabm.drawings.generator import _entity_points
-from oabm.drawings.panel_schedules import panel_report_to_drawing_schedules
-from oabm.reports import generate_panel_schedule_report
+from oabm.drawings.schedule_set import combined_schedule_drawing_set
 from oabm.exports.review_bundle import canonical_model_sha256
 
 VERSION = "review-electrical-drawings-v1"
@@ -162,11 +161,10 @@ def generate_review_drawings(model, config, *, source_proposals_not_admitted=(),
     plans = tuple(p.spec() for p in sorted(config.plans, key=lambda p: p.id))
     drawing = generate_drawing_set(model, plans=plans, include_schedules=False,
         label_provider=compact_label_provider)
-    facts = generate_panel_schedule_report(model)
-    facts.validate_against_model(model)
-    schedules = panel_report_to_drawing_schedules(facts)
+    facts, schedule_drawing = combined_schedule_drawing_set(model)
+    schedules = schedule_drawing.schedules
     schedules = tuple(replace(s, title=BANNER + " | " + s.title) for s in schedules)
-    drawing = replace(drawing, schedules=schedules,
+    drawing = replace(drawing, schedules=schedules, source_index=schedule_drawing.source_index,
         views=tuple(replace(v, title=BANNER + " | " + v.title,
             metadata=(*v.metadata, ("review_status", "incomplete"), ("permit_ready", "false"),
                       ("canonical_model_sha256", before))) for v in drawing.views))

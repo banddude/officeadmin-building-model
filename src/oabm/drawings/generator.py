@@ -723,8 +723,7 @@ def _generate_section_base(
 
 def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
     reject_site_inventory(model, "generate_schedules")
-    if model.building_assemblies or model.assembly_components or any(isinstance(route,PhysicalRoute) for route in model.routes):
-        validate_model(model)
+    validate_model(model)
     schedules = (
         _room_schedule(model),
         _opening_schedule(model),

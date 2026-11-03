@@ -4,6 +4,10 @@ from __future__ import annotations
 import textwrap
 import xml.etree.ElementTree as ET
 
+from oabm.model import ContractError
+from .company_sheets import _font
+from .generator import _boxes_intersect
+
 SVG = 'http://www.w3.org/2000/svg'
 # Shape plus literal token distinguish classes even in monochrome output.
 STYLES = {
@@ -24,7 +28,37 @@ def _text(parent, x, y, value, *, size=13, **attrs):
     node = _node(parent, 'text', x=x, y=y, font_size=size, fill='black',
                  font_family='DejaVu Sans', **attrs)
     node.text = value
+    bounds_x = x
+    if attrs.get('text_anchor') == 'middle':
+        font, _, _, _ = _font('DejaVu Sans', 400)
+        bounds_x -= font.getlength(value)*size/2000
+    node.set('data-text-bounds', ' '.join(map(str, _text_bounds(bounds_x, y, value, size))))
     return node
+
+
+def _text_bounds(x, y, value, size):
+    """Installed renderer face ink bounds at the SVG baseline, plus 2px clearance."""
+    font, _, _, _ = _font('DejaVu Sans', 400)
+    left, top, right, bottom = font.getbbox(value, anchor='ls')
+    ratio = size / 1000
+    return (x+left*ratio-2, y+top*ratio-2, x+right*ratio+2, y+bottom*ratio+2)
+
+
+def _place_annotation(x, y, identity, obstacles, width, height):
+    # Move presentation annotations only. Geometry and source anchor stay fixed.
+    for dy in (40, -40, 80, -80, 120, -120):
+        for dx in (-40, 40, -80, 80):
+            bx, by = x+dx, y+dy
+            badge = (bx-18, by-18, bx+18, by+18)
+            font, _, _, _ = _font('DejaVu Sans', 400)
+            advance = font.getlength(identity)*12/1000
+            for tx in (bx+22, bx-22-advance):
+                label = _text_bounds(tx, by+5, identity, 12)
+                boxes = (badge, label)
+                if all(0 <= b[0] and 0 <= b[1] and b[2] <= width and b[3] <= height
+                       and not any(_boxes_intersect(b, o) for o in obstacles) for b in boxes):
+                    return bx, by, tx, boxes
+    raise ContractError('scope annotations cannot fit without obscuring labels; enlarge review window or separate views')
 
 
 def _mark(parent, status, x, y):
@@ -54,10 +88,28 @@ def scope_plan_svg(raw, view, *, plan, pixels_per_model_unit, objects, ledger):
     root.set('viewBox', f'0 0 {width} {height+290}')
     root.set('width', str(width)); root.set('height', str(height+290))
     rows = {r.source.id: r for r in ledger.rows}
+    occupied = []
+    plan_width = (plan.bounds_m[2]-plan.bounds_m[0])*pixels_per_model_unit
+    plan_height = (plan.bounds_m[3]-plan.bounds_m[1])*pixels_per_model_unit
     # Base review backend alone decides whether real geometry was projected.
     shown = {identity for p in view['primitives'] if p['kind'] != 'text'
              for identity in p['source_ids'] if identity in rows}
     for node in root.iter():
+        if node.tag.rsplit('}', 1)[-1] == 'text' and node.get('data-source-ids'):
+            node.set('font-family', 'DejaVu Sans')
+            box = _text_bounds(float(node.get('x')), float(node.get('y')),
+                node.text or '', float(node.get('font-size', '16')))
+            if box[2]-box[0] > plan_width or box[3]-box[1] > plan_height:
+                raise ContractError('source label cannot fit review window; enlarge window or separate views')
+            # Boundary labels are annotations too: keep their complete ink in
+            # the clipped plan body without touching canonical geometry.
+            dx = max(0, -box[0]) - max(0, box[2]-plan_width)
+            dy = max(0, -box[1]) - max(0, box[3]-plan_height)
+            node.set('x', str(float(node.get('x'))+dx))
+            node.set('y', str(float(node.get('y'))+dy))
+            box = (box[0]+dx, box[1]+dy, box[2]+dx, box[3]+dy)
+            node.set('data-text-bounds', ' '.join(map(str, box)))
+            occupied.append(box)
         ids = node.get('data-source-ids', '').split()
         matched = [identity for identity in ids if identity in rows]
         if len(matched) == 1:
@@ -68,7 +120,7 @@ def scope_plan_svg(raw, view, *, plan, pixels_per_model_unit, objects, ledger):
                 node.set('stroke-width', '2' if status in ('new', 'removed', 'unresolved') else '1')
                 if status in ('removed', 'relocated'):
                     node.set('stroke-dasharray', '5 3')
-    # Marks anchor to supplied canonical poses only. Offset text is annotation.
+    # Callouts retain the supplied anchor; badges and text occupy clear space.
     overlay = _node(root, 'g', id='scope-marks', transform='translate(0 64)')
     marked = []
     for obj in sorted(objects, key=lambda o: o.id):
@@ -81,8 +133,16 @@ def scope_plan_svg(raw, view, *, plan, pixels_per_model_unit, objects, ledger):
         status = rows[obj.id].effective_status
         group = _node(overlay, 'g', data_source_ids=obj.id, data_scope_status=status,
                       data_anchor_model_x=p.x, data_anchor_model_y=p.y)
-        _mark(group, status, x, y)
-        _text(group, x+20, y-19, obj.id, size=12)
+        bx, by, tx, boxes = _place_annotation(x, y, obj.id, occupied,
+            plan_width, plan_height)
+        group.set('data-mark-bounds', ' '.join(map(str, boxes[0])))
+        group.set('data-badge-center', f'{bx} {by}')
+        _node(group, 'line', x1=max(0, min(plan_width, x-6)),
+              y1=max(0, min(plan_height, y+6)), x2=bx, y2=by,
+              stroke=STYLES[status][1], stroke_width=1, data_role='annotation-leader')
+        _mark(group, status, bx, by)
+        _text(group, tx, by+5, obj.id, size=12)
+        occupied.extend(boxes)
         title = _node(group, 'title')
         title.text = STYLES[status][2] + '; ' + (rows[obj.id].diagnostic_reason or rows[obj.id].derivation)
         marked.append(obj.id)
@@ -130,8 +190,12 @@ def scope_schedule_svg(schedules, ledger):
             for i, cell in enumerate(lines):
                 for j, line in enumerate(cell):
                     _text(group, 16+i*col_width, y+j*17, line, size=12)
-            y += count*17+12
-            _node(root, 'line', x1=16, x2=width-16, y1=y-5, y2=y-5, stroke='#888888')
+            # Rule follows the last baseline, then leave ascent clearance before
+            # the next baseline. Previously it was only 5px above the next row.
+            rule_y = y+(count-1)*17+10
+            _node(root, 'line', x1=16, x2=width-16, y1=rule_y, y2=rule_y,
+                  stroke='#888888', data_row_rule=row.source_id)
+            y = rule_y+24
     y += 24
     root.set('viewBox', f'0 0 {width} {y}')
     root.set('width', str(width)); root.set('height', str(y))

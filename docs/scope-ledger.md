@@ -112,8 +112,16 @@ origin/destination geometry is explicitly unavailable. No arrows are invented.
 The two existing full scope schedules accompany the plans in both drawing JSON
 and a readable wrapped vector table. IDs remain literal in plan labels and table
 cells, and are machine-readable in SVG `data-source-ids`, ledger and drawing JSON.
-Symbols are annotations, not physical extents. Crowded source geometry can overlap
-annotations; this bounded review is not automatic construction-sheet composition.
+Symbols are annotations, not physical extents. Scope badges and canonical-ID
+labels occupy clear annotation space using the shared installed DejaVu Sans face
+and drawing-box intersection helper. A thin annotation leader retains the supplied
+source anchor; it is not relocation geometry. Existing labels retain their full
+text and move inward only when their ink would cross the clipped plan boundary.
+Badge/ID ink must fit entirely above the footer and avoid existing text and prior
+callouts; a bounded placement failure explicitly requests a larger window or
+separate views. Physical geometry never moves. This is not automatic
+construction-sheet composition. Schedule rules follow each row's final baseline
+with clearance before the following row's ascenders.
 
 ```python
 from oabm.pipeline.scope_review_plan import (

@@ -124,8 +124,9 @@ def test_real_pdf_png_and_example(tmp_path):
     png = Image.open(io.BytesIO(rendered['review_plan:scope-plan:png'])).convert('RGB')
     # Real colored strokes at every supplied pose, independent of metadata.
     for obj in (*model.electrical_devices, *model.electrical_equipment):
-        x = round(obj.pose.position.x*64)
-        y = round((8-obj.pose.position.y)*64+64)
+        center = marks(payloads['review_plan:scope-plan'])[obj.id].get('data-badge-center')
+        bx, by = map(float, center.split())
+        x, y = round(bx), round(by+64)
         colors = set(png.crop((x-18, y-18, x+19, y+19)).getdata())
         if obj.attributes['pdf_electrical']['scope_status'] == 'existing_to_remain':
             assert any(max(c) < 180 for c in colors)
@@ -134,3 +135,77 @@ def test_real_pdf_png_and_example(tmp_path):
     create_example(tmp_path/'example')
     assert (tmp_path/'example/scope-plan.pdf').read_bytes().startswith(b'%PDF')
     assert (tmp_path/'example/scope-plan.png').read_bytes().startswith(b'\x89PNG')
+
+
+def _actual_ink(node):
+    from oabm.drawings.company_sheets import _font
+    font, _, _, _ = _font('DejaVu Sans', 400)
+    size = float(node.get('font-size', '16'))
+    x, y = float(node.get('x')), float(node.get('y'))
+    left, top, right, bottom = font.getbbox(node.text or '', anchor='ls')
+    return (x+left*size/1000, y+top*size/1000,
+            x+right*size/1000, y+bottom*size/1000)
+
+
+def _intersects(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+def test_badges_and_id_ink_clear_existing_labels_without_moving_geometry():
+    model, config, policy = synthetic_inputs()
+    payloads, _ = generate_scope_review_plan(model, config, policy=policy)
+    root = ET.fromstring(payloads['review_plan:scope-plan'])
+    labels = [n for n in root.iter() if n.tag.endswith('}text') and n.get('data-source-ids')]
+    assert any(n.text == 'RECEPTAC' for n in labels)
+    badges = marks(payloads['review_plan:scope-plan'])
+    obstacles = [_actual_ink(n) for n in labels]
+    for identity, group in badges.items():
+        badge = tuple(map(float, group.get('data-mark-bounds').split()))
+        label = next(n for n in group if n.tag.endswith('}text') and n.text == identity)
+        id_ink = _actual_ink(label)
+        assert not _intersects(badge, id_ink)
+        assert all(not _intersects(box, obstacle) for box in (badge, id_ink) for obstacle in obstacles)
+        obstacles.extend((badge, id_ink))
+        obj = next(o for o in (*model.electrical_devices, *model.electrical_equipment) if o.id == identity)
+        assert float(group.get('data-anchor-model-x')) == obj.pose.position.x
+
+
+def test_schedule_rules_are_between_actual_row_ink():
+    model, config, policy = synthetic_inputs()
+    payloads, _ = generate_scope_review_plan(model, config, policy=policy)
+    root = ET.fromstring(payloads['scope_schedule'])
+    rows = [n for n in root if n.get('data-schedule-row-id')]
+    rules = {n.get('data-row-rule'): float(n.get('y1')) for n in root if n.get('data-row-rule')}
+    for index, row in enumerate(rows):
+        ink = [_actual_ink(n) for n in row if n.tag.endswith('}text') and n.text]
+        rule = rules[row.get('data-schedule-row-id')]
+        assert rule > max(b[3] for b in ink)+3
+        if index+1 < len(rows):
+            next_ink = [_actual_ink(n) for n in rows[index+1] if n.tag.endswith('}text') and n.text]
+            assert rule < min(b[1] for b in next_ink)-3
+
+
+@pytest.mark.parametrize('x,y', [(0, 0), (0, 8), (22, 0), (22, 8)])
+def test_boundary_callouts_fit_above_footer_without_repositioning_source(x, y):
+    model, config, policy = synthetic_inputs()
+    obj = model.electrical_devices[0]
+    obj = replace(obj, pose=replace(obj.pose, position=replace(obj.pose.position, x=x, y=y)))
+    model = replace(model, electrical_devices=(obj,), electrical_equipment=())
+    before = model.to_json()
+    payloads, status = generate_scope_review_plan(model, config, policy=policy)
+    assert status['scope']['views'][0]['marked_ids'] == [obj.id]
+    group = marks(payloads['review_plan:scope-plan'])[obj.id]
+    badge = tuple(map(float, group.get('data-mark-bounds').split()))
+    label = next(n for n in group if n.tag.endswith('}text') and n.text == obj.id)
+    for b in (badge, _actual_ink(label)):
+        assert 0 <= b[0] < b[2] <= 22*64
+        assert 0 <= b[1] < b[3] <= 8*64
+    root = ET.fromstring(payloads['review_plan:scope-plan'])
+    for n in root.iter():
+        if n.tag.endswith('}text') and n.get('data-source-ids'):
+            b = _actual_ink(n)
+            assert 0 <= b[0] < b[2] <= 22*64
+            assert 0 <= b[1] < b[3] <= 8*64
+    assert float(group.get('data-anchor-model-x')) == x
+    assert float(group.get('data-anchor-model-y')) == y
+    assert model.to_json() == before

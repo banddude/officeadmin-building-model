@@ -1,5 +1,9 @@
 # Contracts
 
+`sizing-request-v1.schema.json` and `sizing-result-v1.schema.json` define an
+opt-in, source-bound sizing-provider proposal. They do not change the canonical
+model or enable a provider by default. See [circuit sizing provider](../docs/circuit-sizing-provider.md).
+
 Canonical serialized contracts live here. Do not create competing workstream-local schemas.
 
 ## Current contract

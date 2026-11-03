@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local circuit sizing result prototype",
+  "type": "object",
+  "required": [
+    "version",
+    "purpose",
+    "model_id",
+    "model_sha256",
+    "circuit_id",
+    "request_digest",
+    "inputs",
+    "status",
+    "request_payload"
+  ],
+  "properties": {
+    "version": {
+      "const": "sizing-result-v1"
+    },
+    "purpose": {
+      "const": "proposed_only"
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "circuit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "status": {
+      "enum": [
+        "partial",
+        "unresolved",
+        "unsupported",
+        "needs_review"
+      ]
+    },
+    "missing": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "target_mapping": {
+      "type": "object",
+      "required": [
+        "circuit_id",
+        "route_ids",
+        "existing_routes",
+        "existing_conductors",
+        "proposed_wire_size",
+        "proposed_wire_scope",
+        "proposed_conduit_trade_size",
+        "ground_size_supplied",
+        "ground_size_verified",
+        "applied"
+      ],
+      "properties": {
+        "circuit_id": {
+          "type": "string"
+        },
+        "route_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "existing_routes": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "existing_conductors": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "proposed_wire_size": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proposed_wire_scope": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "line",
+              "neutral"
+            ]
+          }
+        },
+        "proposed_conduit_trade_size": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ground_size_supplied": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ground_size_verified": {
+          "const": false
+        },
+        "applied": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operating_amps",
+        "design_amps",
+        "wire_size",
+        "conduit_trade_size",
+        "voltage_drop_percent",
+        "violations",
+        "unsupported_reason"
+      ],
+      "properties": {
+        "operating_amps": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "design_amps": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "wire_size": {
+          "enum": [
+            "14",
+            "12",
+            "10",
+            "8",
+            "6",
+            "4",
+            "3",
+            "2",
+            "1",
+            "1/0",
+            "2/0",
+            "3/0",
+            "4/0",
+            "250",
+            "300",
+            "350",
+            "400",
+            "500",
+            "600",
+            "700",
+            "750",
+            "900",
+            "1000",
+            null
+          ]
+        },
+        "conduit_trade_size": {
+          "enum": [
+            "1/2",
+            "3/4",
+            "1",
+            "1-1/4",
+            "1-1/2",
+            "2",
+            "2-1/2",
+            "3",
+            "3-1/2",
+            "4",
+            "5",
+            "6",
+            null
+          ]
+        },
+        "voltage_drop_percent": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "unsupported_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "request_payload": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

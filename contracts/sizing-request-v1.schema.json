@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local circuit sizing request prototype",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "purpose",
+    "model_id",
+    "model_sha256",
+    "circuit_id",
+    "request_digest",
+    "inputs",
+    "request_payload"
+  ],
+  "properties": {
+    "version": {
+      "const": "sizing-request-v1"
+    },
+    "purpose": {
+      "const": "proposed_only"
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "circuit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_evidence",
+        "phase",
+        "voltage_v",
+        "material",
+        "insulation",
+        "location_condition",
+        "neutral",
+        "neutral_is_ccc",
+        "egc",
+        "temp_rating_c",
+        "termination_rating_c",
+        "ambient_c",
+        "conduit_type",
+        "length_ft",
+        "length_basis",
+        "vd_limit_pct",
+        "continuous",
+        "parallel_sets",
+        "current_carrying_count",
+        "hot_conductor_count",
+        "sole_circuit_in_raceway",
+        "raceway_inventory_complete"
+      ],
+      "anyOf": [
+        {
+          "required": [
+            "load_amps"
+          ]
+        },
+        {
+          "required": [
+            "load_va"
+          ]
+        }
+      ],
+      "properties": {
+        "source_evidence": {
+          "type": "object",
+          "required": [
+            "confidence",
+            "provenance"
+          ],
+          "properties": {
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "provenance": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "phase": {
+          "enum": [
+            1,
+            3
+          ]
+        },
+        "balanced_three_phase": {
+          "type": "boolean"
+        },
+        "voltage_v": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "load_amps": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "load_va": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "material": {
+          "enum": [
+            "cu",
+            "al"
+          ]
+        },
+        "insulation": {
+          "enum": [
+            "thhn",
+            "xhhw",
+            "thw",
+            "rhw"
+          ]
+        },
+        "location_condition": {
+          "enum": [
+            "dry",
+            "wet"
+          ]
+        },
+        "neutral": {
+          "type": "boolean"
+        },
+        "neutral_is_ccc": {
+          "type": "boolean"
+        },
+        "neutral_same_size_as_phase": {
+          "type": "boolean"
+        },
+        "egc": {
+          "type": "boolean"
+        },
+        "egc_same_insulation_as_phase": {
+          "type": "boolean"
+        },
+        "egc_size": {
+          "enum": [
+            "14",
+            "12",
+            "10",
+            "8",
+            "6",
+            "4",
+            "3",
+            "2",
+            "1",
+            "1/0",
+            "2/0",
+            "3/0",
+            "4/0",
+            "250",
+            "300",
+            "350",
+            "400",
+            "500",
+            "600",
+            "700",
+            "750",
+            "900",
+            "1000"
+          ]
+        },
+        "temp_rating_c": {
+          "enum": [
+            60,
+            75,
+            90
+          ]
+        },
+        "termination_rating_c": {
+          "enum": [
+            60,
+            75
+          ]
+        },
+        "ambient_c": {
+          "type": "number"
+        },
+        "conduit_type": {
+          "enum": [
+            "emt",
+            "rmc",
+            "imc",
+            "pvc40",
+            "pvc80"
+          ]
+        },
+        "length_ft": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "length_basis": {
+          "enum": [
+            "model_centerline",
+            "user_supplied"
+          ]
+        },
+        "source_route_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "length_evidence": {
+          "type": "object",
+          "required": [
+            "confidence",
+            "provenance"
+          ],
+          "properties": {
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "provenance": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "continuous": {
+          "type": "boolean",
+          "description": "Applies to the entire supplied load; mixed portions are not separately modeled."
+        },
+        "parallel_sets": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "current_carrying_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hot_conductor_count": {
+          "enum": [
+            1,
+            2,
+            3
+          ]
+        },
+        "sole_circuit_in_raceway": {
+          "type": "boolean"
+        },
+        "vd_limit_pct": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "raceway_inventory_complete": {
+          "type": "boolean",
+          "description": "Caller asserts every conductor in the proposed raceway is represented by the supplied topology; this assertion is not independently verified."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "phase": {
+                "const": 3
+              }
+            },
+            "required": [
+              "phase"
+            ]
+          },
+          "then": {
+            "required": [
+              "balanced_three_phase"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "egc": {
+                "const": true
+              }
+            },
+            "required": [
+              "egc"
+            ]
+          },
+          "then": {
+            "required": [
+              "egc_size",
+              "egc_same_insulation_as_phase"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "neutral": {
+                "const": true
+              }
+            },
+            "required": [
+              "neutral"
+            ]
+          },
+          "then": {
+            "required": [
+              "neutral_same_size_as_phase"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "length_basis": {
+                "const": "model_centerline"
+              }
+            },
+            "required": [
+              "length_basis"
+            ]
+          },
+          "then": {
+            "required": [
+              "source_route_id",
+              "length_evidence"
+            ]
+          }
+        }
+      ]
+    },
+    "request_payload": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

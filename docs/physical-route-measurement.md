@@ -1,0 +1,7 @@
+# Physical route measurement
+
+`oabm-physical-route-measure --model model.json --circuit circuit:id` writes a bounded JSON measurement for one stored physical route connecting a circuit's single source and load. The geometry is described by integer nanometre ticks and quarter-arc radii; the one-way feet value is conservatively rounded upward. Leads, slack and installation allowances are not included.
+
+This is **geometric measurement only**. Source context and obstacle clearance are unverified, a physical outside diameter is not a nominal trade size, and the output neither selects wire nor certifies an installation. No model is modified. It does not send data to a provider or over the network; its output can include sensitive project provenance, so handle it as private project data.
+
+`model_hash_scope` is `normalized_typed_model_json_utf8_v1`: `model_sha256` hashes the UTF-8 JSON serialization of the bounded, validated typed model after a stable parse and serialization round trip. Typed numeric fields normalize consistently across saving and reopening. The hash is not the original file hash, does not authenticate the model, and does not verify source context or clearance. This scope replaces the earlier draft scope `canonical_json_snapshot_utf8`; earlier measurements using that scope must be regenerated, not compared as if the scopes were interchangeable. The route context’s declared source and request hashes retain their separate meanings.

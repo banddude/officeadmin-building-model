@@ -9,3 +9,5 @@ This is a preliminary user-supplied design, not source observation, a saved revi
 The separate `manual-design-decision-v1` and `manual-design-report-v1` schemas define shape and required warnings. Schema validity alone cannot authenticate input, prove semantic consistency or replace recomputing the result from the current model and decisions. This is a partial development slice, not closure of #72/#241 or an OfficeAdmin deployment.
 
 This first bounded slice accepts at most four admitted devices and 512 total model entities per request. Larger projects require a future cumulative-work design; the limit is not an electrical rule.
+
+For an offline file-based workflow, including fingerprint preparation and private create-only output, see [the manual preliminary design CLI](manual-preliminary-design-cli.md). The CLI design command preserves the same four-device and 512-entity limits; intake preparation can report more devices without designing them.

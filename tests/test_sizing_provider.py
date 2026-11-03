@@ -18,7 +18,7 @@ def model():
 
 @pytest.fixture
 def settings():
-    return {'phase':1,'continuous':True,'material':'cu','insulation':'thhn','location_condition':'dry','parallel_sets':1,'neutral':False,'neutral_is_ccc':False,'egc':True,'egc_size':'10','egc_same_insulation_as_phase':True,'temp_rating_c':90,'termination_rating_c':75,'ambient_c':30,'conduit_type':'emt','current_carrying_count':2,'hot_conductor_count':2,'sole_circuit_in_raceway':True,'length_ft':50,'length_basis':'user_supplied','vd_limit_pct':3}
+    return {'phase':1,'continuous':True,'material':'cu','insulation':'thhn','location_condition':'dry','parallel_sets':1,'neutral':False,'neutral_is_ccc':False,'egc':True,'egc_size':'10','egc_same_insulation_as_phase':True,'temp_rating_c':90,'termination_rating_c':75,'ambient_c':30,'conduit_type':'emt','current_carrying_count':2,'hot_conductor_count':2,'sole_circuit_in_raceway':True,'raceway_inventory_complete':True,'length_ft':50,'length_basis':'user_supplied','vd_limit_pct':3}
 
 def fake_provider(request):
     return {'version':'sizing-result-v1','provider':{'name':'synthetic','version':'1'},'purpose':'proposed_only','model_id':request['model_id'],'model_sha256':request['model_sha256'],'circuit_id':request['circuit_id'],'request_digest':request['request_digest'],'request_payload':request['request_payload'],'inputs':request['inputs'],'status':'partial','limitations':['Synthetic provider only.'],'result':{'operating_amps':40,'design_amps':50,'wire_size':'8','conduit_trade_size':'1/2','voltage_drop_percent':1.0,'violations':[],'unsupported_reason':None}}
@@ -84,7 +84,7 @@ def test_non_partial_provider_cannot_smuggle_a_size(model, settings):
         size_model_circuit(model, 'circuit:evse', settings, bad)
 
 @pytest.mark.parametrize('changes', [
-    {'parallel_sets':2}, {'sole_circuit_in_raceway':False},
+    {'parallel_sets':2}, {'sole_circuit_in_raceway':False}, {'raceway_inventory_complete':False},
     {'current_carrying_count':4},
     {'egc_same_insulation_as_phase':False}, {'location_condition':'wet'},
     {'insulation':'thw', 'temp_rating_c':90}, {'ambient_c':90},
@@ -92,6 +92,9 @@ def test_non_partial_provider_cannot_smuggle_a_size(model, settings):
 ])
 def test_unrepresented_arrangements_do_not_call_provider(model, settings, changes):
     def never(_): raise AssertionError('provider should not run')
+    if changes.get('neutral') is True:
+        neutral = replace(model.conductors[0], id='conductor:neutral', role='neutral')
+        model = replace(model, conductors=(*model.conductors, neutral))
     out = size_model_circuit(model, 'circuit:evse', {**settings, **changes}, never)
     assert out['status'] == 'unsupported' and out['target_mapping']['applied'] is False
 
@@ -129,14 +132,24 @@ def test_invalid_topology_is_rejected_before_provider(model, settings):
 
 def test_three_phase_requires_explicit_balance(model, settings):
     three = replace(model, circuits=(replace(model.circuits[0], phase='3ph', poles=3, voltage_v=208),))
+    third = replace(three.conductors[0], id='conductor:third')
+    three = replace(three, conductors=(*three.conductors, third))
     inputs = {**settings, 'phase':3, 'hot_conductor_count':3, 'current_carrying_count':3}
     def never(_): raise AssertionError('provider should not run')
     assert size_model_circuit(three, 'circuit:evse', inputs, never)['status'] == 'unresolved'
     assert size_model_circuit(three, 'circuit:evse', {**inputs, 'balanced_three_phase':False}, never)['status'] == 'unsupported'
 
 def test_one_hot_without_neutral_is_unsupported(model, settings):
-    one_hot = replace(model, circuits=(replace(model.circuits[0], poles=1, voltage_v=120),))
+    one_hot = replace(model, circuits=(replace(model.circuits[0], poles=1, voltage_v=120),), conductors=tuple(c for c in model.conductors if c.id!='conductor:l2'))
     inputs = {**settings, 'hot_conductor_count':1, 'current_carrying_count':1}
+    def never(_): raise AssertionError('provider should not run')
+    assert size_model_circuit(one_hot, 'circuit:evse', inputs, never)['status'] == 'unsupported'
+
+def test_two_wire_neutral_cannot_be_omitted_from_current_carrying_count(model, settings):
+    base = replace(model, circuits=(replace(model.circuits[0], poles=1, voltage_v=120),), conductors=tuple(c for c in model.conductors if c.id!='conductor:l2'))
+    neutral = replace(base.conductors[0], id='conductor:neutral', role='neutral')
+    one_hot = replace(base, conductors=(*base.conductors, neutral))
+    inputs = {**settings, 'hot_conductor_count':1, 'current_carrying_count':1, 'neutral':True, 'neutral_same_size_as_phase':True, 'neutral_is_ccc':False}
     def never(_): raise AssertionError('provider should not run')
     assert size_model_circuit(one_hot, 'circuit:evse', inputs, never)['status'] == 'unsupported'
 
@@ -161,6 +174,15 @@ def test_conductor_routes_cannot_extend_beyond_circuit_mapping(model, settings):
     no_route = replace(model, circuits=(replace(model.circuits[0], route_ids=()),))
     with pytest.raises(ValueError, match='extends beyond'):
         size_model_circuit(no_route, 'circuit:evse', settings, fake_provider)
+
+def test_complete_inventory_cannot_omit_modeled_conductors(model, settings):
+    extra = replace(model.conductors[0], id='conductor:spare', role='spare')
+    changed = replace(model, conductors=(*model.conductors, extra))
+    with pytest.raises(ValueError, match='not represented'):
+        size_model_circuit(changed, 'circuit:evse', settings, fake_provider)
+    partial = replace(model, conductors=tuple(c for c in model.conductors if c.id!='conductor:l2'))
+    with pytest.raises(ValueError, match='counts conflict'):
+        size_model_circuit(partial, 'circuit:evse', settings, fake_provider)
 
 def test_route_length_and_shared_route_fail_closed(model, settings):
     feet, route = single_route_length_ft(model, 'circuit:evse')

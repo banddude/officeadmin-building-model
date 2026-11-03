@@ -60,7 +60,8 @@
         "parallel_sets",
         "current_carrying_count",
         "hot_conductor_count",
-        "sole_circuit_in_raceway"
+        "sole_circuit_in_raceway",
+        "raceway_inventory_complete"
       ],
       "anyOf": [
         {
@@ -264,6 +265,10 @@
         "vd_limit_pct": {
           "type": "number",
           "exclusiveMinimum": 0
+        },
+        "raceway_inventory_complete": {
+          "type": "boolean",
+          "description": "Caller asserts every conductor in the proposed raceway is represented by the supplied topology; this assertion is not independently verified."
         }
       },
       "allOf": [

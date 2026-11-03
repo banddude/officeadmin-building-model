@@ -77,6 +77,17 @@ def request_from_model(model, circuit_id, design_inputs):
     mapped_routes = set(found[0].route_ids)
     if any(set(conductor.route_ids) - mapped_routes for conductor in detached.conductors if conductor.circuit_id == cid):
         raise ValueError('a conductor extends beyond the mapped circuit route')
+    modeled = [c for c in detached.conductors if c.circuit_id == cid]
+    if inputs.get('raceway_inventory_complete') is True and modeled and type(inputs.get('hot_conductor_count')) is int and type(inputs.get('neutral')) is bool and type(inputs.get('egc')) is bool:
+        if mapped_routes and any(not c.route_ids for c in modeled):
+            raise ValueError('modeled conductor route membership is unresolved')
+        roles = {'line':'line', 'neutral':'neutral', 'equipment-ground':'ground', 'ground':'ground', 'egc':'ground'}
+        if any(c.role not in roles for c in modeled):
+            raise ValueError('modeled conductor role is not represented by this sizing request')
+        counts = {role:sum(c.count for c in modeled if roles[c.role] == role) for role in ('line','neutral','ground')}
+        expected = {'line':inputs['hot_conductor_count'], 'neutral':int(inputs['neutral']), 'ground':int(inputs['egc'])}
+        if counts != expected:
+            raise ValueError('modeled conductor counts conflict with the asserted complete inventory')
     if any(r.id in found[0].route_ids and not isinstance(r, Route) for r in detached.routes):
         raise ValueError('physical-route sizing is not supported by this prototype')
     if inputs.get('sole_circuit_in_raceway') is True:
@@ -158,9 +169,11 @@ def _size_circuit(model_id, model_sha256, circuit_id, solver_input, provider):
     unsupported = (
         solver_input['parallel_sets'] != 1
         or not solver_input['sole_circuit_in_raceway']
+        or not solver_input['raceway_inventory_complete']
         or solver_input['current_carrying_count'] != minimum_ccc
         or (solver_input['phase'] == 3 and not solver_input['balanced_three_phase'])
         or (solver_input['phase'] == 1 and solver_input['hot_conductor_count'] == 1 and not solver_input['neutral'])
+        or (solver_input['phase'] == 1 and solver_input['hot_conductor_count'] == 1 and solver_input['neutral'] and not solver_input['neutral_is_ccc'])
         or (solver_input['phase'] == 1 and solver_input['hot_conductor_count'] == 2 and solver_input['neutral'])
         or (solver_input['neutral'] and not solver_input['neutral_same_size_as_phase'])
         or (solver_input['egc'] and not solver_input['egc_same_insulation_as_phase'])

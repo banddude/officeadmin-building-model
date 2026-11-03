@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unapplied voltage-drop review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "purpose",
+    "model_id",
+    "model_sha256",
+    "circuit_id",
+    "request_digest",
+    "provider",
+    "phase",
+    "voltage_v",
+    "operating_amps",
+    "load_amps_input",
+    "load_va_input",
+    "proposed_wire_size",
+    "material",
+    "one_way_length_ft",
+    "length_basis",
+    "source_route_id",
+    "voltage_drop_percent",
+    "user_limit_percent",
+    "comparison",
+    "provider_output_authentication",
+    "applied",
+    "limitations",
+    "provider_notes_untrusted"
+  ],
+  "properties": {
+    "version": {
+      "const": "voltage-drop-review-v1"
+    },
+    "purpose": {
+      "const": "review_only"
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "circuit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "phase": {
+      "enum": [
+        1,
+        3
+      ]
+    },
+    "voltage_v": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "operating_amps": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "load_amps_input": {
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "load_va_input": {
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "proposed_wire_size": {
+      "type": "string",
+      "minLength": 1
+    },
+    "material": {
+      "enum": [
+        "cu",
+        "al"
+      ]
+    },
+    "one_way_length_ft": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "length_basis": {
+      "enum": [
+        "model_centerline",
+        "user_supplied"
+      ]
+    },
+    "source_route_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "voltage_drop_percent": {
+      "type": "number",
+      "minimum": 0
+    },
+    "user_limit_percent": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "comparison": {
+      "const": "within_user_limit"
+    },
+    "provider_output_authentication": {
+      "const": "not_verified"
+    },
+    "applied": {
+      "const": false
+    },
+    "limitations": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "const": "Provider-reported values are unauthenticated and have not been independently recalculated."
+        },
+        {
+          "const": "Comparison with the supplied limit is not a code-compliance determination."
+        },
+        {
+          "const": "Source facts, conductor suitability, and field conditions remain unverified."
+        },
+        {
+          "const": "One-way length may exclude leads and slack; installation allowances need review."
+        },
+        {
+          "const": "The calculation method and power factor are not specified by this contract."
+        }
+      ],
+      "minItems": 5,
+      "maxItems": 5,
+      "items": false
+    },
+    "provider_notes_untrusted": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

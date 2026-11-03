@@ -141,11 +141,16 @@ def test_reference_cli_hook_order_and_success_output(tmp_path,monkeypatch,capsys
     import utility_service_set as utility
     import as_built_quick_edit as as_built
     import as_built_physical_route as physical
+    import labor_reality as labor
     stub=lambda *args,**kwargs:{'revised_model_sha256':'a'*64}
     monkeypatch.setattr(as_built,'create_synthetic_delivery',stub)
     monkeypatch.setattr(as_built,'create_three_story_delivery',stub)
     monkeypatch.setattr(physical,'create_physical_field_delivery',stub)
     events=[]
+    def labor_companion(path):
+        assert capsys.readouterr().out==''
+        events.append(('labor',path));return {'source_sha256':'b'*64}
+    monkeypatch.setattr(labor,'create_synthetic_delivery',labor_companion)
     root=tmp_path/'review';delivery=root/'attempt'/'delivery'
     monkeypatch.setattr(command,'prepare',lambda path,**kw: events.append(('prepare',path)) or 'request')
     def primary(request,**kw):
@@ -157,17 +162,19 @@ def test_reference_cli_hook_order_and_success_output(tmp_path,monkeypatch,capsys
         events.append(('companion',path))
     monkeypatch.setattr(utility,'create_example',companion)
     assert command.main([str(root),'--variant',variant])==delivery
-    assert [event[0] for event in events]==(['prepare','primary','companion'] if variant=='reference' else ['prepare','primary'])
+    assert [event[0] for event in events]==(['prepare','primary','labor','companion'] if variant=='reference' else ['prepare','primary'])
+    if variant=='reference':assert events[-2][1]==root/'attempt'/'labor-example'
     if variant=='reference':assert events[-1][1]==root/'inputs'/'model-utility-example'
     assert capsys.readouterr().out==str(delivery)+'\n'
 
 
-@pytest.mark.parametrize('failure', ['primary','companion'])
+@pytest.mark.parametrize('failure', ['primary','labor','companion'])
 def test_reference_cli_propagates_failure_without_success_path(tmp_path,monkeypatch,capsys,failure):
     import reference_production_set as command
     import utility_service_set as utility
     import as_built_quick_edit as as_built
     import as_built_physical_route as physical
+    import labor_reality as labor
     stub=lambda *args,**kwargs:{'revised_model_sha256':'a'*64}
     monkeypatch.setattr(as_built,'create_synthetic_delivery',stub)
     monkeypatch.setattr(as_built,'create_three_story_delivery',stub)
@@ -181,9 +188,15 @@ def test_reference_cli_propagates_failure_without_success_path(tmp_path,monkeypa
         return tmp_path/'delivery'
     def companion(*args,**kwargs):
         events.append('companion');raise ValueError('companion failed')
+    def labor_companion(*args,**kwargs):
+        events.append('labor')
+        if failure=='labor':raise ValueError('labor failed')
+        return {'source_sha256':'b'*64}
     monkeypatch.setattr(command,'create_production_sheet_set',primary)
     monkeypatch.setattr(utility,'create_example',companion)
+    monkeypatch.setattr(labor,'create_synthetic_delivery',labor_companion)
     with pytest.raises(ValueError,match=failure+' failed'):
         command.main([str(tmp_path/'review')])
-    assert events==(['primary'] if failure=='primary' else ['primary','companion'])
+    assert events==({'primary':['primary'],'labor':['primary','labor'],
+                    'companion':['primary','labor','companion']}[failure])
     assert capsys.readouterr().out==''

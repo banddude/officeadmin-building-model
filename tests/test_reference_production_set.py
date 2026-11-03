@@ -78,6 +78,35 @@ def test_reference_example_retains_independent_as_built_under_existing_checksum_
     assert {f'attempt/as-built-example/delivery/{name}' for name in manifest['files']}<=checksum_tree
     assert 'attempt/as-built-example/delivery/MANIFEST.json' in checksum_tree
     assert 'attempt/AS-BUILT-COMPANION.txt' in checksum_tree
+    labor=root/'attempt/labor-example/delivery'
+    labor_manifest=json.loads((labor/'MANIFEST.json').read_bytes())
+    labor_model=BuildingModel.load(labor/'model.json')
+    summary=json.loads((labor/'SUMMARY.json').read_bytes())
+    assert labor_manifest['fictional'] and summary['fictional']
+    assert hashlib.sha256(labor_model.to_json(indent=None).encode()).hexdigest()==labor_manifest['source_sha256']
+    assert labor_model.model_id not in {BuildingModel.load(production/'inputs/model.json').model_id,
+        BuildingModel.load(companion/'canonical-model.json').model_id}
+    complete=summary['cases']['complete'];missing=summary['cases']['missing-input']
+    assert [row['adjusted_person_hours'] for row in complete['work']]==['4','4']
+    assert [row['cents'] for row in complete['work']]==[400,400]
+    assert len(complete['rentals'])==1 and complete['rentals'][0]['cents']==1020
+    assert len(complete['rentals'][0]['assigned_work'])==2
+    assert missing['work'][0]['cents'] is None and missing['work'][0]['status']=='unresolved'
+    assert 'UNPRICED' in (labor/'SUMMARY.md').read_text()
+    assert 'no live OA integration' in (root/'attempt/LABOR-COMPANION.txt').read_text()
+    from oabm.labor import generate_receipted_labor_report
+    for case in ('complete','missing-input'):
+        request=json.loads((labor/case/'request.json').read_bytes())
+        receipts=json.loads((labor/case/'receipts.json').read_bytes())
+        expected=generate_receipted_labor_report(labor_model,request,receipts)
+        assert (labor/case/'labor.json').read_text()==expected.to_json()+'\n'
+        assert (labor/case/'labor.csv').read_text()==expected.to_csv()
+    for name,receipt in labor_manifest['files'].items():
+        raw=(labor/name).read_bytes()
+        assert len(raw)==receipt['bytes'] and hashlib.sha256(raw).hexdigest()==receipt['sha256']
+        assert f'attempt/labor-example/delivery/{name}' in checksum_tree
+    assert 'attempt/labor-example/delivery/MANIFEST.json' in checksum_tree
+    assert 'attempt/LABOR-COMPANION.txt' in checksum_tree
     physical=root/'attempt/physical-as-built-example/delivery'
     physical_manifest=json.loads((physical/'MANIFEST.json').read_bytes())
     physical_current=BuildingModel.load(physical/'canonical-model.json')

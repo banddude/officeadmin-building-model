@@ -1,0 +1,131 @@
+# Labor reality source checkpoint (#234)
+
+The original source checkpoint is `7250a70ef00b620d683260623ef23c9553a3d5c0`.
+The parent reports its cloud acceptance evidence at
+`/workspace/shared/labor-cloud-7250-checks/RESULTS.md`: 73 focused tests and 12
+retained outputs. That cloud evidence remains unchanged; this desktop integration
+does not replace it or claim it verifies a different source head.
+
+PR #396 / #238 and PR #397 are now merged. The integration checkpoint combines
+that preserved labor source with accepted main
+`4781a27b147a62be7eabc96de0bf2fe5848e0908`. It consumes the merged original
+quantity contribution hook without changing it or the canonical model. Current
+utility, legacy/three-story as-built, and physical field companions remain intact;
+the labor report is an additional independent companion. Integrated source/cloud
+verification and native authenticated standards/export integration remain pending.
+Do not claim whole-issue convergence or close #234 from this bounded feature.
+
+`oabm.labor.contribution_inventory(model, groups=...)` returns source-bound
+selectors for original quantity contributions, not aggregated source membership.
+`generate_labor_report(model, request)` detaches and bounds JSON input, captures
+and validates the canonical model using the existing bounded snapshot admission,
+and emits immutable source/request-bound JSON plus readable CSV. Replaying via
+`report.validate_against(model, request)` rejects stale or changed reports.
+
+The request example is in `tests/test_labor_reality.py`. Every field is explicit:
+version, normalized source hash, bid groups, versioned policy/source, operation
+definitions, finite condition rules, external rates, work allocations and rental
+occurrences. No real rates or defaults ship here. Inputs and rates may contain
+private data and must remain outside the public checkout. Reports retain rates
+and source snapshots, so private reports must also stay outside public artifacts.
+
+Operation eligibility matches category, item type and unit. Preserve the full
+variant, assembly, group, evidence and original scalar in each work line.
+Fractions conserve scope per exact contribution/operation across phases.
+An `exclusive_family` prevents wall length/face/volume or alternative operations
+from charging the same installation; conduit install and conductor pull may use
+different families. Mixed-basis partial ownership is deliberately refused.
+Shared support hardware must select its single canonical contribution once.
+
+Each condition (`occupied`, `hillside`, `no-truck`, `height`) needs an explicit
+finite value. Exactly one matching policy rule is applied. Even an ordinary
+condition needs an explicit multiplier-one rule. Duplicate matching restrictions
+are errors; matched multipliers multiply once. Missing facts/rules/productivity
+remain unresolved rather than establishing zero effort or a price.
+
+Height is a supplied band relative to a named known work surface, with evidence
+and `measured-split` or `conservative-whole-operation` method. The engine does not
+infer a band from route endpoints, average elevation or absolute Z. Measured
+splits use independent work fractions that sum to at most one; the caller's
+measurement evidence remains subject to acceptance. Automatic geometric split
+verification is outside this slice.
+
+Crew roles, counts and rate selections are explicit. A selection may represent
+regular, overtime, off-hours or prevailing wage; the engine only checks exact
+agreement with the supplied rate response. It never determines legal eligibility.
+Each external response includes kind, unit, currency, revision, source, integer
+cents, selection and role. Labor uses `person-hour` and rentals use `hire-quantum`.
+Base effort = original quantity × fraction × supplied person-hours/unit.
+Adjusted effort multiplies matched condition factors. Money uses adjusted
+person-hours / crew count × sum(count × role cents/person-hour), rounded once
+per work line to integer cents. Unknown inputs produce null amounts.
+
+Explicit work windows require ISO timestamps with UTC offsets, so DST folds are
+unambiguous. Windows provide resource occupancy and crew capacity, not an inferred
+schedule. A work row has one crew/rate selection; split rows for overtime/off-hours
+windows, phases or mobilizations. Windows can retain shutdown gaps. They cannot
+overlap within a work row. No cross-row crew identity or scheduling optimizer is
+claimed; crew entries are compositions, not named people.
+
+One rental occurrence can serve two objects and is billed once. Explicit hire and
+off-hire include retained overnight/shutdown time. Concurrent work assignments
+consume capacity, end-before-start at equal timestamps. Required lift/scaffold
+kinds must have assigned occurrences. Separate mobilizations require separate
+occurrences, and duplicated same-kind ownership is rejected. Quantum billing
+rounds the explicit elapsed hire time up by the supplied quantum. This is a
+bounded provider contract, not a universal vendor day/week/month tariff. OA's
+7/28-day tier coverage needs a future read-only provider adapter.
+
+Parent source verification at private OA commit
+`21463cd9293c1203b2a480284d696b6eba7b3b51` establishes an existing editable
+base-productivity capability: price-book `laborHours` is hours per unit and the
+authenticated item PATCH requires `manage:inventory`. No PATCH was called.
+The future read-only adapter must retain unit/rule/rental evidence beyond the
+current org-scoped assembly snapshot subset. This is source evidence only,
+not live integration or acceptance.
+
+No laptop/Oracle project execution, imports, tests, builds, render jobs or CI
+dispatch were performed during this source integration. Prior cloud acceptance
+belongs to the exact original checkpoint above; the integrated head needs its own
+coordinated cloud verification. Missing private editable
+productivity-standard integration, authenticated org-scoped read-only rate adapter, provider
+tiers, actual output review and whole issue acceptance remain open. Existing OA
+assembly pricing must choose total-hours-in-one-unit **or** one-hour-unit × hours,
+never both. This public source neither connects to nor writes OA production.
+
+Height records carry explicit `min_height_m` and `max_height_m` **relative to the
+supplied work surface**, and height rules carry finite `height_min_m` and
+`height_max_m` bounds. Measured splits must fit the chosen band. A conservative
+whole-operation selection can include lower work but must cover the known maximum
+in the selected upper band. Unknown surface evidence never becomes absolute-Z
+height. Resource rate receipts also declare `quantum_hours`; a conflicting caller
+billing quantum is rejected. Labor receipts carry null quantum hours.
+
+The first independent source review added four admission/report safeguards:
+
+- Inventory, JSON and CSV preserve takeoff group summaries and unmatched group
+  member counts. A misspelled alternate member remains explicitly disclosed.
+- A conservative height rule must have at least the effort multiplier of every
+  intersected supplied height band and the same required resource kind whenever
+  another band requires one. No lift/scaffold substitution is inferred; conflicts
+  require measured splits.
+- Groups must be plain objects with member-ID lists; condition names are checked
+  as text before finite lookup. Malformed inputs produce contract refusals.
+- Expanded inventory/report and CSV output have cumulative conservative byte and
+  node budgets. Every alias occurrence is charged before encoding, including
+  repeated basis/provenance and CSV rate receipts. Input limits alone are not
+  treated as an output bound. Oversize output is refused rather than truncated.
+
+Conservative height admission additionally requires the union of supplied height
+bands to cover the entire measured closed interval without gaps, before checking
+dominance against every intersecting band (including shared boundaries). An
+unclassified lower span cannot become calculated work merely by selecting an
+upper band. UTC conversions that overflow Python's supported datetime range are
+reported as contract refusals; timestamp parsing and scheduling semantics are
+otherwise unchanged. These source-review repairs remain unexecuted.
+
+The separate [exported receipt adapter](labor-export-receipts.md) consumes a
+proposed generic read-only interchange for per-unit standards and externally
+priced labor/rental occurrences. It does not claim an existing OA export or live
+authenticated integration; its native-export mapping and runtime acceptance
+remain pending.

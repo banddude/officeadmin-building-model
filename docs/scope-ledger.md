@@ -85,3 +85,66 @@ or private plan is used.
 This closes only the bounded ledger child #284. Existing-system modeling,
 relocation/demo geometry, tie-ins, safe-off and production OA work on #231/#227
 remain open. This schedule is not an OA-issued or delivered customer document.
+
+## Opt-in scope plan connection (bounded #231 slice)
+
+`oabm.pipeline.scope_review_plan.generate_scope_review_plan(model, config,
+policy=policy, ledger=None)` consumes a `ReviewDrawingConfig` and the same explicit
+`ScopePolicy`. A supplied saved `ScopeLedger` must validate against the full model
+and policy before drawing. No schema, importer or default drawing behavior changes.
+The source model is never rewritten; callers retain their original source bytes.
+Nested device/equipment `source_scope` attributes are refused, including AI payloads:
+reconcile them explicitly into supported source evidence before using this API.
+
+The existing `generate_review_drawings` backend supplies actual plan geometry,
+source index and panel schedules. Scope presentation adds canonical-ID-bound marks
+at supplied poses only where backend geometry is present and the anchor is inside
+the requested window. Omitted objects remain in the complete ledger and schedules;
+`status['scope']['views']` lists marked and unmarked IDs. It does not move an object
+into view or infer its level/height. Underlying drawing-set geometry is unchanged.
+
+Visible marks use shape, letters and color: double square **N** for installation,
+gray square **E** for retained context, crossed square **D** with real dashed
+geometry strokes for demolition, dashed square **R** for relocation, and heavy
+diamond **?** for unresolved/conflicting scope. The footer shows all five classes
+and complete-model counts. Relocated items show only their supplied position;
+origin/destination geometry is explicitly unavailable. No arrows are invented.
+The two existing full scope schedules accompany the plans in both drawing JSON
+and a readable wrapped vector table. IDs remain literal in plan labels and table
+cells, and are machine-readable in SVG `data-source-ids`, ledger and drawing JSON.
+Symbols are annotations, not physical extents. Crowded source geometry can overlap
+annotations; this bounded review is not automatic construction-sheet composition.
+
+```python
+from oabm.pipeline.scope_review_plan import (
+    generate_scope_review_plan, render_scope_review_artifacts,
+)
+payloads, status = generate_scope_review_plan(model, config, policy=policy)
+# payloads: drawing_set, panel_facts, review_plan:<id>, scope_ledger, scope_schedule
+# Explicit optional CairoSVG runtime; no installation or conversion on import:
+rendered = render_scope_review_artifacts(payloads)
+# rendered keys: review_plan:<id>:pdf/:png and scope_schedule:pdf/:png
+```
+
+Limits: 200 devices/equipment, 16 requested plans, 32–200 pixels/metre and 4096
+pixels per plan axis before the legend. The existing backend's unsupported-model
+refusals still apply. Circuit/raceway scope, safe-off, pricing, topology, relocation
+pairs, tie-ins, engineering and permit readiness are outside this connection.
+Issue #231 remains open for its broader requirements.
+
+Cloud acceptance commands (do not run on the source-only laptop):
+
+```sh
+python -m pytest tests/test_scope_review_plan.py tests/test_scope_ledger.py tests/test_review_electrical_plans.py
+python examples/scope_review_plan.py /tmp/fresh-scope-review
+```
+
+The dedicated example uses six synthetic canonical objects covering all five
+classes, includes retained equipment, and creates matching SVG/PDF/PNG plans and
+full schedules with a hash manifest. Its revised model changes the same removed
+canonical ID to retained and regenerates SVG/PDF/PNG, ledger and schedule to demonstrate
+both visible and count changes. Focused tests cover exact supplied XY anchors,
+unchanged backend geometry/default outputs/source bytes, stale model/policy
+rejection, unresolved/conflicting evidence, incompatible AI fields, omitted
+geometry coverage, actual PDF text and PNG pixels. Runtime and independent visual
+acceptance must run in the parent cloud environment before publication.

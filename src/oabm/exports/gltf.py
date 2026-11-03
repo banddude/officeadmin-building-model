@@ -35,6 +35,8 @@ Design notes:
 
 from __future__ import annotations
 
+from oabm.model.site import reject_site_inventory
+
 from oabm.model import reject_physical_routes
 import hashlib
 import json
@@ -440,6 +442,7 @@ def to_glb(
       of metres or ``None``; bools and non-numeric values are rejected, so
       ``True`` can never masquerade as a 1 metre wall.
     """
+    reject_site_inventory(model, "to_glb")
 
     if type(physical_routes) is not bool or type(include_obstacles) is not bool:
         raise ValueError("physical_routes and include_obstacles must be booleans")

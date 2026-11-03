@@ -170,10 +170,19 @@ def generate(root,*,variant='reference',pdf=True,profile=None,adaptive_layout=Fa
             'Actual visual acceptance: PENDING. Retained SVGs are not a visual pass or engineering approval.\n'
             'As-built scope: supported-object edits refused; physical products unresolved; finite-story physical centerline projections are explicitly disclosed.\n',
             encoding='utf-8')
+    if variant=='reference' and pdf:
+        from utility_service_set import create_example
+        create_example(root/'inputs'/'model-utility-example')
+    return delivery
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root');p.add_argument('--variant',choices=('reference','residential','commercial'),default='reference');p.add_argument('--profile',type=Path);p.add_argument('--adaptive-layout',action='store_true');p.add_argument('--reference-cover',action='store_true')
+    a=p.parse_args(argv)
+    delivery=generate(a.root,variant=a.variant,profile=a.profile,adaptive_layout=a.adaptive_layout,reference_cover=a.reference_cover)
+    print(delivery)
     return delivery
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('root');p.add_argument('--variant',choices=('reference','residential','commercial'),default='reference');p.add_argument('--profile',type=Path);p.add_argument('--adaptive-layout',action='store_true');p.add_argument('--reference-cover',action='store_true')
-    a=p.parse_args()
-    print(generate(a.root,variant=a.variant,profile=a.profile,adaptive_layout=a.adaptive_layout,reference_cover=a.reference_cover))
+    main()

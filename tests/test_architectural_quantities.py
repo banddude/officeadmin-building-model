@@ -37,6 +37,24 @@ def test_architectural_only_has_known_answer_quantities_and_explicit_gaps():
     assert "assemblies_unresolved" in {w.code for w in report.warnings}
 
 
+def test_empty_site_collections_preserve_architectural_quantity_report():
+    from oabm.model import upgrade_to_v1_8
+    from oabm.model.site import SITE_FIELDS
+    from oabm.quantities.core import _canonical_entity_collections
+    original=base();upgraded=upgrade_to_v1_8(original)
+    collections=_canonical_entity_collections(original)
+    assert SITE_FIELDS <= collections.keys()
+    assert all(collections[name]==() for name in SITE_FIELDS)
+    before=extract_quantities(original);after=extract_quantities(upgraded)
+    assert before.items==after.items and before.warnings==after.warnings
+
+
+def test_populated_site_inventory_is_not_silently_excluded_from_quantities():
+    from test_site_model_integration import site_model
+    with pytest.raises(ContractError,match='populated site/service inventory is unsupported'):
+        extract_quantities(site_model())
+
+
 def test_claim_scope_never_promotes_assumed_thickness_to_observed_volume():
     report = extract_quantities(base())
     face = lines(report,"wall_face_area")[0]

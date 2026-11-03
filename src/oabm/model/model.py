@@ -23,6 +23,9 @@ from .physical_route_context import (AllowedPhysicalDomain, PhysicalRoutingConte
 from .physical import CatalogProduct, ElectricalBox, BoxSelectionOutcome, box_contains_point
 from .raceway import RacewaySelection, RacewaySelectionOutcome, wiring_method_for_route_type
 from .structural import StructuralMember
+from .common import SITE_SCHEMA_VERSION
+from .site import (SITE_FIELDS, SiteFeature, SiteRequirement, ServiceEquipmentFacts,
+                   ServiceNode, ServiceConnection, PlanServiceLateral, validate_site_inventory)
 from .fittings import FittingInterface, FittingSelection, FittingSelectionOutcome
 from .assemblies import AssemblyComponent, BuildingAssembly
 from .assembly_validation import (
@@ -81,11 +84,26 @@ class BuildingModel:
     fitting_selection_outcomes: tuple[FittingSelectionOutcome, ...] = ()
     building_assemblies: tuple[BuildingAssembly, ...] = ()
     assembly_components: tuple[AssemblyComponent, ...] = ()
+    site_features: tuple[SiteFeature, ...] = ()
+    site_requirements: tuple[SiteRequirement, ...] = ()
+    service_equipment_facts: tuple[ServiceEquipmentFacts, ...] = ()
+    service_nodes: tuple[ServiceNode, ...] = ()
+    service_connections: tuple[ServiceConnection, ...] = ()
+    plan_service_laterals: tuple[PlanServiceLateral, ...] = ()
     provenance: tuple[Provenance, ...] = ()
     attributes: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_id(self.model_id, "model_id")
+        site_types = dict(site_features=SiteFeature,site_requirements=SiteRequirement,
+                          service_equipment_facts=ServiceEquipmentFacts,service_nodes=ServiceNode,
+                          service_connections=ServiceConnection,plan_service_laterals=PlanServiceLateral)
+        for name,item_type in site_types.items():
+            values=getattr(self,name)
+            if type(values) is not tuple or any(type(value) is not item_type for value in values):
+                raise ContractError(f'{name} must be a typed tuple')
+        if self.schema_version != SITE_SCHEMA_VERSION and any(getattr(self,name) for name in SITE_FIELDS):
+            raise ContractError('site/service inventory requires explicit schema_version 1.8.0')
         if self.schema_version not in SUPPORTED_SCHEMA_VERSIONS:
             raise UnsupportedSchemaVersion(
                 f"unsupported schema_version {self.schema_version!r}"
@@ -130,7 +148,7 @@ class BuildingModel:
         # Physical records contain mutable metadata despite frozen dataclasses.
         # Refuse invalid physical output before serialization or any file write;
         # leave every legacy-only serializer behavior unchanged.
-        if any(isinstance(route, PhysicalRoute) for route in self.routes):
+        if self.schema_version == SITE_SCHEMA_VERSION or any(isinstance(route, PhysicalRoute) for route in self.routes):
             validate_model(self)
         return _encode(self)
 
@@ -140,6 +158,10 @@ class BuildingModel:
     @classmethod
     def from_dict(cls, document: Mapping[str, Any]) -> BuildingModel:
         version = document.get("schema_version") if isinstance(document, Mapping) else None
+        if version == SITE_SCHEMA_VERSION:
+            if not SITE_FIELDS.issubset(document):raise ContractError('1.8.0 requires all site/service arrays')
+        elif isinstance(document,Mapping) and SITE_FIELDS.intersection(document):
+            raise ContractError('site/service fields require explicit migration to1.8.0')
         if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise UnsupportedSchemaVersion(
                 f"unsupported schema_version {version!r}"
@@ -232,10 +254,17 @@ def _entity_collections(model: BuildingModel) -> tuple[tuple[Any, ...], ...]:
         model.fitting_selection_outcomes,
         model.building_assemblies,
         model.assembly_components,
+        model.site_features,
+        model.site_requirements,
+        model.service_equipment_facts,
+        model.service_nodes,
+        model.service_connections,
+        model.plan_service_laterals,
     )
 
 
 def validate_model(model: BuildingModel) -> None:
+    validate_site_inventory(model)
     all_entities = [entity for collection in _entity_collections(model) for entity in collection]
     nested_owners = []
     for route in model.routes:
@@ -267,6 +296,8 @@ def validate_model(model: BuildingModel) -> None:
     for owner in (model, *all_entities, *coverage_owners):
         for record in owner.provenance:
             for path in record.scope_paths or ():
+                if owner is model and path.split('.')[0] in SITE_FIELDS and model.schema_version != SITE_SCHEMA_VERSION:
+                    raise ContractError('site model provenance scopes require schema_version1.8.0')
                 if (owner is model and path.split(".", 1)[0] in _FITTING_FIELDS and
                         model.schema_version not in FITTING_SCHEMA_VERSIONS):
                     raise ContractError(
@@ -1188,6 +1219,8 @@ def _port_matches_route_tangent(route: Route, port: Port, tolerance_m: float,
 def _encode(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
         encoded = {item.name: _encode(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, BuildingModel) and value.schema_version != SITE_SCHEMA_VERSION:
+            for name in SITE_FIELDS:encoded.pop(name)
         if isinstance(value, BuildingModel) and value.schema_version == SCHEMA_VERSION:
             for name in _PHYSICAL_FIELDS:
                 encoded.pop(name)
@@ -1236,6 +1269,8 @@ def _encode(value: Any) -> Any:
 def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
     """Explicit, lossless opt-in to the physical-object contract; never downgrade."""
     from dataclasses import replace
+    if model.schema_version == SITE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.8")
     if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_1 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
@@ -1248,6 +1283,8 @@ def upgrade_to_v1_1(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in; preserve prior physical box inventory."""
     from dataclasses import replace
+    if model.schema_version == SITE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_2 cannot downgrade version 1.8")
     if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_2 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
@@ -1260,6 +1297,8 @@ def upgrade_to_v1_2(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_3(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to shared supports; preserve previous inventory."""
     from dataclasses import replace
+    if model.schema_version == SITE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_3 cannot downgrade version 1.8")
     if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_3 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
@@ -1270,6 +1309,8 @@ def upgrade_to_v1_3(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_4(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to structural members; preserve prior inventory."""
     from dataclasses import replace
+    if model.schema_version == SITE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_4 cannot downgrade version 1.8")
     if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_4 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
@@ -1280,6 +1321,8 @@ def upgrade_to_v1_4(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_5(model: BuildingModel) -> BuildingModel:
     """Explicit lossless opt-in to exact-product route-fitting decisions."""
     from dataclasses import replace
+    if model.schema_version == SITE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_5 cannot downgrade version 1.8")
     if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_5 cannot downgrade version 1.7")
     if model.schema_version == ASSEMBLY_SCHEMA_VERSION:
@@ -1295,6 +1338,8 @@ def upgrade_to_v1_6(model: BuildingModel) -> BuildingModel:
     current public consumers are not yet safe for models using its assemblies.
     """
     from dataclasses import replace
+    if model.schema_version == SITE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_6 cannot downgrade version 1.8")
     if model.schema_version == PHYSICAL_ROUTE_SCHEMA_VERSION:
         raise ContractError("upgrade_to_v1_6 cannot downgrade version 1.7")
     return replace(model, schema_version=ASSEMBLY_SCHEMA_VERSION)
@@ -1303,7 +1348,17 @@ def upgrade_to_v1_6(model: BuildingModel) -> BuildingModel:
 def upgrade_to_v1_7(model: BuildingModel) -> BuildingModel:
     """Explicit opt-in preserving all old routes without inventing physical facts."""
     from dataclasses import replace
+    if model.schema_version == SITE_SCHEMA_VERSION:
+        raise ContractError("upgrade_to_v1_7 cannot downgrade version 1.8")
     return replace(model, schema_version=PHYSICAL_ROUTE_SCHEMA_VERSION)
+
+
+def upgrade_to_v1_8(model: BuildingModel) -> BuildingModel:
+    """Lossless opt-in, refusing bound physical routes without touching hashes."""
+    from dataclasses import replace
+    if any(isinstance(route,PhysicalRoute) for route in model.routes):
+        raise ContractError('1.8 site migration cannot rebind populated 1.7 physical routes')
+    return replace(model,schema_version=SITE_SCHEMA_VERSION)
 
 
 T = TypeVar("T")

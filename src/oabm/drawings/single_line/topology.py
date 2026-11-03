@@ -9,7 +9,7 @@ import json
 from oabm.model import BuildingModel, validate_model
 from .drafting_facts import equipment_facts,circuit_facts,feeder_labels
 
-SUPPORTED = {'source', 'generator', 'meter', 'panelboard', 'switchboard',
+SUPPORTED = {'source', 'generator', 'meter', 'meter_main', 'panelboard', 'switchboard',
              'disconnect', 'transformer', 'transfer_switch', 'breaker', 'fuse',
              'ground_electrode','neutral_bus','ground_bus'}
 
@@ -30,13 +30,36 @@ class Topology:
         return asdict(self)
 
 
-def project_topology(model: BuildingModel) -> Topology:
+@dataclass(frozen=True)
+class ServiceTopology(Topology):
+    """Explicit service subset; default Topology bytes/fields remain unchanged."""
+    coverage: dict
+
+
+def project_topology(model: BuildingModel, *, service_only: bool = False) -> Topology:
     """All equipment and all circuit/load pairs, or an actionable error.
 
     Only directed acyclic radial/branching networks and explicit two-input
     transfer equipment are supported. Routes remain physical source references;
     their geometry does not imply electrical connectivity. Isolated equipment
     is retained with a visible warning. Unknown supplied facts stay unknown.
+    """
+    if type(service_only) is not bool:raise ValueError('single-line: service_only must be an explicit boolean')
+    validate_model(model)
+    if service_only:
+        from oabm.drawings.model_utility import project_service_topology
+        return project_service_topology(model)
+    if model.service_nodes or model.service_connections or model.service_equipment_facts:
+        raise ValueError('single-line: default whole-electrical-model projection cannot omit typed service references/facts; use explicit service_only=True with complete scope/omission reporting')
+    return _project_canonical_electrical_topology(model)
+
+
+def _project_canonical_electrical_topology(model: BuildingModel) -> Topology:
+    """Shared established whole canonical graph admission; no service selection.
+
+    Internal callers must retain explicit scope/omission reporting. This helper
+    preserves the original domain, role, conductor, port-only-link, supply,
+    transformer, voltage and acyclic-graph checks in one implementation.
     """
     validate_model(model)
     equipment = {e.id:e for e in model.electrical_equipment}

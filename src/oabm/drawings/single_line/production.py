@@ -11,7 +11,7 @@ from .layout import plan_pages, validate_precomputed_layout, _plan_fingerprint
 from .render import render_body
 
 
-def build_single_line_bodies(model, sheets, *, layout=None, sheet_index=None):
+def build_single_line_bodies(model, sheets, *, layout=None, sheet_index=None, service_only=False):
     """Render the exact ordered SLD sheets, optionally using a sealed layout.
 
     ``layout`` is consumed without replanning and must bind the same canonical
@@ -28,7 +28,7 @@ def build_single_line_bodies(model, sheets, *, layout=None, sheet_index=None):
     sheets=tuple(sheets)
     if not sheets:
         raise ValueError('single-line requires at least one resolved shared company sheet')
-    topology=project_topology(model)
+    topology=project_topology(model,service_only=service_only)
     layout=(plan_pages(topology,sheets[0].drawing_bounds_mm,first_sheet_id=sheets[0].id)
             if layout is None else validate_precomputed_layout(layout,topology,sheets[0].drawing_bounds_mm))
     if sheet_index is not None:
@@ -64,7 +64,7 @@ def build_single_line_bodies(model, sheets, *, layout=None, sheet_index=None):
         'engineering_approval':False,'topology':topology.to_dict(),'layout':layout,'sheets':maps}
 
 
-def create_single_line_set(model_path, profile_path, job_path, *, output_directory):
+def create_single_line_set(model_path, profile_path, job_path, *, output_directory, service_only=False):
     """Fresh atomic package; exact source snapshots and a complete hash manifest.
 
     Uses company_sheets without modifying its profile/titleblock/PDF behavior.
@@ -75,7 +75,7 @@ def create_single_line_set(model_path, profile_path, job_path, *, output_directo
     model_raw=Path(model_path).read_bytes()
     model=BuildingModel.from_dict(json.loads(model_raw))
     resolved=resolve_company_sheet_set(profile_path,job_path)
-    bodies,document=build_single_line_bodies(model,resolved.sheets)
+    bodies,document=build_single_line_bodies(model,resolved.sheets,service_only=service_only)
     attempt=Path(output_directory).absolute()
     attempt.mkdir(parents=True,exist_ok=False)
     pending=attempt/'.pending'
@@ -103,6 +103,7 @@ def create_single_line_set(model_path, profile_path, job_path, *, output_directo
         manifest={'kind':'oabm.single-line-package','version':'1.0.0','status':'complete_supplied_facts_only',
                   'engineering_approval':False,'sheet_order':list(bodies),
                   'model_sha256':hashlib.sha256(model_raw).hexdigest(),'files':files}
+        if service_only:manifest['selection_mode']='service_only_explicit'
         for row in files:
             data=(pending/row['path']).read_bytes()
             if len(data)!=row['bytes'] or hashlib.sha256(data).hexdigest()!=row['sha256']:
@@ -121,9 +122,10 @@ def main(argv=None):
     parser.add_argument('profile',type=Path)
     parser.add_argument('job',type=Path)
     parser.add_argument('output_directory',type=Path)
+    parser.add_argument('--service-only',action='store_true',help='Explicit service subset with complete model-owner omission report')
     args=parser.parse_args(argv)
     try:
-        path=create_single_line_set(args.model,args.profile,args.job,output_directory=args.output_directory)
+        path=create_single_line_set(args.model,args.profile,args.job,output_directory=args.output_directory,service_only=args.service_only)
     except (ValueError,OSError,ImportError) as exc:
         parser.exit(1,str(exc)+'\n')
     print(path)

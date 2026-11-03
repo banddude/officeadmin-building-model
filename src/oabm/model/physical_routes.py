@@ -353,6 +353,8 @@ def validate_physical_route_ports(route: PhysicalRoute, ports: Mapping[str, Any]
 
 def reject_physical_routes(model: Any, consumer: str) -> None:
     """Fail before unsupported consumers filter, mutate, invoke callbacks or write."""
+    from .site import reject_site_inventory
+    reject_site_inventory(model,consumer)
     if any(isinstance(route, PhysicalRoute) for route in model.routes):
         raise ContractError(f"{consumer} does not support physical routes (line_arc_v1)")
 

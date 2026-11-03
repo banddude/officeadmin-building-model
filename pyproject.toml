@@ -9,6 +9,7 @@ description = "Semantic 3D building and electrical modeling engine for OfficeAdm
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26,<3",
+    "jsonschema>=4.23,<5",
     "pypdf>=6.21,<7",
     "packaging>=24,<27",
     "pdfplumber>=0.11.10,<1",
@@ -58,7 +59,6 @@ registration = ["pycpd>=2,<3", "opencv-python-headless>=4,<6"]
 dev = [
   "pytest>=8,<10",
   "pytest-xdist>=3,<4",
-  "jsonschema>=4.23,<5",
   "ifcopenshell>=0.8.5,<0.9",
   "numpy>=1.26,<3",
 ]
@@ -68,3 +68,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+"oabm.electrical._sizing_contracts" = ["*.json"]

@@ -49,6 +49,9 @@ def request_from_model(model, circuit_id, design_inputs):
     cid, inputs = request_from_canonical(found[0], design_inputs)
     if len(found[0].load_port_ids) != 1 or len(found[0].route_ids) > 1:
         raise ValueError('multi-load or multi-route circuit mapping is unsupported')
+    mapped_routes = set(found[0].route_ids)
+    if any(set(conductor.route_ids) - mapped_routes for conductor in detached.conductors if conductor.circuit_id == cid):
+        raise ValueError('a conductor extends beyond the mapped circuit route')
     if any(r.id in found[0].route_ids and not isinstance(r, Route) for r in detached.routes):
         raise ValueError('physical-route sizing is not supported by this prototype')
     if inputs.get('sole_circuit_in_raceway') is True:

@@ -123,10 +123,15 @@ def test_poles_do_not_silently_supply_hot_count(model, settings):
     assert out['status'] == 'unresolved'
 
 def test_circuit_without_route_does_not_claim_a_mapped_raceway(model, settings):
-    no_route = replace(model, circuits=(replace(model.circuits[0], route_ids=()),))
+    no_route = replace(model, circuits=(replace(model.circuits[0], route_ids=()),), conductors=tuple(replace(c, route_ids=()) for c in model.conductors))
     out = size_model_circuit(no_route, 'circuit:evse', settings, fake_provider)
     assert out['target_mapping']['route_ids'] == []
     assert any('No route is mapped' in x for x in out['limitations'])
+
+def test_conductor_routes_cannot_extend_beyond_circuit_mapping(model, settings):
+    no_route = replace(model, circuits=(replace(model.circuits[0], route_ids=()),))
+    with pytest.raises(ValueError, match='extends beyond'):
+        size_model_circuit(no_route, 'circuit:evse', settings, fake_provider)
 
 def test_route_length_and_shared_route_fail_closed(model, settings):
     feet, route = single_route_length_ft(model, 'circuit:evse')

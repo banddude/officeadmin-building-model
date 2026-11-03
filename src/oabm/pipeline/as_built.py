@@ -312,6 +312,23 @@ def _check_device_moves(before, after, touched, changed_fields):
                 w*k + x*j - y*i + z*r, w*r - x*i - y*j - z*k)
     def close(a, b, tolerance=1e-9):
         return all(abs(x-y) <= tolerance for x, y in zip(a, b))
+    old_devices,new_devices=_index(before,"electrical_devices"),_index(after,"electrical_devices")
+    old_ports,new_ports=_index(before,"ports"),_index(after,"ports")
+    # Check existing device-owned ports even when their owner is unchanged.
+    # Canonical endpoint validity alone permits a port and its route to move
+    # together while leaving the device behind; that is not a rigid owner move.
+    for port_id,old_port in old_ports.items():
+        owner_id=old_port["owner_id"]
+        if owner_id not in old_devices:
+            continue
+        new_port=new_ports.get(port_id);new_owner=new_devices.get(owner_id)
+        if new_port is None and new_owner is None:
+            continue  # whole owner/connection deletion still needs canonical admission
+        _require(new_port is not None and new_port["owner_id"]==owner_id,
+                 "existing device-owned ports cannot be independently removed or reassigned")
+        if new_owner is not None and old_devices[owner_id]["pose"]==new_owner["pose"]:
+            _require(old_port["pose"]==new_port["pose"] and old_port["direction"]==new_port["direction"],
+                     "independent device-owned port pose/direction edits require a supported rigid device move")
     for identity, device in _index(before, "electrical_devices").items():
         new = _index(after, "electrical_devices").get(identity)
         if new is None or device["pose"] == new["pose"]:

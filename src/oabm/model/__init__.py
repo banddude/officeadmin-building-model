@@ -266,3 +266,9 @@ __all__ = [
 ]
 
 from .common import PhysicalRoutingAdmissionError
+from .v1 import (SITE_SCHEMA_VERSION,SitePlanGeometry,SiteSourceEvidence,SiteFeature,
+                 SiteRequirement,ServiceEquipmentFacts,ServiceNode,ServiceConnection,
+                 PlanServiceLateral,reject_site_inventory,upgrade_to_v1_8)
+__all__ += ['SITE_SCHEMA_VERSION','SitePlanGeometry','SiteSourceEvidence','SiteFeature',
+            'SiteRequirement','ServiceEquipmentFacts','ServiceNode','ServiceConnection',
+            'PlanServiceLateral','reject_site_inventory','upgrade_to_v1_8']

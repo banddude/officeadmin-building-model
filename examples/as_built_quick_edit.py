@@ -174,7 +174,8 @@ def _retain_sheet_images(output_directory, manifest):
             width,height=round(width_mm*96/25.4*1.5),round(height_mm*96/25.4*1.5)
             if not (0<width<=7000 and 0<height<=7000 and width*height<=36_000_000):
                 raise ValueError('preview pixel budget exceeded')
-            image=cairosvg.svg2png(bytestring=raw,output_width=width,output_height=height)
+            image=cairosvg.svg2png(bytestring=raw,output_width=width,output_height=height,
+                                  background_color='#ffffff')
             if len(image)<24 or image[:8]!=b'\x89PNG\r\n\x1a\n' or struct.unpack('>II',image[16:24])!=(width,height):
                 raise ValueError('actual full-sheet preview dimensions mismatch')
             filename=path.stem+'.png';(pending/filename).write_bytes(image)
@@ -185,6 +186,7 @@ def _retain_sheet_images(output_directory, manifest):
         (pending/'PREVIEW-MANIFEST.json').write_text(json.dumps({
             'version':'as-built-preview-images-v1','source_manifest_sha256':hashlib.sha256((delivery/'MANIFEST.json').read_bytes()).hexdigest(),
             'model_sha256':manifest['revised_model_sha256'],'images':rows,'scale':1.5,'dpi':96,
+            'background_color':'#ffffff',
             'visual_review_status':'unreviewed','qualification':'Full generated sheets; no crop, model edit or visual acceptance.'},sort_keys=True))
         os.rename(pending,preview)
 

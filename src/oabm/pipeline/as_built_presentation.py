@@ -39,6 +39,44 @@ def _owners(model):
     return result
 
 
+def _endpoint_routes(model,owner,origin):
+    """Explicit route endpoints at this owner's actual connection pose only."""
+    pose=getattr(owner,'pose',None)
+    if pose is None or Point2(pose.position.x,pose.position.y)!=origin:
+        return set()
+    ports={port.id for port in model.ports if port.owner_id==owner.id and port.pose.position==pose.position}
+    return {route.id for route in model.routes if ports.intersection((route.start_port_id,route.end_port_id))}
+
+
+def _shared_marker_connections(model,primitives):
+    """Symmetric symbol ownership only at explicit clipped endpoint ports.
+
+    Route strokes, text and other coincident objects retain ordinary collision
+    checks. An XY coincidence or an unrelated nearby route alone grants nothing.
+    """
+    ports={port.id:port for port in model.ports};owners=_owners(model)
+    result=[]
+    for primitive in primitives:
+        if primitive.kind!='symbol' or primitive.symbol!='route-vertical-projection':
+            continue
+        meta=dict(primitive.metadata)
+        low=meta.get('clipped_min_z_m',meta.get('min_z_m'))
+        high=meta.get('clipped_max_z_m',meta.get('max_z_m'))
+        if low is None or high is None:
+            continue
+        for route in model.routes:
+            if route.id not in primitive.source_ids:
+                continue
+            for identity in (route.start_port_id,route.end_port_id):
+                port=ports[identity];owner=owners.get(port.owner_id,(None,''))[0]
+                pose=getattr(owner,'pose',None);point=port.pose.position
+                if (pose is not None and primitive.points[0]==Point2(point.x,point.y)==Point2(pose.position.x,pose.position.y)
+                        and float(low)<=point.z<=float(high)):
+                    result.append({'marker_id':primitive.id,'route_id':route.id,'port_id':identity,
+                        'owner_id':port.owner_id,'anchor_m':[primitive.points[0].x,primitive.points[0].y]})
+    return result
+
+
 def _layout(model, view, scale):
     """Use actual sheet font widths, millimetre symbols and dimension gaps.
 
@@ -61,8 +99,9 @@ def _layout(model, view, scale):
             owner = owners[identity][0]
             texts.setdefault(identity,[owner.name or getattr(owner,'device_type',None) or
                 getattr(owner,'box_type',None) or getattr(owner,'equipment_type',None) or getattr(owner,'route_type','')])
-            if owners[identity][1]=='R' and f'{owner.route_type} route' not in texts[identity]:
-                texts[identity].append(f'{owner.route_type} route')
+            route_caption=f'{getattr(owner,"route_type","physical centerline")} route'
+            if owners[identity][1]=='R' and route_caption not in texts[identity]:
+                texts[identity].append(route_caption)
     if len(texts)>128:
         raise ValueError('as-built presentation supports at most 128 callout owners per plan')
     if sum(len(text) for labels in texts.values() for text in labels)>32768 or any(
@@ -91,11 +130,17 @@ def _layout(model, view, scale):
         offset=(9 if owners.get(dimension.source_ids[0],(None,''))[1]=='W' else 5)*unit
         dimensions.append(replace(dimension,offset_m=-offset if toward>=0 else offset))
 
+    shared_connections=_shared_marker_connections(model,geometry)
     boxes,segments=[],[]
     for p in geometry:
         if p.kind=='symbol':
             a=p.points[0];radius=SYMBOL_RADIUS_MM*unit
-            boxes.append(((a.x-radius,a.y-radius,a.x+radius,a.y+radius),p.source_ids))
+            symbol_owners=set(p.source_ids)
+            for connection in shared_connections:
+                pair={connection['route_id'],connection['owner_id']}
+                if [a.x,a.y]==connection['anchor_m'] and pair.intersection(p.source_ids):
+                    symbol_owners.update(pair)
+            boxes.append(((a.x-radius,a.y-radius,a.x+radius,a.y+radius),tuple(sorted(symbol_owners))))
         elif p.kind=='text':
             boxes.append((_box(p.points[0],p.text or '',scale),p.source_ids))
         elif p.kind=='quarter_arc':
@@ -150,6 +195,7 @@ def _layout(model, view, scale):
         else:
             unplaced.append(identity);entry.update(callout_status='legend_only',reason='no_source_anchor');continue
         selected=None
+        endpoint_routes=_endpoint_routes(model,owner,origin) if symbols else set()
         width=measure_sheet_text(tag,TEXT_MM,font_family=FONT)*unit
         for radius_mm in (4,7,10,14,20,28):
             radius=radius_mm*unit
@@ -166,22 +212,40 @@ def _layout(model, view, scale):
                     continue
                 end=Point2(max(rectangle[0],min(origin.x,rectangle[2])),max(rectangle[1],min(origin.y,rectangle[3])))
                 distance=math.hypot(end.x-origin.x,end.y-origin.y)
-                trim=SYMBOL_RADIUS_MM*unit if symbols else 0
-                start=Point2(origin.x+(end.x-origin.x)*min(1,trim/distance),
-                             origin.y+(end.y-origin.y)*min(1,trim/distance)) if distance else origin
-                if any(not linked.intersection(ids) and _segment_hits_box(start,end,_inflate(b,gap)) for b,ids in boxes):
-                    continue
-                if any(_segment_hits_box(start,end,_inflate(b,gap)) for b in occupied):
-                    continue
-                if any(not linked.intersection(ids) and _segments_close(start,end,a,b,gap) for a,b,ids in segments):
-                    continue
-                selected=(anchor,rectangle,start,end);break
+                base_trim=SYMBOL_RADIUS_MM if symbols else 0
+                def along(mm):
+                    fraction=min(1,mm*unit/distance) if distance else 0
+                    return Point2(origin.x+(end.x-origin.x)*fraction,origin.y+(end.y-origin.y)*fraction)
+                base_start=along(base_trim)
+                for trim_mm in ((base_trim,2.,3.) if endpoint_routes else (base_trim,)):
+                    start=along(trim_mm)
+                    # The extra bounded escape span may clear ONLY incident
+                    # strokes of explicitly connected routes. Check all other
+                    # geometry over that span; no crossing disappears by trim.
+                    if trim_mm>base_trim:
+                        if any(not linked.intersection(ids) and _segment_hits_box(base_start,start,_inflate(b,gap)) for b,ids in boxes):
+                            continue
+                        if any(_segment_hits_box(base_start,start,_inflate(b,gap)) for b in occupied):
+                            continue
+                        if any(not linked.intersection(ids) and not (endpoint_routes.intersection(ids) and origin in (a,b))
+                               and _segments_close(base_start,start,a,b,gap) for a,b,ids in segments):
+                            continue
+                    if any(not linked.intersection(ids) and _segment_hits_box(start,end,_inflate(b,gap)) for b,ids in boxes):
+                        continue
+                    if any(_segment_hits_box(start,end,_inflate(b,gap)) for b in occupied):
+                        continue
+                    if any(not linked.intersection(ids) and _segments_close(start,end,a,b,gap) for a,b,ids in segments):
+                        continue
+                    selected=(anchor,rectangle,start,end,trim_mm);break
+                if selected:
+                    break
             if selected:
                 break
         if selected is None:
             unplaced.append(identity);entry.update(callout_status='legend_only',reason='no_clear_finite_candidate');continue
-        anchor,rectangle,start,end=selected
-        entry.update(callout_status='placed',text_box_m=list(rectangle),anchor_m=[origin.x,origin.y])
+        anchor,rectangle,start,end,trim_mm=selected
+        entry.update(callout_status='placed',text_box_m=list(rectangle),anchor_m=[origin.x,origin.y],
+                     leader_trim_mm=trim_mm,endpoint_route_ids=sorted(endpoint_routes))
         occupied.append(rectangle)
         style=LineStyle(stroke='route' if owners.get(identity,(None,''))[1]=='R' else 'annotation',weight='thin')
         placed.append(_primitive(f'as-built-tag:{identity}','text',identity,(anchor,),text=tag,style=style))
@@ -236,6 +300,7 @@ def _layout(model, view, scale):
         'text_height_mm':TEXT_MM,'font_family':FONT,'symbol_radius_mm':SYMBOL_RADIUS_MM,
         'level_id':level.id,'level_elevation_m':level.elevation_m,'view_title':view.title,
         'printed_level_heading_lines':identity_lines,
+        'shared_endpoint_symbols':shared_connections,
         'entries':entries,'unplaced_callout_owner_ids':unplaced,
         'dimension_text_boxes_m':[list(box) for box in dimension_boxes],
         'geometry_unchanged':True,'review_status':'needs_review' if unplaced else 'unreviewed'}

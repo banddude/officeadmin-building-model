@@ -1,10 +1,19 @@
 # Labor reality source checkpoint (#234)
 
-This **unexecuted source slice** depends on unmerged PR #396 / #238 at
-`4a8602cce13d0928383cd6b093f56515ed55a07c`, specifically its existing original
-quantity contribution hook. It does not modify that hook or the canonical model.
-Do not publish this branch as converged or close #234 before that dependency,
-coordinated runtime acceptance and private editable standards integration pass.
+The original source checkpoint is `7250a70ef00b620d683260623ef23c9553a3d5c0`.
+The parent reports its cloud acceptance evidence at
+`/workspace/shared/labor-cloud-7250-checks/RESULTS.md`: 73 focused tests and 12
+retained outputs. That cloud evidence remains unchanged; this desktop integration
+does not replace it or claim it verifies a different source head.
+
+PR #396 / #238 and PR #397 are now merged. The integration checkpoint combines
+that preserved labor source with accepted main
+`4781a27b147a62be7eabc96de0bf2fe5848e0908`. It consumes the merged original
+quantity contribution hook without changing it or the canonical model. Current
+utility, legacy/three-story as-built, and physical field companions remain intact;
+the labor report is an additional independent companion. Integrated source/cloud
+verification and native authenticated standards/export integration remain pending.
+Do not claim whole-issue convergence or close #234 from this bounded feature.
 
 `oabm.labor.contribution_inventory(model, groups=...)` returns source-bound
 selectors for original quantity contributions, not aggregated source membership.
@@ -75,9 +84,10 @@ The future read-only adapter must retain unit/rule/rental evidence beyond the
 current org-scoped assembly snapshot subset. This is source evidence only,
 not live integration or acceptance.
 
-No execution, imports, tests, builds, render jobs or CI dispatch were performed
-because the parent placed laptop execution on hold. The synthetic tests are
-source-only acceptance work pending that hold's release. Missing private editable
+No laptop/Oracle project execution, imports, tests, builds, render jobs or CI
+dispatch were performed during this source integration. Prior cloud acceptance
+belongs to the exact original checkpoint above; the integrated head needs its own
+coordinated cloud verification. Missing private editable
 productivity-standard integration, authenticated org-scoped read-only rate adapter, provider
 tiers, actual output review and whole issue acceptance remain open. Existing OA
 assembly pricing must choose total-hours-in-one-unit **or** one-hour-unit × hours,

@@ -189,3 +189,31 @@ Markdown punctuation is escaped before HTML encoding. Generated apostrophe
 entities therefore retain their original form instead of acquiring an escaped
 `#`; a combined apostrophe/image/link source case is retained in source coverage.
 The staged publication layout and hook paths are unchanged.
+
+## Integration checkpoint after dependency acceptance
+
+The parent reports source/cloud acceptance of exact original checkpoint
+`7250a70ef00b620d683260623ef23c9553a3d5c0` with 73 focused tests and 12 retained
+outputs at `/workspace/shared/labor-cloud-7250-checks/RESULTS.md`. That evidence is
+retained in its cloud environment; it has not been copied, overwritten or relabeled
+as acceptance of a new head. PRs #396 and #397 are merged, and accepted main
+`4781a27b147a62be7eabc96de0bf2fe5848e0908` passed postmerge CI according to the
+parent's verified handoff.
+
+The separate integration branch merges that exact main into the preserved labor
+checkpoint. Its reference companion is additive: retain the current utility
+example, legacy quick edits, three-story projections and actual physical field
+reroute alongside the labor delivery. No sealed production manifest or canonical
+quantity hook is replaced. No workflow, runner, OA production or native exporter
+changes are part of this integration. A source archive is prepared for independent
+cloud verification; no laptop/Oracle project execution or publication is allowed
+before the integration's independent source and cloud checks pass.
+
+Bounded acceptance for the integrated source is: rerun the labor/receipt cases and
+standalone fictional demo; inspect four adjusted person-hours and 400 cents per
+object, the one shared 25-hour/1020-cent occurrence, and the explicitly unpriced
+case; validate retained hashes and source/request/receipt bindings; then run the
+reference companion integration and confirm utility/as-built/physical/labor
+retention remains additive and failures still propagate. Integrated output review
+is pending. Native authenticated OA export mapping and real-job #234 acceptance
+remain genuinely missing.

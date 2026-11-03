@@ -38,7 +38,12 @@ def test_small_model_physical_callouts_legend_route_and_paper_are_bound_to_uncha
     assert layout['scale'] in {25,50} and layout['text_height_mm']==3
     entries={row['owner_id']:row for row in layout['entries']}
     for identity in ('device:evse','device:spare','equip:panel',model.routes[0].id):
-        assert entries[identity]['callout_status']=='placed'
+        assert entries[identity]['callout_status']=='placed',entries[identity]
+    assert entries['equip:panel']['leader_trim_mm']>1.5
+    assert entries['equip:panel']['endpoint_route_ids']==[model.routes[0].id]
+    assert entries['device:spare']['endpoint_route_ids']==[]
+    assert entries['device:spare']['leader_trim_mm']==1.5
+    assert not any(p['kind']=='symbol' and p['symbol']=='route-vertical-projection' for p in view['primitives'])
     boxes=[row['text_box_m'] for row in entries.values() if row['callout_status']=='placed']
     for index,box in enumerate(boxes):
         assert not any(_overlap(box,other) for other in boxes[index+1:])
@@ -96,6 +101,8 @@ def test_panel_cards_use_readable_font_unknown_positions_and_complete_source_row
 
 def test_actual_full_sheet_previews_bind_exact_svg_bytes_without_crop(tmp_path):
     pytest.importorskip('cairosvg')
+    from PIL import Image
+    from io import BytesIO
     root=tmp_path/'preview-example'
     manifest=example().create_synthetic_delivery(root,preview_images=True)
     preview=json.loads((root/'preview-images/PREVIEW-MANIFEST.json').read_bytes())
@@ -103,12 +110,16 @@ def test_actual_full_sheet_previews_bind_exact_svg_bytes_without_crop(tmp_path):
     assert preview['model_sha256']==manifest['revised_model_sha256']
     assert preview['source_manifest_sha256']==hashlib.sha256((root/'delivery/MANIFEST.json').read_bytes()).hexdigest()
     assert preview['images']
+    assert preview['background_color']=='#ffffff'
     for row in preview['images']:
         raw=(root/'delivery'/row['source_svg']).read_bytes()
         assert hashlib.sha256(raw).hexdigest()==row['source_svg_sha256']
         image=(root/'preview-images'/row['image']).read_bytes()
         assert hashlib.sha256(image).hexdigest()==row['sha256']
         assert struct.unpack('>II',image[16:24])==(row['width'],row['height'])
+        with Image.open(BytesIO(image)) as raster:
+            assert raster.convert('RGBA').getchannel('A').getextrema()==(255,255)
+            assert raster.convert('RGB').getpixel((0,0))==(255,255,255)
         svg=ET.fromstring(raw)
         assert row['width']==round(float(svg.get('width').removesuffix('mm'))*96/25.4*1.5)
         assert row['height']==round(float(svg.get('height').removesuffix('mm'))*96/25.4*1.5)
@@ -180,3 +191,51 @@ def test_panel_row_rectangles_match_exact_svg_anchor_coordinates():
                 assert x==pytest.approx(page.placement.x_mm+(point.x-view.bounds.min_x)*1000,abs=1e-5)
                 assert y==pytest.approx(page.placement.y_mm+(view.bounds.max_y-point.y)*1000,abs=1e-5)
                 assert left<=x<=right and top<=y<=bottom
+
+
+def test_endpoint_escape_membership_requires_a_port_at_the_actual_owner_anchor():
+    from oabm.drawings import Point2
+    from oabm.pipeline.as_built_presentation import _endpoint_routes
+    history,request=example().synthetic_inputs()
+    model=replay_history(apply_transaction(history,request))
+    panel=model.electrical_equipment[0];route=model.routes[0]
+    anchor=Point2(panel.pose.position.x,panel.pose.position.y)
+    assert _endpoint_routes(model,panel,anchor)=={route.id}
+    spare=next(device for device in model.electrical_devices if device.id=='device:spare')
+    assert _endpoint_routes(model,spare,Point2(spare.pose.position.x,spare.pose.position.y))==set()
+    assert _endpoint_routes(model,panel,Point2(anchor.x+.01,anchor.y))==set()
+    port=next(port for port in model.ports if port.owner_id==panel.id)
+    moved_port=replace(port,pose=replace(port.pose,position=replace(port.pose.position,z=port.pose.position.z+.1)))
+    moved_route=replace(route,centerline=replace(route.centerline,
+        points=(moved_port.pose.position,*route.centerline.points[1:])))
+    source=replace(model,ports=tuple(moved_port if p.id==port.id else p for p in model.ports),
+        routes=tuple(moved_route if r.id==route.id else r for r in model.routes))
+    assert _endpoint_routes(source,panel,anchor)==set()
+
+
+def test_high_precision_legacy_endpoint_shares_the_quantized_marker_anchor_without_model_writeback():
+    from oabm.model import Point3
+    from oabm.drawings import Point2
+    history,request=example().synthetic_three_story_inputs()
+    model=replay_history(apply_transaction(history,request))
+    x=.123456789123;y=1.2
+    panel=replace(model.electrical_equipment[0],size=None,pose=replace(model.electrical_equipment[0].pose,
+        position=Point3(x=x,y=y,z=model.electrical_equipment[0].pose.position.z)))
+    device=replace(model.electrical_devices[0],size=None,pose=replace(model.electrical_devices[0].pose,
+        position=Point3(x=x,y=y,z=model.electrical_devices[0].pose.position.z)))
+    owners={panel.id:panel,device.id:device}
+    ports=tuple(replace(port,pose=owners[port.owner_id].pose) for port in model.ports)
+    route=replace(model.routes[0],centerline=replace(model.routes[0].centerline,
+        points=(panel.pose.position,device.pose.position)))
+    model=replace(model,electrical_equipment=(panel,),electrical_devices=(device,),ports=ports,routes=(route,))
+    before=snapshot(model);outputs=_drawings(model,'field:high-precision-shared-anchor')
+    layout=json.loads(outputs['drawings/plan-layout.json'])
+    third=next(row for row in layout['plans'] if row['level_id']==device.level_id)
+    expected=[Point2(x,y).x,Point2(x,y).y]
+    assert expected!=[x,y]
+    assert third['shared_endpoint_symbols']
+    assert all(row['anchor_m']==expected for row in third['shared_endpoint_symbols'])
+    entries={row['owner_id']:row for row in third['entries']}
+    assert entries[device.id]['callout_status']=='placed'
+    assert entries[route.id]['callout_status']=='placed'
+    assert model.ports[-1].pose.position.x==x and snapshot(model)==before

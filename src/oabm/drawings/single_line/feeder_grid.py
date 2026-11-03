@@ -26,15 +26,21 @@ def paginate_feeder_grid(topology,connection_ids,bounds_mm, *, sheet_id,width_mm
     rows=[];bindings={}
     for identity in connection_ids:
         edge=edges[identity]
-        source=edge['circuit_id'] if count[edge['circuit_id']]==1 else edge['load_port_id']
+        unresolved=edge['circuit_id'] is None
+        if unresolved and (edge['source_role']!='supplied_service_relationship' or edge['load_role']!='supplied_service_relationship'):
+            raise ValueError(f'{identity}: missing circuit identity outside an explicit service relationship')
+        source=identity if unresolved else (edge['circuit_id'] if count[edge['circuit_id']]==1 else edge['load_port_id'])
+        circuit_label=identity+' / CIRCUIT UNRESOLVED' if unresolved else edge['circuit_id']
+        source_port=edge['source_port_id'] if edge['source_port_id'] is not None else 'TERMINAL UNRESOLVED'
+        load_port=edge['load_port_id'] if edge['load_port_id'] is not None else 'TERMINAL UNRESOLVED'
         if source in bindings:raise ValueError(f'{identity}: shared grid requires distinct canonical row sources; resolve duplicate load-port assignment')
         bindings[source]=identity
         facts=edge['drafting'];kind=facts['connection_kind']
         voltage=(f'{edge["voltage_v"]:g} V' if edge['voltage_v'] is not None else 'V UNKNOWN') if kind=='power' else kind.upper()
         if kind=='power':voltage+=f' / {edge["poles"] if edge["poles"] is not None else "?"}P / {edge["phase"] or "?"}'
         notes='; '.join([*facts['notes'], 'ROUTE '+(', '.join(edge['route_ids']) or 'UNKNOWN / not supplied')])
-        rows.append(ScheduleRow(source,(tags[identity]+' / '+edge['circuit_id'],
-            status_tag(facts['status'])+' '+edge['source_id']+' / '+edge['source_port_id']+' ('+edge['source_role']+') -> '+edge['load_id']+' / '+edge['load_port_id']+' ('+edge['load_role']+')'+('\nSUPPLIED LABEL: '+edge['circuit_number'] if edge.get('circuit_number') is not None else ''),voltage,
+        rows.append(ScheduleRow(source,(tags[identity]+' / '+circuit_label,
+            status_tag(facts['status'])+' '+edge['source_id']+' / '+source_port+' ('+edge['source_role']+') -> '+edge['load_id']+' / '+load_port+' ('+edge['load_role']+')'+('\nSUPPLIED LABEL: '+edge['circuit_number'] if edge.get('circuit_number') is not None else ''),voltage,
             protection_label(facts) if kind=='power' else 'NOT A PHASE FEEDER',edge['conductor_specification'],notes)))
     sources=[]
     for entry in topology.source_index:

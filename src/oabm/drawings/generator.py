@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from oabm.model.site import reject_site_inventory
+
 from oabm.model import reject_physical_routes
 import hashlib
 import math
@@ -300,6 +302,7 @@ def generate_drawing_set(
     opt-in presentation options shared by every generated view; see
     :func:`generate_plan`.
     """
+    reject_site_inventory(model, "generate_drawing_set")
     from .route_arcs import admit_plan_routes
     admit_plan_routes(model,physical_geometry)
     if assembly_geometry not in (None, "cut"):
@@ -403,6 +406,7 @@ def generate_plan(
     before labels, so ``"skip_with_dimensions"`` only sees the dimensions that
     survived this pass.
     """
+    reject_site_inventory(model, "generate_plan")
     from .route_arcs import admit_plan_routes
     admit_plan_routes(model,physical_geometry)
     if assembly_geometry not in (None, "cut"):
@@ -496,7 +500,10 @@ def _generate_plan_base(
         from oabm.model.layers import _route_level_id
         unknown = sorted(route.id for route in model.routes if isinstance(route,PhysicalRoute)
                          and _route_level_id(model,route) is None)
-        metadata += (("physical_geometry","horizontal analytic XY centerline; no OD or clearance envelope; no partial XY crop"),
+        physical_scope=("analytic XY centerline; nonhorizontal segments are finite-story projections only; no OD or clearance envelope; no partial XY crop"
+            if any(isinstance(route,PhysicalRoute) and len({joint.position.z for joint in route.joints})>1 for route in entities)
+            else "horizontal analytic XY centerline; no OD or clearance envelope; no partial XY crop")
+        metadata += (("physical_geometry",physical_scope),
                      ("physical_routes_unknown_level",",".join(unknown)))
     if overlap != "keep":
         metadata = metadata + (("skipped_labels", str(skipped_labels)),)
@@ -525,6 +532,7 @@ def generate_elevation(
     dimension_overlap: str = "keep", assembly_geometry: str | None = None,
 ) -> DrawingView:
     """Project physical child meshes only through explicit projection admission."""
+    reject_site_inventory(model, "generate_elevation")
     reject_physical_routes(model, "generate_elevation")
     if assembly_geometry not in (None, "projection"):
         raise ValueError("assembly_geometry: use None or explicit 'projection'")
@@ -629,6 +637,7 @@ def generate_section(
     ``dimension_overlap`` are validated for interface parity but do not change
     section output.
     """
+    reject_site_inventory(model, "generate_section")
     reject_physical_routes(model, "generate_section")
     if assembly_geometry not in (None, "cut"):
         raise ValueError("assembly_geometry: use None or explicit 'cut'")
@@ -713,6 +722,7 @@ def _generate_section_base(
 
 
 def generate_schedules(model: BuildingModel) -> tuple[DrawingSchedule, ...]:
+    reject_site_inventory(model, "generate_schedules")
     if model.building_assemblies or model.assembly_components or any(isinstance(route,PhysicalRoute) for route in model.routes):
         validate_model(model)
     schedules = (
@@ -1112,8 +1122,8 @@ def _entity_primitives(
     elif isinstance(entity, PhysicalRoute):
         from .route_arcs import physical_plan_primitives
         if view_type != "plan":
-            raise ValueError("physical route DrawingViews support explicit horizontal XY plans only")
-        result.extend(physical_plan_primitives(entity,frame,bounds))
+            raise ValueError("physical route DrawingViews support explicit XY plans only")
+        result.extend(physical_plan_primitives(entity,frame,bounds,depth_interval=depth_interval))
     elif isinstance(entity, Route):
         fragments3 = (
             clip_polyline_depth(
@@ -1423,9 +1433,12 @@ def _plan_entities(model: BuildingModel, level_id: str, *, min_z: float, max_z: 
             # Real clipping below admits every traversed story, including an
             # intermediate story with neither endpoint and an out-and-back run.
             return True
+        from .route_arcs import physical_story_segments
         result.extend(item for item in model.routes if
             level_admitted(item) and
-            (min_z <= item.joints[0].position.z <= max_z and _route_level_id(model,item) in {None,level_id} if isinstance(item,PhysicalRoute)
+            (bool(physical_story_segments(item,min_z,max_z)) and
+             (route_level_policy=='traversed_stories' or len({joint.position.z for joint in item.joints})>1 or
+              _route_level_id(model,item) in {None,level_id}) if isinstance(item,PhysicalRoute)
              else _polyline_z_overlap(item.centerline,min_z,max_z)))
         route_ids = {item.id for item in result if isinstance(item, Route)}
         result.extend(item for item in model.route_fittings if item.route_id in route_ids and
@@ -1524,6 +1537,15 @@ def _auto_bounds(
 ) -> Bounds2:
     points: list[Point2] = []
     for entity in entities:
+        if isinstance(entity, PhysicalRoute) and depth_interval is not None:
+            from .route_arcs import physical_story_segments
+            fragments=physical_story_segments(entity,depth_interval[0]+frame.origin.z,depth_interval[1]+frame.origin.z)
+            # Cardinal quarter arcs are monotone in each varying coordinate;
+            # their clipped endpoints are their exact projected extrema. Never
+            # inherit joints belonging exclusively to another story.
+            for segment,fact,start,end,center in fragments:
+                points.extend((frame.project(start)[0],frame.project(end)[0]))
+            continue
         if isinstance(entity, Route) and depth_interval is not None:
             fragments = clip_polyline_depth(
                 entity.centerline.points,
@@ -1548,6 +1570,10 @@ def _label_anchor(
     depth_interval: tuple[float, float] | None = None,
 ) -> Point2 | None:
     if isinstance(entity, PhysicalRoute):
+        if depth_interval is not None:
+            from .route_arcs import physical_story_segments
+            fragments=physical_story_segments(entity,depth_interval[0]+frame.origin.z,depth_interval[1]+frame.origin.z)
+            return frame.project(fragments[0][2])[0] if fragments else None
         return frame.project(entity.joints[0].position)[0]
     if isinstance(entity, Wall):
         points, _ = project_points(frame, entity.centerline.points)

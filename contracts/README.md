@@ -4,6 +4,9 @@
 opt-in, source-bound sizing-provider proposal. They do not change the canonical
 model or enable a provider by default. See [circuit sizing provider](../docs/circuit-sizing-provider.md).
 
+`sizing-preview-v1.schema.json` describes an unauthenticated, unapplied,
+source-bound comparison. See [sizing preview](../docs/circuit-sizing-preview.md).
+
 Canonical serialized contracts live here. Do not create competing workstream-local schemas.
 
 ## Current contract

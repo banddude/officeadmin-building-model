@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sizing comparison preview v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "model_id",
+    "model_sha256",
+    "circuit_id",
+    "request_digest",
+    "provider",
+    "inputs",
+    "route_ids",
+    "conductors",
+    "excluded_conductors",
+    "unmatched_roles",
+    "ground_mapping_status",
+    "ground_count",
+    "ground_size_comparison",
+    "comparison_scope",
+    "comparison_status",
+    "missing_roles",
+    "expected_counts",
+    "observed_counts",
+    "existing_routes",
+    "proposed_conduit_trade_size",
+    "provider_output_authentication",
+    "applied",
+    "limitations"
+  ],
+  "properties": {
+    "version": {
+      "const": "sizing-preview-v1"
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "circuit_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "inputs": {
+      "type": "object"
+    },
+    "route_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "conductors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conductor_id",
+          "role",
+          "count",
+          "route_membership",
+          "existing_size",
+          "proposed_size",
+          "size_comparison",
+          "existing_material",
+          "proposed_material",
+          "material_comparison",
+          "existing_insulation",
+          "proposed_insulation"
+        ],
+        "properties": {
+          "conductor_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "enum": [
+              "line",
+              "neutral"
+            ]
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "route_membership": {
+            "enum": [
+              "matched",
+              "unknown"
+            ]
+          },
+          "existing_size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposed_size": {
+            "type": "string"
+          },
+          "size_comparison": {
+            "enum": [
+              "same",
+              "different",
+              "unknown"
+            ]
+          },
+          "existing_material": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposed_material": {
+            "enum": [
+              "cu",
+              "al"
+            ]
+          },
+          "material_comparison": {
+            "enum": [
+              "same",
+              "different",
+              "unknown"
+            ]
+          },
+          "existing_insulation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposed_insulation": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "excluded_conductors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "conductor_id",
+          "role",
+          "count",
+          "route_membership",
+          "existing_size",
+          "existing_material"
+        ],
+        "properties": {
+          "conductor_id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "route_membership": {
+            "enum": [
+              "matched",
+              "unknown"
+            ]
+          },
+          "existing_size": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "existing_material": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "unmatched_roles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ground_mapping_status": {
+      "enum": [
+        "present_unverified",
+        "missing",
+        "count_mismatch",
+        "existing_not_in_proposal",
+        "not_requested"
+      ]
+    },
+    "ground_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ground_size_comparison": {
+      "enum": [
+        "same",
+        "different",
+        "unknown",
+        null
+      ]
+    },
+    "comparison_scope": {
+      "const": "line_neutral_size_material_and_ground_size_only"
+    },
+    "comparison_status": {
+      "enum": [
+        "unresolved",
+        "differences_found",
+        "matches_in_scope"
+      ]
+    },
+    "missing_roles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "observed_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "existing_routes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "proposed_conduit_trade_size": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider_output_authentication": {
+      "const": "not_verified"
+    },
+    "applied": {
+      "const": false
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

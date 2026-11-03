@@ -162,6 +162,8 @@ def _size_circuit(model_id, model_sha256, circuit_id, solver_input, provider):
         raise ValueError('partial response requires explicit proposed sizes')
     if result['status'] == 'partial':
         outcome = result['result']
+        if solver_input['material'] == 'al' and outcome['wire_size'] == '14':
+            raise ValueError('provider returned unsupported aluminum conductor size')
         drop = outcome.get('voltage_drop_percent')
         multiplier = math.sqrt(3) if solver_input['phase'] == 3 else 1
         expected_operating = solver_input.get('load_amps') or solver_input['load_va'] / (solver_input['voltage_v'] * multiplier)
@@ -195,6 +197,8 @@ def size_model_circuit(model, circuit_id, design_inputs, provider):
         'ground_size_supplied':response['inputs'].get('egc_size') if response['inputs'].get('egc') else None, 'ground_size_verified':False,
         'applied':False,
     }
+    if not circuit.route_ids:
+        response.setdefault('limitations', []).append('No route is mapped; any conduit suggestion is circuit-level only.')
     _RESPONSE.validate(response)
     return response
 

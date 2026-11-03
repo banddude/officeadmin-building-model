@@ -87,6 +87,12 @@ def test_provider_cannot_return_unrecognized_size_or_wrong_current(model, settin
         return response
     with pytest.raises(ValueError, match='partial response'):
         size_model_circuit(model, 'circuit:evse', settings, bad_current)
+    def bad_aluminum(request):
+        response = fake_provider(request)
+        response['result']['wire_size'] = '14'
+        return response
+    with pytest.raises(ValueError, match='aluminum'):
+        size_model_circuit(model, 'circuit:evse', {**settings, 'material':'al'}, bad_aluminum)
 
 def test_invalid_topology_is_rejected_before_provider(model, settings):
     with pytest.raises(ValueError, match='poles|hot conductor'):
@@ -115,6 +121,12 @@ def test_poles_do_not_silently_supply_hot_count(model, settings):
     def never(_): raise AssertionError('provider should not run')
     out = size_model_circuit(model, 'circuit:evse', settings, never)
     assert out['status'] == 'unresolved'
+
+def test_circuit_without_route_does_not_claim_a_mapped_raceway(model, settings):
+    no_route = replace(model, circuits=(replace(model.circuits[0], route_ids=()),))
+    out = size_model_circuit(no_route, 'circuit:evse', settings, fake_provider)
+    assert out['target_mapping']['route_ids'] == []
+    assert any('No route is mapped' in x for x in out['limitations'])
 
 def test_route_length_and_shared_route_fail_closed(model, settings):
     feet, route = single_route_length_ft(model, 'circuit:evse')

@@ -19,7 +19,7 @@
         "egc_size": {"enum": ["14", "12", "10", "8", "6", "4", "3", "2", "1", "1/0", "2/0", "3/0", "4/0", "250", "300", "350", "400", "500", "600", "700", "750", "900", "1000"]}, "temp_rating_c": {"enum": [60, 75, 90]},
         "termination_rating_c": {"enum": [60, 75]}, "ambient_c": {"type": "number"},
         "conduit_type": {"enum": ["emt", "rmc", "imc", "pvc40", "pvc80"]},
-        "length_ft": {"type": "number", "exclusiveMinimum": 0}, "length_basis": {"enum": ["model_centerline", "user_supplied"]}, "source_route_id": {"type": "string", "minLength": 1}, "length_evidence": {"type": "object", "required": ["confidence", "provenance"], "properties": {"confidence": {"type": "number", "minimum": 0, "maximum": 1}, "provenance": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": false}, "continuous": {"type": "boolean"},
+        "length_ft": {"type": "number", "exclusiveMinimum": 0}, "length_basis": {"enum": ["model_centerline", "user_supplied"]}, "source_route_id": {"type": "string", "minLength": 1}, "length_evidence": {"type": "object", "required": ["confidence", "provenance"], "properties": {"confidence": {"type": "number", "minimum": 0, "maximum": 1}, "provenance": {"type": "array", "items": {"type": "object"}}}, "additionalProperties": false}, "continuous": {"type": "boolean", "description": "Applies to the entire supplied load; mixed portions are not separately modeled."},
         "parallel_sets": {"type": "integer", "minimum": 1}, "current_carrying_count": {"type": "integer", "minimum": 1}, "hot_conductor_count": {"enum": [1, 2, 3]}, "sole_circuit_in_raceway": {"type": "boolean"},
         "vd_limit_pct": {"type": "number", "exclusiveMinimum": 0}
       },

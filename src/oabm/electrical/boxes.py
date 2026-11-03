@@ -155,7 +155,7 @@ def select_electrical_boxes(
             box_id = stable_id("electrical-box", f"{model.model_id}:{intent.intent_id}")
             claim_paths = ("product", "box_type", "size") + (("listed_volume_m3",) if entry.listed_volume_m3 is not None else ())
             catalog_records = tuple(replace(p, scope_paths=p.scope_paths or claim_paths,
-                attributes={**p.attributes, "consumed_catalog_entry": _portable(entry)}) for p in entry.provenance)
+                attributes={**_portable(p)["attributes"], "consumed_catalog_entry": _portable(entry)}) for p in entry.provenance)
             box_intent_record = replace(intent_record, scope_paths=(
                 "intent_id", "pose", "host_id", "mounting", "occupant_ids"))
             host_level_record = Provenance(

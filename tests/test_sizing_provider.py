@@ -56,6 +56,7 @@ def test_non_partial_provider_cannot_smuggle_a_size(model, settings):
 
 @pytest.mark.parametrize('changes', [
     {'parallel_sets':2}, {'sole_circuit_in_raceway':False},
+    {'current_carrying_count':4},
     {'egc_same_insulation_as_phase':False}, {'location_condition':'wet'},
     {'insulation':'thw', 'temp_rating_c':90}, {'ambient_c':90},
     {'neutral':True, 'neutral_same_size_as_phase':True},

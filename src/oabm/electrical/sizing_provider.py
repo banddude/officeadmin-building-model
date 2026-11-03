@@ -128,6 +128,7 @@ def _size_circuit(model_id, model_sha256, circuit_id, solver_input, provider):
     unsupported = (
         solver_input['parallel_sets'] != 1
         or not solver_input['sole_circuit_in_raceway']
+        or solver_input['current_carrying_count'] != minimum_ccc
         or (solver_input['phase'] == 3 and not solver_input['balanced_three_phase'])
         or (solver_input['phase'] == 1 and solver_input['hot_conductor_count'] == 1 and not solver_input['neutral'])
         or (solver_input['phase'] == 1 and solver_input['hot_conductor_count'] == 2 and solver_input['neutral'])

@@ -294,3 +294,19 @@ def test_golden_manifest_version_must_match_payload(base,entry,tmp_path):
     with pytest.raises(GoldenFixtureError,match='version'):
         load_golden_model(GoldenCase(name='wrong-version',path=path,valid=True))
     assert load_golden_model(GoldenCase(name='version-1.1',path=path,valid=True,schema_version='1.1.0')).electrical_boxes
+
+
+def test_catalog_nested_evidence_is_detached_in_both_directions(base, entry):
+    evidence = {'document': {'revision': 'A', 'pages': [3]}}
+    catalog = replace(entry, provenance=(replace(entry.provenance[0], attributes=evidence),))
+    model = selected(base, catalog)
+    captured = model.to_json()
+    evidence['document']['revision'] = 'B'
+    evidence['document']['pages'][0] = 4
+    assert model.to_json() == captured
+    record = model.electrical_boxes[0].provenance[1]
+    assert record.attributes['document'] == {'revision': 'A', 'pages': [3]}
+    assert record.attributes['consumed_catalog_entry']['provenance'][0]['attributes']['document'] == {'revision': 'A', 'pages': [3]}
+    record.attributes['document']['pages'].append(5)
+    assert evidence['document']['pages'] == [4]
+    assert record.attributes['consumed_catalog_entry']['provenance'][0]['attributes']['document']['pages'] == [3]

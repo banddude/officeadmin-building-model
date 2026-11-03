@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manual intake source coverage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "intake_request_sha256",
+    "candidate_model_sha256",
+    "strict",
+    "coverage",
+    "source_authentication",
+    "registration",
+    "applied_to_original",
+    "limitations"
+  ],
+  "properties": {
+    "version": {
+      "const": "manual-intake-coverage-v1"
+    },
+    "intake_request_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "candidate_model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "strict": {
+      "type": "boolean"
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "source_sha256",
+        "inventory_sha256",
+        "model_sha256",
+        "rows"
+      ],
+      "properties": {
+        "version": {
+          "const": "1.0.0"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "inventory_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "model_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2000,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_id",
+                  "status",
+                  "canonical_ids"
+                ],
+                "properties": {
+                  "source_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "const": "mapped"
+                  },
+                  "canonical_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_id",
+                  "status",
+                  "omission_reason"
+                ],
+                "properties": {
+                  "source_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "const": "omitted"
+                  },
+                  "omission_reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_id",
+                  "status"
+                ],
+                "properties": {
+                  "source_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "status": {
+                    "const": "unresolved"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "source_authentication": {
+      "const": "not_verified"
+    },
+    "registration": {
+      "const": "not_verified"
+    },
+    "applied_to_original": {
+      "const": false
+    },
+    "limitations": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "const": "Manually supplied source IDs may be incomplete; the source is hashed, not parsed."
+        },
+        {
+          "const": "Mappings are derived from user-supplied intake, not independently verified observations."
+        },
+        {
+          "const": "Source authenticity, registration, field conditions and code compliance are not verified."
+        },
+        {
+          "const": "The report is bound to the intake candidate; later model changes require a fresh audit."
+        },
+        {
+          "const": "The source path may change during or after reading; the hash identifies only the bytes read."
+        }
+      ],
+      "minItems": 5,
+      "maxItems": 5,
+      "items": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "strict": {
+            "const": true
+          }
+        },
+        "required": [
+          "strict"
+        ]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "rows": {
+                "items": {
+                  "not": {
+                    "properties": {
+                      "status": {
+                        "const": "unresolved"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

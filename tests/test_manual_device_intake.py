@@ -139,3 +139,15 @@ def test_unresolved_id_colliding_with_nested_physical_route_owner_rejected():
     base=replace(make_physical_model(),levels=(Level(id='level:ground',elevation_m=0),))
     row={'source_item_id':'item:nested','device_id':base.routes[0].joints[0].id}
     with pytest.raises(ValueError):run(base,[row])
+
+
+def test_integral_float_quantity_uses_same_normalized_request_and_result():
+    model=fixture_model();integer=item(1);floating=copy.deepcopy(integer);floating['quantity']=1.0
+    a,ar=run(model,[integer]);b,br=run(model,[floating])
+    assert ar['request_sha256']==br['request_sha256'] and a.to_json()==b.to_json()
+
+
+def test_tuple_items_rejected_even_with_equivalent_list_digest():
+    model=fixture_model();args={'request_id':'request:synthetic','source_sha256':'a'*64,'base_model_sha256':model_fingerprint(model),'frame_id':'model','items':[item(1)]}
+    digest=manual_intake_request_sha256(**args);args['items']=tuple(args['items'])
+    with pytest.raises(ValueError):admit_manual_devices(model,**args,request_sha256=digest)

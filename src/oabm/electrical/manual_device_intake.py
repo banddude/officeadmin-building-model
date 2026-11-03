@@ -63,8 +63,10 @@ def admit_manual_devices(model, *, request_id, source_sha256, base_model_sha256,
     if not isinstance(source_sha256,str) or re.fullmatch(r'[0-9a-f]{64}',source_sha256) is None:raise ValueError('source hash required')
     try:
         base=capture(model,byte_limit=SOURCE_BYTES)
-        rows=capture(items,byte_limit=CANDIDATE_BYTES)
-    except VerificationStop as exc:raise ValueError('invalid or oversized intake') from exc
+        captured_rows=capture(items,byte_limit=CANDIDATE_BYTES)
+        if not isinstance(captured_rows,list):raise ValueError('intake items must be a list')
+        rows=_portable_json(captured_rows)
+    except (VerificationStop,TypeError,ValueError,RecursionError) as exc:raise ValueError('invalid or oversized intake') from exc
     validate_model(base)
     base_hash=model_fingerprint(base)
     expected=manual_intake_request_sha256(request_id=request_id,source_sha256=source_sha256,base_model_sha256=base_model_sha256,frame_id=frame_id,items=rows)

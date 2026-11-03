@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Unverified preliminary manual design receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "decision_id",
+    "decision_sha256",
+    "base_model_sha256",
+    "intake_request_sha256",
+    "candidate_model_sha256",
+    "designed_model_sha256",
+    "unresolved_items",
+    "device_ids",
+    "source_observed",
+    "applied_to_original",
+    "decision_authentication",
+    "limitations",
+    "equipment_id",
+    "source_port_id",
+    "new_circuit_ids",
+    "new_route_ids"
+  ],
+  "properties": {
+    "version": {
+      "const": "manual-preliminary-design-v1"
+    },
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "decision_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "base_model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "intake_request_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "candidate_model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "designed_model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "unresolved_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_item_id",
+          "status",
+          "reason",
+          "missing_fields"
+        ],
+        "properties": {
+          "source_item_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "status": {
+            "const": "unresolved"
+          },
+          "reason": {
+            "enum": [
+              "missing_explicit_fields",
+              "individual_placement_required"
+            ]
+          },
+          "missing_fields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "device_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "source_observed": {
+      "const": false
+    },
+    "applied_to_original": {
+      "const": false
+    },
+    "decision_authentication": {
+      "const": "not_verified"
+    },
+    "limitations": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "const": "Preliminary user-supplied design, not source observation or engineering approval."
+        },
+        {
+          "const": "Source authenticity, registration, inventory completeness, clearance, electrical sizing and code compliance are not verified."
+        },
+        {
+          "const": "Existing panel circuiting is refused; no automatic replacement is allowed."
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3,
+      "items": false
+    },
+    "equipment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "source_port_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "new_circuit_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "new_route_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    }
+  }
+}

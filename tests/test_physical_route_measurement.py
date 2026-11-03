@@ -16,7 +16,7 @@ def test_straight_is_bound_and_never_applied():
     model=with_circuit(make_physical_model()); before=model.to_json()
     result=measure_single_physical_route(model,'circuit:synthetic')
     assert result['one_way_centerline_feet_upper'] >= 2/.3048
-    assert result['model_hash_scope']=='canonical_json_snapshot_utf8'
+    assert result['model_hash_scope']=='normalized_typed_model_json_utf8_v1'
     assert result['source_context_status']==result['clearance_status']=='unverified' and result['applied'] is False
     assert result['geometry'][0]['length_ticks']==2_000_000_000
     assert model.to_json()==before
@@ -133,3 +133,13 @@ def test_cli_rejects_malformed_duplicate_offgrid_and_oversized_without_echo(tmp_
     with path.open('wb') as f:f.truncate(32*1024*1024+1)
     assert main(['--model',str(path),'--circuit','circuit:synthetic'])==2
     out=capsys.readouterr();assert out.out=='' and 'measurement failed' in out.err
+
+
+def test_model_snapshot_hash_is_stable_after_save_and_reopen():
+    from oabm.model import BuildingModel
+    model = with_circuit(make_physical_model())
+    reopened = BuildingModel.from_json(model.to_json(indent=None))
+    reopened_twice = BuildingModel.from_json(reopened.to_json(indent=None))
+    measured = [measure_single_physical_route(m,'circuit:synthetic') for m in (model,reopened,reopened_twice)]
+    assert len({x['model_sha256'] for x in measured}) == 1
+    assert all(x['model_hash_scope'] == 'normalized_typed_model_json_utf8_v1' for x in measured)

@@ -31,6 +31,11 @@ def _capture_physical_measurement(model, circuit_id):
         captured = capture(model, byte_limit=SOURCE_BYTES)
         snapshot = bounded_source_json(captured.to_json(indent=None))
         detached = BuildingModel.from_json(snapshot)
+        # Normalize typed model fields before hashing. Constructor-created
+        # integer coordinates and parsed floats must have the same identity.
+        snapshot = bounded_source_json(detached.to_json(indent=None))
+        if BuildingModel.from_json(snapshot).to_json(indent=None) != snapshot:
+            raise ValueError('normalized model snapshot is not stable')
     except VerificationStop as exc:
         raise ValueError('invalid or oversized model snapshot') from exc
     circuits = [c for c in detached.circuits if c.id == circuit_id]
@@ -62,7 +67,7 @@ def _capture_physical_measurement(model, circuit_id):
     result = {
         'version':'physical-route-measurement-v1','purpose':'geometric_measurement_only',
         'model_id':detached.model_id,'model_sha256':hashlib.sha256(snapshot.encode('utf-8')).hexdigest(),
-        'model_hash_scope':'canonical_json_snapshot_utf8',
+        'model_hash_scope':'normalized_typed_model_json_utf8_v1',
         'circuit_id':circuit.id,'route_id':route.id,'route_type':route.route_type,
         'frame_id':route.context.coordinate_frame_id,'start_port_id':route.start_port_id,'end_port_id':route.end_port_id,
         'declared_source_model_sha256':route.context.source_model_sha256,

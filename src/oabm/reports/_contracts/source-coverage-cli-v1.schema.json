@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Source coverage CLI output",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inventory_sha256",
+        "model_sha256",
+        "entries"
+      ],
+      "properties": {
+        "inventory_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "model_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "entries": {
+          "const": []
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "strict",
+        "report",
+        "limitations"
+      ],
+      "properties": {
+        "version": {
+          "const": "source-coverage-cli-v1"
+        },
+        "strict": {
+          "type": "boolean"
+        },
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "source_sha256",
+            "inventory_sha256",
+            "model_sha256",
+            "rows"
+          ],
+          "properties": {
+            "version": {
+              "const": "1.0.0"
+            },
+            "source_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "inventory_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "model_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "rows": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2000,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "source_id",
+                      "status",
+                      "canonical_ids"
+                    ],
+                    "properties": {
+                      "source_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "const": "mapped"
+                      },
+                      "canonical_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "source_id",
+                      "status",
+                      "omission_reason"
+                    ],
+                    "properties": {
+                      "source_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "const": "omitted"
+                      },
+                      "omission_reason": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "source_id",
+                      "status"
+                    ],
+                    "properties": {
+                      "source_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "const": "unresolved"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "Source IDs are supplied manually; source completeness and extraction are not verified."
+            },
+            {
+              "const": "Mappings and omissions are reviewer assertions, not independently verified."
+            },
+            {
+              "const": "Strict mode rejects unresolved inventoried IDs but permits explicit omissions."
+            },
+            {
+              "const": "This report does not establish design, safety, or code compliance."
+            }
+          ],
+          "minItems": 4,
+          "maxItems": 4,
+          "items": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "strict": {
+                "const": true
+              }
+            },
+            "required": [
+              "strict"
+            ]
+          },
+          "then": {
+            "properties": {
+              "report": {
+                "properties": {
+                  "rows": {
+                    "items": {
+                      "not": {
+                        "properties": {
+                          "status": {
+                            "const": "unresolved"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

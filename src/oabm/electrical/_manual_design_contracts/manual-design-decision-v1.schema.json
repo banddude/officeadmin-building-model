@@ -1,0 +1,329 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit manual preliminary design decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision_id",
+    "candidate_model_sha256",
+    "intake_request_sha256",
+    "equipment_id",
+    "source_port_id",
+    "groups",
+    "load_ports",
+    "rules",
+    "routing_controls",
+    "allowed_domain"
+  ],
+  "properties": {
+    "decision_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "candidate_model_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "intake_request_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "equipment_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "source_port_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "groups": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "maxItems": 4
+      }
+    },
+    "load_ports": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "maxProperties": 4
+    },
+    "rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_devices_per_circuit",
+        "assumed_voltage_v",
+        "assumed_poles",
+        "route_type",
+        "nominal_diameter_m",
+        "conductor_material",
+        "conductor_size",
+        "insulated_conductor_count",
+        "include_ground"
+      ],
+      "properties": {
+        "max_devices_per_circuit": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "assumed_voltage_v": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "assumed_poles": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "route_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "nominal_diameter_m": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "conductor_material": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "conductor_size": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "insulated_conductor_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "include_ground": {
+          "type": "boolean"
+        }
+      }
+    },
+    "routing_controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bend_penalty_m",
+        "port_stub_m",
+        "clearance_m",
+        "search_margin_m",
+        "corridor_tolerance_m",
+        "bundle_alignment_tolerance_m",
+        "preferred_corridor_discount",
+        "surface_path_discount",
+        "glazed_wall_penalty",
+        "soft_obstacle_penalty_factor",
+        "vertical_cost_factor",
+        "max_bends",
+        "coordinate_precision"
+      ],
+      "properties": {
+        "bend_penalty_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "port_stub_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "clearance_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "search_margin_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "corridor_tolerance_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "bundle_alignment_tolerance_m": {
+          "type": "number",
+          "minimum": 0
+        },
+        "preferred_corridor_discount": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "surface_path_discount": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "glazed_wall_penalty": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "soft_obstacle_penalty_factor": {
+          "type": "number",
+          "minimum": 0
+        },
+        "vertical_cost_factor": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_bends": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coordinate_precision": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 12
+        }
+      }
+    },
+    "allowed_domain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "volumes",
+        "source_ids"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "volumes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pose",
+              "size"
+            ],
+            "properties": {
+              "pose": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "position",
+                  "rotation"
+                ],
+                "properties": {
+                  "position": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y",
+                      "z"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "z": {
+                        "type": "number"
+                      }
+                    }
+                  },
+                  "rotation": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y",
+                      "z",
+                      "w"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "z": {
+                        "type": "number"
+                      },
+                      "w": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                }
+              },
+              "size": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ],
+                "properties": {
+                  "x": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "y": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "z": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "source_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "maxItems": 128
+        }
+      }
+    }
+  }
+}

@@ -1,11 +1,13 @@
 """Synthetic provider contracts; no result is an approved electrical design."""
 import json
+import shutil
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from oabm.electrical.sizing_provider import request_from_model, single_route_length_ft, size_model_circuit
+from oabm.electrical.sizing_provider import request_digest, request_from_model, request_payload, single_route_length_ft, size_model_circuit
 from oabm.model import BuildingModel
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +21,7 @@ def settings():
     return {'phase':1,'continuous':True,'material':'cu','insulation':'thhn','location_condition':'dry','parallel_sets':1,'neutral':False,'neutral_is_ccc':False,'egc':True,'egc_size':'10','egc_same_insulation_as_phase':True,'temp_rating_c':90,'termination_rating_c':75,'ambient_c':30,'conduit_type':'emt','current_carrying_count':2,'hot_conductor_count':2,'sole_circuit_in_raceway':True,'length_ft':50,'length_basis':'user_supplied','vd_limit_pct':3}
 
 def fake_provider(request):
-    return {'version':'sizing-result-v1','provider':{'name':'synthetic','version':'1'},'purpose':'proposed_only','model_id':request['model_id'],'model_sha256':request['model_sha256'],'circuit_id':request['circuit_id'],'request_digest':request['request_digest'],'inputs':request['inputs'],'status':'partial','limitations':['Synthetic provider only.'],'result':{'operating_amps':40,'design_amps':50,'wire_size':'8','conduit_trade_size':'1/2','voltage_drop_percent':1.0,'violations':[],'unsupported_reason':None}}
+    return {'version':'sizing-result-v1','provider':{'name':'synthetic','version':'1'},'purpose':'proposed_only','model_id':request['model_id'],'model_sha256':request['model_sha256'],'circuit_id':request['circuit_id'],'request_digest':request['request_digest'],'request_payload':request['request_payload'],'inputs':request['inputs'],'status':'partial','limitations':['Synthetic provider only.'],'result':{'operating_amps':40,'design_amps':50,'wire_size':'8','conduit_trade_size':'1/2','voltage_drop_percent':1.0,'violations':[],'unsupported_reason':None}}
 
 def test_contract_maps_proposal_and_preserves_original_model(model, settings):
     before = model.to_json()
@@ -45,6 +47,33 @@ def test_provider_cannot_mutate_evidence_or_return_wrong_binding(model, settings
     with pytest.raises(ValueError, match='mismatched'):
         size_model_circuit(model, 'circuit:evse', settings, tamper)
     assert json.dumps(settings, sort_keys=True) == before
+
+def test_provider_cannot_replace_boolean_with_equal_integer(model, settings):
+    def tamper(request):
+        response = fake_provider(request)
+        response['inputs']['continuous'] = 1
+        return response
+    with pytest.raises(ValueError, match='mismatched'):
+        size_model_circuit(model, 'circuit:evse', settings, tamper)
+
+def test_provider_must_echo_exact_payload(model, settings):
+    def tamper(request):
+        response = fake_provider(request)
+        response['request_payload'] = response['request_payload'] + ' '
+        return response
+    with pytest.raises(ValueError, match='mismatched'):
+        size_model_circuit(model, 'circuit:evse', settings, tamper)
+
+def test_exact_payload_survives_javascript_json_roundtrip():
+    if not shutil.which('node'):
+        pytest.skip('Node is not installed')
+    body = {'fraction':1e-7, 'small':1e-6, 'integral':1.0, 'negative_zero':-0.0, 'max_safe':2**53-1, 'unicode':{'😀':'x', '\ue000':'y'}, 'flag':True}
+    payload = request_payload(body)
+    wire = subprocess.run(['node','-e','let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>console.log(JSON.stringify(JSON.parse(s))))'], input=payload, text=True, capture_output=True, check=True).stdout
+    assert request_payload(json.loads(wire)) == payload
+    assert request_digest(json.loads(wire)) == request_digest(body)
+    with pytest.raises(ValueError, match='interoperable'):
+        request_payload({'too_large':2**53})
 
 def test_non_partial_provider_cannot_smuggle_a_size(model, settings):
     def bad(request):

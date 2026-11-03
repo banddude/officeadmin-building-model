@@ -1,7 +1,6 @@
 """Explicit, opt-in circuit sizing provider boundary. Never applies a design."""
 import hashlib, json, math
 from importlib.resources import files
-from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from jsonschema import Draft202012Validator, ValidationError
 from oabm.model import BuildingModel, Circuit, Route
@@ -9,6 +8,32 @@ from oabm.model import BuildingModel, Circuit, Route
 _SCHEMAS = files('oabm.electrical._sizing_contracts')
 _REQUEST = Draft202012Validator(json.loads(_SCHEMAS.joinpath('sizing-request-v1.schema.json').read_text()))
 _RESPONSE = Draft202012Validator(json.loads(_SCHEMAS.joinpath('sizing-result-v1.schema.json').read_text()))
+
+def _portable_json(value):
+    """Normalize JSON numbers for Python/JavaScript round trips; reject unsafe integers."""
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        if abs(value) > 2**53 - 1:
+            raise ValueError('integer is outside the interoperable JSON range')
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value) or abs(value) > 2**53 - 1:
+            raise ValueError('number is outside the interoperable JSON range')
+        return int(value) if value.is_integer() else value
+    if isinstance(value, (tuple, list)):
+        return [_portable_json(item) for item in value]
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return {key:_portable_json(item) for key,item in value.items()}
+    raise ValueError('value is not interoperable JSON')
+
+def request_payload(body):
+    """Exact UTF-8 JSON text to be echoed, not a cross-language canonicalization rule."""
+    return json.dumps(_portable_json(body), sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
+
+def request_digest(body):
+    """Correlation digest of the exact payload text, not authentication."""
+    return hashlib.sha256(request_payload(body).encode()).hexdigest()
 
 def request_from_canonical(circuit, design_inputs):
     """Map a canonical Circuit only; caller must validate its model references."""
@@ -103,16 +128,18 @@ def single_route_length_ft(model, circuit_id):
     return length_m / 0.3048, r.id
 
 def _size_circuit(model_id, model_sha256, circuit_id, solver_input, provider):
+    solver_input = _portable_json(solver_input)
     body = {'version': 'sizing-request-v1', 'purpose':'proposed_only', 'model_id':model_id, 'model_sha256':model_sha256, 'circuit_id': circuit_id, 'inputs': solver_input}
-    digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
-    request = {**body, 'request_digest': digest}
+    payload = request_payload(body)
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    request = {**body, 'request_digest': digest, 'request_payload':payload}
     errors = list(_REQUEST.iter_errors(request))
     if errors:
         missing = [e.message for e in errors if e.validator == 'required']
         if not any(k in solver_input for k in ('load_amps', 'load_va')):
             missing.append('load_amps or load_va is required')
         if missing and all(e.validator in ('required', 'anyOf') for e in errors):
-            return {'version':'sizing-result-v1', 'purpose':'proposed_only', 'model_id':model_id, 'model_sha256':model_sha256, 'circuit_id':circuit_id, 'request_digest':digest, 'inputs':solver_input, 'status':'unresolved', 'missing':missing}
+            return {'version':'sizing-result-v1', 'purpose':'proposed_only', 'model_id':model_id, 'model_sha256':model_sha256, 'circuit_id':circuit_id, 'request_digest':digest, 'request_payload':payload, 'inputs':solver_input, 'status':'unresolved', 'missing':missing}
         locations = sorted({'.'.join(str(part) for part in e.absolute_path) or 'request' for e in errors})
         raise ValueError('invalid sizing request at: ' + ', '.join(locations))
     if solver_input['neutral_is_ccc'] and not solver_input['neutral']:
@@ -143,7 +170,7 @@ def _size_circuit(model_id, model_sha256, circuit_id, solver_input, provider):
         or solver_input['ambient_c'] >= solver_input['temp_rating_c']
     )
     if unsupported:
-        return {'version':'sizing-result-v1', 'purpose':'proposed_only', 'model_id':model_id, 'model_sha256':model_sha256, 'circuit_id':circuit_id, 'request_digest':digest, 'inputs':solver_input, 'status':'unsupported', 'limitations':['This boundary does not represent all required details for the selected circuit arrangement.']}
+        return {'version':'sizing-result-v1', 'purpose':'proposed_only', 'model_id':model_id, 'model_sha256':model_sha256, 'circuit_id':circuit_id, 'request_digest':digest, 'request_payload':payload, 'inputs':solver_input, 'status':'unsupported', 'limitations':['This boundary does not represent all required details for the selected circuit arrangement.']}
     # Copy the request: an in-process provider must not mutate the caller's
     # inputs or the evidence used to verify its response.
     request_copy = json.loads(json.dumps(request, allow_nan=False))
@@ -157,7 +184,8 @@ def _size_circuit(model_id, model_sha256, circuit_id, solver_input, provider):
         raise ValueError('invalid provider response') from None
     if 'provider' not in result:
         raise ValueError('provider must identify itself and its version')
-    if result.get('model_id') != model_id or result.get('model_sha256') != model_sha256 or result.get('circuit_id') != circuit_id or result.get('request_digest') != digest or result.get('inputs') != solver_input:
+    echoed_body = {'version':'sizing-request-v1', 'purpose':result.get('purpose'), 'model_id':result.get('model_id'), 'model_sha256':result.get('model_sha256'), 'circuit_id':result.get('circuit_id'), 'inputs':result.get('inputs')}
+    if result.get('request_digest') != digest or result.get('request_payload') != payload or request_payload(echoed_body) != payload:
         raise ValueError('provider returned a mismatched circuit or request')
     if result['status'] != 'partial' and any((result.get('result') or {}).get(k) is not None for k in ('wire_size', 'conduit_trade_size', 'voltage_drop_percent')):
         raise ValueError('non-partial response cannot include proposed sizes or voltage drop')

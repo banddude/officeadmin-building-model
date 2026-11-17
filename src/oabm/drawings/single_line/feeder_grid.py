@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import replace
 from .layout import wrap_mm
 from ..model import DrawingSet,DrawingSchedule,ScheduleColumn,ScheduleRow,SourceReference,SourceProvenance
-from .drafting_facts import protection_label,status_tag
+from .drafting_facts import protection_label,status_tag,is_submittal
 
 
 def paginate_feeder_grid(topology,connection_ids,bounds_mm, *, sheet_id,width_mm,height_mm):
@@ -20,9 +20,13 @@ def paginate_feeder_grid(topology,connection_ids,bounds_mm, *, sheet_id,width_mm
     tags={edge['id']:f'C{i:03d}' for i,edge in enumerate(topology.connections,1)}
     count={}
     for edge in topology.connections:count[edge['circuit_id']]=count.get(edge['circuit_id'],0)+1
-    columns=tuple(ScheduleColumn(key,label) for key,label in (
+    submittal=is_submittal()
+    names={row['id']:row['name'] for row in topology.equipment}
+    columns=tuple(ScheduleColumn(key,label) for key,label in ((
+        ('tag','FEEDER'),('equipment','FROM / TO'),('voltage','VOLTAGE / POLES'),
+        ('protection','PROTECTION'),('conductors','CONDUCTORS AND CONDUIT'),('notes','NOTES')) if submittal else (
         ('tag','ID / FEEDER'),('equipment','FROM / TO'),('voltage','V / POLES / PHASE'),
-        ('protection','PROTECTION'),('conductors','CONDUCTORS'),('notes','NOTES')))
+        ('protection','PROTECTION'),('conductors','CONDUCTORS'),('notes','NOTES'))))
     rows=[];bindings={}
     for identity in connection_ids:
         edge=edges[identity]
@@ -39,6 +43,12 @@ def paginate_feeder_grid(topology,connection_ids,bounds_mm, *, sheet_id,width_mm
         voltage=(f'{edge["voltage_v"]:g} V' if edge['voltage_v'] is not None else 'V UNKNOWN') if kind=='power' else kind.upper()
         if kind=='power':voltage+=f' / {edge["poles"] if edge["poles"] is not None else "?"}P / {edge["phase"] or "?"}'
         notes='; '.join([*facts['notes'], 'ROUTE '+(', '.join(edge['route_ids']) or 'UNKNOWN / not supplied')])
+        if submittal:
+            label=(status_tag(facts['status'])+' '+(edge.get('circuit_name') or tags[identity])).strip()
+            rows.append(ScheduleRow(source,(label,names[edge['source_id']]+' to '+names[edge['load_id']],voltage.replace(' / ?','').replace('V UNKNOWN','-'),
+                protection_label(facts) if facts['protection'] is not None else '-',
+                '; '.join(facts['notes']) or '-', '-')))
+            continue
         rows.append(ScheduleRow(source,(tags[identity]+' / '+circuit_label,
             status_tag(facts['status'])+' '+edge['source_id']+' / '+source_port+' ('+edge['source_role']+') -> '+edge['load_id']+' / '+load_port+' ('+edge['load_role']+')'+('\nSUPPLIED LABEL: '+edge['circuit_number'] if edge.get('circuit_number') is not None else ''),voltage,
             protection_label(facts) if kind=='power' else 'NOT A PHASE FEEDER',edge['conductor_specification'],notes)))
@@ -47,7 +57,7 @@ def paginate_feeder_grid(topology,connection_ids,bounds_mm, *, sheet_id,width_mm
         entity=entry['entity']
         records=tuple(SourceProvenance(p['source_kind'],p['source_id'],p.get('source_element_id'),p.get('page'),p.get('method'),p.get('confidence',1),p.get('derivation')) for p in entity.get('provenance',[]))
         sources.append(SourceReference(entity['id'],entity.get('name'),entity.get('confidence',1),records))
-    drawing=DrawingSet('single-line:'+topology.model_sha256,(),(DrawingSchedule('single-line-feeders','SUPPLIED FEEDER FACTS',columns,tuple(rows)),),tuple(sources))
+    drawing=DrawingSet('single-line:'+topology.model_sha256,(),(DrawingSchedule('single-line-feeders','FEEDERS' if submittal else 'SUPPLIED FEEDER FACTS',columns,tuple(rows)),),tuple(sources))
     template=SimpleNamespace(id=sheet_id,title='FEEDER SCHEDULE',width_mm=width_mm,height_mm=height_mm,drawing_bounds_mm=bounds_mm)
     usable=bounds_mm[2]-bounds_mm[0]-4.01
     fractions=(.09,.29,.12,.17,.23,.10)
@@ -83,7 +93,7 @@ def resolve_register_footer(grid,sheet_id,previous_sheet,next_sheet):
             if template is None:template=dict(node.attrib)
             root.remove(node)
     if template is None:raise ValueError('cannot locate the shared register footer text slots')
-    labels=['REGISTER '+sheet_id]
+    labels=[('SHEET ' if is_submittal() else 'REGISTER ')+sheet_id]
     links=[]
     if previous_sheet:links.append('PREV '+previous_sheet)
     if next_sheet:links.append('NEXT '+next_sheet)

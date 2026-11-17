@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 from oabm.model import BuildingModel, validate_model
-from .drafting_facts import equipment_facts,circuit_facts,feeder_labels
+from .drafting_facts import equipment_facts,circuit_facts,feeder_labels, is_submittal
 
 SUPPORTED = {'source', 'generator', 'meter', 'meter_main', 'panelboard', 'switchboard',
              'disconnect', 'transformer', 'transfer_switch', 'breaker', 'fuse',
@@ -122,6 +122,7 @@ def _project_canonical_electrical_topology(model: BuildingModel) -> Topology:
                 'wire_labels':[f'{w.count}x {w.size or "size ?"} {w.material or "material ?"} {w.role}' for w in wires],
                 'source_ids':[circuit.id,source.id,load.id,*[w.id for w in wires],*circuit.route_ids],
                 'route_ids':list(circuit.route_ids), 'conductor_ids':[w.id for w in wires]})
+            if is_submittal():connections[-1]['circuit_name']=circuit.name
     # Port-only links are not directed circuit facts. Refuse silent omission.
     undirected = {frozenset(pair) for pair in endpoint_pairs}
     for port in ports.values():

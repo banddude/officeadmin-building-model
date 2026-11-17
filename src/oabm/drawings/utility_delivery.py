@@ -103,7 +103,28 @@ def _calculation_rows(report):
     return [(identity,[identity,label,'calculation',value,', '.join(sorted(set(source_ids))),formula]) for identity,label,value,source_ids,formula in raw]
 
 
-def _load_bodies(report,template,reserved):
+def _plain_calculation_rows(report):
+    """Same exact arithmetic as _calculation_rows, in plain submittal wording."""
+    a=report['arithmetic'];g=a['group_connected_va_exact']
+    def va(value):
+        number=Fraction(value)
+        text=f'{float(number):,.2f}'.rstrip('0').rstrip('.')
+        return text+' VA'
+    first=Fraction(a['first_applied_va_exact']);factor=Fraction(a['remainder_factor_exact'])
+    rows=[('general-connected',['General connected load','General',va(report['general_connected_va_exact']),'Sum of general loads']),
+        ('first-applied',[f'First {va(a["first_threshold_va_exact"])} at 100%','General',va(first),'']),
+        ('remainder-demand',[f'Remainder at {float(factor)*100:g}%','General',va(a['remainder_demand_va_exact']),
+            f'{va(a["remainder_connected_va_exact"])} x {float(factor):g}']),
+        ('general-demand',['General demand','General',va(report['general_demand_va_exact']),f'{va(first)} + {va(a["remainder_demand_va_exact"])}']),
+        ('hvac',['HVAC at 100%','HVAC',va(g['hvac']),'']),
+        ('floor-heat',['Floor heat at 100%','Floor heat',va(g['floor_heat']),'']),
+        ('base-va',['Total calculated demand','',va(report['no_supplemental_heat_va_exact']),
+            f'{va(report["general_demand_va_exact"])} + {va(g["hvac"])} + {va(g["floor_heat"])}']),
+        ('base-current',['Demand current','',f'{report["no_supplemental_heat_a"]:.2f} A',f'{va(report["no_supplemental_heat_va_exact"])} / {_exact_number(a["voltage_v_exact"])} V'])]
+    return [(identity,values,'calculation') for identity,values in rows]
+
+
+def _load_bodies(report,template,reserved,*,submittal=False):
     """Measured, paginated source rows; no shrink-to-fit or silent truncation."""
     body_left,body_top,body_right,body_bottom=template.drawing_bounds_mm
     # The shared renderer checks actual ink, including text safety padding and
@@ -111,16 +132,29 @@ def _load_bodies(report,template,reserved):
     inset=2.
     left,top,right,bottom=body_left+inset,body_top+inset,body_right-inset,body_bottom-inset
     if right-left<=30 or bottom-top<=110:raise ContractError('load template has insufficient inset content capacity')
-    widths=[(right-left)*fraction for fraction in (.14,.20,.10,.10,.12,.24)]
-    headers=['Record ID','Calculation / supplied load','Group','Value / unit','Source ID','Numeric formula / source basis']
+    if submittal:
+        # Utility-submittal presentation: plain load table and calculation.
+        # Record IDs, source IDs, model hash and scenario sensitivity stay in
+        # the retained JSON report, not on the printed sheet.
+        widths=[(right-left)*fraction for fraction in (.40,.12,.14,.34)]
+        headers=['Load / calculation step','Group','VA / value','Basis']
+    else:
+        widths=[(right-left)*fraction for fraction in (.14,.20,.10,.10,.12,.24)]
+        headers=['Record ID','Calculation / supplied load','Group','Value / unit','Source ID','Numeric formula / source basis']
     header_lines=[_rows(value,width-4,2.5,700) for value,width in zip(headers,widths)]
     header_height=max(len(lines) for lines in header_lines)*3.7+3
     if header_height>15:raise ContractError('load column headings exceed measured header capacity')
     records=[]
-    for section,rows in (
+    groups={'general':'General','hvac':'HVAC','floor_heat':'Floor heat'}
+    sections=(
         ('NUMERIC DEMAND CALCULATION',[(identity,values,'calculation') for identity,values in _calculation_rows(report)]),
         ('SUPPLIED LOAD COMPONENTS',[(row['id'],[row['id'],row['name'],row['group'],str(row['va'])+' VA',row['source_id'],
-            row['basis']+(' [ASSUMPTION]' if row['assumption'] else '')],'component') for row in report['inputs']['components']])):
+            row['basis']+(' [ASSUMPTION]' if row['assumption'] else '')],'component') for row in report['inputs']['components']]))
+    if submittal:
+        sections=(
+            ('CONNECTED LOADS',[(row['id'],[row['name'],groups[row['group']],f"{row['va']:,} VA".replace('.0 VA',' VA'),row['basis']],'component') for row in report['inputs']['components']]),
+            ('DEMAND CALCULATION',_plain_calculation_rows(report)))
+    for section,rows in sections:
         records.append((section,None,8.,'section'))
         for identity,values,kind in rows:
             wrapped=[_rows(value,width-4,2.5) for value,width in zip(values,widths)]
@@ -143,10 +177,11 @@ def _load_bodies(report,template,reserved):
         root=ET.Element('{'+SVG+'}g');y=top+5
         def text(x,y,value,size=2.5,weight=400):
             ET.SubElement(root,'{'+SVG+'}text',x=str(x),y=str(y),**{'font-size':str(size),'font-family':'Liberation Sans','font-weight':str(weight)}).text=value
-        for line in _rows('SUPPLIED SERVICE DEMAND / SOURCE COMPONENTS',right-left,4,700):
+        for line in _rows('DWELLING LOAD CALCULATION' if submittal else 'SUPPLIED SERVICE DEMAND / SOURCE COMPONENTS',right-left,4,700):
             text(left,y,line,4,700);y+=6
         y+=1
-        summary=[f'Service owner: {report["service_node_id"]}; supplied voltage: {report["inputs"]["voltage_v"]} V',
+        summary=[f"Calculated demand: {report['no_supplemental_heat_a']:.2f} A at {report['inputs']['voltage_v']} V, 120/240V, 1 phase, 3 wire.",
+            'Method: '+report['inputs']['general_demand']['basis']+'.'] if submittal else [f'Service owner: {report["service_node_id"]}; supplied voltage: {report["inputs"]["voltage_v"]} V',
             f'No supplemental heat: {report["no_supplemental_heat_a"]:.2f} A; sensitivity: {report["sensitivity_a"]:.2f} A',
             'Demand is separate from connected circuit VA. Supplied grouping/factors/allowances; no automatic NEC or engineering approval.',
             f'Model SHA256: {report["source_model_sha256"]}',

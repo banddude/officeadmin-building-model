@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import xml.etree.ElementTree as ET
 from .layout import FONT,TEXT_MM,SMALL_TEXT_MM,TEXT_LINE_MM,wrap_mm,backbone_geometry,symbol_lane,fan_geometry,chain_feeder_geometry,transfer_input_contacts,_segments_cross,_paper_clear_segment
-from .drafting_facts import status_tag,protection_label
+from .drafting_facts import status_tag,protection_label,is_submittal
 from ..company_sheets import measure_sheet_text
 
 NS='http://www.w3.org/2000/svg'
@@ -86,7 +86,7 @@ def render_body(topology,layout,page,sheet):
         seen.add(identity)
         label_x=text_left+text_width+2 if side else text_left+2
         label_anchor='end' if side else 'start'
-        text(label_x,y+3.5,status_tag(facts['status'])+' '+identity,3.5,label_anchor)
+        text(label_x,y+3.5,(status_tag(facts['status'])+' '+identity).strip(),3.5,label_anchor)
         names=wrap_mm(e['name'],text_width)
         name_limit=4 if side and kind not in {'panelboard','switchboard','disconnect','transfer_switch','meter_main'} else 3
         if len(names)>name_limit:raise ValueError(f'{identity}: equipment name exceeds its measured label lane; select a larger diagram area')
@@ -96,7 +96,8 @@ def render_body(topology,layout,page,sheet):
             outline(sx,y+5,sw,h-5.5)
             volts='V ?' if e['rated_voltage_v'] is None else f'{e["rated_voltage_v"]:g} V'
             current='BUS A ?' if facts['bus_current_a'] is None else f'{facts["bus_current_a"]:g} A BUS'
-            rating=wrap_mm(current+' / '+volts,text_width,size=SMALL_TEXT_MM)
+            if is_submittal():current=None if facts['bus_current_a'] is None else f'{facts["bus_current_a"]:g}A BUS'
+            rating=wrap_mm(' / '.join(v for v in (current,volts) if v),text_width,size=SMALL_TEXT_MM)
             if len(rating)>2:raise ValueError(f'{identity}: bus rating needs a wider label lane')
             for i,value in enumerate(rating):text(label_x,y+22+i*3.8,value,SMALL_TEXT_MM,label_anchor)
             if kind=='transfer_switch':
@@ -249,7 +250,7 @@ def render_body(topology,layout,page,sheet):
                               'equipment_id':edge[endpoint+'_id'],'port_id':edge[endpoint+'_port_id'],
                               'role':edge[endpoint+'_role'],'point_mm':start if endpoint=='source' else end})
     section(1,'ELECTRICAL REFERENCES' if page['kind']=='reference-index' else 'FEEDER SCHEDULE CONTINUED' if page['kind']=='facts-register' else 'ONE-LINE NOTES CONTINUED' if page['kind']=='notes-continuation' else 'POWER ONE-LINE',left+2,top+1,right-left-4)
-    header='NOT TO SCALE / '+page.get('navigation_header','REFERENCES UNRESOLVED')
+    header='NOT TO SCALE' if is_submittal() else 'NOT TO SCALE / '+page.get('navigation_header','REFERENCES UNRESOLVED')
     header_lines=wrap_mm(header,right-left-26,size=TEXT_MM)
     if len(header_lines)>2:raise ValueError('actual reference links exceed the reserved header; shorten IDs or allocate a notes region')
     for i,value in enumerate(header_lines):text(left+13,top+19+i*TEXT_LINE_MM,value,TEXT_MM)

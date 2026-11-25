@@ -609,7 +609,7 @@ def _validate_graphics(graphics,request,sheet):
     Caller facts/notes are retained exactly. There is no copied historical data.
     """
     _keys(graphics,{"version","overview_bounds_mm","notes_bounds_mm","label_feature_ids",
-        "work_status","symbols","detail_views","notes","dimensions"},{"route_patterns"},label="site graphics")
+        "work_status","symbols","detail_views","notes","dimensions"},{"route_patterns","submittal"},label="site graphics")
     if graphics["version"]!="site-drafting-v1":
         raise ValueError("unsupported site graphics version")
     if request["drawing"].get("presentation_role","overview")!="overview":
@@ -667,8 +667,24 @@ def _validate_graphics(graphics,request,sheet):
         validate_sheet_text(_text(note["text"],"note text"))
         if not isinstance(note["source_ids"],list) or not note["source_ids"] or set(note["source_ids"])-set(features):
             raise ValueError("drafting note requires actual source feature IDs")
+    submittal=graphics.get("submittal")
+    if submittal is not None:_validate_submittal(submittal,features)
     dimension_ids=set()
     for dim in graphics["dimensions"]:
+        if submittal is not None and "start_xy" in dim:
+            _keys(dim,{"id","view_id","start_xy","end_xy","offset_mm","source_ids"},{"text"},label="submittal dimension request")
+            _identifier(dim["id"],"dimension id")
+            if dim["id"] in dimension_ids:raise ValueError("duplicate dimension id")
+            dimension_ids.add(dim["id"])
+            if dim["view_id"]!="overview":raise ValueError("explicit-coordinate dimensions are overview-only")
+            for end in ("start_xy","end_xy"):
+                if not isinstance(dim[end],list) or len(dim[end])!=2:raise ValueError("dimension coordinates must be [x,y]")
+                for value in dim[end]:_number(value,"dimension coordinate")
+            if not isinstance(dim["source_ids"],list) or not dim["source_ids"] or set(dim["source_ids"])-set(features):
+                raise ValueError("explicit-coordinate dimension requires actual source feature IDs")
+            if "text" in dim:validate_sheet_text(_text(dim["text"],"dimension text"))
+            _number(dim["offset_mm"],"dimension offset_mm")
+            continue
         _keys(dim,{"id","view_id","start_feature_id","start_point_index","end_feature_id","end_point_index","offset_mm"},label="dimension request")
         _identifier(dim["id"],"dimension id")
         if dim["id"] in dimension_ids:raise ValueError("duplicate dimension id")
@@ -684,21 +700,70 @@ def _validate_graphics(graphics,request,sheet):
     return graphics
 
 
+def _feet_inches(metres):
+    """Architectural feet-inches text rounded to the nearest inch."""
+    inches=round(metres/.0254)
+    feet,rest=divmod(inches,12)
+    return f"{feet}'-{rest}\""
+
+
+SUBMITTAL_SAMPLES={"line","dash","dot","heavy","box","symbol"}
+
+
+def _validate_submittal(submittal,features):
+    """Submittal presentation: plain legend, feet scale bar, plan annotations.
+
+    It suppresses internal source/presentation-basis rows and generic review
+    disclaimers on the printed sheet only. The complete audit, source map and
+    qualifications remain in the delivery receipts.
+    """
+    _keys(submittal,{"legend","annotations"},{"dimension_units","scale_bar_ft"},label="site submittal")
+    if submittal.get("dimension_units","m") not in {"m","ft"}:raise ValueError("submittal dimension_units: m or ft")
+    bar=submittal.get("scale_bar_ft")
+    if bar is not None and (not isinstance(bar,list) or not 2<=len(bar)<=6 or any(type(v) not in (int,float) or v<0 for v in bar) or bar!=sorted(bar) or bar[0]!=0):
+        raise ValueError("scale_bar_ft: ascending list of 2-6 tick values starting at 0")
+    if not isinstance(submittal["legend"],list):raise ValueError("submittal legend must be a list")
+    for row in submittal["legend"]:
+        _keys(row,{"label","sample"},{"symbol"},label="submittal legend row")
+        validate_sheet_text(_text(row["label"],"legend label"))
+        if row["sample"] not in SUBMITTAL_SAMPLES:raise ValueError("unsupported legend sample")
+        if row["sample"]=="symbol" and row.get("symbol") not in SYMBOLS:raise ValueError("legend symbol must be a known site symbol")
+    if not isinstance(submittal["annotations"],list):raise ValueError("submittal annotations must be a list")
+    for row in submittal["annotations"]:
+        _keys(row,{"text","at","source_ids"},{"size","weight","anchor","rotate","leader_to"},label="submittal annotation")
+        validate_sheet_text(_text(row["text"],"annotation text"))
+        for key in ("at",*(("leader_to",) if "leader_to" in row else ())):
+            if not isinstance(row[key],list) or len(row[key])!=2:raise ValueError("annotation coordinates must be [x,y]")
+            for value in row[key]:_number(value,"annotation coordinate")
+        if not isinstance(row["source_ids"],list) or not row["source_ids"] or set(row["source_ids"])-set(features):
+            raise ValueError("annotation requires actual source feature IDs")
+        if row.get("anchor","start") not in {"start","middle","end"}:raise ValueError("annotation anchor")
+        if "size" in row:_number(row["size"],"annotation size",positive=True)
+        if "rotate" in row:_number(row["rotate"],"annotation rotate")
+
+
 def _graphics_dimensions(graphics,request,view_id,scale):
     if not graphics:
         return ()
     features={row["id"]:row for row in request["features"]}
+    feet=(graphics.get("submittal") or {}).get("dimension_units")=="ft"
     dimensions=[]
     for row in graphics["dimensions"]:
         if row["view_id"]!=view_id:
             continue
-        a=_point(features[row["start_feature_id"]]["points"][row["start_point_index"]],UNITS[request["units"]],"dimension start")
-        b=_point(features[row["end_feature_id"]]["points"][row["end_point_index"]],UNITS[request["units"]],"dimension end")
+        factor=UNITS[request["units"]]
+        if "start_xy" in row:
+            a=_point(row["start_xy"],factor,"dimension start");b=_point(row["end_xy"],factor,"dimension end")
+            sources=tuple(dict.fromkeys(row["source_ids"]))
+        else:
+            a=_point(features[row["start_feature_id"]]["points"][row["start_point_index"]],factor,"dimension start")
+            b=_point(features[row["end_feature_id"]]["points"][row["end_point_index"]],factor,"dimension end")
+            sources=tuple(dict.fromkeys((row["start_feature_id"],row["end_feature_id"])))
         length=math.hypot(b.x-a.x,b.y-a.y)
         if length<=0:
             raise ValueError("dimension endpoints have zero plan separation")
-        dimensions.append(DrawingDimension("dimension:"+row["id"],tuple(dict.fromkeys((row["start_feature_id"],row["end_feature_id"]))),
-            a,b,row["offset_mm"]*scale/1000,length,f"{length:.2f} m PLAN"))
+        label=row.get("text") or (_feet_inches(length) if feet else f"{length:.2f} m PLAN")
+        dimensions.append(DrawingDimension("dimension:"+row["id"],sources,a,b,row["offset_mm"]*scale/1000,length,label))
     return tuple(dimensions)
 
 
@@ -883,9 +948,31 @@ def _render_drafted_site_body(request,sheet,graphics):
     overview_transform=merge("overview",result,overview)
     # Measured bar and supplied north are paper annotations, not site geometry.
     l,t,r,b=overview
-    line(l+3,b-5,l+23,b-5,weight=.5)
-    for x in (l+3,l+13,l+23):line(x,b-7,x,b-3,weight=.25)
-    text(f"0       {selected_scale/100:g}       {selected_scale/50:g} m",l+3,b-8,size=2.5)
+    submittal=graphics.get("submittal")
+    bar_ft=(submittal or {}).get("scale_bar_ft")
+    if bar_ft:
+        mm_per_ft=304.8/selected_scale
+        line(l+3,b-5,l+3+bar_ft[-1]*mm_per_ft,b-5,weight=.5)
+        for value in bar_ft:
+            x=l+3+value*mm_per_ft;line(x,b-7,x,b-3,weight=.25)
+            text(f"{value:g}'",x,b-8,size=2.5,anchor="middle")
+        text("SCALE: "+(sheet.fields.get("scale") if hasattr(sheet,"fields") and sheet.fields.get("scale") else f"1:{selected_scale:g}"),l+3+bar_ft[-1]*mm_per_ft+4,b-4,size=2.5)
+    else:
+        line(l+3,b-5,l+23,b-5,weight=.5)
+        for x in (l+3,l+13,l+23):line(x,b-7,x,b-3,weight=.25)
+        text(f"0       {selected_scale/100:g}       {selected_scale/50:g} m",l+3,b-8,size=2.5)
+    if submittal:
+        matrix=overview_transform["matrix"]
+        def paper(point):return (matrix[0][0]*point[0]+matrix[0][2],matrix[1][1]*point[1]+matrix[1][2])
+        for row in submittal["annotations"]:
+            px,py=paper(row["at"])
+            if "leader_to" in row:
+                qx,qy=paper(row["leader_to"]);line(px,py,qx,qy,weight=.25,sources=tuple(row["source_ids"]))
+                angle=math.atan2(py-qy,px-qx)
+                for side in (-.35,.35):line(qx,qy,qx+2*math.cos(angle+side),qy+2*math.sin(angle+side),weight=.25,sources=tuple(row["source_ids"]))
+            node=text(row["text"],px,py-(1 if "leader_to" in row else 0),size=row.get("size",2.5),weight=row.get("weight",400),
+                      anchor=row.get("anchor","start"),sources=tuple(row["source_ids"]))
+            if row.get("rotate"):node.set("transform",f"rotate({-row['rotate']:g} {px} {py})")
     north=request["drawing"]["north_degrees"]
     if north is not None:
         angle=math.radians(north);x,y=r-18,b-7
@@ -941,7 +1028,7 @@ def _render_drafted_site_body(request,sheet,graphics):
             y+=max(4.2,size*1.5)
         y+=1.3
     for i,row in enumerate(graphics["notes"],1):note(f"{i}. "+row["text"],tuple(row["source_ids"]))
-    y+=3;note("PLAN GRAPHICS",(reference,),bold=True)
+    y+=3;note("LEGEND" if submittal else "PLAN GRAPHICS",(reference,),bold=True)
     def legend_label(value,sources=(reference,),minimum_height=6):
         nonlocal y
         fragments=_wrap_legend_text(value,width-21,size=3.2)
@@ -951,31 +1038,47 @@ def _render_drafted_site_body(request,sheet,graphics):
             text(fragment,x+21,y+index*4.8,size=3.2,sources=sources,
                  metadata={"full_text":value,"line_index":index})
         y+=max(minimum_height,len(fragments)*4.8)
-    for description,color,weight,pattern in (("Proposed route - supplied status","#000000",.5,None),
+    samples={"line":("#666666",.13,None),"dash":("#666666",.13,"dash"),"dot":("#000000",.25,"dot"),"heavy":("#000000",.5,None)}
+    if submittal:
+        for row in submittal["legend"]:
+            if y+1>box[3]:raise ValueError("submittal legend overflows notes panel")
+            if row["sample"] in samples:
+                color,weight,pattern=samples[row["sample"]]
+                sample=ET.Element(ns+"polyline",{"points":f"{x},{y-1} {x+16},{y-1}","fill":"none","stroke":color,"stroke-width":str(weight)})
+                if pattern:sample.set("stroke-dasharray","3 1.5" if pattern=="dash" else ".4 1.2")
+                key=f"graphics-key:{count}";position=len(body);body.append(_company_body_node(sample));paths[key]=[position]
+                items.append({"svg_id":key,"source_ids":[reference],"kind":"legend-sample","source_item_id":key,"view_id":"drafting-notes"})
+            elif row["sample"]=="box":
+                add("rect",{"x":x+4,"y":y-3.5,"width":8,"height":5,"fill":"none","stroke":"#000000","stroke-width":.25})
+            else:
+                for a,b in SYMBOLS[row["symbol"]].segments:line(x+7+a.x,y-1+a.y,x+7+b.x,y-1+b.y)
+            legend_label(row["label"],minimum_height=6.5)
+    for description,color,weight,pattern in (() if submittal else (("Proposed route - supplied status","#000000",.5,None),
             ("Existing route - supplied status","#666666",.13,"dash"),("Future route / reserved intent","#000000",.25,"dash"),
-            ("Context / parking linework","#666666",.13,None)):
+            ("Context / parking linework","#666666",.13,None))):
         if y+1>box[3]:raise ValueError("drafting graphics key overflows notes panel")
         sample=ET.Element(ns+"polyline",{"points":f"{x},{y-1} {x+16},{y-1}","fill":"none","stroke":color,"stroke-width":str(weight)})
         if pattern:sample.set("stroke-dasharray","3 1.5")
         key=f"graphics-key:{count}";position=len(body);body.append(_company_body_node(sample));paths[key]=[position]
         items.append({"svg_id":key,"source_ids":[reference],"kind":"legend-sample","source_item_id":key,"view_id":"drafting-notes"})
         legend_label(description)
-    for key in graphics["symbols"]:
+    for key in (() if submittal else graphics["symbols"]):
         if y+1>box[3]:raise ValueError("drafting symbol key overflows notes panel")
         for a,b in SYMBOLS[graphics["symbols"][key]].segments:line(x+7+a.x,y-1+a.y,x+7+b.x,y-1+b.y,sources=(key,))
         legend_label(features[key]["label"]+" - generic mark",sources=(key,),minimum_height=7)
-    y+=3;note("SOURCE / PRESENTATION BASIS",(reference,),bold=True)
-    for qualification in dict.fromkeys(row["evidence"]["qualification"] for row in request["features"]):
-        note(qualification,tuple(row["id"] for row in request["features"] if row["evidence"]["qualification"]==qualification))
-    for view_id,audit in audits.items():
-        for missing in audit["unplaced_labels"]:note(missing["text"]+" ("+missing["source_ids"][0]+", "+view_id+")",tuple(missing["source_ids"]))
-    for row in request["features"]:
-        if row["kind"]=="route" and not row["points"]:note(row["label"]+" ["+row["route_status"]+"] - no geometry ("+row["id"]+")",(row["id"],))
-    for detail_id,diagnostics in focus_annotations.items():
-        if diagnostics["state"]!="placed":
-            note("Detail "+detail_id+": focus annotation has no fully clear placement; see the numbered enlargement.",tuple(next(d["feature_ids"] for d in graphics["detail_views"] if d["id"]==detail_id)))
-    note("Plan dimensions are coordinate-derived; verify source qualifications.",(reference,))
-    note("No survey, engineering or completeness approval.",(reference,))
+    if not submittal:
+        y+=3;note("SOURCE / PRESENTATION BASIS",(reference,),bold=True)
+        for qualification in dict.fromkeys(row["evidence"]["qualification"] for row in request["features"]):
+            note(qualification,tuple(row["id"] for row in request["features"] if row["evidence"]["qualification"]==qualification))
+        for view_id,audit in audits.items():
+            for missing in audit["unplaced_labels"]:note(missing["text"]+" ("+missing["source_ids"][0]+", "+view_id+")",tuple(missing["source_ids"]))
+        for row in request["features"]:
+            if row["kind"]=="route" and not row["points"]:note(row["label"]+" ["+row["route_status"]+"] - no geometry ("+row["id"]+")",(row["id"],))
+        for detail_id,diagnostics in focus_annotations.items():
+            if diagnostics["state"]!="placed":
+                note("Detail "+detail_id+": focus annotation has no fully clear placement; see the numbered enlargement.",tuple(next(d["feature_ids"] for d in graphics["detail_views"] if d["id"]==detail_id)))
+        note("Plan dimensions are coordinate-derived; verify source qualifications.",(reference,))
+        note("No survey, engineering or completeness approval.",(reference,))
     all_drawings=DrawingSet(request["id"],tuple(views),(),source_index)
     composed=compose_sheet(all_drawings,SheetSpec(sheet.id,sheet.width_mm,sheet.height_mm+60,0,60,sheet.title),tuple(placements))
     xml=ET.tostring(body,encoding="unicode")

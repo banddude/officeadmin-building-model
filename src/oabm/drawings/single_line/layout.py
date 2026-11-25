@@ -99,6 +99,21 @@ def _core(topology, ids, bounds):
 
 
 def _facts(topology,tags):
+    from .drafting_facts import is_submittal,status_tag
+    if is_submittal():
+        names={row['id']:row['name'] for row in topology.equipment}
+        rows=[]
+        for edge in topology.connections:
+            facts=edge['drafting'];label=edge.get('circuit_name') or tags[edge['id']]
+            voltage='' if edge['voltage_v'] is None else f'{edge["voltage_v"]:g}V'
+            poles='' if edge['poles'] is None else f'{edge["poles"]}P'
+            head=(status_tag(facts['status'])+' '+label).strip()+': '+names[edge['source_id']]+' to '+names[edge['load_id']]
+            rows.append({'connection_id':edge['id'],'values':[head,*([', '.join(v for v in (voltage,poles) if v)] if voltage or poles else []),*facts['notes']]})
+        for equipment in topology.equipment:
+            if equipment['supplied_notes']:
+                rows.append({'equipment_id':equipment['id'],'values':[equipment['name'],*equipment['supplied_notes']]})
+        rows.append({'note_id':'notes','values':['ELECTRICAL SINGLE-LINE DIAGRAM, NOT TO SCALE.']})
+        return rows
     rows=[]
     for edge in topology.connections:
         voltage='V UNKNOWN' if edge['voltage_v'] is None else f'{edge["voltage_v"]:g} V'
@@ -943,6 +958,10 @@ def _resolve_navigation(result,topology,bounds,regions,reserved_sheet_ids=()):
             continue
         nav=['FEEDER / TERMINAL LINKS',*lines]
         notes=page.get('notes_bounds')
+        from .drafting_facts import is_submittal
+        if is_submittal() and len(original_pages)==1:
+            # Single-sheet submittal: no cross-sheet links exist to navigate.
+            page['navigation_header']='NOT TO SCALE';continue
         if notes:
             l,t,r,b=notes;capacity=int((b-t-30)/4.6)
             wrapped=[part for value in nav for part in wrap_mm(value,r-l-10,size=3.2)]
@@ -1042,7 +1061,11 @@ def plan_pages(topology: Topology,drawing_bounds_mm, *, first_sheet_id='E601',re
     tags={key:row['tag'] for key,row in refs.items()}
     rows=_facts(topology,tags)
     notes=[value for row in rows if 'connection_id' not in row for value in row['values']]
-    notes[:0]=['(E) EXISTING; (N) NEW; (?) STATUS NOT SUPPLIED.',
+    from .drafting_facts import is_submittal
+    if is_submittal():
+        notes=[value for row in rows if 'connection_id' not in row for value in row['values']]
+        notes[:0]=['(E) EXISTING. (N) NEW.']
+    else:notes[:0]=['(E) EXISTING; (N) NEW; (?) STATUS NOT SUPPLIED.',
               'Protection symbols, neutral and grounding links are drawn only from supplied facts.',
               'Knife symbols identify device type; operating state is not supplied.',
               'Dashed outlines identify equipment; heavy strokes identify schematic bus terminals.']

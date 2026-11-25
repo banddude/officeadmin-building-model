@@ -330,7 +330,7 @@ def _body_group(body, bounds):
              'circle':{'cx','cy','r','fill','stroke','stroke-width'},
              'polyline':{'points','fill','stroke','stroke-width','stroke-linejoin'},
              'polygon':{'points','fill','stroke','stroke-width','stroke-linejoin'},
-             'text':{'x','y','font-size','font-family','font-weight','text-anchor','fill',XML_SPACE}}
+             'text':{'x','y','font-size','font-family','font-weight','text-anchor','fill',XML_SPACE,'transform'}}
     l,t,r,b=bounds
     for node in root.iter():
         tag=node.tag.split('}')[-1]
@@ -387,6 +387,15 @@ def _body_group(body, bounds):
             x-=width*({'start':0,'middle':.5,'end':1}[anchor])
             safety=size*.01
             box=(x+min(0,ink[0])-safety,y+min(-size,ink[1]),x+max(width,ink[2])+safety,y+max(size*.3,ink[3]))
+            if 'transform' in node.attrib:
+                # Only quarter-turn text rotation about an explicit point; the
+                # admitted box is the exact rotation of the measured text box.
+                match=re.fullmatch(r'rotate\((-?90|-?270|180)(?:\.0+)? (-?[0-9.]+) (-?[0-9.]+)\)',node.get('transform'))
+                if not match: raise ValueError('body: text transform must be rotate(+/-90|180|270 cx cy)')
+                angle=math.radians(float(match.group(1)));cx,cy=float(match.group(2)),float(match.group(3))
+                corners=[(px,py) for px in (box[0],box[2]) for py in (box[1],box[3])]
+                rotated=[(cx+(px-cx)*math.cos(angle)-(py-cy)*math.sin(angle),cy+(px-cx)*math.sin(angle)+(py-cy)*math.cos(angle)) for px,py in corners]
+                box=(min(q[0] for q in rotated),min(q[1] for q in rotated),max(q[0] for q in rotated),max(q[1] for q in rotated))
         if box and (box[0]-pad<l or box[1]-pad<t or box[2]+pad>r or box[3]+pad>b):
             raise ValueError('body: content exceeds drawing_bounds_mm; paginate or move/resize content')
         node.tag=f'{{{SVG}}}'+tag

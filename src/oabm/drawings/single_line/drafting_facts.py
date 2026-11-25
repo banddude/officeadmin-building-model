@@ -4,9 +4,26 @@ Only this drawing consumer interprets the namespaced presentation attributes.
 Canonical ports/circuits remain the exclusive source of connectivity.
 """
 from __future__ import annotations
+import contextlib
+import contextvars
 import math
 
 STATUSES={'existing','new','unknown'}
+# Presentation only. 'review' (default) keeps every diagnostic and register
+# detail; 'submittal' prints a plain utility-submittal one-line from the same
+# admitted topology. Receipts and source maps are unchanged in both modes.
+PRESENTATION=contextvars.ContextVar('single_line_presentation',default='review')
+
+
+@contextlib.contextmanager
+def submittal_presentation():
+    token=PRESENTATION.set('submittal')
+    try:yield
+    finally:PRESENTATION.reset(token)
+
+
+def is_submittal():
+    return PRESENTATION.get()=='submittal'
 KINDS={'power','neutral','grounding'}
 PROTECTION={'breaker','fuse','disconnect','fused_disconnect'}
 
@@ -63,7 +80,7 @@ def circuit_facts(entity):
 
 
 def status_tag(status):
-    return {'existing':'(E)','new':'(N)','unknown':'(?)'}[status]
+    return {'existing':'(E)','new':'(N)','unknown':'' if is_submittal() else '(?)'}[status]
 
 
 def protection_label(facts):
@@ -78,6 +95,14 @@ def protection_label(facts):
 
 def feeder_labels(edge,tag):
     facts=edge['drafting'];kind=facts['connection_kind']
+    if is_submittal():
+        name=edge.get('circuit_name') or (f'{edge["voltage_v"]:g} V' if edge['voltage_v'] is not None else tag)
+        lines=[(status_tag(facts['status'])+' '+name).strip()]
+        if facts['protection'] is not None:
+            p=facts['protection']
+            lines.append(' / '.join(v for v in (f'{p["rating_a"]:g}A' if p.get('rating_a') else None,f'{p["poles"]}P' if p.get('poles') else None) if v)+' '+p['kind'].replace('_',' ').upper())
+        lines.extend(facts['notes'])
+        return lines
     voltage='VOLTAGE NOT SUPPLIED' if edge['voltage_v'] is None else f'{edge["voltage_v"]:g} V'
     lines=[status_tag(facts['status'])+' '+tag+' / '+(voltage if kind=='power' else kind.upper())]
     if facts['protection'] is not None:
